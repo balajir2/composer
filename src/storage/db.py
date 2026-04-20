@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from fastapi import FastAPI, Request
 
+    from src.storage.checkpointer import PrismaCheckpointSaver
+
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 
 
@@ -18,10 +20,14 @@ from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 async def prisma_lifespan(  # pyright: ignore[reportUnknownParameterType]
     app: "FastAPI",
 ) -> AsyncIterator[Prisma]:  # pyright: ignore[reportUnknownParameterType]
-    """Connect a Prisma client for the duration of the app's lifespan."""
+    """Connect a Prisma client + attach checkpointer for the duration of the app's lifespan."""
+    # Deferred import to avoid circular dependency: checkpointer imports db module.
+    from src.storage.checkpointer import PrismaCheckpointSaver
+
     db = Prisma()
     await db.connect()
     app.state.db = db
+    app.state.checkpointer = PrismaCheckpointSaver(db)
     try:
         yield db
     finally:
@@ -36,4 +42,12 @@ def get_db(request: "Request") -> Prisma:  # pyright: ignore[reportUnknownParame
     return db
 
 
-__all__ = ["get_db", "prisma_lifespan"]
+def get_checkpointer(request: "Request") -> "PrismaCheckpointSaver":  # pyright: ignore[reportUnknownParameterType]
+    """FastAPI dependency — returns the app-wide PrismaCheckpointSaver."""
+    cp = getattr(request.app.state, "checkpointer", None)
+    if cp is None:
+        raise RuntimeError("Checkpointer not attached to app.state — did lifespan run?")
+    return cp
+
+
+__all__ = ["get_checkpointer", "get_db", "prisma_lifespan"]
