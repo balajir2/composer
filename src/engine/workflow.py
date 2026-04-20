@@ -1,8 +1,10 @@
 """Pydantic models for Composer's workflow JSON.
 
-This module defines the Phase 1 envelope (Workflow, WorkflowEdge, Position,
-BaseNodeData) plus the Start and End node discriminators. The remaining 16
-node-type classes land in Task 4 and plug into the same discriminated union.
+Implements ADR-0002 (full OAB fidelity for the workflow envelope). This
+module defines the Phase 1 models (Workflow, WorkflowEdge, Position,
+BaseNodeData) plus the Start and End node discriminators. The remaining
+16 node-type classes land in Task 4 and plug into the same discriminated
+union.
 
 See docs/superpowers/specs/2026-04-20-phase-1-execution-engine-design.md §5.
 OAB reference: lib/workflow/types.ts.
@@ -21,6 +23,9 @@ class Position(BaseModel):
 class BaseNodeData(BaseModel):
     """Fields shared by every node-type data class."""
 
+    # extra="allow" preserves per-type fields not yet modeled (e.g. Agent.tools,
+    # Mcp.mcpServers) so workflows authored against later-phase executors still
+    # round-trip through Phase 1 CRUD without data loss.
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
     label: str
