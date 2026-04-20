@@ -1,0 +1,21 @@
+// Composer — Prisma schema
+// Tables will be added phase-by-phase as executors are built.
+// Phase 0: empty schema (just client generator + datasource config).
+
+generator client {
+  provider             = "prisma-client-py"
+  recursive_type_depth = 5
+  interface            = "asyncio"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ────────────────────────────────────────────────
+// Phase 1 will add: Workflow, WorkflowExecution,
+//   LangGraphCheckpoint, LangGraphCheckpointWrite
+// Phase 3 will add: McpServer, McpOAuthToken, McpOAuthState
+// Phase 5 will add: Approval
+// ────────────────────────────────────────────────

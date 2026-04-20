@@ -1,0 +1,27 @@
+# Composer — local development dependencies.
+# Run with: docker compose up -d
+# Stop with: docker compose down
+# Reset with: docker compose down -v (wipes the data volume)
+
+services:
+  postgres:
+    image: postgres:15-alpine
+    container_name: composer-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: composer
+      POSTGRES_PASSWORD: composer
+      POSTGRES_DB: composer
+    ports:
+      - "5432:5432"
+    volumes:
+      - composer_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U composer"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  composer_pgdata:
+    name: composer_pgdata

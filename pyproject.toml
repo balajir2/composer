@@ -1,0 +1,150 @@
+[project]
+name = "composer"
+version = "0.1.0"
+description = "Python rebuild of Open Agent Builder on IE-compatible stack"
+authors = [
+    { name = "Balaji Rajan", email = "balajirajan@gmail.com" },
+]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+    # Web framework
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+
+    # Validation
+    "pydantic>=2.9.0",
+    "pydantic-settings>=2.6.0",
+
+    # Database (Prisma Python)
+    "prisma>=0.15.0",
+
+    # Orchestration
+    "langgraph>=0.2.50",
+    "langchain>=0.3.0",
+    "langchain-core>=0.3.0",
+    "langchain-anthropic>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langchain-google-genai>=2.0.0",
+    "langchain-groq>=0.2.0",
+
+    # MCP / HTTP
+    "httpx>=0.28.0",
+
+    # Security
+    "cryptography>=44.0.0",
+    "python-jose[cryptography]>=3.3.0",
+    "simpleeval>=1.0.0",
+
+    # Utilities
+    "python-dotenv>=1.0.1",
+    "python-multipart>=0.0.20",
+
+    # LangSmith tracing
+    "langsmith>=0.2.0",
+
+    # Sandboxed code execution
+    "e2b-code-interpreter>=1.0.0",
+
+    # Document parsing (for Start node file uploads)
+    "pypdf>=5.0.0",
+    "python-docx>=1.1.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.3.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=6.0.0",
+    "ruff>=0.8.0",
+    "pyright>=1.1.390",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+# ───────────────────────────────────────────
+# Ruff (lint + format)
+# ───────────────────────────────────────────
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+extend-exclude = ["prisma/generated", ".venv"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade
+    "RUF",  # Ruff-specific
+    "SIM",  # flake8-simplify
+    "TCH",  # flake8-type-checking
+]
+ignore = [
+    "E501",  # line-too-long (handled by formatter)
+    "B008",  # FastAPI depends pattern
+]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ───────────────────────────────────────────
+# Pyright (type check — strict from day 0)
+# ───────────────────────────────────────────
+[tool.pyright]
+include = ["src", "tests"]
+exclude = ["prisma/generated", ".venv", "**/__pycache__"]
+typeCheckingMode = "strict"
+pythonVersion = "3.11"
+reportMissingImports = "error"
+reportMissingTypeStubs = "warning"
+# Accept some flexibility for now; tighten as the codebase stabilizes.
+reportUnknownMemberType = "warning"
+reportUnknownArgumentType = "warning"
+reportUnknownVariableType = "warning"
+
+# ───────────────────────────────────────────
+# Pytest
+# ───────────────────────────────────────────
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+asyncio_mode = "auto"
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+    "--cov=src",
+    "--cov-report=term-missing",
+    "--cov-report=xml",
+]
+markers = [
+    "integration: end-to-end tests that require external services",
+    "slow: tests that take longer than a few seconds",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["src"]
+omit = [
+    "src/main.py",
+    "prisma/generated/**",
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
