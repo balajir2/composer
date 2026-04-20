@@ -1,6 +1,5 @@
 // Composer — Prisma schema
 // Tables will be added phase-by-phase as executors are built.
-// Phase 0: empty schema (just client generator + datasource config).
 
 generator client {
   provider             = "prisma-client-py"
@@ -14,17 +13,82 @@ datasource db {
 }
 
 // ────────────────────────────────────────────────
-// Phase 1 will add: Workflow, WorkflowExecution,
+// Phase 1: Workflow, WorkflowExecution,
 //   LangGraphCheckpoint, LangGraphCheckpointWrite
 // Phase 3 will add: McpServer, McpOAuthToken, McpOAuthState
 // Phase 5 will add: Approval
 // ────────────────────────────────────────────────
 
-// Placeholder model so `prisma generate` succeeds in CI.
-// Will be removed or repurposed when Phase 1 adds real tables.
-model ComposerBootstrap {
-  id        String   @id @default(cuid())
-  createdAt DateTime @default(now())
+model Workflow {
+  id            String   @id @default(cuid())
+  userId        String?  @map("user_id")
+  name          String
+  description   String?
+  category      String?
+  tags          String[]
+  difficulty    String?
+  estimatedTime String?  @map("estimated_time")
+  nodes         Json
+  edges         Json
+  version       String?
+  isTemplate    Boolean  @default(false) @map("is_template")
+  isPublic      Boolean  @default(false) @map("is_public")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt      @map("updated_at")
 
-  @@map("_composer_bootstrap")
+  executions    WorkflowExecution[]
+
+  @@map("workflows")
+  @@index([userId])
+}
+
+model WorkflowExecution {
+  id            String    @id @default(cuid())
+  workflowId    String    @map("workflow_id")
+  userId        String?   @map("user_id")
+  status        String
+  currentNodeId String?   @map("current_node_id")
+  nodeResults   Json      @map("node_results")
+  variables     Json
+  input         Json?
+  output        Json?
+  error         String?
+  startedAt     DateTime  @default(now()) @map("started_at")
+  completedAt   DateTime? @map("completed_at")
+  threadId      String    @unique         @map("thread_id")
+
+  workflow      Workflow  @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@map("workflow_executions")
+  @@index([workflowId])
+  @@index([userId])
+}
+
+model LangGraphCheckpoint {
+  threadId           String   @map("thread_id")
+  checkpointNs       String   @default("") @map("checkpoint_ns")
+  checkpointId       String   @map("checkpoint_id")
+  parentCheckpointId String?  @map("parent_checkpoint_id")
+  checkpoint         Bytes
+  metadata           Bytes
+  createdAt          DateTime @default(now()) @map("created_at")
+
+  @@id([threadId, checkpointNs, checkpointId])
+  @@map("langgraph_checkpoints")
+  @@index([threadId])
+}
+
+model LangGraphCheckpointWrite {
+  threadId     String   @map("thread_id")
+  checkpointNs String   @default("") @map("checkpoint_ns")
+  checkpointId String   @map("checkpoint_id")
+  taskId       String   @map("task_id")
+  idx          Int
+  channel      String
+  value        Bytes
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  @@id([threadId, checkpointNs, checkpointId, taskId, idx])
+  @@map("langgraph_checkpoint_writes")
+  @@index([threadId, checkpointId])
 }
