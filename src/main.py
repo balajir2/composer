@@ -47,7 +47,7 @@ def create_app() -> FastAPI:
     )
 
     @app.get("/health", tags=["system"])
-    async def health() -> dict[str, str]:
+    async def health() -> dict[str, str]:  # pyright: ignore[reportUnusedFunction]
         """Liveness probe. Always returns ok if the process is responding."""
         return {
             "status": "ok",
