@@ -125,7 +125,7 @@ def build_graph(
         if node.type == "note":
             continue  # visual-only; skipped at build time per OAB behavior
         executor = build_executor(node)  # may raise NotImplementedError
-        builder.add_node(node.id, executor.arun)
+        builder.add_node(node.id, executor.arun)  # pyright: ignore[reportUnknownMemberType]
 
     for edge in workflow.edges:
         source_node = nodes_by_id[edge.source]
@@ -149,7 +149,7 @@ def build_graph(
     for end_id in end_ids:
         builder.add_edge(end_id, END)
 
-    return builder.compile(checkpointer=checkpointer)
+    return builder.compile(checkpointer=checkpointer)  # pyright: ignore[reportUnknownMemberType]
 
 
 __all__ = [
