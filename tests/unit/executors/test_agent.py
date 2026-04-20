@@ -4,6 +4,7 @@ from typing import Any
 
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
+from langchain_core.messages import AIMessage
 
 from src.engine.state import initial_state
 from src.engine.workflow import AgentNode
@@ -100,3 +101,107 @@ async def test_agent_is_registered() -> None:
     node = _agent_node()
     executor = build_executor(node)
     assert isinstance(executor, AgentExecutor)
+
+
+async def test_agent_calls_tool_and_loops_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First LLM turn returns a tool_call; tool returns text; second turn returns final text."""
+    from langchain_core.tools import tool
+
+    @tool
+    async def echo_tool(message: str) -> str:
+        """Echo the given message."""
+        return f"echoed: {message}"
+
+    class _ToolCallingFake:
+        """Fake chat model: first invoke returns a tool_call, second returns text."""
+
+        def __init__(self) -> None:
+            self.call_count = 0
+
+        def bind_tools(self, tools: list[Any]) -> "_ToolCallingFake":
+            return self
+
+        async def ainvoke(self, messages: list[Any]) -> AIMessage:
+            self.call_count += 1
+            if self.call_count == 1:
+                return AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "echo_tool",
+                            "args": {"message": "hello"},
+                            "id": "call_1",
+                            "type": "tool_call",
+                        }
+                    ],
+                )
+            return AIMessage(content="Tool said: echoed: hello")
+
+    fake = _ToolCallingFake()
+    from src.llm import providers
+
+    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+
+    # Register a test-scoped provider with echo_tool
+    from src.tools import registry
+
+    async def _resolve_stub(node: Any, context: Any) -> list[Any]:
+        return [echo_tool]
+
+    monkeypatch.setattr(registry, "resolve_tools_for_node", _resolve_stub)
+
+    node = _agent_node(selected_tools=["fake.echo"])
+    state = initial_state("say hello")
+    delta = await AgentExecutor(node).arun(state)
+    assert "echoed: hello" in delta["variables"]["lastOutput"]
+    assert fake.call_count == 2
+
+
+async def test_agent_respects_max_iterations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the LLM keeps emitting tool calls, we cap at MAX_ITERATIONS."""
+    from langchain_core.tools import tool
+
+    @tool
+    async def always_tool() -> str:
+        """Echo."""
+        return "."
+
+    class _InfiniteLoopFake:
+        def bind_tools(self, tools: list[Any]) -> "_InfiniteLoopFake":
+            return self
+
+        async def ainvoke(self, messages: list[Any]) -> AIMessage:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": "always_tool",
+                        "args": {},
+                        "id": f"call_{len(messages)}",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+
+    fake = _InfiniteLoopFake()
+    from src.llm import providers
+
+    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+
+    from src.tools import registry
+
+    async def _resolve_stub(node: Any, context: Any) -> list[Any]:
+        return [always_tool]
+
+    monkeypatch.setattr(registry, "resolve_tools_for_node", _resolve_stub)
+
+    node = _agent_node(selected_tools=["fake.always"])
+    state = initial_state("loop")
+    from src.executors.agent import MaxIterationsExceededError
+
+    with pytest.raises(MaxIterationsExceededError, match="MAX_ITERATIONS=10"):
+        await AgentExecutor(node).arun(state)
