@@ -295,6 +295,6 @@ Two ways to integrate MCP:
 - Phase 10 UI that enumerates providers will have to query both the registry (`list_providers()`) AND Prisma (`McpServer.find_many`) — two calls, two lists, joined in the UI. Acceptable cost.
 - Phase 3b's OAuth flow slots in as additional methods on `McpToolProvider` + new Prisma tables, not as changes to the registry.
 
-**Implemented by.** Phase 3a (commits TBD).
+**Implemented by.** Phase 3a (commits `16bb663`..`2fd3961` on `main`, 2026-04-20).
 
 **Related.** ADR-0002 (node types include `mcp` with `mcp_server_ids` field), ADR-0009 (tool provider framework).
