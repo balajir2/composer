@@ -9,20 +9,21 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src import __version__
 from src.config import get_settings
+from src.storage.db import prisma_lifespan
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    """Application startup and shutdown hooks.
-
-    Phase 0: minimal. Later phases will attach DB pool, Prisma client, etc.
-    """
+    """Application startup and shutdown hooks."""
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
     logger.info("Starting Composer v%s in %s mode", __version__, settings.environment)
-    yield
+
+    async with prisma_lifespan(app):
+        yield
+
     logger.info("Shutting down Composer")
 
 
