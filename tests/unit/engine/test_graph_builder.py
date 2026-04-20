@@ -1,11 +1,13 @@
-"""Tests for workflow validation in graph_builder."""
+"""Tests for workflow validation and graph compilation in graph_builder."""
 
 from typing import Any
 
 import pytest
+from langgraph.checkpoint.memory import MemorySaver
 
 from src.engine.graph_builder import (
     WorkflowValidationError,
+    build_graph,
     validate_workflow_shape,
 )
 from src.engine.workflow import Workflow
@@ -118,3 +120,77 @@ def test_valid_start_to_end_passes() -> None:
         edges=[{"id": "e1", "source": "s", "target": "e"}],
     )
     validate_workflow_shape(wf)  # no raise
+
+
+# ---------------------------------------------------------------------------
+# Task 9: build_graph tests
+# ---------------------------------------------------------------------------
+
+
+def _minimal() -> Workflow:
+    return _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {"id": "e", "type": "end", "position": {"x": 100, "y": 0}, "data": {"label": "E"}},
+        ],
+        edges=[{"id": "e1", "source": "s", "target": "e"}],
+    )
+
+
+def test_build_graph_compiles_start_to_end() -> None:
+    compiled = build_graph(_minimal(), MemorySaver())
+    # CompiledStateGraph exposes .get_graph() which we can use to inspect structure.
+    g = compiled.get_graph()
+    names = {n.id for n in g.nodes.values()}
+    # LangGraph adds synthetic __start__ / __end__ in addition to our nodes
+    assert "s" in names
+    assert "e" in names
+
+
+def test_build_graph_rejects_unshipped_executor_type() -> None:
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {"id": "a", "type": "agent", "position": {"x": 0, "y": 0}, "data": {"label": "A"}},
+            {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
+        ],
+        edges=[
+            {"id": "e1", "source": "s", "target": "a"},
+            {"id": "e2", "source": "a", "target": "e"},
+        ],
+    )
+    with pytest.raises(NotImplementedError, match="Phase 2"):
+        build_graph(wf, MemorySaver())
+
+
+def test_build_graph_rejects_conditional_edge_source() -> None:
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {"id": "cond", "type": "if-else", "position": {"x": 0, "y": 0}, "data": {"label": "C"}},
+            {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
+        ],
+        edges=[
+            {"id": "e1", "source": "s", "target": "cond"},
+            {"id": "e2", "source": "cond", "target": "e"},
+        ],
+    )
+    with pytest.raises(NotImplementedError, match="Phase 4"):
+        build_graph(wf, MemorySaver())
+
+
+def test_build_graph_skips_note_nodes() -> None:
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {"id": "note", "type": "note", "position": {"x": 0, "y": 0}, "data": {"label": "memo"}},
+            {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
+        ],
+        edges=[{"id": "e1", "source": "s", "target": "e"}],
+    )
+    compiled = build_graph(wf, MemorySaver())
+    g = compiled.get_graph()
+    names = {n.id for n in g.nodes.values()}
+    assert "note" not in names  # skipped at build time
+    assert "s" in names
+    assert "e" in names

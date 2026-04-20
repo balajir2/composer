@@ -8,7 +8,21 @@ Reference: OAB lib/workflow/langgraph.ts:169-427.
 from collections import deque
 from collections.abc import Iterable
 
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.constants import END, START
+from langgraph.graph import StateGraph
+from langgraph.graph.state import CompiledStateGraph
+
+from src.engine.state import WorkflowStateDict
 from src.engine.workflow import Workflow, WorkflowEdge, WorkflowNode
+
+# Executors are registered as a side effect of import; importing them here
+# ensures the registry is populated before build_graph reads it.
+from src.executors import end as _end_executor  # noqa: F401  # pyright: ignore[reportUnusedImport]
+from src.executors import (
+    start as _start_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+)
+from src.executors.base import build_executor
 
 
 class WorkflowValidationError(ValueError):
@@ -80,4 +94,52 @@ def validate_workflow_shape(workflow: Workflow) -> None:
     _check_reachability(start_ids[0], nodes, workflow.edges)
 
 
-__all__ = ["WorkflowValidationError", "validate_workflow_shape"]
+CONDITIONAL_SOURCE_TYPES = {"if-else", "while", "user-approval"}
+
+
+def build_graph(
+    workflow: Workflow,
+    checkpointer: BaseCheckpointSaver,
+) -> CompiledStateGraph:
+    """Validate the workflow, compile it into a LangGraph StateGraph, return the compiled graph."""
+    validate_workflow_shape(workflow)
+
+    builder: StateGraph = StateGraph(WorkflowStateDict)
+    nodes_by_id = {node.id: node for node in workflow.nodes}
+
+    for node in workflow.nodes:
+        if node.type == "note":
+            continue  # visual-only; skipped at build time per OAB behavior
+        executor = build_executor(node)  # may raise NotImplementedError
+        builder.add_node(node.id, executor.arun)
+
+    for edge in workflow.edges:
+        source_node = nodes_by_id[edge.source]
+        if source_node.type in CONDITIONAL_SOURCE_TYPES:
+            phase = 4 if source_node.type in {"if-else", "while"} else 5
+            raise NotImplementedError(
+                f"Conditional edges from node type {source_node.type!r} land in Phase {phase}."
+            )
+        # Skip edges whose source is a note node (note is not in the graph)
+        if source_node.type == "note":
+            continue
+        # Skip edges whose target is a note node (same reason)
+        if nodes_by_id[edge.target].type == "note":
+            continue
+        builder.add_edge(edge.source, edge.target)
+
+    start_id = next(n.id for n in workflow.nodes if n.type == "start")
+    end_ids = [n.id for n in workflow.nodes if n.type == "end"]
+
+    builder.add_edge(START, start_id)
+    for end_id in end_ids:
+        builder.add_edge(end_id, END)
+
+    return builder.compile(checkpointer=checkpointer)
+
+
+__all__ = [
+    "WorkflowValidationError",
+    "build_graph",
+    "validate_workflow_shape",
+]
