@@ -19,6 +19,9 @@ from src.engine.workflow import Workflow, WorkflowEdge, WorkflowNode
 
 # Executors are registered as a side effect of import; importing them here
 # ensures the registry is populated before build_graph reads it.
+from src.executors import (
+    agent as _agent_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+)
 from src.executors import end as _end_executor  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from src.executors import (
     start as _start_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]

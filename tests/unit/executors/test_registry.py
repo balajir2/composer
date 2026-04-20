@@ -33,18 +33,20 @@ def test_register_and_lookup() -> None:
 
 
 def test_unshipped_type_raises_with_phase_hint() -> None:
-    node = AgentNode.model_validate(
+    from src.engine.workflow import McpNode
+
+    node = McpNode.model_validate(
         {
             "id": "n",
-            "type": "agent",
+            "type": "mcp",
             "position": {"x": 0, "y": 0},
-            "data": {"label": "a"},
+            "data": {"label": "m"},
         }
     )
     with pytest.raises(NotImplementedError) as excinfo:
         build_executor(node)
-    assert "'agent'" in str(excinfo.value)
-    assert "Phase 2" in str(excinfo.value)
+    assert "'mcp'" in str(excinfo.value)
+    assert "Phase 3" in str(excinfo.value)
 
 
 def test_unknown_type_raises_generic_message() -> None:
