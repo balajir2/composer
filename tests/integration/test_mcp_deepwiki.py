@@ -37,7 +37,7 @@ async def test_agent_with_deepwiki_mcp(client: AsyncClient) -> None:
         "/mcp-servers",
         json={
             "name": "DeepWiki",
-            "url": "https://mcp.deepwiki.com/sse",
+            "url": "https://mcp.deepwiki.com/mcp",
             "authType": "none",
             "category": "data",
         },

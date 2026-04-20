@@ -34,7 +34,7 @@ async def test_agent_with_firecrawl_mcp(client: AsyncClient) -> None:
         "/mcp-servers",
         json={
             "name": "Firecrawl MCP",
-            "url": "https://mcp.firecrawl.dev/{FIRECRAWL_API_KEY}/v2/sse",
+            "url": "https://mcp.firecrawl.dev/{FIRECRAWL_API_KEY}/v2/mcp",
             "authType": "none",  # Firecrawl uses api-key in URL path
             "category": "web",
         },

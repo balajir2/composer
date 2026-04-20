@@ -33,7 +33,7 @@ async def test_mcp_standalone_node(client: AsyncClient) -> None:
         "/mcp-servers",
         json={
             "name": "DeepWiki",
-            "url": "https://mcp.deepwiki.com/sse",
+            "url": "https://mcp.deepwiki.com/mcp",
             "authType": "none",
             "category": "data",
         },

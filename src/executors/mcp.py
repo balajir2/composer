@@ -49,7 +49,7 @@ class McpExecutor:
         _, tool = await resolve_single_mcp_tool(
             self.node.data.mcp_server_id,
             self.node.data.tool_name,
-            user_id=None,  # Phase 7 wires real user_id
+            user_id="dev",  # matches API default per ADR-0005; Phase 7 wires real user_id
             db=db,
         )
         result = await tool.ainvoke(resolved_args)

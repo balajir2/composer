@@ -41,7 +41,7 @@ async def test_oab_mcp_lifecycle_regression(client: AsyncClient) -> None:
         "/mcp-servers",
         json={
             "name": "Regression DeepWiki",
-            "url": "https://mcp.deepwiki.com/sse",
+            "url": "https://mcp.deepwiki.com/mcp",
             "authType": "none",
         },
     )

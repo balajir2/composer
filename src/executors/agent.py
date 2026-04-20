@@ -54,7 +54,7 @@ class AgentExecutor:
             BuildContext(
                 node=self.node,
                 state=state,
-                user_id=None,  # Phase 7 wires real user_id
+                user_id="dev",  # matches API default per ADR-0005; Phase 7 wires real user_id
                 db=get_current_db(),
             ),
         )

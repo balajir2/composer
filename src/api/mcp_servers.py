@@ -10,7 +10,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.mcp.base import McpToolProvider
 from src.mcp.schema_adapter import (
     UnresolvedUrlTemplateError,
@@ -123,20 +123,22 @@ async def create_mcp_server(
         else None
     )
 
-    row = await db.mcpserver.create(  # pyright: ignore[reportAttributeAccessIssue]
-        data={
-            "userId": "dev",  # anonymous per ADR-0005
-            "name": payload.name,
-            "url": payload.url,
-            "description": payload.description,
-            "category": payload.category,
-            "authType": payload.auth_type,
-            "encryptedAccessToken": encrypted_token,
-            "headerName": payload.header_name,
-            "isShared": payload.is_shared,
-            "headers": payload.headers,  # pyright: ignore[reportArgumentType]
-        }
-    )
+    create_data: dict[str, Any] = {
+        "userId": "dev",  # anonymous per ADR-0005
+        "name": payload.name,
+        "url": payload.url,
+        "description": payload.description,
+        "category": payload.category,
+        "authType": payload.auth_type,
+        "encryptedAccessToken": encrypted_token,
+        "headerName": payload.header_name,
+        "isShared": payload.is_shared,
+    }
+    # Prisma rejects `None` for Json? columns; only include when set.
+    if payload.headers is not None:
+        create_data["headers"] = Json(payload.headers)
+
+    row = await db.mcpserver.create(data=create_data)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
     return _to_read(row)
 
 
@@ -174,15 +176,15 @@ async def test_mcp_connection(
     if health.ok:
         try:
             tools = await provider.tools()
-            update_data["tools"] = [  # pyright: ignore[reportArgumentType]
-                {"name": t.name, "description": t.description} for t in tools
-            ]
+            update_data["tools"] = Json(
+                [{"name": t.name, "description": t.description} for t in tools]
+            )
         except Exception as exc:
             # Health said ok but tools/list failed; surface + don't overwrite lastError
             update_data["connectionStatus"] = "error"
             update_data["lastError"] = f"tools/list failed after initialize ok: {exc}"
 
-    await db.mcpserver.update(  # pyright: ignore[reportAttributeAccessIssue]
+    await db.mcpserver.update(  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
         where={"id": server_id}, data=update_data
     )
 
