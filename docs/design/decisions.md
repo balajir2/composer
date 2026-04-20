@@ -32,7 +32,7 @@ Entries are numbered sequentially and never renumbered. Superseding decisions ge
 - We do not take a dependency on `langgraph-checkpoint-postgres` and thus don't carry its psycopg transitive.
 - If Prisma's BYTEA handling or async driver proves problematic, the escape hatch is to switch to Option A mid-phase (the schema would migrate to LangGraph-managed tables; non-trivial but recoverable).
 
-**Implemented by.** Phase 1 (see [phase-1 spec](../superpowers/specs/2026-04-20-phase-1-execution-engine-design.md)).
+**Implemented by.** Phase 1 (commits `df25733`..`1b746dd` on `main`).
 
 **Related.** ADR-0002, ADR-0004.
 
@@ -56,7 +56,7 @@ Entries are numbered sequentially and never renumbered. Superseding decisions ge
 - If OAB's type definitions are ambiguous for a given node type's `data` fields, the implementation reads `lib/workflow/types.ts` (and the executor's usage of those fields) as the authoritative specification.
 - OAB node-type discriminator strings (`if-else`, `user-approval`, `gamma-ai`, etc.) are preserved verbatim in JSON; Python class names normalize to snake_case (`IfElseNodeData`, `UserApprovalNodeData`, `GammaAiNodeData`).
 
-**Implemented by.** Phase 1.
+**Implemented by.** Phase 1 (commits `df25733`..`1b746dd` on `main`).
 
 **Related.** ADR-0001, ADR-0005.
 
@@ -109,7 +109,7 @@ Entries are numbered sequentially and never renumbered. Superseding decisions ge
 - Integration tests (`@pytest.mark.integration`) require a `TEST_DATABASE_URL` env var set to a Neon dev branch or an equivalent Postgres. CI provides this via GitHub Actions `services: postgres`; developers running integration tests locally either point at a scratch Neon branch or skip the marker.
 - If Neon is down during development, the user is unblocked because only *integration* tests require Postgres — unit tests (which are the bulk) run with fakes.
 
-**Implemented by.** The docs commit that lands this ADR also removes `docker-compose.yml` and updates `.env.example` + `README.md`.
+**Implemented by.** Phase 1 (commits `df25733`..`1b746dd` on `main`).
 
 **Related.** ADR-0001 (checkpointer needs Postgres to exercise).
 
@@ -143,6 +143,6 @@ Key context that resolved the tradeoff: **no one is using Composer today**. Prog
 - Anonymous API in Phase 1 is safe because Composer has no external users and runs only on local dev machines during the backend-rebuild window. Phase 7 restores the security posture before any external exposure.
 - The 3 Phase 1 endpoints' response shapes are best-effort — they may be revised in Phase 7 as part of API-parity work. This is acceptable because no one depends on them in the interim.
 
-**Implemented by.** Phase 1.
+**Implemented by.** Phase 1 (commits `df25733`..`1b746dd` on `main`).
 
 **Related.** ADR-0002, ADR-0003.

@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### Phase 1 — Execution engine core (2026-04-20, in progress)
+### Phase 1 — Execution engine core (2026-04-20)
 
 #### Added
 - [Phase 1 design spec](docs/superpowers/specs/2026-04-20-phase-1-execution-engine-design.md) — architecture for the execution engine, Prisma schema additions, Pydantic models for all 18 node types, checkpointer design, API surface, test plan, phase-exit checklist.
@@ -16,6 +16,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - ADR-0003: Documentation runs in lockstep with development (four-document system + enforcement).
   - ADR-0004: Local dev Postgres — Neon only (supersedes Phase 0's dual-path guidance).
   - ADR-0005: Phase 1 API surface (3 endpoints) + JWT primitives as library code only.
+- Prisma schema: four tables — `Workflow`, `WorkflowExecution`, `LangGraphCheckpoint`, `LangGraphCheckpointWrite`.
+- Pydantic envelope for all 18 OAB node types (`src/engine/workflow.py`), discriminated on `type`.
+- `WorkflowStateDict` TypedDict with reducers (merge_dict, last_wins, operator.add) mirroring OAB's Annotation.Root.
+- Executor protocol + registry (`src/executors/base.py`) with phase-aware NotImplementedError for unshipped types.
+- Start + End executors (Phase 1 subset of OAB's 18 executor types).
+- Graph builder (`src/engine/graph_builder.py`): shape validation, reachability BFS, LangGraph StateGraph compilation.
+- `PrismaCheckpointSaver` (`src/storage/checkpointer.py`) implementing BaseCheckpointSaver's four async methods.
+- `LangGraphExecutor` orchestrator (`src/engine/langgraph_executor.py`): creates WorkflowExecution rows, drives graphs, persists terminal state.
+- REST API: `POST /workflows`, `POST /executions`, `GET /executions/{id}`.
+- JWT primitives (`src/security/jwt.py`): access + refresh token helpers, not wired to routes (ADR-0005).
+- Prisma client lifecycle wiring via FastAPI `lifespan`; `get_db` + `get_checkpointer` dependencies.
+- CI updated with Postgres 15 service, Prisma migrate step, and split pytest (unit vs integration marker).
+- Integration test (`tests/integration/test_start_to_end.py`) exercising the full engine path end-to-end.
+- Regression test harness (`tests/regression/`) with one OAB-ported start→end smoke test.
 
 #### Changed
 - README points at `docs/design/` and `docs/superpowers/specs/` for design/spec/ADR docs.
