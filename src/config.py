@@ -51,6 +51,18 @@ class Settings(BaseSettings):
     langchain_project: str = "composer"
     langchain_endpoint: str = "https://api.smith.langchain.com"
 
+    # ─── LLM providers (Phase 2) ──────────────────
+    anthropic_api_key: str = Field(default="", description="Anthropic API key")
+    openai_api_key: str = Field(default="", description="OpenAI API key")
+    google_api_key: str = Field(default="", description="Google AI Studio API key")
+    groq_api_key: str = Field(default="", description="Groq API key")
+
+    # ─── Agent tools (Phase 2) ────────────────────
+    tavily_api_key: str = Field(default="", description="Tavily web-search API key")
+    serper_api_key: str = Field(default="", description="Serper.dev Google-search API key")
+    firecrawl_api_key: str = Field(default="", description="Firecrawl web-scrape API key")
+    browserless_api_key: str = Field(default="", description="Browserless headless-Chrome API key")
+
 
 @lru_cache
 def get_settings() -> Settings:
