@@ -36,7 +36,9 @@ def test_google_returns_chat_google(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.config import get_settings
 
     get_settings.cache_clear()
-    from langchain_google_genai import ChatGoogleGenerativeAI  # pyright: ignore[reportMissingImports]
+    from langchain_google_genai import (  # pyright: ignore[reportMissingImports]
+        ChatGoogleGenerativeAI,
+    )
 
     model = build_chat_model("google/gemini-2.0-flash")
     assert isinstance(model, ChatGoogleGenerativeAI)
