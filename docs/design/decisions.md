@@ -267,3 +267,34 @@ Phase 4's Extract node will also need structured output, so the decision has dow
 **Implemented by.** Phase 2 (commits `252c80d`..`36c5c4f` on `main`).
 
 **Related.** ADR-0002, ADR-0006.
+
+---
+
+## ADR-0010: MCP Tool Provider — resolver-side instantiation
+
+**Status:** Accepted (2026-04-20)
+
+**Context.** Phase 2's Tool Provider Framework (ADR-0009) ships `@register_tool_provider` as a class decorator that instantiates a provider once at import time. That pattern works for standard tools (Tavily, Serper, etc.) whose Python class and configuration are both known at code-load time. MCP is different: MCP servers are DB rows added at runtime via REST. Each server has its own URL, auth config, and tool set. The same `McpToolProvider` Python class, instantiated many times with different rows.
+
+Two ways to integrate MCP:
+
+- **A.** Instantiate in the resolver. `resolve_tools_for_node` detects `mcp_server_ids` on the node, fetches McpServer rows, directly instantiates `McpToolProvider(server)` on the fly. Registry stays static-tool-only.
+- **B.** Extend the registry with dynamic runtime registration. Add `register_runtime_provider(instance)` alongside `@register_tool_provider`. When an MCP server is added via REST, the create handler instantiates and registers. Requires re-registration on every app startup (lifespan scans Prisma).
+
+**Decision.** Option **A**. MCP and standard tools have fundamentally different lifecycles — one is code-shipped-at-startup, the other is user-created-at-runtime. Mixing them in the same registry bends the framework to accommodate a semantic mismatch. Keep the registry clean for static tools; let the resolver dispatch on node config:
+
+- `selectedTools: list[str]` → registry (Phase 2 behavior, unchanged)
+- `mcp_server_ids: list[str]` → Prisma lookup + `McpToolProvider(row)` instantiation + `provider.tools()` + `provider.build_tool()`
+
+`McpToolProvider` still **implements** `ToolProvider` (inherits the ABC), just isn't decorator-registered. UI enumeration of "MCP servers the user has connected" is a separate Prisma query, not `list_providers()`.
+
+**Consequences.**
+- Registry stays small and single-purpose (static tools only).
+- No need for per-startup Prisma scanning or registry re-hydration.
+- MCP-specific REST endpoints (`POST /mcp-servers`, etc.) are independent of the tool registry code path — they only touch Prisma.
+- Phase 10 UI that enumerates providers will have to query both the registry (`list_providers()`) AND Prisma (`McpServer.find_many`) — two calls, two lists, joined in the UI. Acceptable cost.
+- Phase 3b's OAuth flow slots in as additional methods on `McpToolProvider` + new Prisma tables, not as changes to the registry.
+
+**Implemented by.** Phase 3a (commits TBD).
+
+**Related.** ADR-0002 (node types include `mcp` with `mcp_server_ids` field), ADR-0009 (tool provider framework).
