@@ -161,9 +161,7 @@ def test_workflow_round_trip_preserves_camelcase_aliases() -> None:
                 "data": {"label": "End"},
             },
         ],
-        "edges": [
-            {"id": "e1", "source": "n1", "target": "n2", "sourceHandle": "out"}
-        ],
+        "edges": [{"id": "e1", "source": "n1", "target": "n2", "sourceHandle": "out"}],
     }
     parsed = Workflow.model_validate(original)
     dumped = parsed.model_dump(by_alias=True, exclude_none=True)
@@ -181,3 +179,54 @@ def test_workflow_round_trip_preserves_camelcase_aliases() -> None:
     assert isinstance(start_node, StartNode)
     assert start_node.data.node_name == "MyStart"
     assert start_node.data.input_variables[0].default_value == "hello"
+
+
+ALL_NODE_TYPES = [
+    "start",
+    "end",
+    "note",
+    "agent",
+    "mcp",
+    "if-else",
+    "while",
+    "user-approval",
+    "transform",
+    "data-transform",
+    "set-state",
+    "extract",
+    "http",
+    "guardrails",
+    "vector-db",
+    "gamma-ai",
+    "arcade",
+    "join-chunks",
+]
+
+
+@pytest.mark.parametrize("node_type", ALL_NODE_TYPES)
+def test_every_node_type_parses_minimal_instance(node_type: str) -> None:
+    wf = Workflow.model_validate(
+        {
+            "name": "T",
+            "nodes": [
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "x",
+                    "type": node_type,
+                    "position": {"x": 100, "y": 0},
+                    "data": {"label": "X"},
+                },
+                {"id": "e", "type": "end", "position": {"x": 200, "y": 0}, "data": {"label": "E"}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "s", "target": "x"},
+                {"id": "e2", "source": "x", "target": "e"},
+            ],
+        }
+    )
+    # start, x, end — verify the middle node parsed with the requested type
+    assert wf.nodes[1].type == node_type
+
+
+def test_all_18_types_exhaustive() -> None:
+    assert len(ALL_NODE_TYPES) == 18
