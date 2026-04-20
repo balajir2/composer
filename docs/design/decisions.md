@@ -174,7 +174,7 @@ Key context that resolved the tradeoff: **no one is using Composer today**. Prog
 - If external plugin discovery (Option C) becomes valuable later, it's a non-breaking migration: plugin authors still subclass `ToolProvider`, the only change is how the registry finds them (switch from "import for side effects" to `importlib.metadata.entry_points`).
 - The `auth: AuthRequirement` declaration flows into the Phase 10 UI as a "you need to set X to enable this" indicator, and into the Phase 1 JWT/auth plumbing as per-provider authorization checks in Phase 7.
 
-**Implemented by.** Phase 2 (commits TBD).
+**Implemented by.** Phase 2 (commits `252c80d`..`36c5c4f` on `main`).
 
 **Related.** ADR-0006, ADR-0002 (node-type models — `selectedTools`, `mcpServerIds`, `mcpTools` fields consumed here).
 
@@ -205,7 +205,7 @@ Key context that resolved the tradeoff: **no one is using Composer today**. Prog
 - LangSmith integration threads through LangChain's native callback system (explicit config pass, per the six MCP fixes' Lesson 6 about threading LangSmith config rather than relying on env vars).
 - OAB's 1289-line executor compresses to ~400 lines in Python because LangChain handles the provider-format dispatch OAB did by hand. This is a real code-quality win.
 
-**Implemented by.** Phase 2 (commits TBD).
+**Implemented by.** Phase 2 (commits `252c80d`..`36c5c4f` on `main`).
 
 **Related.** ADR-0002 (node-type models), ADR-0007, ADR-0008.
 
@@ -235,7 +235,7 @@ Key context that resolved the tradeoff: **no one is using Composer today**. Prog
 - Security posture matches OAB (blocks prototype-pollution paths); subject to Phase 8 security-review rescoping of whether the OAB guard is sufficient.
 - Jinja-style features (loops, conditionals) are **not** supported. If someone authors `{% for x in y %}` in a template, it renders as literal text, same as OAB.
 
-**Implemented by.** Phase 2 (commits TBD).
+**Implemented by.** Phase 2 (commits `252c80d`..`36c5c4f` on `main`).
 
 **Related.** ADR-0002, ADR-0006.
 
@@ -264,6 +264,6 @@ Phase 4's Extract node will also need structured output, so the decision has dow
 - Provider-native structured output is more reliable than prompt-based JSON asks — same-quality output, fewer retries, fewer silent failures.
 - Pulls a piece of Phase 4 work into Phase 2. Consistent with ADR-0006's decision to pull the full agentic loop forward.
 
-**Implemented by.** Phase 2 (commits TBD).
+**Implemented by.** Phase 2 (commits `252c80d`..`36c5c4f` on `main`).
 
 **Related.** ADR-0002, ADR-0006.

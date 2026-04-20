@@ -71,8 +71,8 @@ Supporting docs in `docs/design/` provide historical context and product/strateg
 |---|---|---|
 | 0 — Scaffolding | ✅ Complete | Repo, FastAPI skeleton, `/health`, Prisma placeholder, CI green |
 | 1 — Execution engine core | ✅ Complete | LangGraph Python executor, Start+End nodes, Postgres checkpointer, real Prisma schema |
-| 2 — Agent + LLM providers | ⏭ Next | LangChain: Anthropic, OpenAI, Google, Groq |
-| 3 — MCP + OAuth | ⏸ | RFC 8707 resource param, manual tool calling, inputSchema camelCase — see §5 below |
+| 2 — Agent + LLM providers | ✅ Complete | Agent executor + 10-iter loop, 4 LLM providers, Tool Provider Framework + 4 providers, MCP skeleton |
+| 3 — MCP + OAuth | ⏭ Next | RFC 8707 resource param, manual tool calling, inputSchema camelCase — see §5 below |
 | 4 — HTTP, Transform, Extract, If/Else, While, Set-State | ⏸ | |
 | 5 — User-approval + SSE streaming | ⏸ | LangGraph `interrupt()` |
 | 6 — Guardrails, Note, Vector-DB, Gamma, Arcade | ⏸ | |
