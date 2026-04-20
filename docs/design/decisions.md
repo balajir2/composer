@@ -146,3 +146,93 @@ Key context that resolved the tradeoff: **no one is using Composer today**. Prog
 **Implemented by.** Phase 1 (commits `df25733`..`5e13c19` on `main`, plus a follow-up cleanup commit for code-review findings).
 
 **Related.** ADR-0002, ADR-0003.
+
+---
+
+## ADR-0006: Agent executor — LangChain chat models, custom 10-iteration loop, pull Phase 3/6 hooks forward
+
+**Status:** Accepted (2026-04-20)
+
+**Context.** OAB's Agent executor (`lib/workflow/executors/agent.ts`, 1289 lines) uses raw provider SDKs (`@anthropic-ai/sdk`, `openai`, `@langchain/google-genai`) and implements a custom `while iterations < 10` loop that invokes the model, extracts tool calls, executes them in parallel, feeds results back, and caps at 10 iterations. The master design doc scoped Phase 2 as "Agent node **without tools** — multi-LLM provider support." Three axes needed a decision:
+
+1. **Chat-model layer:** raw provider SDKs (match OAB) vs LangChain abstractions (langchain-anthropic, langchain-openai, langchain-google-genai, langchain-groq are already installed per Phase 0 stack).
+2. **Agentic loop scope:** no-tools only (strict to design doc) vs loop skeleton now with hooks filled later vs full tools (scope creep).
+3. **Tool set coverage in Phase 2:** zero tools vs full OAB standard-tool set (Tavily + Serper + Firecrawl + Browserless) vs one representative tool.
+
+**Decision.**
+
+- **Chat-model layer: LangChain.** Every provider call goes through the `langchain-{provider}` chat model. `chat_model.bind_tools([...])` handles the Anthropic `tool_use`/OpenAI `function` format divergence internally — no manual format dispatch like OAB has. This is `Option B` from the Q4 brainstorm.
+- **Agentic loop: custom `while iter < MAX_ITERATIONS=10` loop.** Wraps LangChain's `model.ainvoke(messages)` with our own iteration cap, usage accumulation, and tool-execution dispatch. Does **not** use LangChain's `AgentExecutor`/`create_tool_calling_agent` — those hide the iteration cap and make it hard to thread LangSmith config + Phase 3 MCP tools + Phase 5 interrupt semantics in a controlled way.
+- **Phase 2 tool coverage: Tavily only (standard-tool side) + tool-execution branch wired into the loop.** Scope pulled forward:
+  - **Phase 3 agentic-loop architecture** → Phase 2. The full while-loop lands now, with a `ToolRegistry` protocol that MCP tools (Phase 3) plug into by registering themselves. Phase 3's diff becomes "implement `McpToolResolver.resolve(node)` → register `Tool` instances" rather than "rewrite the Agent executor to add a loop."
+  - **One Phase 6 standard tool (Tavily)** → Phase 2. Proves the tool-registration and tool-execution paths end-to-end with a real external API. Phase 6 adds Serper / Firecrawl / Browserless / Gamma / Arcade by registering their Tool wrappers — no executor changes.
+
+**Consequences.**
+- Phase 2 ships ~600 lines of executor code (loop + provider dispatch + tool binding + variable substitution + JSON output) instead of the ~200 a literal interpretation of the design doc would produce.
+- ~3 extra days in Phase 2. Phase 3 becomes ~2 days shorter (MCP is tool-registration + OAuth, not executor rebuild). Net schedule impact is neutral.
+- All provider-specific reasoning-model detection (o1/o3/gpt-5 use `max_completion_tokens`) lives in one place: a `model_param_adapter` that Phase 2 gets right once.
+- LangSmith integration threads through LangChain's native callback system (explicit config pass, per the six MCP fixes' Lesson 6 about threading LangSmith config rather than relying on env vars).
+- OAB's 1289-line executor compresses to ~400 lines in Python because LangChain handles the provider-format dispatch OAB did by hand. This is a real code-quality win.
+
+**Implemented by.** Phase 2 (commits TBD).
+
+**Related.** ADR-0002 (node-type models), ADR-0007, ADR-0008.
+
+---
+
+## ADR-0007: Variable substitution — full OAB `{{...}}` parity
+
+**Status:** Accepted (2026-04-20)
+
+**Context.** OAB's variable substitution engine (`lib/workflow/variable-substitution.ts`) supports multiple `{{...}}` syntaxes and is used by every node that interpolates runtime state into a configured string (Agent `instructions`, HTTP `body`/`headers`, Transform `script`, Extract `prompt`, etc.). Three options:
+
+- **A.** Flat keys only — just `{{variable_name}}` → `state.variables[name]`. Simplest impl.
+- **B.** Full OAB parity — `{{input}}`, `{{nodeId.field}}`, `{{state.variables.path.to.value}}`, with prototype-pollution guard on path walks.
+- **C.** Jinja2 — more powerful (loops, filters) but syntactically diverges from OAB.
+
+**Decision.** Option **B**. Port the full OAB engine faithfully:
+- `{{pattern}}` regex: `/\{\{([^}]+)\}\}/g` in JS → `re.compile(r"\{\{([^}]+)\}\}")` in Python.
+- Flat keys resolve to `state.variables[key]`.
+- Dotted paths walk `state.variables` (and `state.nodeResults` when Phase 3+ uses that).
+- `state.variables.<path>` and `state.nodeResults.<path>` explicit prefixes supported.
+- Prototype-pollution guard blocks `__proto__`, `constructor`, `prototype` keys at every path segment. Python equivalent: a `_UNSAFE_KEYS = {"__class__", "__dict__", "__globals__"}` set plus the JS-style names (since ported OAB workflow JSON might reference them).
+- Unresolved placeholders render as literal `{{name}}` (matching OAB's fall-through behavior) rather than raising — this lets templates reference not-yet-populated fields without blowing up execution.
+
+**Consequences.**
+- Phase 2 lands a standalone `src/variable_substitution.py` module + unit tests; every future executor that interpolates strings imports `substitute(template, state)`.
+- OAB workflows that use `{{nodeId.field}}` round-trip through Composer unchanged — no template rewriting required during migration.
+- Security posture matches OAB (blocks prototype-pollution paths); subject to Phase 8 security-review rescoping of whether the OAB guard is sufficient.
+- Jinja-style features (loops, conditionals) are **not** supported. If someone authors `{% for x in y %}` in a template, it renders as literal text, same as OAB.
+
+**Implemented by.** Phase 2 (commits TBD).
+
+**Related.** ADR-0002, ADR-0006.
+
+---
+
+## ADR-0008: Structured output — LangChain `with_structured_output`, shared primitive for Agent + Extract
+
+**Status:** Accepted (2026-04-20)
+
+**Context.** When an Agent node sets `outputFormat: "JSON"`, OAB does a naive `JSON.parse()` on the response text and falls back to the raw string on parse failure. Phase 2 has to decide whether to match OAB's naive approach or use LangChain's `with_structured_output()` which leverages provider-native JSON / structured-output modes (OpenAI `response_format`, Anthropic structured output, Google JSON mode).
+
+Phase 4's Extract node will also need structured output, so the decision has downstream impact.
+
+**Decision.** Use LangChain's `with_structured_output` as a **hybrid**, and factor it into a shared primitive both Agent (Phase 2) and Extract (Phase 4) use:
+
+- **`src/llm/structured_output.py`** — module that wraps the `with_structured_output` call. Phase 2 adds it; Phase 4's Extract node imports it.
+- **Agent behavior:**
+  - `outputFormat == "Text"` → return response text as-is.
+  - `outputFormat == "JSON"` + `jsonSchema` provided → `chat_model.with_structured_output(jsonSchema).ainvoke(messages)`. Provider enforces schema at generation time.
+  - `outputFormat == "JSON"` + no `jsonSchema` → `chat_model.with_structured_output(method="json_mode")` for OpenAI/Anthropic (they support schema-less JSON mode); for Google, fall back to "ask in prompt, `json.loads` the response" pattern.
+- **Extract behavior (Phase 4):** always has a schema; always uses the schema-enforced path. Extract's executor becomes a thin orchestration wrapper over the same primitive.
+
+**Consequences.**
+- Deliberate deviation from OAB's naive behavior. Flagged in CHANGELOG as an OAB→Composer divergence. OAB regression tests that asserted specific "JSON that failed to parse → raw string" behavior may need adaptation.
+- Phase 4 Extract node becomes smaller (uses `structured_output` helper) rather than reimplementing.
+- Provider-native structured output is more reliable than prompt-based JSON asks — same-quality output, fewer retries, fewer silent failures.
+- Pulls a piece of Phase 4 work into Phase 2. Consistent with ADR-0006's decision to pull the full agentic loop forward.
+
+**Implemented by.** Phase 2 (commits TBD).
+
+**Related.** ADR-0002, ADR-0006.
