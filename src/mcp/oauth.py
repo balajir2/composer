@@ -17,6 +17,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from urllib.parse import urlencode, urlsplit
 
+import httpx
+
+from src.security.encryption import encrypt
+
 
 class OAuthError(RuntimeError):
     """Base class for all OAuth-layer errors."""
@@ -130,6 +134,95 @@ async def build_authorize_url(
     return f"{authorize_url}?{urlencode(params)}"
 
 
+async def _validate_and_consume_state(state: str, db: Any) -> Any:
+    """Find state row, check expiry, delete it (one-shot), return the row."""
+    row = await db.mcpoauthstate.find_unique(where={"state": state})
+    if row is None:
+        raise InvalidStateError(f"OAuth state {state!r} not found (CSRF or replay).")
+    if row.expiresAt < datetime.now(UTC):
+        raise InvalidStateError(f"OAuth state {state!r} has expired.")
+    await db.mcpoauthstate.delete(where={"state": state})
+    return row
+
+
+def _expires_at_from_in(expires_in: int | None) -> datetime | None:
+    if expires_in is None:
+        return None
+    return datetime.now(UTC) + timedelta(seconds=int(expires_in))
+
+
+async def exchange_code_for_tokens(
+    server: Any,
+    code: str,
+    state: str,
+    db: Any,
+) -> Any:
+    """Exchange authorization code for tokens; store encrypted in McpOAuthToken.
+
+    Token-exchange POST includes RFC 8707 `resource` (fix #1).
+    """
+    state_row = await _validate_and_consume_state(state, db)
+
+    config = server.oauthConfig or {}
+    token_url = config["tokenUrl"]
+    client_id = config["clientId"]
+    client_secret = config.get("clientSecret", "")
+
+    form = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": state_row.redirectUri,
+        "code_verifier": state_row.codeVerifier,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "resource": derive_resource(server.url),  # fix #1
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            token_url,
+            data=form,
+            headers={"Accept": "application/json"},
+        )
+    if resp.status_code >= 400:
+        raise TokenExchangeError(
+            f"OAuth token exchange failed (HTTP {resp.status_code}): {resp.text[:200]}"
+        )
+
+    payload = resp.json()
+    access_token = payload.get("access_token", "")
+    refresh_token: str | None = payload.get("refresh_token")
+    expires_at = _expires_at_from_in(payload.get("expires_in"))
+
+    encrypted_access = encrypt(access_token)
+    encrypted_refresh = encrypt(refresh_token) if refresh_token else None
+
+    token_data = {
+        "encryptedAccessToken": encrypted_access,
+        "encryptedRefreshToken": encrypted_refresh,
+        "expiresAt": expires_at,
+        "scope": payload.get("scope") or state_row.scope,
+        "tokenType": payload.get("token_type", "Bearer"),
+    }
+
+    return await db.mcpoauthtoken.upsert(
+        where={
+            "mcpServerId_userId": {
+                "mcpServerId": server.id,
+                "userId": state_row.userId,
+            }
+        },
+        data={
+            "create": {
+                "mcpServerId": server.id,
+                "userId": state_row.userId,
+                **token_data,
+            },
+            "update": token_data,
+        },
+    )
+
+
 __all__ = [
     "InvalidStateError",
     "McpTokenExpiredError",
@@ -139,6 +232,7 @@ __all__ = [
     "TokenRefreshError",
     "build_authorize_url",
     "derive_resource",
+    "exchange_code_for_tokens",
     "generate_pkce_pair",
     "generate_state",
 ]
