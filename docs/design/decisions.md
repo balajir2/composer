@@ -149,6 +149,37 @@ Key context that resolved the tradeoff: **no one is using Composer today**. Prog
 
 ---
 
+## ADR-0009: Tool Provider Framework — unified ToolProvider abstraction for standard tools and MCP servers
+
+**Status:** Accepted (2026-04-20)
+
+**Context.** ADR-0006 decided to pull the Phase 3 agentic-loop architecture and one Phase 6 standard tool (Tavily) into Phase 2. That raised the follow-on question: what's the abstraction for *tools* that both standard integrations (Tavily, Serper, Firecrawl, …) and MCP servers (Highspot, Notion, …) implement? Three candidates:
+
+- **A.** A loose `ToolFactory` protocol with a `register_tool_factory` function. Each integration follows a convention but nothing enforces shape. (Initial sketch in the Phase 2 spec draft.)
+- **B.** A formal framework — `ToolProvider` ABC, `AuthRequirement` taxonomy, `ToolDefinition` descriptors, `resolve_tools_for_node` entry point, `list_providers()` for discovery. Each integration is a one-file `@register_tool_provider` subclass.
+- **C.** `importlib.metadata` entry-point based plugin system — external packages can declare providers without touching the main codebase.
+
+**Decision.** Option **B**. Ship the full framework in Phase 2:
+
+- `src/tools/base.py` — `ToolProvider` ABC, `AuthRequirement` hierarchy (`NoAuth`, `ApiKeyAuth`, `OAuthAuth`), `ToolDefinition`, `BuildContext`, `HealthStatus`.
+- `src/tools/registry.py` — `register_tool_provider` decorator, `get_provider`, `list_providers`, `resolve_tools_for_node`.
+- `src/tools/providers/tavily.py` — the Phase 2 reference implementation.
+- `src/mcp/` directory created as a placeholder. Phase 3 populates it with `McpToolProvider(ToolProvider)` plus one provider instance per registered MCP server.
+
+**Consequences.**
+- Phase 2 ships ~120 lines of framework + ~80 lines of Tavily provider instead of ~30 lines of "registry + one tool" code. Net ~+1 day in Phase 2.
+- Phase 3 shrinks: MCP becomes "subclass `ToolProvider` + OAuth + one Prisma table per user-side token storage," not "design a tool registration system."
+- Phase 6 integrations (Serper, Firecrawl, Browserless, Gamma, Arcade) each cost ~0.5 day instead of ~1 day — same template, drop a file in `providers/`.
+- Phase 10 (UI) gets `list_providers()` and `provider.tools()` for free — the workflow editor's tool picker is a direct API call over the framework.
+- If external plugin discovery (Option C) becomes valuable later, it's a non-breaking migration: plugin authors still subclass `ToolProvider`, the only change is how the registry finds them (switch from "import for side effects" to `importlib.metadata.entry_points`).
+- The `auth: AuthRequirement` declaration flows into the Phase 10 UI as a "you need to set X to enable this" indicator, and into the Phase 1 JWT/auth plumbing as per-provider authorization checks in Phase 7.
+
+**Implemented by.** Phase 2 (commits TBD).
+
+**Related.** ADR-0006, ADR-0002 (node-type models — `selectedTools`, `mcpServerIds`, `mcpTools` fields consumed here).
+
+---
+
 ## ADR-0006: Agent executor — LangChain chat models, custom 10-iteration loop, pull Phase 3/6 hooks forward
 
 **Status:** Accepted (2026-04-20)

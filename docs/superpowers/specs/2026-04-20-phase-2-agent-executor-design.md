@@ -85,10 +85,15 @@ src/
 │   ├── __init__.py
 │   ├── providers.py     # model-string → BaseChatModel dispatch
 │   └── structured_output.py  # with_structured_output wrapper (shared Agent + Extract)
-├── tools/               # NEW package
-│   ├── __init__.py
-│   ├── base.py          # ToolRegistry protocol + registration pattern
-│   └── tavily.py        # Tavily web-search tool (the one Phase-2 standard tool)
+├── tools/               # NEW package — the Tool Provider Framework
+│   ├── __init__.py      # imports providers/* to trigger registration at package load
+│   ├── base.py          # ToolProvider ABC, AuthRequirement hierarchy, ToolDefinition, BuildContext
+│   ├── registry.py      # register_tool_provider + list_providers + resolve_tools_for_node
+│   └── providers/
+│       ├── __init__.py  # auto-imports every provider module so registration side-effects run
+│       └── tavily.py    # Phase 2's one ToolProvider; Phase 6 adds siblings here
+├── mcp/                 # NEW (skeleton only, populated in Phase 3)
+│   └── __init__.py      # placeholder — McpToolProvider subclass lands Phase 3
 ├── variable_substitution.py  # NEW module, top-level per OAB
 ├── api/                 # unchanged (Phase 1)
 ├── security/            # unchanged (Phase 1)
@@ -103,8 +108,10 @@ tests/
 │   │   ├── test_providers.py     # NEW: model-string dispatch, reasoning model detection
 │   │   └── test_structured_output.py  # NEW: with_structured_output unit tests
 │   ├── tools/
-│   │   ├── test_base.py          # NEW: ToolRegistry contract tests
-│   │   └── test_tavily.py        # NEW: Tavily tool wrapper with mocked httpx
+│   │   ├── test_base.py          # NEW: ToolProvider ABC contract tests, AuthRequirement tests
+│   │   ├── test_registry.py      # NEW: registration decorator, list_providers, resolve_tools_for_node
+│   │   └── providers/
+│   │       └── test_tavily.py    # NEW: TavilyProvider contract + Tavily tool call with mocked httpx
 │   └── test_variable_substitution.py  # NEW: OAB-parity substitution tests
 ├── integration/
 │   └── test_agent_providers.py   # NEW: Start→Agent→End per provider (real keys)
@@ -259,75 +266,291 @@ Matching OAB: unresolved placeholders render as literal `{{path}}` in the output
 
 ---
 
-## 8. `src/tools/base.py` — ToolRegistry protocol
+## 8. The Tool Provider Framework — `src/tools/base.py` + `src/tools/registry.py`
 
-### 8.1 Design
+### 8.1 Goal
 
-The Agent executor needs to know **which LangChain `BaseTool` instances to bind** for a given node. Phase 2 supports `selectedTools` (list of string tool names, OAB convention). Each name resolves through the registry.
+A single, well-defined abstraction that both **standard integrations** (Tavily, Serper, Firecrawl, Browserless, Gamma, Arcade, …) and **MCP servers** (Highspot, Notion, any SSE MCP) implement. Adding a new tool or a new MCP server is a one-file operation. The Agent executor, workflow editor (Phase 10), and health-check UI all consume the same abstraction.
+
+Design goals (in priority order):
+1. **Extensibility.** New providers drop into `src/tools/providers/` (standard) or `src/mcp/providers/` (MCP) as a single file. No changes to the Agent executor or registry.
+2. **Uniformity.** Standard and MCP paths share 90% of their surface area. MCP-specific behaviour (OAuth, `tools/list` RPC, token refresh) is handled by an `McpToolProvider(ToolProvider)` subclass — the base abstraction doesn't know about MCP.
+3. **Discoverability.** `list_providers()` and `provider.tools()` let the UI enumerate what's available. `provider.health_check()` lets the UI show a "connection OK / auth required / server down" indicator.
+4. **Testability.** Mocking a whole provider is trivial; mocking individual tools is trivial. Each provider has its own test file.
+
+### 8.2 Core abstractions (`src/tools/base.py`)
 
 ```python
-from typing import Protocol
+from abc import ABC, abstractmethod
+from dataclasses import dataclass, field
+from typing import Any, Literal
+from pydantic import BaseModel
 from langchain_core.tools import BaseTool
 
-class ToolFactory(Protocol):
-    """A callable that produces a BaseTool for a given node + state."""
+# ─── Auth declarations ─────────────────────────────────────────
 
-    name: str
+@dataclass(frozen=True, kw_only=True)
+class AuthRequirement:
+    """Base: a provider declares what kind of auth it needs."""
+    required: bool = True
 
-    def build(self, node_data: AgentNodeData, state: WorkflowStateDict) -> BaseTool: ...
+@dataclass(frozen=True, kw_only=True)
+class NoAuth(AuthRequirement):
+    required: bool = False
 
+@dataclass(frozen=True, kw_only=True)
+class ApiKeyAuth(AuthRequirement):
+    """Single API key lives in settings (centrally maintained, per memory)."""
+    env_var: str   # e.g. "TAVILY_API_KEY"
+    settings_field: str  # e.g. "tavily_api_key" (name on the Settings class)
 
-_REGISTRY: dict[str, ToolFactory] = {}
+@dataclass(frozen=True, kw_only=True)
+class OAuthAuth(AuthRequirement):
+    """Per-user OAuth (Phase 3 MCP). Envelope here; details in Phase 3 spec."""
+    authorize_url: str
+    token_url: str
+    scopes: list[str] = field(default_factory=list)
+    include_rfc8707_resource: bool = True  # Lesson 1 of the six MCP fixes
 
-def register_tool_factory(factory: ToolFactory) -> None: ...
-def get_tools_for_node(node: AgentNode, state: WorkflowStateDict) -> list[BaseTool]: ...
+# ─── Tool descriptor ───────────────────────────────────────────
+
+@dataclass(frozen=True, kw_only=True)
+class ToolDefinition:
+    """Enumerable metadata about a single tool offered by a provider."""
+    name: str                        # e.g. "tavily_search"
+    description: str
+    args_schema: type[BaseModel]     # Pydantic input schema (LLM sees this)
+
+# ─── Build context ─────────────────────────────────────────────
+
+@dataclass(kw_only=True)
+class BuildContext:
+    """Everything a provider might need to build a tool for a specific invocation."""
+    node: "AgentNode"                # the node requesting the tool
+    state: "WorkflowStateDict"       # current workflow state
+    user_id: str | None              # for per-user OAuth in Phase 3+
+
+# ─── Health status ─────────────────────────────────────────────
+
+@dataclass(frozen=True, kw_only=True)
+class HealthStatus:
+    ok: bool
+    message: str                     # user-visible status line
+
+# ─── Provider ABC ──────────────────────────────────────────────
+
+class ToolProvider(ABC):
+    """A service offering one-or-more tools for LLM consumption.
+
+    Standard tools (Tavily, Serper, …) are providers. MCP servers are
+    also providers, via the McpToolProvider subclass that lands in
+    Phase 3. Register at module import time via @register_tool_provider.
+    """
+
+    name: str                         # unique slug, "tavily", "highspot-mcp"
+    description: str                  # human-readable, shown in UI
+    category: Literal["standard", "mcp"]  # set by ABC leaf; drives UI grouping
+    auth: AuthRequirement
+
+    @abstractmethod
+    async def tools(self) -> list[ToolDefinition]:
+        """Enumerate offered tools.
+
+        Standard: typically a static list.
+        MCP: a `tools/list` JSON-RPC call to the server (async, cached).
+        """
+
+    @abstractmethod
+    async def build_tool(self, tool_name: str, context: BuildContext) -> BaseTool:
+        """Construct a LangChain BaseTool ready for chat_model.bind_tools()."""
+
+    async def health_check(self) -> HealthStatus:
+        """Default impl: verify the auth credential is present. Override to
+        do a real ping (HTTP GET to /health, MCP initialize, etc.)."""
+        if isinstance(self.auth, ApiKeyAuth):
+            ok = bool(getattr(get_settings(), self.auth.settings_field, ""))
+            return HealthStatus(
+                ok=ok,
+                message=f"{self.auth.env_var} {'present' if ok else 'missing'} in settings",
+            )
+        return HealthStatus(ok=True, message="no auth required")
 ```
 
-### 8.2 Phase 2 registrations
+### 8.3 Registry (`src/tools/registry.py`)
 
-- `tavily` — registered by `src/tools/tavily.py`.
-- **Phase 3 MCP resolution hooks here.** When an Agent node has `mcp_server_ids`, Phase 3's `src/mcp/resolver.py` registers dynamically-built `BaseTool` instances. Phase 2 leaves `mcp_server_ids` and `mcp_tools` fields **unused** — the registry's `get_tools_for_node` inspects only `selectedTools`. Phase 3 extends.
+```python
+from typing import TypeVar
+from src.tools.base import ToolProvider, BuildContext
 
-### 8.3 Contract
+T = TypeVar("T", bound=type[ToolProvider])
+_PROVIDERS: dict[str, ToolProvider] = {}
 
-- `selectedTools` contains name strings like `"tavily"`. For each name, `get_tools_for_node` calls the registered factory's `.build(node.data, state)` to produce a `BaseTool`.
-- Unknown names raise `UnknownToolError` — the Agent executor catches and records it as a node-execution error (`status: "failed"`).
+def register_tool_provider(cls: T) -> T:
+    """Class decorator — instantiates and stores the provider."""
+    instance = cls()
+    if instance.name in _PROVIDERS:
+        raise ValueError(f"Duplicate provider name: {instance.name!r}")
+    _PROVIDERS[instance.name] = instance
+    return cls
+
+def get_provider(name: str) -> ToolProvider:
+    try:
+        return _PROVIDERS[name]
+    except KeyError as exc:
+        raise UnknownProviderError(
+            f"No provider registered for {name!r}. "
+            f"Registered: {sorted(_PROVIDERS)}"
+        ) from exc
+
+def list_providers(*, category: Literal["standard", "mcp"] | None = None) -> list[ToolProvider]:
+    out = list(_PROVIDERS.values())
+    if category is not None:
+        out = [p for p in out if p.category == category]
+    return sorted(out, key=lambda p: p.name)
+
+async def resolve_tools_for_node(node: AgentNode, context: BuildContext) -> list[BaseTool]:
+    """Given an Agent node's config, return a list of BaseTool instances
+    ready for chat_model.bind_tools()."""
+    out: list[BaseTool] = []
+
+    # Standard tools from selectedTools (a list of provider.tool_name, e.g. "tavily_search")
+    # Phase 2 convention: selectedTools carries fully-qualified names, one provider per name.
+    for qualified_name in node.data.selected_tools:
+        provider_name, tool_name = _split_qualified(qualified_name)
+        provider = get_provider(provider_name)
+        out.append(await provider.build_tool(tool_name, context))
+
+    # MCP tools from mcpServerIds (Phase 3 — Phase 2 leaves this path empty)
+    for mcp_id in node.data.mcp_server_ids:
+        # Phase 3: look up the McpToolProvider registered under this ID,
+        # call provider.tools(), build each.
+        raise NotImplementedError(f"MCP tool resolution lands in Phase 3 — server_id={mcp_id!r}")
+
+    return out
+
+class UnknownProviderError(ValueError): ...
+class UnknownToolError(ValueError): ...
+```
+
+### 8.4 Auto-registration on package import
+
+`src/tools/__init__.py` imports `src/tools/providers/__init__.py` which imports each provider module. The import triggers the `@register_tool_provider` decorator side-effect. Phase 3 adds `src/mcp/providers/__init__.py` that does the same for MCP providers.
+
+This pattern — "import for side effects" — is ugly by default but fine here because (a) it's a well-known Python convention, (b) the import graph is tiny, (c) there's a single entry point. If we outgrow it in Phase 10+ (external plugin developers), we switch to `importlib.metadata` entry points — a non-breaking change because provider authors only see the `ToolProvider` ABC and the decorator.
+
+### 8.5 Phase 2 registrations
+
+- `src/tools/providers/tavily.py` registers `TavilyProvider`.
+- MCP path in `resolve_tools_for_node` raises `NotImplementedError` with a Phase 3 hint. The graph_builder's workflow-level validator continues to accept Agent nodes with empty `mcp_server_ids` in Phase 2; non-empty fails fast at execution time.
+
+### 8.6 What Phase 3 adds (for context)
+
+`src/mcp/providers/__init__.py` + `src/mcp/base.py` defines `McpToolProvider(ToolProvider)` that:
+- Takes an `McpServer` DB row at `__init__`.
+- Implements `async tools()` by calling the MCP server's `tools/list` JSON-RPC.
+- Implements `async build_tool()` by wrapping each MCP tool in a LangChain `BaseTool` subclass that calls the MCP server's `tools/call` with the user's OAuth token threaded through `BuildContext.user_id`.
+- Implements `async health_check()` by doing a real MCP `initialize` + `tools/list` round-trip.
+
+Phase 3's scope is then "implement `McpToolProvider` + OAuth flow + Prisma tables for `McpServer` / `McpOAuthToken` / `McpOAuthState`" — not "rewrite the Agent executor's tool handling".
 
 ---
 
-## 9. `src/tools/tavily.py` — Tavily web search tool
+## 9. `src/tools/providers/tavily.py` — `TavilyProvider` (the Phase 2 reference provider)
 
-### 9.1 Tool behavior
-
-Simple wrapper around Tavily's `/search` endpoint:
+### 9.1 Provider
 
 ```python
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, Field
 import httpx
+
 from src.config import get_settings
+from src.tools.base import (
+    ApiKeyAuth, BuildContext, HealthStatus, ToolDefinition, ToolProvider,
+)
+from src.tools.registry import register_tool_provider
+
 
 class TavilySearchInput(BaseModel):
     query: str = Field(description="Web search query")
     max_results: int = Field(default=5, ge=1, le=20)
 
-class TavilySearchTool(BaseTool):
+
+class _TavilySearchTool(BaseTool):
     name: str = "tavily_search"
-    description: str = "Search the web via Tavily. Use for current events and fact-lookup."
+    description: str = (
+        "Search the web via Tavily. Use for current events, fact lookups, and "
+        "questions that need fresh information."
+    )
     args_schema: type[BaseModel] = TavilySearchInput
 
     async def _arun(self, query: str, max_results: int = 5) -> str: ...
+
+
+@register_tool_provider
+class TavilyProvider(ToolProvider):
+    name = "tavily"
+    description = "Tavily web search — general-purpose web search with content extraction."
+    category = "standard"
+    auth = ApiKeyAuth(env_var="TAVILY_API_KEY", settings_field="tavily_api_key")
+
+    async def tools(self) -> list[ToolDefinition]:
+        return [
+            ToolDefinition(
+                name="tavily_search",
+                description=_TavilySearchTool.description,
+                args_schema=TavilySearchInput,
+            ),
+        ]
+
+    async def build_tool(self, tool_name: str, context: BuildContext) -> BaseTool:
+        if tool_name != "tavily_search":
+            raise UnknownToolError(f"TavilyProvider has no tool named {tool_name!r}")
+        if not get_settings().tavily_api_key:
+            raise MissingApiKeyError("TAVILY_API_KEY not configured")
+        return _TavilySearchTool()
+
+    async def health_check(self) -> HealthStatus:
+        # Override default to actually ping Tavily (optional — the default
+        # settings-presence check is a reasonable fallback).
+        key = get_settings().tavily_api_key
+        if not key:
+            return HealthStatus(ok=False, message="TAVILY_API_KEY missing")
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            try:
+                resp = await client.post(
+                    "https://api.tavily.com/search",
+                    json={"api_key": key, "query": "ping", "max_results": 1, "search_depth": "basic"},
+                )
+                if resp.status_code == 200:
+                    return HealthStatus(ok=True, message="Tavily reachable + key valid")
+                return HealthStatus(ok=False, message=f"Tavily returned {resp.status_code}: {resp.text[:200]}")
+            except httpx.HTTPError as exc:
+                return HealthStatus(ok=False, message=f"Tavily unreachable: {exc}")
 ```
 
-### 9.2 API call
+### 9.2 API call (inside `_TavilySearchTool._arun`)
 
-`POST https://api.tavily.com/search` with body `{"api_key": settings.tavily_api_key, "query": ..., "max_results": ..., "search_depth": "basic"}`. Response: `{"results": [{"title", "url", "content", "score"}, ...]}`. Return a markdown-formatted string of top results.
+`POST https://api.tavily.com/search` with body:
+```json
+{
+  "api_key": "<settings.tavily_api_key>",
+  "query": "<user query>",
+  "max_results": 5,
+  "search_depth": "basic"
+}
+```
+Response shape: `{"results": [{"title", "url", "content", "score"}, ...]}`. Return a markdown-formatted string of top results.
 
-### 9.3 Auth + error handling
+### 9.3 Error handling
 
-- If `settings.tavily_api_key == ""`, raise `MissingApiKeyError` at tool-build time.
-- 4xx/5xx from Tavily → raise `ToolExecutionError` with the HTTP status + response body snippet.
-- Timeout (httpx default 30s) → raise `ToolExecutionError("Tavily search timed out after 30s")`.
+- If `settings.tavily_api_key == ""`, `build_tool` raises `MissingApiKeyError` (caught by Agent executor → reported on node_result).
+- 4xx/5xx from Tavily in `_arun` → return a string starting with `"Error: Tavily search failed (HTTP <status>): <short message>"`. Tool errors are routed back to the agent loop so the LLM can recover (same as OAB's pattern); they are not propagated as Python exceptions.
+- Timeout (httpx default 30s) → same pattern: return `"Error: Tavily search timed out after 30s"`.
+
+### 9.4 What this template shows for Phase 6 providers
+
+Serper, Firecrawl, Browserless, Gamma, and Arcade each land as one file under `src/tools/providers/` following this template. Changes per provider: the class name, the `name/description/auth` fields, and the `_*Tool._arun` body. Registry auto-discovers them when `src/tools/providers/__init__.py` imports the module.
 
 ---
 
@@ -355,8 +578,11 @@ class AgentExecutor:
             token_limit=self.node.data.token_limit,
         )
 
-        # 4. Build tools from selectedTools
-        tools = get_tools_for_node(self.node, state)
+        # 4. Build tools via the Tool Provider Framework (§8)
+        tools = await resolve_tools_for_node(
+            self.node,
+            BuildContext(node=self.node, state=state, user_id=state.get("user_id")),
+        )
 
         # 5. Run the agentic loop
         result = await self._agentic_loop(chat_model, messages, tools)
