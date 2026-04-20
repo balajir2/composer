@@ -19,3 +19,10 @@ datasource db {
 // Phase 3 will add: McpServer, McpOAuthToken, McpOAuthState
 // Phase 5 will add: Approval
 // ────────────────────────────────────────────────
+
+// Placeholder model so `prisma generate` succeeds in CI.
+// Will be removed or repurposed when Phase 1 adds real tables.
+model _ComposerBootstrap {
+  id        String   @id @default(cuid())
+  createdAt DateTime @default(now())
+}
