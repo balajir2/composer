@@ -19,7 +19,7 @@ from urllib.parse import urlencode, urlsplit
 
 import httpx
 
-from src.security.encryption import encrypt
+from src.security.encryption import decrypt, encrypt
 
 
 class OAuthError(RuntimeError):
@@ -223,6 +223,67 @@ async def exchange_code_for_tokens(
     )
 
 
+async def refresh_token(
+    server: Any,
+    token_row: Any,
+    db: Any,
+) -> Any:
+    """Refresh an expired access token. POST includes RFC 8707 resource (fix #1).
+
+    Updates token_row in place (via DB). Keeps the old refresh_token if the
+    IdP doesn't return a new one.
+    """
+    if not token_row.encryptedRefreshToken:
+        raise McpTokenExpiredError(
+            f"Token for server {server.id!r} has no refresh token; user must re-authorize."
+        )
+
+    config = server.oauthConfig or {}
+    token_url = config["tokenUrl"]
+    client_id = config["clientId"]
+    client_secret = config.get("clientSecret", "")
+    refresh_plaintext = decrypt(token_row.encryptedRefreshToken)
+
+    form = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_plaintext,
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "resource": derive_resource(server.url),  # fix #1
+    }
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        resp = await client.post(
+            token_url,
+            data=form,
+            headers={"Accept": "application/json"},
+        )
+    if resp.status_code >= 400:
+        raise TokenRefreshError(
+            f"OAuth refresh failed (HTTP {resp.status_code}): {resp.text[:200]}"
+        )
+
+    payload = resp.json()
+    access_token = payload.get("access_token", "")
+    new_refresh: str | None = payload.get("refresh_token")
+    expires_at = _expires_at_from_in(payload.get("expires_in"))
+
+    update_data: dict[str, Any] = {
+        "encryptedAccessToken": encrypt(access_token),
+        "expiresAt": expires_at,
+    }
+    if new_refresh:
+        update_data["encryptedRefreshToken"] = encrypt(new_refresh)
+    else:
+        # Keep the old encrypted refresh token (no rotation)
+        update_data["encryptedRefreshToken"] = token_row.encryptedRefreshToken
+
+    return await db.mcpoauthtoken.update(
+        where={"id": token_row.id},
+        data=update_data,
+    )
+
+
 __all__ = [
     "InvalidStateError",
     "McpTokenExpiredError",
@@ -235,4 +296,5 @@ __all__ = [
     "exchange_code_for_tokens",
     "generate_pkce_pair",
     "generate_state",
+    "refresh_token",
 ]
