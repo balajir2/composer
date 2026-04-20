@@ -15,7 +15,7 @@
 
 ## Sequencing and discipline
 
-17 tasks, one commit each. Every task ends with:
+20 tasks, one commit each (Task 7 is now a family: 7 Tavily + 7b Serper + 7c Firecrawl + 7d Browserless — all following the Tavily template with only the provider-specific HTTP payload changing). Every task ends with:
 
 ```bash
 uv run ruff check src tests
@@ -77,6 +77,9 @@ Append to `src/config.py`'s `Settings` class (under the existing LangSmith secti
 
     # ─── Agent tools (Phase 2) ────────────────────
     tavily_api_key: str = Field(default="", description="Tavily web-search API key")
+    serper_api_key: str = Field(default="", description="Serper.dev Google-search API key")
+    firecrawl_api_key: str = Field(default="", description="Firecrawl web-scrape API key")
+    browserless_api_key: str = Field(default="", description="Browserless headless-Chrome API key")
 ```
 
 - [ ] **Step 2: Verify settings load**
@@ -1695,6 +1698,623 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
 
 ---
 
+## Task 7b: SerperProvider — Google search via Serper.dev
+
+**Files:**
+- Create: `src/tools/providers/serper.py`
+- Modify: `src/tools/providers/__init__.py` (add `from . import serper`)
+- Create: `tests/unit/tools/providers/test_serper.py`
+
+Follows the exact Tavily template (Task 7). Differences: API URL, auth header style, response shape.
+
+- [ ] **Step 1: Write failing tests** (mirror Tavily's test file, substituting URLs/shapes)
+
+Create `tests/unit/tools/providers/test_serper.py`:
+
+```python
+"""Tests for SerperProvider (Google search via Serper.dev)."""
+import pytest
+from pytest_httpx import HTTPXMock
+
+from src.config import get_settings
+from src.engine.state import initial_state
+from src.engine.workflow import AgentNode
+from src.tools.base import ApiKeyAuth, BuildContext
+from src.tools.providers.serper import MissingApiKeyError, SerperProvider
+
+
+def _agent_node() -> AgentNode:
+    return AgentNode.model_validate({
+        "id": "a", "type": "agent",
+        "position": {"x": 0, "y": 0}, "data": {"label": "A"},
+    })
+
+
+def test_provider_metadata() -> None:
+    p = SerperProvider()
+    assert p.name == "serper"
+    assert p.category == "standard"
+    assert isinstance(p.auth, ApiKeyAuth)
+    assert p.auth.env_var == "SERPER_API_KEY"
+
+
+async def test_tools_lists_search() -> None:
+    tools = await SerperProvider().tools()
+    assert [t.name for t in tools] == ["serper_search"]
+
+
+async def test_build_tool_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("SERPER_API_KEY", "")
+    get_settings.cache_clear()
+    with pytest.raises(MissingApiKeyError):
+        await SerperProvider().build_tool(
+            "serper_search",
+            BuildContext(node=_agent_node(), state=initial_state()),
+        )
+
+
+async def test_search_tool_returns_markdown(
+    monkeypatch: pytest.MonkeyPatch, httpx_mock: HTTPXMock,
+) -> None:
+    monkeypatch.setenv("SERPER_API_KEY", "test-key")
+    get_settings.cache_clear()
+    httpx_mock.add_response(
+        url="https://google.serper.dev/search", method="POST",
+        json={
+            "organic": [
+                {"title": "Result 1", "link": "https://example.com/1", "snippet": "Body 1", "position": 1},
+                {"title": "Result 2", "link": "https://example.com/2", "snippet": "Body 2", "position": 2},
+            ],
+        },
+    )
+    tool = await SerperProvider().build_tool(
+        "serper_search", BuildContext(node=_agent_node(), state=initial_state()),
+    )
+    result = await tool._arun(query="test query")
+    assert "Result 1" in result and "https://example.com/1" in result
+
+
+async def test_search_tool_http_error_returns_error_string(
+    monkeypatch: pytest.MonkeyPatch, httpx_mock: HTTPXMock,
+) -> None:
+    monkeypatch.setenv("SERPER_API_KEY", "test-key")
+    get_settings.cache_clear()
+    httpx_mock.add_response(url="https://google.serper.dev/search", method="POST", status_code=500, text="err")
+    tool = await SerperProvider().build_tool(
+        "serper_search", BuildContext(node=_agent_node(), state=initial_state()),
+    )
+    result = await tool._arun(query="foo")
+    assert result.startswith("Error: Serper search failed (HTTP 500)")
+```
+
+- [ ] **Step 2: Implement provider**
+
+Create `src/tools/providers/serper.py`:
+
+```python
+"""SerperProvider — Google search via https://serper.dev."""
+
+from typing import Any
+
+import httpx
+from langchain_core.tools import BaseTool
+from pydantic import BaseModel, ConfigDict, Field
+
+from src.config import get_settings
+from src.tools.base import ApiKeyAuth, BuildContext, ToolDefinition, ToolProvider
+from src.tools.registry import register_tool_provider
+
+
+class MissingApiKeyError(RuntimeError):
+    """Raised when SERPER_API_KEY isn't configured."""
+
+
+class SerperSearchInput(BaseModel):
+    query: str = Field(description="Google search query")
+    num: int = Field(default=10, ge=1, le=20)
+
+
+class _SerperSearchTool(BaseTool):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    name: str = "serper_search"
+    description: str = (
+        "Google search via Serper.dev. Returns Google's organic results for a query. "
+        "Use when you need high-quality search results similar to a direct Google query."
+    )
+    args_schema: type[BaseModel] = SerperSearchInput
+
+    def _run(self, query: str, num: int = 10) -> str:  # pragma: no cover
+        raise NotImplementedError("Use _arun")
+
+    async def _arun(self, query: str, num: int = 10) -> str:
+        api_key = get_settings().serper_api_key
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                resp = await client.post(
+                    "https://google.serper.dev/search",
+                    headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
+                    json={"q": query, "num": num},
+                )
+        except httpx.TimeoutException:
+            return "Error: Serper search timed out after 30s"
+        except httpx.HTTPError as exc:
+            return f"Error: Serper search failed ({type(exc).__name__}): {exc}"
+
+        if resp.status_code >= 400:
+            return f"Error: Serper search failed (HTTP {resp.status_code}): {resp.text[:200]}"
+
+        data: dict[str, Any] = resp.json()
+        organic = data.get("organic", [])
+        if not organic:
+            return "No results."
+        lines = [f"# Google search results for: {query}\n"]
+        for r in organic:
+            lines.append(f"## {r.get('title', '(no title)')}")
+            lines.append(f"{r.get('link', '')}")
+            lines.append(f"{r.get('snippet', '')}\n")
+        return "\n".join(lines)
+
+
+@register_tool_provider
+class SerperProvider(ToolProvider):
+    name = "serper"
+    description = "Serper — Google search via serper.dev. Organic results in JSON."
+    category: str = "standard"  # pyright: ignore[reportIncompatibleVariableOverride]
+    auth = ApiKeyAuth(env_var="SERPER_API_KEY", settings_field="serper_api_key")
+
+    async def tools(self) -> list[ToolDefinition]:
+        return [ToolDefinition(
+            name="serper_search",
+            description=_SerperSearchTool.description,
+            args_schema=SerperSearchInput,
+        )]
+
+    async def build_tool(self, tool_name: str, context: BuildContext) -> BaseTool:
+        if tool_name != "serper_search":
+            raise ValueError(f"SerperProvider has no tool named {tool_name!r}")
+        if not get_settings().serper_api_key:
+            raise MissingApiKeyError("SERPER_API_KEY is not configured")
+        return _SerperSearchTool()
+
+
+__all__ = ["SerperProvider", "MissingApiKeyError"]
+```
+
+Modify `src/tools/providers/__init__.py`:
+
+```python
+"""Auto-register all tool providers."""
+
+from src.tools.providers import serper as _serper  # noqa: F401
+from src.tools.providers import tavily as _tavily  # noqa: F401
+
+__all__ = ["_serper", "_tavily"]
+```
+
+- [ ] **Step 3: Also add `serper_api_key` field to `src/config.py` Settings class** (it was listed in Task 1 — verify the field exists. If not, add `serper_api_key: str = Field(default="", description="Serper.dev API key")` in the Agent-tools section).
+
+- [ ] **Step 4: Commit**
+
+```bash
+.venv/Scripts/python -m pytest tests/unit/tools/providers/test_serper.py -v
+```
+Expected: all PASS.
+
+```bash
+.venv/Scripts/python -m ruff check src tests && .venv/Scripts/python -m ruff format src tests
+.venv/Scripts/python -m pyright src tests
+.venv/Scripts/python -m pytest -m "not integration"
+```
+
+```bash
+git add src/tools/providers/serper.py src/tools/providers/__init__.py src/config.py tests/unit/tools/providers/test_serper.py
+git commit -m "feat(tools): SerperProvider (Google search via serper.dev)
+
+Second ToolProvider — follows TavilyProvider's template. Proves the
+framework's drop-a-file pattern. Uses X-API-KEY header auth (vs Tavily's
+body-field auth) to verify AuthRequirement flexibility.
+
+Co-Authored-By: Balaji Rajan <balajirajan@gmail.com>
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+## Task 7c: FirecrawlProvider — web scrape
+
+**Files:**
+- Create: `src/tools/providers/firecrawl.py`
+- Modify: `src/tools/providers/__init__.py`
+- Modify: `src/config.py` — add `firecrawl_api_key` field if missing
+- Create: `tests/unit/tools/providers/test_firecrawl.py`
+
+API: `POST https://api.firecrawl.dev/v1/scrape` with `Authorization: Bearer <key>`, body `{"url": "...", "formats": ["markdown"]}`, response `{"success": true, "data": {"markdown": "...", "metadata": {...}}}`.
+
+- [ ] **Step 1: Tests** (same shape as Serper's test file; substitute URL/body/response)
+
+Create `tests/unit/tools/providers/test_firecrawl.py`:
+
+```python
+"""Tests for FirecrawlProvider (web scrape via firecrawl.dev)."""
+import pytest
+from pytest_httpx import HTTPXMock
+
+from src.config import get_settings
+from src.engine.state import initial_state
+from src.engine.workflow import AgentNode
+from src.tools.base import ApiKeyAuth, BuildContext
+from src.tools.providers.firecrawl import FirecrawlProvider, MissingApiKeyError
+
+
+def _agent_node() -> AgentNode:
+    return AgentNode.model_validate({
+        "id": "a", "type": "agent",
+        "position": {"x": 0, "y": 0}, "data": {"label": "A"},
+    })
+
+
+def test_provider_metadata() -> None:
+    p = FirecrawlProvider()
+    assert p.name == "firecrawl"
+    assert p.category == "standard"
+    assert isinstance(p.auth, ApiKeyAuth)
+    assert p.auth.env_var == "FIRECRAWL_API_KEY"
+
+
+async def test_tools_lists_scrape() -> None:
+    tools = await FirecrawlProvider().tools()
+    assert [t.name for t in tools] == ["firecrawl_scrape"]
+
+
+async def test_build_tool_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "")
+    get_settings.cache_clear()
+    with pytest.raises(MissingApiKeyError):
+        await FirecrawlProvider().build_tool(
+            "firecrawl_scrape",
+            BuildContext(node=_agent_node(), state=initial_state()),
+        )
+
+
+async def test_scrape_tool_returns_markdown(
+    monkeypatch: pytest.MonkeyPatch, httpx_mock: HTTPXMock,
+) -> None:
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test-key")
+    get_settings.cache_clear()
+    httpx_mock.add_response(
+        url="https://api.firecrawl.dev/v1/scrape", method="POST",
+        json={
+            "success": True,
+            "data": {
+                "markdown": "# Page title\nBody content.",
+                "metadata": {"title": "Page title", "sourceURL": "https://example.com"},
+            },
+        },
+    )
+    tool = await FirecrawlProvider().build_tool(
+        "firecrawl_scrape", BuildContext(node=_agent_node(), state=initial_state()),
+    )
+    result = await tool._arun(url="https://example.com")
+    assert "Page title" in result and "Body content" in result
+
+
+async def test_scrape_tool_http_error(
+    monkeypatch: pytest.MonkeyPatch, httpx_mock: HTTPXMock,
+) -> None:
+    monkeypatch.setenv("FIRECRAWL_API_KEY", "fc-test-key")
+    get_settings.cache_clear()
+    httpx_mock.add_response(url="https://api.firecrawl.dev/v1/scrape", method="POST", status_code=500, text="err")
+    tool = await FirecrawlProvider().build_tool(
+        "firecrawl_scrape", BuildContext(node=_agent_node(), state=initial_state()),
+    )
+    assert (await tool._arun(url="https://example.com")).startswith("Error: Firecrawl scrape failed (HTTP 500)")
+```
+
+- [ ] **Step 2: Implement**
+
+Create `src/tools/providers/firecrawl.py`:
+
+```python
+"""FirecrawlProvider — web scrape via https://firecrawl.dev."""
+
+from typing import Any
+
+import httpx
+from langchain_core.tools import BaseTool
+from pydantic import BaseModel, ConfigDict, Field
+
+from src.config import get_settings
+from src.tools.base import ApiKeyAuth, BuildContext, ToolDefinition, ToolProvider
+from src.tools.registry import register_tool_provider
+
+
+class MissingApiKeyError(RuntimeError):
+    """Raised when FIRECRAWL_API_KEY isn't configured."""
+
+
+class FirecrawlScrapeInput(BaseModel):
+    url: str = Field(description="URL to scrape")
+
+
+class _FirecrawlScrapeTool(BaseTool):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    name: str = "firecrawl_scrape"
+    description: str = (
+        "Scrape a URL and return the page content as clean markdown. "
+        "Handles JavaScript rendering and pagination. Use when you need the full "
+        "content of a web page, not just search results."
+    )
+    args_schema: type[BaseModel] = FirecrawlScrapeInput
+
+    def _run(self, url: str) -> str:  # pragma: no cover
+        raise NotImplementedError("Use _arun")
+
+    async def _arun(self, url: str) -> str:
+        api_key = get_settings().firecrawl_api_key
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(
+                    "https://api.firecrawl.dev/v1/scrape",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={"url": url, "formats": ["markdown"]},
+                )
+        except httpx.TimeoutException:
+            return "Error: Firecrawl scrape timed out after 60s"
+        except httpx.HTTPError as exc:
+            return f"Error: Firecrawl scrape failed ({type(exc).__name__}): {exc}"
+
+        if resp.status_code >= 400:
+            return f"Error: Firecrawl scrape failed (HTTP {resp.status_code}): {resp.text[:200]}"
+
+        data: dict[str, Any] = resp.json()
+        if not data.get("success"):
+            return f"Error: Firecrawl scrape returned success=false: {data}"
+        payload = data.get("data", {})
+        markdown = payload.get("markdown", "")
+        metadata = payload.get("metadata", {})
+        title = metadata.get("title", "(no title)")
+        source = metadata.get("sourceURL", url)
+        return f"# {title}\n\n_Source: {source}_\n\n{markdown}"
+
+
+@register_tool_provider
+class FirecrawlProvider(ToolProvider):
+    name = "firecrawl"
+    description = "Firecrawl — web scrape with JS rendering; returns clean markdown."
+    category: str = "standard"  # pyright: ignore[reportIncompatibleVariableOverride]
+    auth = ApiKeyAuth(env_var="FIRECRAWL_API_KEY", settings_field="firecrawl_api_key")
+
+    async def tools(self) -> list[ToolDefinition]:
+        return [ToolDefinition(
+            name="firecrawl_scrape",
+            description=_FirecrawlScrapeTool.description,
+            args_schema=FirecrawlScrapeInput,
+        )]
+
+    async def build_tool(self, tool_name: str, context: BuildContext) -> BaseTool:
+        if tool_name != "firecrawl_scrape":
+            raise ValueError(f"FirecrawlProvider has no tool named {tool_name!r}")
+        if not get_settings().firecrawl_api_key:
+            raise MissingApiKeyError("FIRECRAWL_API_KEY is not configured")
+        return _FirecrawlScrapeTool()
+
+
+__all__ = ["FirecrawlProvider", "MissingApiKeyError"]
+```
+
+Modify `src/tools/providers/__init__.py` to add `from . import firecrawl as _firecrawl`.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/tools/providers/firecrawl.py src/tools/providers/__init__.py src/config.py tests/unit/tools/providers/test_firecrawl.py
+git commit -m "feat(tools): FirecrawlProvider (web scrape)
+
+Third ToolProvider. Bearer-token auth + JSON response envelope
+({success, data: {markdown, metadata}}). Longer timeout (60s) because
+full-page scrapes with JS rendering can be slow.
+
+Co-Authored-By: Balaji Rajan <balajirajan@gmail.com>
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
+## Task 7d: BrowserlessProvider — headless browser via /content endpoint
+
+**Files:**
+- Create: `src/tools/providers/browserless.py`
+- Modify: `src/tools/providers/__init__.py`
+- Modify: `src/config.py` — add `browserless_api_key` field if missing
+- Create: `tests/unit/tools/providers/test_browserless.py`
+
+API: `POST https://chrome.browserless.io/content?token=<api_key>` with body `{"url": "..."}` → response is raw HTML of the rendered page. Simpler than Firecrawl (no JSON envelope) but returns HTML not markdown — we keep it raw; the LLM handles it.
+
+- [ ] **Step 1: Tests**
+
+Create `tests/unit/tools/providers/test_browserless.py`:
+
+```python
+"""Tests for BrowserlessProvider (headless-browser page fetch)."""
+import pytest
+from pytest_httpx import HTTPXMock
+
+from src.config import get_settings
+from src.engine.state import initial_state
+from src.engine.workflow import AgentNode
+from src.tools.base import ApiKeyAuth, BuildContext
+from src.tools.providers.browserless import BrowserlessProvider, MissingApiKeyError
+
+
+def _agent_node() -> AgentNode:
+    return AgentNode.model_validate({
+        "id": "a", "type": "agent",
+        "position": {"x": 0, "y": 0}, "data": {"label": "A"},
+    })
+
+
+def test_provider_metadata() -> None:
+    p = BrowserlessProvider()
+    assert p.name == "browserless"
+    assert p.category == "standard"
+    assert isinstance(p.auth, ApiKeyAuth)
+    assert p.auth.env_var == "BROWSERLESS_API_KEY"
+
+
+async def test_tools_lists_fetch() -> None:
+    tools = await BrowserlessProvider().tools()
+    assert [t.name for t in tools] == ["browserless_fetch"]
+
+
+async def test_build_tool_requires_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("BROWSERLESS_API_KEY", "")
+    get_settings.cache_clear()
+    with pytest.raises(MissingApiKeyError):
+        await BrowserlessProvider().build_tool(
+            "browserless_fetch",
+            BuildContext(node=_agent_node(), state=initial_state()),
+        )
+
+
+async def test_fetch_tool_returns_html(
+    monkeypatch: pytest.MonkeyPatch, httpx_mock: HTTPXMock,
+) -> None:
+    monkeypatch.setenv("BROWSERLESS_API_KEY", "bl-test")
+    get_settings.cache_clear()
+    httpx_mock.add_response(
+        url="https://chrome.browserless.io/content?token=bl-test", method="POST",
+        text="<html><body><h1>Hello</h1></body></html>",
+    )
+    tool = await BrowserlessProvider().build_tool(
+        "browserless_fetch", BuildContext(node=_agent_node(), state=initial_state()),
+    )
+    result = await tool._arun(url="https://example.com")
+    assert "<h1>Hello</h1>" in result
+
+
+async def test_fetch_tool_http_error(
+    monkeypatch: pytest.MonkeyPatch, httpx_mock: HTTPXMock,
+) -> None:
+    monkeypatch.setenv("BROWSERLESS_API_KEY", "bl-test")
+    get_settings.cache_clear()
+    httpx_mock.add_response(
+        url="https://chrome.browserless.io/content?token=bl-test", method="POST",
+        status_code=500, text="err",
+    )
+    tool = await BrowserlessProvider().build_tool(
+        "browserless_fetch", BuildContext(node=_agent_node(), state=initial_state()),
+    )
+    assert (await tool._arun(url="https://example.com")).startswith(
+        "Error: Browserless fetch failed (HTTP 500)"
+    )
+```
+
+- [ ] **Step 2: Implement**
+
+Create `src/tools/providers/browserless.py`:
+
+```python
+"""BrowserlessProvider — headless-browser page fetch via chrome.browserless.io."""
+
+import httpx
+from langchain_core.tools import BaseTool
+from pydantic import BaseModel, ConfigDict, Field
+
+from src.config import get_settings
+from src.tools.base import ApiKeyAuth, BuildContext, ToolDefinition, ToolProvider
+from src.tools.registry import register_tool_provider
+
+
+class MissingApiKeyError(RuntimeError):
+    """Raised when BROWSERLESS_API_KEY isn't configured."""
+
+
+class BrowserlessFetchInput(BaseModel):
+    url: str = Field(description="URL to fetch with a real Chrome browser")
+
+
+class _BrowserlessFetchTool(BaseTool):
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+    name: str = "browserless_fetch"
+    description: str = (
+        "Fetch a URL through a headless Chrome browser and return the fully-"
+        "rendered HTML. Use for pages that require JavaScript execution — for "
+        "plain scraping without JS, prefer firecrawl_scrape."
+    )
+    args_schema: type[BaseModel] = BrowserlessFetchInput
+
+    def _run(self, url: str) -> str:  # pragma: no cover
+        raise NotImplementedError("Use _arun")
+
+    async def _arun(self, url: str) -> str:
+        api_key = get_settings().browserless_api_key
+        try:
+            async with httpx.AsyncClient(timeout=60.0) as client:
+                resp = await client.post(
+                    f"https://chrome.browserless.io/content?token={api_key}",
+                    json={"url": url},
+                )
+        except httpx.TimeoutException:
+            return "Error: Browserless fetch timed out after 60s"
+        except httpx.HTTPError as exc:
+            return f"Error: Browserless fetch failed ({type(exc).__name__}): {exc}"
+
+        if resp.status_code >= 400:
+            return f"Error: Browserless fetch failed (HTTP {resp.status_code}): {resp.text[:200]}"
+        return resp.text
+
+
+@register_tool_provider
+class BrowserlessProvider(ToolProvider):
+    name = "browserless"
+    description = "Browserless — headless Chrome page fetch. Returns rendered HTML."
+    category: str = "standard"  # pyright: ignore[reportIncompatibleVariableOverride]
+    auth = ApiKeyAuth(env_var="BROWSERLESS_API_KEY", settings_field="browserless_api_key")
+
+    async def tools(self) -> list[ToolDefinition]:
+        return [ToolDefinition(
+            name="browserless_fetch",
+            description=_BrowserlessFetchTool.description,
+            args_schema=BrowserlessFetchInput,
+        )]
+
+    async def build_tool(self, tool_name: str, context: BuildContext) -> BaseTool:
+        if tool_name != "browserless_fetch":
+            raise ValueError(f"BrowserlessProvider has no tool named {tool_name!r}")
+        if not get_settings().browserless_api_key:
+            raise MissingApiKeyError("BROWSERLESS_API_KEY is not configured")
+        return _BrowserlessFetchTool()
+
+
+__all__ = ["BrowserlessProvider", "MissingApiKeyError"]
+```
+
+Modify `src/tools/providers/__init__.py` to add `from . import browserless as _browserless`.
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add src/tools/providers/browserless.py src/tools/providers/__init__.py src/config.py tests/unit/tools/providers/test_browserless.py
+git commit -m "feat(tools): BrowserlessProvider (headless-browser fetch)
+
+Fourth ToolProvider. Query-param auth (token=<key> in URL) rather than
+header-based — proves the provider template handles that auth style
+without any framework changes. Returns raw HTML (no envelope); the LLM
+handles parsing.
+
+Completes Phase 2's expanded tool set per the C2→D scope bump:
+Tavily (search) + Serper (search) + Firecrawl (scrape) + Browserless
+(fetch). Gamma and Arcade stay Phase 6; E2B stays Phase 4 (Transform).
+
+Co-Authored-By: Balaji Rajan <balajirajan@gmail.com>
+Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
 ## Task 8: MCP skeleton package (Phase 3 placeholder)
 
 **Files:**
@@ -2775,6 +3395,9 @@ env:
   GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
   GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
   TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+  SERPER_API_KEY: ${{ secrets.SERPER_API_KEY }}
+  FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+  BROWSERLESS_API_KEY: ${{ secrets.BROWSERLESS_API_KEY }}
   LANGCHAIN_API_KEY: ${{ secrets.LANGCHAIN_API_KEY }}
 ```
 
