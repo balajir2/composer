@@ -27,7 +27,7 @@ from src.variable_substitution import substitute
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_MODEL = "anthropic/claude-3-5-haiku-latest"
+DEFAULT_MODEL = "anthropic/claude-haiku-4-5-20251001"
 MAX_ITERATIONS = 10  # matches OAB
 
 

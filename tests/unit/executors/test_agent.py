@@ -13,7 +13,7 @@ from src.executors.agent import AgentExecutor
 
 def _agent_node(
     *,
-    model: str = "anthropic/claude-3-5-haiku-latest",
+    model: str = "anthropic/claude-haiku-4-5-20251001",
     instructions: str = "Say hi.",
     output_format: str = "Text",
     selected_tools: list[str] | None = None,

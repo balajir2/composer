@@ -46,7 +46,7 @@ async def test_oab_simple_agent_regression(client: AsyncClient) -> None:
                 "data": {
                     "label": "Agent",
                     "name": "SimpleAgent",
-                    "model": "anthropic/claude-3-5-haiku-latest",
+                    "model": "anthropic/claude-haiku-4-5-20251001",
                     "instructions": "Respond with exactly: 'Regression check OK'.",
                     "outputFormat": "Text",
                     "includeChatHistory": False,

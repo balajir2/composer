@@ -31,9 +31,9 @@ async def _poll_until_terminal(
 @pytest.mark.parametrize(
     "provider,model,key_env",
     [
-        ("anthropic", "anthropic/claude-3-5-haiku-latest", "ANTHROPIC_API_KEY"),
+        ("anthropic", "anthropic/claude-haiku-4-5-20251001", "ANTHROPIC_API_KEY"),
         ("openai", "openai/gpt-5-nano", "OPENAI_API_KEY"),
-        ("google", "google/gemini-2.0-flash", "GOOGLE_API_KEY"),
+        ("google", "google/gemini-2.5-flash", "GOOGLE_API_KEY"),
         ("groq", "groq/llama-3.3-70b-versatile", "GROQ_API_KEY"),
     ],
 )

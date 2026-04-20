@@ -51,7 +51,7 @@ async def test_agent_uses_tavily_tool(client: AsyncClient) -> None:
                 "position": {"x": 100, "y": 0},
                 "data": {
                     "label": "Agent",
-                    "model": "anthropic/claude-3-5-haiku-latest",
+                    "model": "anthropic/claude-haiku-4-5-20251001",
                     "instructions": (
                         "Use the tavily_search tool to find the current population of Tokyo, "
                         "then report the number as a single sentence."
