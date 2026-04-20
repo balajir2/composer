@@ -13,21 +13,24 @@ jobs:
 
     services:
       postgres:
-        image: postgres:15-alpine
+        image: postgres:15
         env:
-          POSTGRES_USER: composer
-          POSTGRES_PASSWORD: composer
-          POSTGRES_DB: composer
+          POSTGRES_USER: composer_test
+          POSTGRES_PASSWORD: composer_test
+          POSTGRES_DB: composer_test
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U composer"
-          --health-interval 5s
+          --health-cmd pg_isready
+          --health-interval 10s
           --health-timeout 5s
           --health-retries 5
 
     env:
-      DATABASE_URL: postgresql://composer:composer@localhost:5432/composer
+      TEST_DATABASE_URL: postgresql://composer_test:composer_test@localhost:5432/composer_test
+      DATABASE_URL: postgresql://composer_test:composer_test@localhost:5432/composer_test
+      JWT_SECRET: ci-test-only-not-a-real-secret
+      ENCRYPTION_KEY: "00000000000000000000000000000000000000000000"
 
     steps:
       - name: Checkout
@@ -36,7 +39,7 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
 
       - name: Install uv
         uses: astral-sh/setup-uv@v4
@@ -47,6 +50,9 @@ jobs:
       - name: Generate Prisma client
         run: uv run prisma generate
 
+      - name: Apply migrations
+        run: uv run prisma migrate deploy
+
       - name: Lint (ruff)
         run: uv run ruff check src tests
 
@@ -56,5 +62,8 @@ jobs:
       - name: Type check (pyright)
         run: uv run pyright src tests
 
-      - name: Run tests
-        run: uv run pytest
+      - name: Unit tests
+        run: uv run pytest -m "not integration"
+
+      - name: Integration tests
+        run: uv run pytest -m integration
