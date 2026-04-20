@@ -194,3 +194,40 @@ def test_build_graph_skips_note_nodes() -> None:
     assert "note" not in names  # skipped at build time
     assert "s" in names
     assert "e" in names
+
+
+async def test_build_graph_compiles_with_agent_node(monkeypatch: pytest.MonkeyPatch) -> None:
+    """After Task 9, build_graph should accept an Agent node without raising."""
+    from typing import Any as AnyType
+
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+
+    import src.llm.providers as providers
+
+    fake = FakeListChatModel(responses=["ok"])
+
+    def mock_build_chat_model(*args: AnyType, **kwargs: AnyType) -> FakeListChatModel:  # type: ignore[name-defined]
+        return fake
+
+    monkeypatch.setattr(providers, "build_chat_model", mock_build_chat_model)
+
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {
+                "id": "a",
+                "type": "agent",
+                "position": {"x": 100, "y": 0},
+                "data": {"label": "Agent"},
+            },
+            {"id": "e", "type": "end", "position": {"x": 200, "y": 0}, "data": {"label": "E"}},
+        ],
+        edges=[
+            {"id": "e1", "source": "s", "target": "a"},
+            {"id": "e2", "source": "a", "target": "e"},
+        ],
+    )
+    compiled = build_graph(wf, MemorySaver())
+    g = compiled.get_graph()
+    names = {n.id for n in g.nodes.values()}
+    assert {"s", "a", "e"}.issubset(names)
