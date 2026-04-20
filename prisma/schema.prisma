@@ -15,7 +15,8 @@ datasource db {
 // ────────────────────────────────────────────────
 // Phase 1: Workflow, WorkflowExecution,
 //   LangGraphCheckpoint, LangGraphCheckpointWrite
-// Phase 3 will add: McpServer, McpOAuthToken, McpOAuthState
+// Phase 3a: McpServer (static-auth MCP servers)
+// Phase 3b will add: McpOAuthToken, McpOAuthState
 // Phase 5 will add: Approval
 // ────────────────────────────────────────────────
 
@@ -91,4 +92,31 @@ model LangGraphCheckpointWrite {
   @@id([threadId, checkpointNs, checkpointId, taskId, idx])
   @@map("langgraph_checkpoint_writes")
   @@index([threadId, checkpointId])
+}
+
+model McpServer {
+  id                   String    @id @default(cuid())
+  userId               String    @map("user_id")
+  name                 String
+  url                  String
+  description          String?
+  category             String?
+  authType             String    @map("auth_type")
+  encryptedAccessToken String?   @map("encrypted_access_token")
+  headerName           String?   @map("header_name")
+  oauthConfig          Json?     @map("oauth_config")
+  tools                Json?
+  connectionStatus     String    @default("untested") @map("connection_status")
+  lastTested           DateTime? @map("last_tested")
+  lastError            String?   @map("last_error")
+  enabled              Boolean   @default(true)
+  isOfficial           Boolean   @default(false) @map("is_official")
+  isShared             Boolean   @default(false) @map("is_shared")
+  headers              Json?
+  createdAt            DateTime  @default(now()) @map("created_at")
+  updatedAt            DateTime  @updatedAt       @map("updated_at")
+
+  @@map("mcp_servers")
+  @@index([userId])
+  @@index([isShared])
 }
