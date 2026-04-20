@@ -22,7 +22,9 @@ datasource db {
 
 // Placeholder model so `prisma generate` succeeds in CI.
 // Will be removed or repurposed when Phase 1 adds real tables.
-model _ComposerBootstrap {
+model ComposerBootstrap {
   id        String   @id @default(cuid())
   createdAt DateTime @default(now())
+
+  @@map("_composer_bootstrap")
 }
