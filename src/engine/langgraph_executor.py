@@ -13,7 +13,7 @@ from typing import Any
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.engine.graph_builder import build_graph
 from src.engine.state import initial_state
 from src.engine.workflow import Workflow
@@ -41,9 +41,9 @@ class LangGraphExecutor:
                 "userId": user_id,
                 "status": "running",
                 "threadId": thread_id,
-                "input": input,
-                "nodeResults": {},
-                "variables": {},
+                "input": Json(input),
+                "nodeResults": Json({}),
+                "variables": Json({}),
             }
         )
 
@@ -88,9 +88,9 @@ class LangGraphExecutor:
                 where={"id": execution_id},
                 data={
                     "status": "completed",
-                    "output": final_vars.get("finalOutput"),
-                    "variables": final_vars,
-                    "nodeResults": final_state.get("node_results") or {},
+                    "output": Json(final_vars.get("finalOutput")),
+                    "variables": Json(final_vars),
+                    "nodeResults": Json(final_state.get("node_results") or {}),
                     "completedAt": datetime.now(UTC),
                 },
             )

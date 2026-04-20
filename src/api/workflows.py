@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.engine.graph_builder import WorkflowValidationError, validate_workflow_shape
 from src.engine.workflow import Workflow, WorkflowEdge, WorkflowNode
 
@@ -74,6 +74,11 @@ async def create_workflow(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
 
+    nodes_json = [
+        node.model_dump(by_alias=True)  # pyright: ignore[reportAttributeAccessIssue]
+        for node in workflow.nodes
+    ]
+    edges_json = [edge.model_dump(by_alias=True) for edge in workflow.edges]
     row = await db.workflow.create(
         data={  # pyright: ignore[reportArgumentType]
             "name": payload.name,
@@ -82,11 +87,8 @@ async def create_workflow(
             "tags": payload.tags,
             "difficulty": payload.difficulty,
             "estimatedTime": payload.estimated_time,
-            "nodes": [
-                node.model_dump(by_alias=True)  # pyright: ignore[reportAttributeAccessIssue]
-                for node in workflow.nodes
-            ],
-            "edges": [edge.model_dump(by_alias=True) for edge in workflow.edges],
+            "nodes": Json(nodes_json),
+            "edges": Json(edges_json),
             "version": payload.version,
             "isTemplate": payload.is_template,
             "isPublic": payload.is_public,

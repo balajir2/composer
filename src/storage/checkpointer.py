@@ -233,8 +233,8 @@ class PrismaCheckpointSaver(BaseCheckpointSaver[str]):  # pyright: ignore[report
         checkpoint_id: str = checkpoint["id"]
         parent_checkpoint_id: str | None = configurable.get("checkpoint_id")
 
-        serialized_checkpoint: bytes = self._dumps(checkpoint)
-        serialized_metadata: bytes = self._dumps(metadata)
+        serialized_checkpoint = Base64.encode(self._dumps(checkpoint))
+        serialized_metadata = Base64.encode(self._dumps(metadata))
 
         await self.db.langgraphcheckpoint.upsert(
             where={
@@ -282,7 +282,7 @@ class PrismaCheckpointSaver(BaseCheckpointSaver[str]):  # pyright: ignore[report
         checkpoint_id: str = configurable["checkpoint_id"]
 
         for idx, (channel, value) in enumerate(writes):
-            serialized_value: bytes = self._dumps(value)
+            serialized_value = Base64.encode(self._dumps(value))
             await self.db.langgraphcheckpointwrite.upsert(
                 where={
                     "threadId_checkpointNs_checkpointId_taskId_idx": {

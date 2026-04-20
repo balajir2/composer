@@ -68,10 +68,15 @@ async def test_aput_upserts_checkpoint_with_serialized_bytes(
     assert db.langgraphcheckpoint.upsert.await_count == 1
     call = db.langgraphcheckpoint.upsert.await_args
     assert call is not None
-    # The `data.create.checkpoint` and `data.create.metadata` fields must be bytes
+    # The `data.create.checkpoint` / `data.create.metadata` fields must be
+    # Prisma Base64-wrapped — Prisma's runtime rejects raw `bytes` for the
+    # Bytes column (the rust engine's JSON encoder doesn't know how to
+    # serialize bytes).
+    from prisma import Base64  # pyright: ignore[reportAttributeAccessIssue]
+
     create_payload = call.kwargs["data"]["create"]
-    assert isinstance(create_payload["checkpoint"], bytes)
-    assert isinstance(create_payload["metadata"], bytes)
+    assert isinstance(create_payload["checkpoint"], Base64)
+    assert isinstance(create_payload["metadata"], Base64)
     assert create_payload["threadId"] == "t1"
     # Config should be updated with the checkpoint_id
     configurable = result_config.get("configurable") or {}

@@ -1,9 +1,12 @@
-"""Project-level pytest fixtures shared by integration and regression tests.
+"""Project-level pytest fixtures and collection hooks.
 
 Both the `tests/integration/` and `tests/regression/` packages rely on the
 `client` and `app` fixtures defined here. Placing them at the top-level
 conftest makes them available to all test sub-packages without relying on
 `pytest_plugins` in sub-level conftest files (which pytest no longer supports).
+
+Integration-marked tests are skipped at collection time when TEST_DATABASE_URL
+is unset, so unit tests remain unaffected.
 """
 
 import os
@@ -17,13 +20,21 @@ from httpx import ASGITransport, AsyncClient
 from src.main import create_app
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _require_test_database_url() -> None:  # pyright: ignore[reportUnusedFunction]
-    if not os.environ.get("TEST_DATABASE_URL"):
-        pytest.skip(
-            "TEST_DATABASE_URL not set; integration tests require a real Postgres",
-            allow_module_level=True,
-        )
+def pytest_collection_modifyitems(
+    config: pytest.Config,  # pyright: ignore[reportUnusedFunction]
+    items: list[pytest.Item],
+) -> None:
+    """Skip integration-marked tests when TEST_DATABASE_URL isn't set.
+
+    Keeps unit tests fully runnable on any developer machine, while the
+    integration/regression suites opt into a real Postgres via env var.
+    """
+    if os.environ.get("TEST_DATABASE_URL"):
+        return
+    skip_marker = pytest.mark.skip(reason="TEST_DATABASE_URL not set")
+    for item in items:
+        if "integration" in item.keywords:
+            item.add_marker(skip_marker)
 
 
 @pytest_asyncio.fixture

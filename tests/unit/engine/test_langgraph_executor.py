@@ -85,7 +85,9 @@ async def test_run_completes_start_to_end() -> None:
     assert db.workflowexecution.update.await_args is not None
     update_kwargs = db.workflowexecution.update.await_args.kwargs["data"]
     assert update_kwargs["status"] == "completed"
-    assert update_kwargs["output"] == "hello"  # start sets lastOutput to parsed input
+    # output/variables/nodeResults are wrapped in prisma.Json(...) before being
+    # passed to Prisma — unwrap via the .data attribute for assertion.
+    assert update_kwargs["output"].data == "hello"  # start sets lastOutput to parsed input
     assert "completedAt" in update_kwargs
 
 
