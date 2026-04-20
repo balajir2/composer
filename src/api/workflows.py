@@ -2,22 +2,15 @@
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.engine.graph_builder import WorkflowValidationError, validate_workflow_shape
 from src.engine.workflow import Workflow, WorkflowEdge, WorkflowNode
+from src.storage.db import get_db
 
 router = APIRouter(tags=["workflows"])
-
-
-def _get_db(request: Request) -> Prisma:  # pyright: ignore[reportUnknownParameterType]
-    """FastAPI dependency — returns the app-wide Prisma client from app.state."""
-    db = getattr(request.app.state, "db", None)
-    if db is None:
-        raise RuntimeError("Prisma client not attached to app.state — did lifespan run?")
-    return db  # pyright: ignore[reportReturnType]
 
 
 class WorkflowCreate(BaseModel):
@@ -63,7 +56,7 @@ class WorkflowRead(BaseModel):
 @router.post("/workflows", response_model=WorkflowRead, status_code=status.HTTP_201_CREATED)
 async def create_workflow(
     payload: WorkflowCreate,
-    db: Prisma = Depends(_get_db),  # pyright: ignore[reportUnknownParameterType]
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
 ) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
     # Re-validate as Workflow to run graph_builder's shape check.
     workflow = Workflow.model_validate(payload.model_dump(by_alias=True))

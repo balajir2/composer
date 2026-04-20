@@ -22,8 +22,8 @@ async def _poll_until_terminal(
     client: AsyncClient, execution_id: str, timeout: float = 10.0
 ) -> dict[str, object]:
     """Poll GET /executions/{id} until status is completed or failed."""
-    deadline = asyncio.get_event_loop().time() + timeout
-    while asyncio.get_event_loop().time() < deadline:
+    deadline = asyncio.get_running_loop().time() + timeout
+    while asyncio.get_running_loop().time() < deadline:
         resp = await client.get(f"/executions/{execution_id}")
         body: dict[str, object] = resp.json()
         if body["status"] in {"completed", "failed"}:

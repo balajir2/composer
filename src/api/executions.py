@@ -7,16 +7,9 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.engine.langgraph_executor import LangGraphExecutor
+from src.storage.db import get_db
 
 router = APIRouter(tags=["executions"])
-
-
-def _get_db(request: Request) -> Prisma:  # pyright: ignore[reportUnknownParameterType]
-    """FastAPI dependency — returns the app-wide Prisma client from app.state."""
-    db = getattr(request.app.state, "db", None)
-    if db is None:
-        raise RuntimeError("Prisma client not attached to app.state — did lifespan run?")
-    return db  # pyright: ignore[reportReturnType]
 
 
 class ExecutionCreate(BaseModel):
@@ -56,7 +49,7 @@ async def create_execution(
     payload: ExecutionCreate,
     background_tasks: BackgroundTasks,
     request: Request,
-    db: Prisma = Depends(_get_db),  # pyright: ignore[reportUnknownParameterType]
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
     workflow = await db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": payload.workflow_id}
@@ -80,7 +73,7 @@ async def create_execution(
 @router.get("/executions/{execution_id}", response_model=ExecutionRead)
 async def get_execution(
     execution_id: str,
-    db: Prisma = Depends(_get_db),  # pyright: ignore[reportUnknownParameterType]
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
     row = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": execution_id}
