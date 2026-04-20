@@ -236,7 +236,6 @@ Mirrors OAB's WorkflowStateAnnotation at lib/workflow/langgraph.ts:52-88.
 See docs/superpowers/specs/2026-04-20-phase-1-execution-engine-design.md §5.3.
 """
 
-from collections.abc import Callable
 from operator import add
 from typing import Annotated, Any, TypedDict
 
@@ -246,7 +245,7 @@ def merge_dict(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     return {**left, **right}
 
 
-def last_wins(_left: Any, right: Any) -> Any:
+def last_wins(_: Any, right: Any) -> Any:
     """Reducer that discards prior value and keeps the latest write."""
     return right
 
@@ -298,9 +297,6 @@ __all__ = [
     "last_wins",
     "merge_dict",
 ]
-
-# Re-export `add` so callers don't need operator; kept at module level for clarity.
-_list_add: Callable[[list[Any], list[Any]], list[Any]] = add
 ```
 
 - [ ] **Step 4: Add tests for `initial_state`**
