@@ -14,6 +14,7 @@ from typing import Any
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from src.engine.context import set_current_db
 from src.engine.graph_builder import build_graph
 from src.engine.state import initial_state
 from src.engine.workflow import Workflow
@@ -78,6 +79,7 @@ class LangGraphExecutor:
             compiled = build_graph(workflow, self.checkpointer)
 
             state = initial_state(execution.input if execution.input is not None else "")
+            set_current_db(self.db)
             final_state = await compiled.ainvoke(
                 state,
                 config={"configurable": {"thread_id": execution.threadId}},

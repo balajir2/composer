@@ -16,6 +16,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
+from src.engine.context import get_current_db
 from src.engine.state import WorkflowStateDict
 from src.engine.workflow import AgentNode
 from src.executors.base import register_executor
@@ -50,7 +51,12 @@ class AgentExecutor:
 
         tools = await _registry.resolve_tools_for_node(
             self.node,
-            BuildContext(node=self.node, state=state),
+            BuildContext(
+                node=self.node,
+                state=state,
+                user_id=None,  # Phase 7 wires real user_id
+                db=get_current_db(),
+            ),
         )
 
         final_text = await self._agentic_loop(chat_model, messages, tools)
