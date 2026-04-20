@@ -119,3 +119,65 @@ def test_workflow_rejects_unknown_node_type() -> None:
                 "edges": [],
             }
         )
+
+
+def test_workflow_round_trip_preserves_camelcase_aliases() -> None:
+    """parse(camelCase JSON) -> dump(by_alias=True) -> re-parse preserves all fields.
+
+    Guards against silent alias breakage when Task 4 adds 16 more node types -
+    any missed `alias=` on a new field shows up here first.
+    """
+    original = {
+        "name": "RoundTrip",
+        "userId": "user-42",
+        "estimatedTime": "5m",
+        "isTemplate": True,
+        "isPublic": False,
+        "createdAt": "2026-04-20T00:00:00Z",
+        "nodes": [
+            {
+                "id": "n1",
+                "type": "start",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "label": "Start",
+                    "nodeType": "custom",
+                    "nodeName": "MyStart",
+                    "inputVariables": [
+                        {
+                            "name": "x",
+                            "type": "string",
+                            "required": True,
+                            "description": "first arg",
+                            "defaultValue": "hello",
+                        }
+                    ],
+                },
+            },
+            {
+                "id": "n2",
+                "type": "end",
+                "position": {"x": 200, "y": 0},
+                "data": {"label": "End"},
+            },
+        ],
+        "edges": [
+            {"id": "e1", "source": "n1", "target": "n2", "sourceHandle": "out"}
+        ],
+    }
+    parsed = Workflow.model_validate(original)
+    dumped = parsed.model_dump(by_alias=True, exclude_none=True)
+    reparsed = Workflow.model_validate(dumped)
+
+    assert reparsed.name == "RoundTrip"
+    assert reparsed.user_id == "user-42"
+    assert reparsed.estimated_time == "5m"
+    assert reparsed.is_template is True
+    assert reparsed.edges[0].source_handle == "out"
+
+    # Narrow the discriminated-union node to StartNode so pyright sees
+    # StartNodeData and the inputVariables field.
+    start_node = reparsed.nodes[0]
+    assert isinstance(start_node, StartNode)
+    assert start_node.data.node_name == "MyStart"
+    assert start_node.data.input_variables[0].default_value == "hello"
