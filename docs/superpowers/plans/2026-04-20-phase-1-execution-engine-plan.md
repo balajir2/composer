@@ -2133,6 +2133,13 @@ EOF
 - Create: `tests/unit/storage/__init__.py` (empty)
 - Create: `tests/unit/storage/test_checkpointer.py`
 
+### Review feedback from Task 1 to address here
+
+(Flagged by the code-quality reviewer when Task 1's schema landed — act on both before declaring Task 11 done.)
+
+1. **Orphan-writes risk.** `LangGraphCheckpointWrite` has no FK to `LangGraphCheckpoint` because Prisma can't express composite-PK FKs in `schema.prisma`. The saver must therefore delete writes BEFORE deleting a checkpoint. A Phase 1 delete path doesn't exist yet, but the saver's implementation should make the ordering invariant a documented contract — either via a helper method `adelete_thread(thread_id)` that deletes writes then checkpoints in the correct order, or by an explicit comment on every deletion site. Unit-test the ordering.
+2. **Index coverage.** `aget_tuple` without a `checkpoint_id` runs `find_first(where={threadId, checkpointNs}, order={"createdAt": "desc"})`. The current `@@index([threadId])` means Postgres narrows by thread then scans for `checkpointNs = ''`. At Phase 1 scale this is fine; when LangGraph subgraphs land (multi-namespace) this becomes the hottest query. Decide based on measurement whether to add a follow-up migration changing `@@index([threadId])` → `@@index([threadId, checkpointNs])` (or adding the compound alongside the single). If you add it, it's a separate micro-migration named `add_checkpoint_ns_to_thread_index`, with its own ADR entry (ADR-0006 or later).
+
 - [ ] **Step 1: Write failing tests**
 
 Create `tests/unit/storage/test_checkpointer.py`:
