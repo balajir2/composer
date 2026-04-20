@@ -205,3 +205,37 @@ async def test_agent_respects_max_iterations(
 
     with pytest.raises(MaxIterationsExceededError, match="MAX_ITERATIONS=10"):
         await AgentExecutor(node).arun(state)
+
+
+@pytest.mark.parametrize(
+    "provider,model",
+    [
+        ("anthropic", "anthropic/claude-3-5-haiku-latest"),
+        ("openai", "openai/gpt-5-nano"),
+        ("google", "google/gemini-2.0-flash"),
+        ("groq", "groq/llama-3.3-70b-versatile"),
+    ],
+)
+async def test_agent_runs_for_each_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    provider: str,
+    model: str,
+) -> None:
+    """Provider dispatch is verified; the actual LLM call is mocked."""
+    expected = f"hello from {provider}"
+    fake = FakeListChatModel(responses=[expected])
+
+    captured: dict[str, str] = {}
+
+    def _fake_build(model_string: str, **kwargs: Any) -> Any:
+        captured["model"] = model_string
+        return fake
+
+    import src.llm.providers as providers
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build)
+
+    node = _agent_node(model=model)
+    delta = await AgentExecutor(node).arun(initial_state("test"))
+    assert delta["variables"]["lastOutput"] == expected
+    assert captured["model"] == model
