@@ -7,6 +7,7 @@ Reference: OAB lib/workflow/langgraph.ts:169-427.
 
 from collections import deque
 from collections.abc import Iterable
+from typing import Any
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import END, START
@@ -99,12 +100,19 @@ CONDITIONAL_SOURCE_TYPES = {"if-else", "while", "user-approval"}
 
 def build_graph(
     workflow: Workflow,
-    checkpointer: BaseCheckpointSaver,
-) -> CompiledStateGraph:
-    """Validate the workflow, compile it into a LangGraph StateGraph, return the compiled graph."""
+    checkpointer: BaseCheckpointSaver[Any],
+) -> CompiledStateGraph[Any, Any, Any, Any]:
+    """Validate the workflow, compile it into a LangGraph StateGraph, return the compiled graph.
+
+    LangGraph's generic type parameters (StateT, InputT, OutputT, RawInputT) are
+    parameterized with Any here — the state type `WorkflowStateDict` is passed
+    to the StateGraph constructor at runtime and LangGraph infers reducers from
+    it, but pyright can't bridge the runtime-inferred type to the compile-time
+    generics. Any is the honest annotation rather than fighting the type system.
+    """
     validate_workflow_shape(workflow)
 
-    builder: StateGraph = StateGraph(WorkflowStateDict)
+    builder: StateGraph[Any, Any, Any, Any] = StateGraph(WorkflowStateDict)
     nodes_by_id = {node.id: node for node in workflow.nodes}
 
     for node in workflow.nodes:

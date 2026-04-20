@@ -112,9 +112,6 @@ reportMissingTypeStubs = "warning"
 reportUnknownMemberType = "warning"
 reportUnknownArgumentType = "warning"
 reportUnknownVariableType = "warning"
-# langgraph ships without full stubs; its generic classes lack type arguments.
-reportUnknownParameterType = "warning"
-reportMissingTypeArgument = "warning"
 
 # ───────────────────────────────────────────
 # Pytest
