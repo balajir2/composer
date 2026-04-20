@@ -298,3 +298,35 @@ Two ways to integrate MCP:
 **Implemented by.** Phase 3a (commits `16bb663`..`2fd3961` on `main`, 2026-04-20).
 
 **Related.** ADR-0002 (node types include `mcp` with `mcp_server_ids` field), ADR-0009 (tool provider framework).
+
+---
+
+## ADR-0011: OAuth tokens server-side + service-account fallback for shared MCP servers
+
+**Status.** Accepted.
+**Date.** 2026-04-20.
+
+**Context.** Phase 3b adds OAuth MCP servers (Highspot is the canonical target). Three atomic decisions had to be made before writing code:
+1. Where do tokens live — client-side (e.g., cookies) or server-side (Prisma)?
+2. What happens when a user can see a **shared** OAuth MCP but has no personal token for it?
+3. Do we encode the RFC 8707 `resource` parameter everywhere it's required, or only where a specific IdP demands it?
+
+**Decision.**
+
+1. **Tokens live server-side only, encrypted with `src/security/encryption.py`.** The API response shape never includes ciphertext or plaintext tokens — only `hasAccessToken: bool`. The client triggers authorize/disconnect via REST; the server exchanges, stores, refreshes, and decrypts on demand inside `McpToolProvider._build_auth_header_async`.
+2. **Service-account token fallback for shared servers.** When a user accesses a shared MCP but has no personal `McpOAuthToken` row for it, `oauth.get_valid_access_token` falls back to the server *owner's* token. This lets teams register one OAuth MCP per org and share it without requiring every user to go through their own OAuth flow.
+3. **RFC 8707 `resource` parameter everywhere.** Every outbound OAuth call (authorize URL, token exchange, refresh, client_credentials) includes `resource = derive_resource(server.url)`. Unit tests assert this on all four paths. Highspot rejects token exchange without it; other IdPs may start enforcing it in the future.
+
+**Alternatives considered.**
+- Client-side tokens via encrypted cookies. Rejected — client becomes a token custody point, tokens appear in logs, cross-site scripting becomes a token-leak vector.
+- Per-user tokens only, no fallback. Rejected — forces every user in a team to OAuth-connect to every MCP. OAB telemetry showed under-use of shared MCPs as a result.
+- Emit `resource` only for Highspot. Rejected — the IdP list changes over time; hard-coding provider sniffing is a maintenance trap.
+
+**Consequences.**
+- `McpToolProvider` grows a `db + user_id` dependency (injected at resolver time). The resolver already has these; the change is local.
+- The UI can't inspect stored tokens even via dev tools — by design. Debugging a broken connection requires looking at `McpOAuthToken.expiresAt` + error fields (not exposed in 3b; add in Phase 10 UI).
+- The service-account fallback creates an implicit delegation. Documented in the endpoint's OpenAPI description and in `oauth.get_valid_access_token`'s docstring.
+
+**Implemented by.** Phase 3b (commits TBD).
+
+**Related.** ADR-0010 (MCP resolver-side instantiation), ADR-0009 (tool provider framework), [Phase 3b spec](../superpowers/specs/2026-04-20-phase-3b-mcp-oauth-design.md).
