@@ -16,7 +16,7 @@ datasource db {
 // Phase 1: Workflow, WorkflowExecution,
 //   LangGraphCheckpoint, LangGraphCheckpointWrite
 // Phase 3a: McpServer (static-auth MCP servers)
-// Phase 3b will add: McpOAuthToken, McpOAuthState
+// Phase 3b: McpOAuthToken, McpOAuthState
 // Phase 5 will add: Approval
 // ────────────────────────────────────────────────
 
@@ -119,4 +119,38 @@ model McpServer {
   @@map("mcp_servers")
   @@index([userId])
   @@index([isShared])
+}
+
+model McpOAuthToken {
+  id                    String    @id @default(cuid())
+  mcpServerId           String    @map("mcp_server_id")
+  userId                String    @map("user_id")
+  encryptedAccessToken  String    @map("encrypted_access_token")
+  encryptedRefreshToken String?   @map("encrypted_refresh_token")
+  expiresAt             DateTime? @map("expires_at")
+  scope                 String?
+  tokenType             String    @default("Bearer") @map("token_type")
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt       @map("updated_at")
+
+  @@unique([mcpServerId, userId])
+  @@map("mcp_oauth_tokens")
+  @@index([mcpServerId])
+  @@index([userId])
+}
+
+model McpOAuthState {
+  id               String    @id @default(cuid())
+  mcpServerId      String    @map("mcp_server_id")
+  userId           String    @map("user_id")
+  state            String    @unique
+  codeVerifier     String    @map("code_verifier")
+  redirectUri      String    @map("redirect_uri")
+  scope            String?
+  expiresAt        DateTime  @map("expires_at")
+  createdAt        DateTime  @default(now()) @map("created_at")
+
+  @@map("mcp_oauth_states")
+  @@index([state])
+  @@index([expiresAt])
 }
