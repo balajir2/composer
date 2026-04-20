@@ -497,7 +497,7 @@ See docs/superpowers/specs/2026-04-20-phase-1-execution-engine-design.md §5.
 OAB reference: lib/workflow/types.ts.
 """
 
-from typing import Annotated, Any, Literal, Union
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -574,7 +574,7 @@ class WorkflowEdge(BaseModel):
 # tag is absent (should never happen, but defensive).
 
 WorkflowNode = Annotated[
-    Union[StartNode, EndNode],
+    StartNode | EndNode,
     Field(discriminator="type"),
 ]
 
@@ -932,26 +932,24 @@ Replace the existing `WorkflowNode = Annotated[Union[StartNode, EndNode], ...]` 
 
 ```python
 WorkflowNode = Annotated[
-    Union[
-        StartNode,
-        EndNode,
-        NoteNode,
-        AgentNode,
-        McpNode,
-        IfElseNode,
-        WhileNode,
-        UserApprovalNode,
-        TransformNode,
-        DataTransformNode,
-        SetStateNode,
-        ExtractNode,
-        HttpNode,
-        GuardrailsNode,
-        VectorDbNode,
-        GammaAiNode,
-        ArcadeNode,
-        JoinChunksNode,
-    ],
+    StartNode
+    | EndNode
+    | NoteNode
+    | AgentNode
+    | McpNode
+    | IfElseNode
+    | WhileNode
+    | UserApprovalNode
+    | TransformNode
+    | DataTransformNode
+    | SetStateNode
+    | ExtractNode
+    | HttpNode
+    | GuardrailsNode
+    | VectorDbNode
+    | GammaAiNode
+    | ArcadeNode
+    | JoinChunksNode,
     Field(discriminator="type"),
 ]
 ```
