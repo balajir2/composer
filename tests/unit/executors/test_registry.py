@@ -33,20 +33,20 @@ def test_register_and_lookup() -> None:
 
 
 def test_unshipped_type_raises_with_phase_hint() -> None:
-    from src.engine.workflow import McpNode
+    from src.engine.workflow import HttpNode
 
-    node = McpNode.model_validate(
+    node = HttpNode.model_validate(
         {
             "id": "n",
-            "type": "mcp",
+            "type": "http",
             "position": {"x": 0, "y": 0},
-            "data": {"label": "m"},
+            "data": {"label": "h"},
         }
     )
     with pytest.raises(NotImplementedError) as excinfo:
         build_executor(node)
-    assert "'mcp'" in str(excinfo.value)
-    assert "Phase 3" in str(excinfo.value)
+    assert "'http'" in str(excinfo.value)
+    assert "Phase 4" in str(excinfo.value)
 
 
 def test_unknown_type_raises_generic_message() -> None:

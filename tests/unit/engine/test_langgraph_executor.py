@@ -92,18 +92,18 @@ async def test_run_completes_start_to_end() -> None:
 
 
 async def test_run_marks_failed_on_exception() -> None:
-    # Construct a workflow that will blow up at graph-build time (mcp node — Phase 3).
+    # Construct a workflow that will blow up at graph-build time (http node — Phase 4).
     bad_wf = {
         "id": "wf1",
         "name": "Bad",
         "nodes": [
             {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-            {"id": "m", "type": "mcp", "position": {"x": 0, "y": 0}, "data": {"label": "M"}},
+            {"id": "h", "type": "http", "position": {"x": 0, "y": 0}, "data": {"label": "H"}},
             {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
         ],
         "edges": [
-            {"id": "e1", "source": "s", "target": "m"},
-            {"id": "e2", "source": "m", "target": "e"},
+            {"id": "e1", "source": "s", "target": "h"},
+            {"id": "e2", "source": "h", "target": "e"},
         ],
     }
     db = MagicMock()
@@ -127,4 +127,4 @@ async def test_run_marks_failed_on_exception() -> None:
     assert db.workflowexecution.update.await_args is not None
     update_kwargs = db.workflowexecution.update.await_args.kwargs["data"]
     assert update_kwargs["status"] == "failed"
-    assert "Phase 3" in update_kwargs["error"]
+    assert "Phase 4" in update_kwargs["error"]
