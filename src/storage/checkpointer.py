@@ -30,7 +30,7 @@ The integration test in Task 17 exercises the full Postgres round-trip.
 
 import struct
 from collections.abc import AsyncIterator, Sequence
-from typing import Any
+from typing import Any, cast
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.checkpoint.base import (
@@ -64,16 +64,18 @@ def _unpack(data: bytes) -> tuple[str, bytes]:
     return tag_bytes.decode(), payload
 
 
-def _to_raw_bytes(value: "Base64 | bytes") -> bytes:
+def _to_raw_bytes(value: Any) -> bytes:
     """Convert a Prisma Base64 field value to raw bytes.
 
     The real Prisma client returns ``Base64`` objects for ``Bytes`` columns.
     Mocks (and any path that bypasses Prisma) may hand us plain ``bytes``.
-    Either way we want the underlying binary data.
+    Either way we want the underlying binary data. Typed as Any because
+    Prisma's generated ``Base64`` class has no static stub; the runtime
+    ``isinstance`` check keeps it honest.
     """
     if isinstance(value, Base64):
-        return value.decode()
-    return value
+        return cast("bytes", value.decode())
+    return cast("bytes", value)
 
 
 class PrismaCheckpointSaver(BaseCheckpointSaver[str]):  # pyright: ignore[reportMissingTypeArgument]
@@ -89,8 +91,12 @@ class PrismaCheckpointSaver(BaseCheckpointSaver[str]):  # pyright: ignore[report
         """Serialize *obj* to bytes using the typed serializer."""
         return _pack(self.serde.dumps_typed(obj))
 
-    def _loads(self, raw: "Base64 | bytes") -> Any:
-        """Deserialize a Prisma Bytes field value serialized by `_dumps`."""
+    def _loads(self, raw: Any) -> Any:
+        """Deserialize a Prisma Bytes field value serialized by `_dumps`.
+
+        Typed as Any for the same reason as `_to_raw_bytes` above — Prisma's
+        Base64 class has no static stub. `_to_raw_bytes` narrows at runtime.
+        """
         return self.serde.loads_typed(_unpack(_to_raw_bytes(raw)))
 
     # ─── required async methods ─────────────────────────────────────────
