@@ -5,7 +5,7 @@ See ADR-0009; spec §8.
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel
@@ -69,6 +69,7 @@ class BuildContext:
     node: "AgentNode"
     state: "WorkflowStateDict"
     user_id: str | None = None
+    db: Any | None = None  # Prisma client — populated when MCP resolution is needed
 
 
 @dataclass(frozen=True, kw_only=True)

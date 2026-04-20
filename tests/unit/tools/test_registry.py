@@ -129,7 +129,21 @@ async def test_resolve_tools_for_node_unknown_provider_raises() -> None:
         )
 
 
-async def test_resolve_tools_for_node_mcp_ids_raise_until_phase_3() -> None:
+async def test_resolve_tools_for_node_mcp_ids_delegate_to_mcp_resolver(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Phase 3a: mcp_server_ids on a node dispatches to src.mcp.resolver."""
+    from unittest.mock import MagicMock
+
+    fake_tool = MagicMock(name="fake_mcp_tool")
+
+    import src.mcp.resolver as resolver_mod
+
+    async def _fake_resolve(node: Any, context: Any, db: Any) -> list[Any]:
+        return [fake_tool]
+
+    monkeypatch.setattr(resolver_mod, "resolve_mcp_tools_for_node", _fake_resolve)
+
     node = AgentNode.model_validate(
         {
             "id": "a",
@@ -138,10 +152,28 @@ async def test_resolve_tools_for_node_mcp_ids_raise_until_phase_3() -> None:
             "data": {"label": "A", "mcpServerIds": ["s1"]},
         }
     )
-    with pytest.raises(NotImplementedError, match="Phase 3"):
+    out = await resolve_tools_for_node(
+        node,
+        BuildContext(node=node, state=initial_state(), user_id="dev", db=MagicMock()),
+    )
+    assert out == [fake_tool]
+
+
+async def test_resolve_tools_for_node_mcp_without_db_raises() -> None:
+    """Calling resolve_tools_for_node with mcp_server_ids but no db in context
+    is a programmer error — the Agent executor forgot to populate context.db."""
+    node = AgentNode.model_validate(
+        {
+            "id": "a",
+            "type": "agent",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "A", "mcpServerIds": ["s1"]},
+        }
+    )
+    with pytest.raises(RuntimeError, match=r"BuildContext\.db is required"):
         await resolve_tools_for_node(
             node,
-            BuildContext(node=node, state=initial_state(), user_id=None),
+            BuildContext(node=node, state=initial_state(), user_id="dev", db=None),
         )
 
 

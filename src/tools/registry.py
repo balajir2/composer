@@ -76,9 +76,15 @@ async def resolve_tools_for_node(node: AgentNode, context: BuildContext) -> list
         out.append(await provider.build_tool(tool_name, context))
 
     if node.data.mcp_server_ids:
-        raise NotImplementedError(
-            f"MCP tool resolution lands in Phase 3 — server_ids={node.data.mcp_server_ids}"
-        )
+        # Phase 3a+: delegate to src.mcp.resolver
+        from src.mcp.resolver import resolve_mcp_tools_for_node
+
+        if context.db is None:
+            raise RuntimeError(
+                "BuildContext.db is required for MCP tool resolution. "
+                "Populate it in the Agent executor when mcp_server_ids is non-empty."
+            )
+        out.extend(await resolve_mcp_tools_for_node(node, context, context.db))
 
     return out
 
