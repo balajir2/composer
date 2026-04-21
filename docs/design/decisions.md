@@ -450,7 +450,7 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 2. Poll + re-run from scratch on resume. Wasteful + incorrect for workflows with side effects (HTTP, LLM, MCP calls re-execute).
 3. Checkpoint + resume. LangGraph's `interrupt()` persists state via our existing `PrismaCheckpointSaver`; resume loads the checkpoint + continues from the paused node.
 
-**Decision.** Option 3. `UserApprovalExecutor` calls `interrupt({node_id, prompt})`. `LangGraphExecutor.run` catches the resulting `GraphInterrupt`, marks execution `waiting_approval`, and exits cleanly. `POST /executions/{id}/resume` writes an `Approval` row + schedules a `BackgroundTask` that calls `compiled.ainvoke(Command(resume=decision), config={"thread_id": ...})`. LangGraph loads the checkpoint + continues.
+**Decision.** Option 3. `UserApprovalExecutor` calls `interrupt({node_id, prompt})`. After `compiled.ainvoke(...)` returns, `LangGraphExecutor.run` calls `compiled.aget_state(config)` and checks `snapshot.next` to detect a pause — in recent LangGraph versions the Pregel runtime catches `GraphInterrupt` internally and returns cleanly rather than propagating the exception (caught by real-Neon integration testing, fix in commit `b07d8de`). On pause, the executor marks execution `waiting_approval` + merges `_pending_approval_node`/`_pending_approval_prompt` into `variables`. `POST /executions/{id}/resume` writes an `Approval` row + schedules a `BackgroundTask` that calls `compiled.ainvoke(Command(resume=decision), config={"thread_id": ...})`. LangGraph loads the checkpoint + continues.
 
 **Alternatives considered.** See above. Option 1 rejected on operational grounds; Option 2 rejected for correctness + cost.
 
@@ -462,6 +462,6 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 - A resume while a prior resume task is in flight → 409 (same check).
 - Workflows with user-approval nodes use Phase 4b's conditional-edges machinery with branches `{"approved", "rejected"}`.
 
-**Implemented by.** Phase 5a (commits TBD).
+**Implemented by.** Phase 5a (commits `74fe159`…`b07d8de`, 2026-04-21).
 
 **Related.** ADR-0001 (PrismaCheckpointSaver), ADR-0013 (WorkflowEdge.branch — user-approval is a conditional source), ADR-0015 (dev-mode auth; any authenticated user can resume in 5a), [Phase 5a spec](../superpowers/specs/2026-04-21-phase-5a-user-approval-design.md).

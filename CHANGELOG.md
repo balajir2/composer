@@ -6,6 +6,37 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 5a — User-approval + interrupt/resume (2026-04-21)
+
+#### Added
+- [Phase 5a design spec](docs/superpowers/specs/2026-04-21-phase-5a-user-approval-design.md) + ADR-0016.
+- Prisma `Approval` table + `ApprovalDecision` enum (per-decision audit row; cascade-deletes with execution; indexed by `executionId` and `approverUserId`).
+- `src/executors/user_approval.py` — `UserApprovalExecutor` calls LangGraph's `interrupt({node_id, prompt})` (reads `data.approval_message` alias `approvalMessage` for the prompt template); records `_approval_<node_id>` in variables on resume; `UserApprovalNodeError` for invalid decisions.
+- `src/engine/graph_builder.py` — extends Phase 4b's conditional-edges pass with `user-approval` routing (branches `{approved, rejected}`); `_route_user_approval` reads `_approval_<node_id>` from variables.
+- `src/engine/langgraph_executor.py` — detects pause via `compiled.aget_state(config).next` after `ainvoke` (see Fixed below); merges `_pending_approval_node` / `_pending_approval_prompt` into `variables`; new `resume(execution_id, decision)` method calls `compiled.ainvoke(Command(resume=decision))`; chained pauses re-mark `waiting_approval`.
+- `POST /executions/{id}/resume` — accepts `{decision: 'approved'|'rejected', note?: str}`; 404 / 409 / 422 / 500 error paths; writes Approval row; flips status to `running` before scheduling the `BackgroundTasks` resume.
+- Integration tests: approved path + rejected path (real Neon); assert `Approval` row contents + final variable state.
+
+#### Changed
+- Status transitions: `running → waiting_approval → running → completed|failed`. No new terminal status — the rejected branch completes normally.
+- Sentinel tests migrate: `user-approval`/`Phase 5` → `guardrails`/`Phase 6` across three test files (graph_builder, langgraph_executor, executors/test_registry).
+- `LangGraphExecutor` refactored: `_prepare_compiled` / `_mark_completed` / `_mark_waiting_approval` / `_mark_failed` / `_load_execution` helpers factor the shared prep + DB-update logic between `run()` and `resume()`.
+
+#### Fixed
+- One bug caught by real-Neon integration testing: LangGraph's `interrupt()` in current versions does NOT propagate `GraphInterrupt` out of `ainvoke` — the Pregel runtime catches it internally, persists the checkpoint, and returns cleanly. Our original `except GraphInterrupt` was dead code; every execution would have completed immediately, skipping the pause. Fix: inspect `compiled.aget_state(config).next` after `ainvoke`; extract pending interrupt payload from `snapshot.tasks[*].interrupts[*].value`. Same check applied to `resume()` for chained pauses. Commit `b07d8de`.
+
+#### Verified
+- 382/382 unit tests green (+18 from Phase 7a baseline of 364).
+- 2/2 Phase 5a integration tests green against real Neon (approved + rejected paths).
+- Prior regression tests unaffected (sentinel tests migrated cleanly; Phase 4b conditional-edges untouched).
+
+#### Deliberate design choices (see ADR-0016)
+- Checkpoint + resume (LangGraph `interrupt()` + `aget_state` pause detection), not blocking request or re-run-from-scratch. Pins no API workers; preserves side-effect correctness.
+- `Approval` as a dedicated Prisma table, not inline JSON on `WorkflowExecution.variables`. Enables audit trail + future multi-approver workflows.
+- Status flip to `running` happens BEFORE the `BackgroundTask`, so polling clients never observe stale `waiting_approval` while the resume is in flight.
+- Rejected branch is ordinary graph routing — no special `"rejected"` top-level status. The decision lives on the `Approval` table.
+- Any authenticated user may resume in 5a (dev-mode fallback returns `'dev'` per ADR-0015). RBAC (only the workflow creator / tagged approvers can resume) is Phase 7b+.
+
 ### Phase 7a — Deployment-mode toggle + auth middleware (2026-04-21)
 
 Brought forward from Phase 7 because user-approval (Phase 5) needs authenticated user context. Phase 5 (user-approval + SSE) is re-sequenced to run next.
