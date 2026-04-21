@@ -67,6 +67,9 @@ class Settings(BaseSettings):
     # ─── Gamma-AI (Phase 6c) ─────────────────────
     gamma_api_key: str = Field(default="", description="Gamma.app public API key.")
 
+    # ─── Arcade (Phase 6d) ────────────────────────
+    arcade_api_key: str = Field(default="", description="Arcade.dev API key.")
+
     # ─── Deployment mode (Phase 7a, ADR-0014) ────────
     deployment_mode: Literal["standalone", "embedded"] = Field(
         default="standalone",

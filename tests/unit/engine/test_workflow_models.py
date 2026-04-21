@@ -206,6 +206,7 @@ ALL_NODE_TYPES = [
 # Minimal data overrides for node types that have required fields beyond `label`.
 _MINIMAL_DATA_OVERRIDES: dict[str, dict[str, object]] = {
     "join-chunks": {"label": "X", "joinChunksVariable": "chunks"},
+    "arcade": {"label": "X", "arcadeTool": "X@1"},
 }
 
 
@@ -453,3 +454,58 @@ def test_gamma_ai_node_full_round_trip() -> None:
     assert node.id == "ga1"
     assert node.type == "gamma-ai"
     assert node.data.prompt == "Hello"
+
+
+def test_arcade_node_data_parses_camelcase_aliases() -> None:
+    from src.engine.workflow import ArcadeNodeData
+
+    data = ArcadeNodeData.model_validate(
+        {
+            "label": "AR",
+            "arcadeTool": "GoogleDocs.CreateDocumentFromText@4.3.1",
+            "arcadeInput": {"title": "Hello", "body": "World"},
+            "arcadeUserId": "alice@example.com",
+        }
+    )
+    assert data.tool == "GoogleDocs.CreateDocumentFromText@4.3.1"
+    assert data.input == {"title": "Hello", "body": "World"}
+    assert data.user_id == "alice@example.com"
+
+
+def test_arcade_node_data_defaults() -> None:
+    from src.engine.workflow import ArcadeNodeData
+
+    data = ArcadeNodeData.model_validate(
+        {
+            "label": "AR",
+            "arcadeTool": "Slack.SendMessage@1.0.0",
+        }
+    )
+    assert data.tool == "Slack.SendMessage@1.0.0"
+    assert data.input == {}
+    assert data.user_id == "workflow-builder"
+
+
+def test_arcade_node_data_missing_tool_raises() -> None:
+    from pydantic import ValidationError
+
+    from src.engine.workflow import ArcadeNodeData
+
+    with pytest.raises(ValidationError):
+        ArcadeNodeData.model_validate({"label": "AR"})
+
+
+def test_arcade_node_full_round_trip() -> None:
+    from src.engine.workflow import ArcadeNode
+
+    node = ArcadeNode.model_validate(
+        {
+            "id": "ar1",
+            "type": "arcade",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "AR", "arcadeTool": "Tool@1"},
+        }
+    )
+    assert node.id == "ar1"
+    assert node.type == "arcade"
+    assert node.data.tool == "Tool@1"

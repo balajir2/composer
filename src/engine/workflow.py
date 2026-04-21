@@ -331,9 +331,11 @@ class GammaAiNode(BaseModel):
 
 
 class ArcadeNodeData(BaseNodeData):
-    arcade_tool: str | None = Field(default=None, alias="arcadeTool")
-    arcade_input: dict[str, Any] = Field(default_factory=dict, alias="arcadeInput")
-    arcade_user_id: str | None = Field(default=None, alias="arcadeUserId")
+    model_config = ConfigDict(populate_by_name=True)
+
+    tool: str = Field(alias="arcadeTool")
+    input: dict[str, Any] = Field(default_factory=dict, alias="arcadeInput")
+    user_id: str = Field(default="workflow-builder", alias="arcadeUserId")
 
 
 class ArcadeNode(BaseModel):
