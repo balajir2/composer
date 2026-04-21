@@ -46,13 +46,13 @@ async def test_while_countdown_from_three(client: AsyncClient) -> None:
                     "id": "w",
                     "type": "while",
                     "position": {"x": 200, "y": 0},
-                    "data": {"label": "W", "condition": "variables['n'] > 0"},
+                    "data": {"label": "W", "condition": "int(variables['n']) > 0"},
                 },
                 {
                     "id": "dec",
                     "type": "transform",
                     "position": {"x": 300, "y": 0},
-                    "data": {"label": "Decrement", "transformScript": "variables['n'] - 1"},
+                    "data": {"label": "Decrement", "transformScript": "int(variables['n']) - 1"},
                 },
                 {
                     "id": "write",

@@ -2,14 +2,15 @@
 
 All user-supplied expression evaluation routes through `evaluate`. No
 `eval()`, `exec()`, or `compile()` calls anywhere in src/. The scope
-exposes a small, explicit whitelist of names; no builtins, no imports,
-no dunder attribute access.
+exposes a small, explicit whitelist of names + coercion functions; no
+other builtins, no imports, no dunder attribute access.
 
 Scope:
   - variables       : dict — state["variables"]
   - lastOutput      : shorthand for variables["lastOutput"]
   - node_results    : dict — state["node_results"]
   - per-call extras : e.g., `item` for data-transform iteration
+  - functions       : int, float, str, bool, len (safe coercions only)
 """
 
 from typing import Any
@@ -30,6 +31,18 @@ class EvalError(RuntimeError):
     """Any simpleeval failure — invalid expression, undefined name, syntax, etc."""
 
 
+# Safe coercion functions exposed to expressions. No eval / exec / open /
+# import / hasattr / getattr — anything that would let an expression reach
+# outside the whitelisted scope.
+_SAFE_FUNCTIONS: dict[str, Any] = {
+    "int": int,
+    "float": float,
+    "str": str,
+    "bool": bool,
+    "len": len,
+}
+
+
 def _build_evaluator(
     state: WorkflowStateDict,
     *,
@@ -44,7 +57,7 @@ def _build_evaluator(
     }
     if extra_names:
         names.update(extra_names)
-    return SimpleEval(names=names)
+    return SimpleEval(names=names, functions=dict(_SAFE_FUNCTIONS))
 
 
 def evaluate(
@@ -55,8 +68,8 @@ def evaluate(
 ) -> Any:
     """Evaluate a simpleeval expression over state.
 
-    Raises EvalError on any failure (undefined name, syntax, blocked access).
-    See ADR-0012.
+    Raises EvalError on any failure (undefined name, syntax, blocked access,
+    missing key in a dict subscript, etc.).  See ADR-0012.
     """
     try:
         return _build_evaluator(state, extra_names=extra_names).eval(expression)
@@ -67,6 +80,10 @@ def evaluate(
         NumberTooHigh,
         InvalidExpression,
         SyntaxError,
+        KeyError,
+        IndexError,
+        TypeError,
+        ValueError,
     ) as exc:
         raise EvalError(
             f"simpleeval failed evaluating {expression!r}: {type(exc).__name__}: {exc}"
