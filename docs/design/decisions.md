@@ -465,3 +465,31 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 **Implemented by.** Phase 5a (commits `74fe159`…`b07d8de`, 2026-04-21).
 
 **Related.** ADR-0001 (PrismaCheckpointSaver), ADR-0013 (WorkflowEdge.branch — user-approval is a conditional source), ADR-0015 (dev-mode auth; any authenticated user can resume in 5a), [Phase 5a spec](../superpowers/specs/2026-04-21-phase-5a-user-approval-design.md).
+
+---
+
+## ADR-0017: SSE streaming uses in-process asyncio event bus with snapshot-on-subscribe
+
+**Status.** Accepted.
+**Date.** 2026-04-21.
+
+**Context.** Clients currently poll `GET /executions/{id}` for progress. Three approaches for real-time:
+1. In-process asyncio bus (this ADR).
+2. Postgres `LISTEN/NOTIFY` — works across workers; adds a dedicated DB connection per subscriber.
+3. Redis pub/sub — new infra dependency.
+
+**Decision.** In-process asyncio bus. Matches the current single-worker target; YAGNI for multi-worker until we actually scale. SSE (not WebSocket) because SSE is stateless, plays well with standard HTTP middleware, and needs no new dependencies. Phase 9 adds WebSocket as a separate channel.
+
+**Alternatives considered.** `LISTEN/NOTIFY` rejected on cost: one DB connection per subscriber would strain Neon. Redis rejected on ops cost: new infra just for event fanout.
+
+**Consequences.**
+- Zero new infrastructure.
+- Multi-worker limitation: subscribers only receive events from the worker that's running the executor. Documented + acceptable until we scale past one worker.
+- Event loss under backpressure: bounded per-subscriber queue (size 128) drops oldest on overflow. DB remains authoritative; stream is advisory.
+- No persistent event log: a client that subscribes late only sees the current-status snapshot, not the past node trail.
+- Five event types in MVP: `status-change`, `node-start`, `node-complete`, `approval-pending`, `approval-resumed`. LLM token streaming is Phase 10+.
+- Keepalive via SSE comment every 15s — detects dead clients and prevents proxy idle-closes.
+
+**Implemented by.** Phase 5b (commits TBD).
+
+**Related.** ADR-0001 (PrismaCheckpointSaver — same single-process assumption), ADR-0016 (Phase 5a emits `approval-pending` / `approval-resumed`), [Phase 5b spec](../superpowers/specs/2026-04-21-phase-5b-sse-streaming-design.md).
