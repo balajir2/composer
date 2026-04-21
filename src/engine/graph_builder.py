@@ -14,6 +14,7 @@ from langgraph.constants import END, START
 from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
+from src.engine.events_wrapper import wrap_executor_with_events
 from src.engine.state import WorkflowStateDict
 from src.engine.workflow import (
     IfElseNode,
@@ -263,7 +264,8 @@ def build_graph(
         if node.type == "note":
             continue  # visual-only; skipped at build time per OAB behavior
         executor = build_executor(node)  # may raise NotImplementedError
-        builder.add_node(node.id, executor.arun)  # pyright: ignore[reportUnknownMemberType]
+        arun_with_events = wrap_executor_with_events(executor, node)
+        builder.add_node(node.id, arun_with_events)  # pyright: ignore[reportUnknownMemberType,reportArgumentType]
 
     # Emit normal edges first; conditional edges handled in a second pass.
     for edge in workflow.edges:
