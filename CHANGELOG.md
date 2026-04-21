@@ -6,6 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 6c — Gamma-AI (2026-04-21)
+
+#### Added
+- [Phase 6c design spec](docs/superpowers/specs/2026-04-21-phase-6c-gamma-ai-design.md).
+- `src/executors/gamma_ai.py` — `GammaAiExecutor` calls the Gamma.app public API (`https://public-api.gamma.app/v1.0`) to generate a presentation/document/webpage. Two-step protocol: POST create → poll GET until `state=completed` or `failed`. OAB-compatible cadence: 60s initial wait, 10s interval, 4-min max. When `exportAs` in {pptx, pdf}, waits up to 60s more for the download URL. `lastOutput = downloadUrl || gammaUrl`. Module-level sleep constants (`INITIAL_WAIT_SECONDS`, `POLL_INTERVAL_SECONDS`, `MAX_POLL_SECONDS`, `EXPORT_WAIT_SECONDS`, `EXPORT_POLL_INTERVAL`) for test monkeypatching.
+- `src/engine/workflow.py` — `GammaAiNodeData` tightened with 8 explicit fields matching OAB `types.ts:77-85` (`prompt`, `format`, `textMode`, `numCards`, `textAmount`, `imageSource`, `language`, `exportAs`). Enum literals pinned (`presentation`/`document`/`social`, `generate`/`condense`/`preserve`, `brief`/`medium`/`detailed`, `pptx`/`pdf`/`web`).
+- `src/config.py` — `gamma_api_key` setting (env var `GAMMA_API_KEY`).
+- Unit tests: 13 via `pytest-httpx`. Sleep monkeypatched so tests run fast.
+
+#### Notes
+- Phase 6 was split — the originally planned 6c (Gamma-AI + Arcade) is now **6c (Gamma-AI only)** + **6d (Arcade)** + **6e (Vector-DB)**. Arcade's auth-interrupt flow (reuse of Phase 5a's `/resume` pattern) warrants its own focused sub-phase.
+- Max runtime ~6 minutes. Runs inline in the BackgroundTask (machine-bounded wait; no LangGraph interrupt needed).
+- Transient 4xx/5xx during polling is retried; POST create failure or `state=failed` raises `GammaNodeError`. Polling timeout (5 min wall clock) returns last-known status without raising — OAB-compatible.
+- **Integration smoke test skipped in Phase 6c.** `GAMMA_API_KEY` is present in `.env`, but a real generation takes ~5 minutes and consumes API credits; can be run manually when needed.
+
+#### Verified
+- 450/450 unit tests green (+17 from Phase 6b 433: 4 Pydantic tests + 13 executor tests).
+- Pyright 0 errors, ruff + format clean.
+
 ### Phase 6b — Guardrails (2026-04-21)
 
 #### Added
