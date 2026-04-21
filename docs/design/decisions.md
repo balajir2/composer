@@ -330,3 +330,30 @@ Two ways to integrate MCP:
 **Implemented by.** Phase 3b (commits `b80f88f`..`a66479d` on `main`, 2026-04-21).
 
 **Related.** ADR-0010 (MCP resolver-side instantiation), ADR-0009 (tool provider framework), [Phase 3b spec](../superpowers/specs/2026-04-20-phase-3b-mcp-oauth-design.md).
+
+---
+
+## ADR-0012: simpleeval is the only eval primitive
+
+**Status.** Accepted.
+**Date.** 2026-04-21.
+
+**Context.** Four Phase 4 executors (`transform`, `data-transform`, `if-else`, `while`) evaluate user-supplied expressions over workflow state. Three options:
+1. Python `eval()` / `exec()` — full `__builtins__`, module imports, filesystem access. Catastrophic attack surface.
+2. Custom parser / AST walk — full control, non-trivial maintenance burden for a secondary feature.
+3. `simpleeval` — small library, explicit whitelist of names + functions, blocks `__` attribute access by default, Python expression syntax.
+
+**Decision.** `simpleeval`, exclusively. One wrapper at `src/executors/_eval.py`; every expression-eval codepath routes through it. `eval()` / `exec()` forbidden anywhere in `src/`.
+
+Scope exposes: `variables`, `lastOutput`, `node_results`, and a per-call `extra_names` dict (e.g., `item` for data-transform, `acc` for reduce). No builtins, no imports, no dunder access.
+
+**Alternatives considered.** asteval (extra numpy surface area, not needed). py-mini-racer / JS sandbox (native deps, reintroduces JS-runtime attack surface; behavioural parity with OAB doesn't require syntactic parity).
+
+**Consequences.**
+- Users migrating from OAB hit expression syntax differences (no arrow functions, no template literals, no `?.`). `EvalError` includes the failing expression + cause for mechanical translation.
+- Adding an operator / function means editing `_eval.py` once. No per-executor drift.
+- CI gate: ruff `S307` rule (use of `eval`) runs as error.
+
+**Implemented by.** Phase 4a (commits TBD).
+
+**Related.** ADR-0002 (workflow schema), [Phase 4a spec](../superpowers/specs/2026-04-21-phase-4a-linear-executors-design.md), CLAUDE.md §Conventions ("NEVER `eval()`; use `simpleeval`").
