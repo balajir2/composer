@@ -16,7 +16,14 @@ from langgraph.types import Command  # pyright: ignore[reportUnknownVariableType
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
-from src.engine.context import LangSmithConfig, set_current_db, set_current_langsmith
+from src.engine.context import (
+    LangSmithConfig,
+    set_current_db,
+    set_current_event_bus,
+    set_current_execution_id,
+    set_current_langsmith,
+)
+from src.engine.events import EventType, ExecutionEvent, ExecutionEventBus
 from src.engine.graph_builder import build_graph
 from src.engine.state import initial_state
 from src.engine.workflow import Workflow
@@ -46,9 +53,27 @@ class LangGraphExecutor:
         self,
         db: Prisma,  # pyright: ignore[reportUnknownParameterType]
         checkpointer: BaseCheckpointSaver[Any],
+        event_bus: ExecutionEventBus | None = None,
     ) -> None:
         self.db = db
         self.checkpointer = checkpointer
+        self.event_bus = event_bus
+
+    async def _emit(
+        self,
+        event_type: EventType,
+        execution_id: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if self.event_bus is None:
+            return
+        await self.event_bus.emit(
+            ExecutionEvent(type=event_type, execution_id=execution_id, payload=payload)
+        )
+
+    async def _close_event_bus(self, execution_id: str) -> None:
+        if self.event_bus is not None:
+            await self.event_bus.close(execution_id)
 
     async def start_execution(self, *, workflow_id: str, input: Any, user_id: str | None) -> Any:
         """Create the execution row (status=running). Caller schedules `run()`."""
@@ -109,6 +134,8 @@ class LangGraphExecutor:
         )
         set_current_langsmith(ls_config)
         set_current_db(self.db)
+        set_current_execution_id(execution.id)
+        set_current_event_bus(self.event_bus)
 
         lg_config: dict[str, Any] = {"configurable": {"thread_id": execution.threadId}}
         return compiled, state, lg_config
@@ -176,6 +203,8 @@ class LangGraphExecutor:
             logger.error("Execution %s not found at run time", execution_id)
             return
 
+        await self._emit("status-change", execution_id, {"status": "running", "previous": None})
+
         try:
             compiled, state, lg_config = await self._prepare_compiled(execution)
 
@@ -189,13 +218,42 @@ class LangGraphExecutor:
                 if isinstance(final_state.get("variables"), dict):
                     existing_vars = final_state["variables"]
                 await self._mark_waiting_approval(execution_id, pending_info, existing_vars)
+                await self._emit(
+                    "approval-pending",
+                    execution_id,
+                    {
+                        "node_id": pending_info.get("node_id"),
+                        "prompt": pending_info.get("prompt"),
+                    },
+                )
+                await self._emit(
+                    "status-change",
+                    execution_id,
+                    {"status": "waiting_approval", "previous": "running"},
+                )
+                await self._close_event_bus(execution_id)
                 return
 
             await self._mark_completed(execution_id, final_state)
+            await self._emit(
+                "status-change",
+                execution_id,
+                {"status": "completed", "previous": "running"},
+            )
+            await self._close_event_bus(execution_id)
 
         except Exception as exc:
             logger.exception("Execution %s failed", execution_id)
             await self._mark_failed(execution_id, exc)
+            try:
+                await self._emit(
+                    "status-change",
+                    execution_id,
+                    {"status": "failed", "previous": "running"},
+                )
+                await self._close_event_bus(execution_id)
+            except Exception:
+                logger.exception("Failed to emit failure event for execution %s", execution_id)
 
     async def resume(self, execution_id: str, decision: str) -> None:
         """Continue a paused execution with a user decision (approved/rejected).
@@ -208,6 +266,12 @@ class LangGraphExecutor:
         if execution is None:
             logger.error("Execution %s not found at resume time", execution_id)
             return
+
+        await self._emit(
+            "status-change",
+            execution_id,
+            {"status": "running", "previous": "waiting_approval"},
+        )
 
         try:
             compiled, _state, lg_config = await self._prepare_compiled(execution)
@@ -225,13 +289,44 @@ class LangGraphExecutor:
                 if isinstance(final_state.get("variables"), dict):
                     existing_vars = final_state["variables"]
                 await self._mark_waiting_approval(execution_id, pending_info, existing_vars)
+                await self._emit(
+                    "approval-pending",
+                    execution_id,
+                    {
+                        "node_id": pending_info.get("node_id"),
+                        "prompt": pending_info.get("prompt"),
+                    },
+                )
+                await self._emit(
+                    "status-change",
+                    execution_id,
+                    {"status": "waiting_approval", "previous": "running"},
+                )
+                await self._close_event_bus(execution_id)
                 return
 
             await self._mark_completed(execution_id, final_state)
+            await self._emit(
+                "status-change",
+                execution_id,
+                {"status": "completed", "previous": "running"},
+            )
+            await self._close_event_bus(execution_id)
 
         except Exception as exc:
             logger.exception("Execution %s failed during resume", execution_id)
             await self._mark_failed(execution_id, exc)
+            try:
+                await self._emit(
+                    "status-change",
+                    execution_id,
+                    {"status": "failed", "previous": "running"},
+                )
+                await self._close_event_bus(execution_id)
+            except Exception:
+                logger.exception(
+                    "Failed to emit failure event for execution %s during resume", execution_id
+                )
 
 
 __all__ = ["LangGraphExecutor"]

@@ -13,6 +13,7 @@ from fastapi import FastAPI, Request
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 
 if TYPE_CHECKING:
+    from src.engine.events import ExecutionEventBus
     from src.storage.checkpointer import PrismaCheckpointSaver
 
 
@@ -28,6 +29,9 @@ async def prisma_lifespan(  # pyright: ignore[reportUnknownParameterType]
     await db.connect()
     app.state.db = db
     app.state.checkpointer = PrismaCheckpointSaver(db)
+    from src.engine.events import ExecutionEventBus
+
+    app.state.event_bus = ExecutionEventBus()
     try:
         yield db
     finally:
@@ -54,4 +58,12 @@ def get_checkpointer(request: Request) -> "PrismaCheckpointSaver":  # pyright: i
     return cp
 
 
-__all__ = ["get_checkpointer", "get_db", "prisma_lifespan"]
+def get_event_bus(request: Request) -> "ExecutionEventBus":  # pyright: ignore[reportUnknownParameterType]
+    """FastAPI dependency — returns the app-wide ExecutionEventBus."""
+    bus = getattr(request.app.state, "event_bus", None)
+    if bus is None:
+        raise RuntimeError("ExecutionEventBus not attached to app.state — did lifespan run?")
+    return bus  # pyright: ignore[reportReturnType]
+
+
+__all__ = ["get_checkpointer", "get_db", "get_event_bus", "prisma_lifespan"]

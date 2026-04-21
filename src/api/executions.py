@@ -55,7 +55,8 @@ def _get_executor(request: Request, db: Prisma) -> LangGraphExecutor:  # pyright
     checkpointer = getattr(request.app.state, "checkpointer", None)
     if checkpointer is None:
         raise RuntimeError("Checkpointer not attached to app.state")
-    return LangGraphExecutor(db=db, checkpointer=checkpointer)
+    event_bus = getattr(request.app.state, "event_bus", None)
+    return LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
 
 
 @router.post("/executions", response_model=ExecutionRead, status_code=status.HTTP_202_ACCEPTED)
