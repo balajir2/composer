@@ -264,8 +264,14 @@ class HttpNode(BaseModel):
 
 
 class GuardrailsNodeData(BaseNodeData):
-    # TODO(phase-6): tighten against OAB's guardrails node fields.
-    config: dict[str, Any] = Field(default_factory=dict)
+    model_config = ConfigDict(populate_by_name=True)
+
+    pii_enabled: bool = Field(default=False, alias="piiEnabled")
+    moderation_enabled: bool = Field(default=False, alias="moderationEnabled")
+    jailbreak_enabled: bool = Field(default=False, alias="jailbreakEnabled")
+    hallucination_enabled: bool = Field(default=False, alias="hallucinationEnabled")
+    action_on_violation: Literal["block", "warn"] = Field(default="warn", alias="actionOnViolation")
+    model: str | None = Field(default=None, alias="model")
 
 
 class GuardrailsNode(BaseModel):

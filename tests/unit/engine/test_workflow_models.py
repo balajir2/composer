@@ -323,3 +323,67 @@ def test_join_chunks_node_full_round_trip() -> None:
     assert node.id == "jc1"
     assert node.type == "join-chunks"
     assert node.data.variable == "chunks"
+
+
+def test_guardrails_node_data_parses_camelcase_aliases() -> None:
+    from src.engine.workflow import GuardrailsNodeData
+
+    data = GuardrailsNodeData.model_validate(
+        {
+            "label": "GR",
+            "piiEnabled": True,
+            "moderationEnabled": True,
+            "jailbreakEnabled": False,
+            "hallucinationEnabled": False,
+            "actionOnViolation": "block",
+            "model": "claude-haiku-4-5-20251001",
+        }
+    )
+    assert data.pii_enabled is True
+    assert data.moderation_enabled is True
+    assert data.jailbreak_enabled is False
+    assert data.hallucination_enabled is False
+    assert data.action_on_violation == "block"
+    assert data.model == "claude-haiku-4-5-20251001"
+
+
+def test_guardrails_node_data_defaults() -> None:
+    from src.engine.workflow import GuardrailsNodeData
+
+    data = GuardrailsNodeData.model_validate({"label": "GR"})
+    assert data.pii_enabled is False
+    assert data.moderation_enabled is False
+    assert data.jailbreak_enabled is False
+    assert data.hallucination_enabled is False
+    assert data.action_on_violation == "warn"
+    assert data.model is None
+
+
+def test_guardrails_node_data_invalid_action_raises() -> None:
+    from pydantic import ValidationError
+
+    from src.engine.workflow import GuardrailsNodeData
+
+    with pytest.raises(ValidationError):
+        GuardrailsNodeData.model_validate(
+            {
+                "label": "GR",
+                "actionOnViolation": "nuke",
+            }
+        )
+
+
+def test_guardrails_node_full_round_trip() -> None:
+    from src.engine.workflow import GuardrailsNode
+
+    node = GuardrailsNode.model_validate(
+        {
+            "id": "g1",
+            "type": "guardrails",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "GR", "piiEnabled": True},
+        }
+    )
+    assert node.id == "g1"
+    assert node.type == "guardrails"
+    assert node.data.pii_enabled is True
