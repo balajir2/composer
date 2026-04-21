@@ -382,3 +382,58 @@ Scope exposes: `variables`, `lastOutput`, `node_results`, and a per-call `extra_
 **Implemented by.** Phase 4b (commits `62d7196`..`8cbf839` on `main`, 2026-04-21).
 
 **Related.** ADR-0002 (workflow schema), ADR-0012 (simpleeval is the only eval primitive), [Phase 4b spec](../superpowers/specs/2026-04-21-phase-4b-control-flow-design.md).
+
+---
+
+## ADR-0014: Deployment-mode toggle — env var, read at startup
+
+**Status.** Accepted.
+**Date.** 2026-04-21.
+
+**Context.** Composer must run in two deployment shapes: **standalone** (owns user identity, issues JWTs, exposes `/auth/*`) and **embedded** (trusts JWTs from IEP, no identity ownership). Three mechanisms considered:
+1. Env var read at startup — immutable within a process.
+2. DB-backed `SystemConfig` row — live-switchable.
+3. Two separate binaries / packages.
+
+**Decision.** Env var `COMPOSER_DEPLOYMENT_MODE ∈ {"standalone", "embedded"}`, default `"standalone"`, read ONCE at `create_app()` time. Changing requires redeploy.
+
+**Alternatives considered.**
+- DB flag: rejected — auth semantics differ fundamentally (which algorithm validates tokens, whether `User` is write-scoped, which routes exist). Live-flipping leaves unauthenticated requests hitting half-migrated state.
+- Two binaries: rejected — doubles CI matrix + artifact count for no real isolation gain.
+
+**Consequences.**
+- Same codebase serves both modes; mode-branching confined to FastAPI router registration + `get_current_user_id`. No mode-check sprawl.
+- Redeploy is the correct boundary for a mode change (auth semantics mismatch is worse than a brief restart).
+- Env-var-driven config aligns with IE's Helm / Docker-Compose deployment patterns.
+
+**Implemented by.** Phase 7a (commits TBD).
+
+**Related.** ADR-0004, ADR-0005, ADR-0015, [Phase 7a spec](../superpowers/specs/2026-04-21-phase-7a-deployment-mode-design.md).
+
+---
+
+## ADR-0015: Dev-mode auth fallback — `user_id="dev"` when no Authorization header in `ENVIRONMENT=development`
+
+**Status.** Accepted.
+**Date.** 2026-04-21.
+
+**Context.** Phase 7a replaces every `user_id="dev"` literal with `Depends(get_current_user_id)` that requires a JWT. But 15+ existing integration tests (Phases 3a/3b/4a/4b) don't set Authorization headers. Two options:
+1. Rewrite every integration test to obtain and send a JWT.
+2. Keep a fallback: when `environment=development` AND no header, return `user_id="dev"`.
+
+**Decision.** Option 2. `get_current_user_id` returns `"dev"` if AND only if:
+- Authorization header absent or empty
+- `settings.environment == "development"`
+
+Production deployments set `ENVIRONMENT=production` (unset or typo → not `"development"`). Fallback is unreachable in production.
+
+**Alternatives considered.** Config flag `enable_dev_auth_fallback` (rejected — doubled state surface); test-only fixture injecting auth (considered for Phase 7b, but 7a's minimal churn is preferred).
+
+**Consequences.**
+- Startup logs `"auth: dev-mode fallback ENABLED"` as a prominent WARN line when environment=development. Prod-like deploys without `ENVIRONMENT=production` set see the log and fix the env var.
+- Existing integration tests require zero changes.
+- Phase 7a's auth integration tests set real Authorization headers explicitly; they bypass the fallback.
+
+**Implemented by.** Phase 7a (commits TBD).
+
+**Related.** ADR-0014, ADR-0005.
