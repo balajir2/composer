@@ -47,6 +47,9 @@ from src.executors import (
 from src.executors import (
     transform as _transform_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
+from src.executors import (
+    while_loop as _while_loop_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+)
 from src.executors.base import build_executor
 
 

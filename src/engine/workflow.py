@@ -152,8 +152,8 @@ class IfElseNode(BaseModel):
 
 
 class WhileNodeData(BaseNodeData):
-    while_condition: str | None = Field(default=None, alias="whileCondition")
-    max_iterations: int | None = Field(default=None, alias="maxIterations")
+    condition: str | None = None
+    max_iterations: int = Field(default=100, alias="maxIterations")
 
 
 class WhileNode(BaseModel):
