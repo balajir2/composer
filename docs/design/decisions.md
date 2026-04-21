@@ -520,6 +520,6 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 - Output dual-written: structured dict on `_guardrails_result` (for `if-else` branching) + human-readable summary on `lastOutput` (for downstream display).
 - `action_on_violation='block'` raises `GuardrailViolationError` → execution fails.
 
-**Implemented by.** Phase 6b (commits TBD).
+**Implemented by.** Phase 6b (commits `c4904ed`…`9121111`, 2026-04-21).
 
 **Related.** ADR-0006 (LLM provider framework — Phase 2), ADR-0012 (simpleeval for if-else conditions — how downstream branches on `_guardrails_result.passed`), [Phase 6b spec](../superpowers/specs/2026-04-21-phase-6b-guardrails-design.md).

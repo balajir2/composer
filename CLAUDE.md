@@ -80,8 +80,8 @@ Supporting docs in `docs/design/` provide historical context and product/strateg
 | 5a — User-approval + interrupt/resume | ✅ Complete | `interrupt()` pause via `aget_state`; `/executions/{id}/resume`; `Approval` table; both branches verified against real Neon |
 | 5b — SSE streaming | ✅ Complete | `GET /executions/{id}/events` with in-process asyncio bus; 5 event types; full taxonomy verified against real Neon |
 | 6a — Note + Join-Chunks | ✅ Complete | note visual-only (skip lock-test from Phase 1); join-chunks concatenates chunk lists with separator/prefix/suffix/metadata; verified against real Neon |
-| 6b — Guardrails | ⏭ Next | moderation-style executor (tool-provider pattern) |
-| 6c — Gamma-AI + Arcade | ⏸ | HTTP integrations |
+| 6b — Guardrails | ✅ Complete | LLM-classifier (pii/moderation/jailbreak/hallucination); concurrent via asyncio.gather; verified against real Anthropic + Neon |
+| 6c — Gamma-AI + Arcade | ⏭ Next | HTTP integrations |
 | 6d — Vector-DB | ⏸ | provider framework (embed/upsert/query) |
 | 6 — Guardrails, Note, Vector-DB, Gamma, Arcade | ⏸ | |
 | 7 — API parity + regression suite ported | ⏸ | |

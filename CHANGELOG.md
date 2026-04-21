@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 6b — Guardrails (2026-04-21)
+
+#### Added
+- [Phase 6b design spec](docs/superpowers/specs/2026-04-21-phase-6b-guardrails-design.md) + ADR-0018.
+- `src/executors/guardrails.py` — `GuardrailsExecutor` calls the Phase 2 LLM provider framework as a safety classifier. Four checks (PII, moderation, jailbreak, hallucination), any subset enabled per node. Concurrent via `asyncio.gather`. Prompts frozen in source (spec §5). Response parsing: `first_word.upper().startswith("YES")`; ambiguous non-YES treated as NO (anti-false-positive bias).
+- `src/engine/workflow.py` — `GuardrailsNodeData` tightened with explicit fields matching OAB `types.ts:86-106` (`piiEnabled`, `moderationEnabled`, `jailbreakEnabled`, `hallucinationEnabled`, `actionOnViolation`, `model`).
+- Output convention: `_guardrails_result = {passed, checks_run, violations, message}` (for `if-else` branching) + `lastOutput` = human-readable summary.
+- `GuardrailsNodeError` wraps LLM failures; `GuardrailViolationError` fires when `action_on_violation='block'` + any violation → execution `failed`.
+- Integration test against real Anthropic (Claude Haiku) + real Neon: PII detection path.
+
+#### Changed
+- `action_on_violation='block'` → `GuardrailViolationError` → execution status `failed`. `'warn'` → pass-through with violations populated.
+- Sentinel tests migrate: `guardrails`/`Phase 6` → `vector-db`/`Phase 6` across three test files (`test_registry`, `test_graph_builder`, `test_langgraph_executor`). Same precedent as Phase 5a's `user-approval` → `guardrails` migration.
+
+#### Notes
+- OAB shipped a placeholder (`lib/workflow/executors/tools.ts:80` — 4-word hardcoded bad-word list with `TODO: Integrate with content moderation APIs`). Composer's executor supersedes it with real LLM-based classification while matching OAB's output shape.
+- Model falls back to `DEFAULT_MODEL = "anthropic/claude-haiku-4-5-20251001"` when not set on the node (matches `src/executors/agent.py`'s pattern). Users can pin a cheap/fast model when guardrails run hot.
+- Prompts are NOT user-configurable — guardrails is a safety feature, deterministic + auditable. Users wanting custom rules should compose `agent` + `if-else`.
+
+#### Verified
+- 433/433 unit tests green (+16 from Phase 6a 417: 4 Pydantic tests + 12 executor tests).
+- 1/1 integration test green against real Anthropic + real Neon on first try (no fix-ups needed).
+- Pyright 0 errors, ruff + format clean.
+
 ### Phase 6a — Note + Join-Chunks (2026-04-21)
 
 #### Added
