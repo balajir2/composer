@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from src import __version__
 from src.api.auth_common import router as auth_common_router
 from src.api.auth_standalone import router as auth_standalone_router
+from src.api.events import router as events_router
 from src.api.executions import router as executions_router
 from src.api.mcp_servers import oauth_router
 from src.api.mcp_servers import router as mcp_servers_router
@@ -80,6 +81,7 @@ def create_app() -> FastAPI:
 
     app.include_router(workflows_router)
     app.include_router(executions_router)
+    app.include_router(events_router)
     app.include_router(mcp_servers_router)
     app.include_router(oauth_router)
 
