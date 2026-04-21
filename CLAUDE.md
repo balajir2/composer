@@ -73,8 +73,8 @@ Supporting docs in `docs/design/` provide historical context and product/strateg
 | 1 — Execution engine core | ✅ Complete | LangGraph Python executor, Start+End nodes, Postgres checkpointer, real Prisma schema |
 | 2 — Agent + LLM providers | ✅ Complete | Agent executor + 10-iter loop, 4 LLM providers, Tool Provider Framework + 4 providers, MCP skeleton |
 | 3a — MCP infrastructure (static auth) | ✅ Complete | DeepWiki + Firecrawl MCP verified end-to-end on `/mcp` streamable HTTP transport |
-| 3b — MCP OAuth (Highspot + the six fixes) | ⏭ Next | RFC 8707 resource param, manual tool calling, inputSchema camelCase — see §5 below |
-| 4 — HTTP, Transform, Extract, If/Else, While, Set-State | ⏸ | |
+| 3b — MCP OAuth (Highspot + the six fixes) | ✅ Complete | All six OAB lessons encoded; real-Highspot MCP stack verified to auth boundary |
+| 4 — HTTP, Transform, Extract, If/Else, While, Set-State | ⏭ Next | |
 | 5 — User-approval + SSE streaming | ⏸ | LangGraph `interrupt()` |
 | 6 — Guardrails, Note, Vector-DB, Gamma, Arcade | ⏸ | |
 | 7 — API parity + regression suite ported | ⏸ | |

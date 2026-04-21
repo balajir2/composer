@@ -327,6 +327,6 @@ Two ways to integrate MCP:
 - The UI can't inspect stored tokens even via dev tools — by design. Debugging a broken connection requires looking at `McpOAuthToken.expiresAt` + error fields (not exposed in 3b; add in Phase 10 UI).
 - The service-account fallback creates an implicit delegation. Documented in the endpoint's OpenAPI description and in `oauth.get_valid_access_token`'s docstring.
 
-**Implemented by.** Phase 3b (commits TBD).
+**Implemented by.** Phase 3b (commits `b80f88f`..`a66479d` on `main`, 2026-04-21).
 
 **Related.** ADR-0010 (MCP resolver-side instantiation), ADR-0009 (tool provider framework), [Phase 3b spec](../superpowers/specs/2026-04-20-phase-3b-mcp-oauth-design.md).
