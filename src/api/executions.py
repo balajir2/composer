@@ -1,5 +1,6 @@
 """POST /executions (start a run) + GET /executions/{id} (fetch state)."""
 
+from enum import StrEnum
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
@@ -36,6 +37,18 @@ class ExecutionRead(BaseModel):
     started_at: Any = Field(alias="startedAt")
     completed_at: Any = Field(default=None, alias="completedAt")
     thread_id: str = Field(alias="threadId")
+
+
+class ResumeDecision(StrEnum):
+    approved = "approved"
+    rejected = "rejected"
+
+
+class ResumeRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    decision: ResumeDecision
+    note: str | None = None
 
 
 def _get_executor(request: Request, db: Prisma) -> LangGraphExecutor:  # pyright: ignore[reportUnknownParameterType]
@@ -88,4 +101,66 @@ async def get_execution(
     return ExecutionRead.model_validate(row)
 
 
-__all__ = ["ExecutionCreate", "ExecutionRead", "router"]
+@router.post("/executions/{execution_id}/resume", response_model=ExecutionRead)
+async def resume_execution(
+    execution_id: str,
+    payload: ResumeRequest,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    user_id: str = Depends(get_current_user_id),
+) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
+    execution = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": execution_id}
+    )
+    if execution is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execution {execution_id!r} not found.",
+        )
+    if execution.status != "waiting_approval":
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Execution is {execution.status!r}, not 'waiting_approval'.",
+        )
+
+    variables = execution.variables or {}
+    pending_node_id = (
+        variables.get("_pending_approval_node") if isinstance(variables, dict) else None
+    )
+    if pending_node_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Execution is waiting_approval but has no _pending_approval_node.",
+        )
+
+    # Audit trail
+    await db.approval.create(  # pyright: ignore[reportAttributeAccessIssue]
+        data={
+            "executionId": execution_id,
+            "nodeId": pending_node_id,
+            "approverUserId": user_id,
+            "decision": payload.decision.value,
+            "note": payload.note,
+        }
+    )
+
+    # Flip status to 'running' BEFORE scheduling the BackgroundTask, so polling
+    # sees consistent state while the background work runs.
+    updated = await db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": execution_id},
+        data={"status": "running"},
+    )
+
+    executor = _get_executor(request, db)
+    background_tasks.add_task(executor.resume, execution_id, payload.decision.value)
+
+    if updated is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execution {execution_id!r} not found after update.",
+        )
+    return ExecutionRead.model_validate(updated)
+
+
+__all__ = ["ExecutionCreate", "ExecutionRead", "ResumeDecision", "ResumeRequest", "router"]

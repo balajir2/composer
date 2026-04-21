@@ -1,0 +1,135 @@
+"""Tests for POST /executions/{id}/resume (Phase 5a)."""
+
+from types import SimpleNamespace
+from typing import Any
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from fastapi.testclient import TestClient
+
+from src.main import create_app
+
+
+def _execution_row(**overrides: Any) -> SimpleNamespace:
+    base: dict[str, Any] = {
+        "id": "e1",
+        "workflowId": "w1",
+        "userId": "dev",
+        "status": "waiting_approval",
+        "threadId": "t1",
+        "nodeResults": {},
+        "variables": {
+            "_pending_approval_node": "ua",
+            "_pending_approval_prompt": "Approve?",
+        },
+        "input": None,
+        "output": None,
+        "error": None,
+        "currentNodeId": None,
+        "startedAt": "2026-04-21T00:00:00Z",
+        "completedAt": None,
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
+def _client_with_execution(
+    monkeypatch: pytest.MonkeyPatch,
+    execution: Any | None,
+) -> tuple[TestClient, MagicMock]:
+    monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    app = create_app()
+
+    db = MagicMock()
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(return_value=execution)
+    db.workflowexecution.update = AsyncMock(return_value=execution)
+    db.approval = MagicMock()
+    db.approval.create = AsyncMock()
+    app.state.db = db
+    app.state.checkpointer = MagicMock()
+    return TestClient(app), db
+
+
+def test_resume_approved_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, db = _client_with_execution(monkeypatch, _execution_row())
+    resp = client.post(
+        "/executions/e1/resume",
+        json={"decision": "approved", "note": "lgtm"},
+    )
+    assert resp.status_code == 200, resp.text
+    db.approval.create.assert_awaited_once()
+    call = db.approval.create.await_args
+    created = call.kwargs["data"]
+    assert created["decision"] == "approved"
+    assert created["note"] == "lgtm"
+    assert created["nodeId"] == "ua"
+    assert created["executionId"] == "e1"
+    assert created["approverUserId"] == "dev"  # dev-mode fallback
+
+
+def test_resume_rejected_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, db = _client_with_execution(monkeypatch, _execution_row())
+    resp = client.post(
+        "/executions/e1/resume",
+        json={"decision": "rejected"},
+    )
+    assert resp.status_code == 200
+    call = db.approval.create.await_args
+    created = call.kwargs["data"]
+    assert created["decision"] == "rejected"
+    assert created["note"] is None
+
+
+def test_resume_execution_not_found_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _ = _client_with_execution(monkeypatch, None)
+    resp = client.post(
+        "/executions/ghost/resume",
+        json={"decision": "approved"},
+    )
+    assert resp.status_code == 404
+
+
+def test_resume_wrong_status_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _ = _client_with_execution(monkeypatch, _execution_row(status="completed"))
+    resp = client.post(
+        "/executions/e1/resume",
+        json={"decision": "approved"},
+    )
+    assert resp.status_code == 409
+
+
+def test_resume_missing_pending_node_500(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Execution is waiting_approval but variables don't have _pending_approval_node."""
+    client, _ = _client_with_execution(monkeypatch, _execution_row(variables={}))
+    resp = client.post(
+        "/executions/e1/resume",
+        json={"decision": "approved"},
+    )
+    assert resp.status_code == 500
+
+
+def test_resume_invalid_decision_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _ = _client_with_execution(monkeypatch, _execution_row())
+    resp = client.post(
+        "/executions/e1/resume",
+        json={"decision": "maybe"},
+    )
+    assert resp.status_code == 422
+
+
+def test_resume_marks_execution_running_before_scheduling_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The endpoint flips status to 'running' BEFORE the background task.
+    This prevents polling from seeing stale 'waiting_approval' state."""
+    client, db = _client_with_execution(monkeypatch, _execution_row())
+    resp = client.post("/executions/e1/resume", json={"decision": "approved"})
+    assert resp.status_code == 200
+    assert db.workflowexecution.update.await_count >= 1
+    first_update = db.workflowexecution.update.await_args_list[0]
+    assert first_update.kwargs["data"]["status"] == "running"
