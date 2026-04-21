@@ -379,6 +379,6 @@ Scope exposes: `variables`, `lastOutput`, `node_results`, and a per-call `extra_
 - `_branch_mapping` helper in `graph_builder.py` validates the edge set matches the required branch set exactly (missing/extra/duplicate → WorkflowValidationError).
 - Phase 10 UI auto-assigns `branch` when the user drags edges from a conditional node.
 
-**Implemented by.** Phase 4b (commits TBD).
+**Implemented by.** Phase 4b (commits `62d7196`..`8cbf839` on `main`, 2026-04-21).
 
 **Related.** ADR-0002 (workflow schema), ADR-0012 (simpleeval is the only eval primitive), [Phase 4b spec](../superpowers/specs/2026-04-21-phase-4b-control-flow-design.md).
