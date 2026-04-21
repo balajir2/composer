@@ -44,6 +44,9 @@ from src.executors import (
     if_else as _if_else_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
 from src.executors import (
+    join_chunks as _join_chunks_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+)
+from src.executors import (
     mcp as _mcp_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
 from src.executors import (
