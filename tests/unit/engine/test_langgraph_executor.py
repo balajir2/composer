@@ -141,18 +141,15 @@ async def test_run_marks_failed_on_exception() -> None:
 async def test_run_marks_waiting_approval_on_interrupt(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When the compiled graph raises GraphInterrupt, the execution is marked
+    """When the graph pauses at a user-approval node, the execution is marked
     waiting_approval with _pending_approval_node + _pending_approval_prompt
-    in variables."""
-    from types import SimpleNamespace
-    from typing import Any
-    from unittest.mock import AsyncMock, MagicMock
+    in variables.
 
-    from langgraph.errors import GraphInterrupt
-    from langgraph.types import Interrupt
-
-    from src.engine.langgraph_executor import LangGraphExecutor
-
+    Production LangGraph >= 0.2.x does NOT propagate GraphInterrupt out of
+    ainvoke — the Pregel runtime catches it internally, persists a checkpoint,
+    and returns cleanly.  The executor detects the pause via aget_state():
+    snapshot.next is a non-empty tuple when the graph is paused.
+    """
     db = MagicMock()
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
@@ -195,12 +192,20 @@ async def test_run_marks_waiting_approval_on_interrupt(
 
     db.workflowexecution.update = _update
 
-    # Patch build_graph to return a stub that raises GraphInterrupt
     from src.engine import langgraph_executor as lge_mod
 
+    # Stub snapshot: snapshot.next is non-empty → paused
+    _fake_interrupt = SimpleNamespace(value={"node_id": "ua", "prompt": "Approve?"})
+    _fake_task = SimpleNamespace(interrupts=(_fake_interrupt,))
+    _fake_snapshot = SimpleNamespace(next=("ua",), tasks=(_fake_task,))
+
     class _FakeCompiled:
-        async def ainvoke(self, *args: Any, **kwargs: Any) -> Any:
-            raise GraphInterrupt([Interrupt(value={"node_id": "ua", "prompt": "Approve?"})])
+        async def ainvoke(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            # Production LangGraph returns state dict, not raises GraphInterrupt
+            return {"variables": {"input": "", "lastOutput": ""}, "node_results": {"s": {}}}
+
+        async def aget_state(self, *args: Any, **kwargs: Any) -> Any:
+            return _fake_snapshot
 
     monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
 
@@ -210,18 +215,19 @@ async def test_run_marks_waiting_approval_on_interrupt(
     assert any(call["data"].get("status") == "waiting_approval" for call in update_calls), (
         f"Expected waiting_approval update; got: {update_calls}"
     )
+    # Verify the pending markers are present in variables
+    waiting_call = next(
+        call for call in update_calls if call["data"].get("status") == "waiting_approval"
+    )
+    saved_vars: dict[str, Any] = waiting_call["data"]["variables"].data
+    assert saved_vars.get("_pending_approval_node") == "ua", f"Got variables: {saved_vars}"
+    assert saved_vars.get("_pending_approval_prompt") == "Approve?", f"Got variables: {saved_vars}"
 
 
 async def test_resume_approved_continues_to_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """resume() calls compiled.ainvoke(Command(resume=...)) and marks completed."""
-    from types import SimpleNamespace
-    from typing import Any
-    from unittest.mock import AsyncMock, MagicMock
-
-    from src.engine.langgraph_executor import LangGraphExecutor
-
     db = MagicMock()
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
@@ -255,9 +261,15 @@ async def test_resume_approved_continues_to_completion(
 
     from src.engine import langgraph_executor as lge_mod
 
+    # Stub snapshot: snapshot.next is empty → completed (no chained pause)
+    _completed_snapshot = SimpleNamespace(next=(), tasks=())
+
     class _FakeCompiled:
         async def ainvoke(self, state: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
             return {"variables": {"lastOutput": "done"}, "node_results": {}}
+
+        async def aget_state(self, *args: Any, **kwargs: Any) -> Any:
+            return _completed_snapshot
 
     monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
 

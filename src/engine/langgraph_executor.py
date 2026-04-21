@@ -12,7 +12,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
-from langgraph.errors import GraphInterrupt
 from langgraph.types import Command  # pyright: ignore[reportUnknownVariableType]
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
@@ -23,6 +22,21 @@ from src.engine.state import initial_state
 from src.engine.workflow import Workflow
 
 logger = logging.getLogger(__name__)
+
+
+def _extract_pending_info(snapshot: Any) -> dict[str, Any]:
+    """Extract {node_id, prompt} from snapshot.tasks[*].interrupts.
+
+    Returns an empty dict if no interrupt payload is found.
+    """
+    tasks = getattr(snapshot, "tasks", None) or ()
+    for task in tasks:
+        interrupts = getattr(task, "interrupts", None) or ()
+        for interrupt_obj in interrupts:
+            value = getattr(interrupt_obj, "value", None)
+            if isinstance(value, dict):
+                return value
+    return {}
 
 
 class LangGraphExecutor:
@@ -116,34 +130,22 @@ class LangGraphExecutor:
     async def _mark_waiting_approval(
         self,
         execution_id: str,
-        interrupt_exc: GraphInterrupt,
+        pending_info: dict[str, Any],
+        existing_vars: dict[str, Any] | None = None,
     ) -> None:
-        """Persist waiting_approval status + pending node/prompt into variables."""
-        # LangGraph's GraphInterrupt.args[0] or .value semantics vary by version — be defensive.
-        info_raw = getattr(interrupt_exc, "value", None)
-        if info_raw is None and interrupt_exc.args:
-            info_raw = interrupt_exc.args[0]
+        """Persist waiting_approval status + pending node/prompt into variables.
 
-        # LangGraph sometimes wraps as a list of Interrupt objects
-        if isinstance(info_raw, list) and info_raw:
-            first = info_raw[0]
-            # Interrupt dataclass has .value; else fall back to dict
-            info_val = getattr(first, "value", first)
-            info: dict[str, Any] = info_val if isinstance(info_val, dict) else {}
-        elif isinstance(info_raw, dict):
-            info = info_raw
-        else:
-            info = {}
+        Merges pending markers into existing_vars so pre-interrupt state is preserved.
+        """
+        merged: dict[str, Any] = {**(existing_vars or {})}
+        merged["_pending_approval_node"] = pending_info.get("node_id")
+        merged["_pending_approval_prompt"] = pending_info.get("prompt")
 
-        pending_variables: dict[str, Any] = {
-            "_pending_approval_node": info.get("node_id"),
-            "_pending_approval_prompt": info.get("prompt"),
-        }
         await self.db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
             where={"id": execution_id},
             data={
                 "status": "waiting_approval",
-                "variables": Json(pending_variables),
+                "variables": Json(merged),
             },
         )
 
@@ -164,8 +166,10 @@ class LangGraphExecutor:
         Exceptions are caught here — they're recorded on the execution row so
         the API caller sees status='failed' rather than a background crash.
 
-        If the graph raises GraphInterrupt (user-approval node hit), the
-        execution is marked waiting_approval instead of failed.
+        LangGraph >= 0.2.x catches GraphInterrupt internally in ainvoke and
+        returns cleanly with pre-interrupt state.  After ainvoke returns, we
+        inspect compiled.aget_state(config) to detect a pending pause:
+        snapshot.next is a non-empty tuple when the graph is paused.
         """
         execution = await self._load_execution(execution_id)
         if execution is None:
@@ -175,11 +179,16 @@ class LangGraphExecutor:
         try:
             compiled, state, lg_config = await self._prepare_compiled(execution)
 
-            try:
-                final_state: dict[str, Any] = await compiled.ainvoke(state, config=lg_config)
-            except GraphInterrupt as interrupt_exc:
+            final_state: dict[str, Any] = await compiled.ainvoke(state, config=lg_config)
+
+            snapshot = await compiled.aget_state(lg_config)  # pyright: ignore[reportUnknownMemberType]
+            if snapshot.next:  # non-empty tuple → graph is paused at an interrupt
                 logger.info("Execution %s paused at user-approval node", execution_id)
-                await self._mark_waiting_approval(execution_id, interrupt_exc)
+                pending_info = _extract_pending_info(snapshot)
+                existing_vars: dict[str, Any] = {}
+                if isinstance(final_state.get("variables"), dict):
+                    existing_vars = final_state["variables"]
+                await self._mark_waiting_approval(execution_id, pending_info, existing_vars)
                 return
 
             await self._mark_completed(execution_id, final_state)
@@ -203,14 +212,19 @@ class LangGraphExecutor:
         try:
             compiled, _state, lg_config = await self._prepare_compiled(execution)
 
-            try:
-                final_state: dict[str, Any] = await compiled.ainvoke(
-                    Command(resume=decision),  # pyright: ignore[reportArgumentType]
-                    config=lg_config,
-                )
-            except GraphInterrupt as interrupt_exc:
+            final_state: dict[str, Any] = await compiled.ainvoke(
+                Command(resume=decision),  # pyright: ignore[reportArgumentType]
+                config=lg_config,
+            )
+
+            snapshot = await compiled.aget_state(lg_config)  # pyright: ignore[reportUnknownMemberType]
+            if snapshot.next:  # non-empty tuple → chained pause (another user-approval downstream)
                 logger.info("Execution %s paused again at another user-approval node", execution_id)
-                await self._mark_waiting_approval(execution_id, interrupt_exc)
+                pending_info = _extract_pending_info(snapshot)
+                existing_vars: dict[str, Any] = {}
+                if isinstance(final_state.get("variables"), dict):
+                    existing_vars = final_state["variables"]
+                await self._mark_waiting_approval(execution_id, pending_info, existing_vars)
                 return
 
             await self._mark_completed(execution_id, final_state)
