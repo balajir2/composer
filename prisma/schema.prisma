@@ -59,6 +59,7 @@ model WorkflowExecution {
   threadId      String    @unique         @map("thread_id")
 
   workflow      Workflow  @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+  approvals     Approval[]
 
   @@map("workflow_executions")
   @@index([workflowId])
@@ -171,4 +172,25 @@ model User {
 
   @@map("users")
   @@index([email])
+}
+
+enum ApprovalDecision {
+  approved
+  rejected
+}
+
+model Approval {
+  id               String            @id @default(cuid())
+  executionId      String            @map("execution_id")
+  nodeId           String            @map("node_id")
+  approverUserId   String            @map("approver_user_id")
+  decision         ApprovalDecision
+  note             String?
+  createdAt        DateTime          @default(now()) @map("created_at")
+
+  execution        WorkflowExecution @relation(fields: [executionId], references: [id], onDelete: Cascade)
+
+  @@map("approvals")
+  @@index([executionId])
+  @@index([approverUserId])
 }
