@@ -22,6 +22,7 @@ from src.mcp.schema_adapter import (
     UnresolvedUrlTemplateError,
     substitute_url_placeholders,
 )
+from src.security.auth import get_current_user_id
 from src.security.encryption import encrypt
 from src.storage.db import get_db
 
@@ -120,6 +121,7 @@ def _to_read(row: Any) -> McpServerRead:
 async def create_mcp_server(
     payload: McpServerCreate,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    user_id: str = Depends(get_current_user_id),
 ) -> McpServerRead:
     # Validate URL template resolves
     try:
@@ -148,7 +150,7 @@ async def create_mcp_server(
     )
 
     create_data: dict[str, Any] = {
-        "userId": "dev",  # anonymous per ADR-0005
+        "userId": user_id,
         "name": payload.name,
         "url": payload.url,
         "description": payload.description,
@@ -169,9 +171,10 @@ async def create_mcp_server(
 @router.get("/mcp-servers", response_model=list[McpServerRead])
 async def list_mcp_servers(
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    user_id: str = Depends(get_current_user_id),
 ) -> list[McpServerRead]:
     rows = await db.mcpserver.find_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"OR": [{"userId": "dev"}, {"isShared": True}]}
+        where={"OR": [{"userId": user_id}, {"isShared": True}]}
     )
     return [_to_read(r) for r in rows]
 
@@ -219,6 +222,7 @@ async def test_mcp_connection(
 async def delete_mcp_server(
     server_id: str,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    user_id: str = Depends(get_current_user_id),
 ) -> None:
     server = await db.mcpserver.find_unique(where={"id": server_id})  # pyright: ignore[reportAttributeAccessIssue]
     if server is None:
@@ -227,7 +231,7 @@ async def delete_mcp_server(
             detail=f"MCP server {server_id!r} not found.",
         )
     # Owner-only delete, even for shared servers
-    if server.userId != "dev":
+    if server.userId != user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Only the owner ({server.userId!r}) can delete this server.",
@@ -243,6 +247,7 @@ async def oauth_authorize(
     server_id: str,
     payload: OAuthAuthorizeRequest,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    user_id: str = Depends(get_current_user_id),
 ) -> OAuthAuthorizeResponse:
     server = await db.mcpserver.find_unique(where={"id": server_id})  # pyright: ignore[reportAttributeAccessIssue]
     if server is None:
@@ -255,7 +260,9 @@ async def oauth_authorize(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"MCP server authType must be 'oauth' (got {server.authType!r}).",
         )
-    url = await build_authorize_url(server, user_id="dev", redirect_uri=payload.redirect_uri, db=db)
+    url = await build_authorize_url(
+        server, user_id=user_id, redirect_uri=payload.redirect_uri, db=db
+    )
     return OAuthAuthorizeResponse.model_validate({"authorizeUrl": url})
 
 
@@ -266,12 +273,13 @@ async def oauth_authorize(
 async def oauth_disconnect(
     server_id: str,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    user_id: str = Depends(get_current_user_id),
 ) -> None:
     token = await db.mcpoauthtoken.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
         where={
             "mcpServerId_userId": {
                 "mcpServerId": server_id,
-                "userId": "dev",
+                "userId": user_id,
             }
         }
     )

@@ -46,10 +46,13 @@ class McpExecutor:
                 "before the compiled graph runs. LangGraphExecutor.run does this."
             )
 
+        # Phase 7a: user_id flows from WorkflowExecution.userId via state;
+        # fallback to 'dev' for pre-7a checkpoints still in flight.
+        user_id = state.get("user_id") or "dev"
         _, tool = await resolve_single_mcp_tool(
             self.node.data.mcp_server_id,
             self.node.data.tool_name,
-            user_id="dev",  # matches API default per ADR-0005; Phase 7 wires real user_id
+            user_id=user_id,
             db=db,
         )
         result = await tool.ainvoke(resolved_args)

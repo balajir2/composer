@@ -7,6 +7,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.engine.langgraph_executor import LangGraphExecutor
+from src.security.auth import get_current_user_id
 from src.storage.db import get_db
 
 router = APIRouter(tags=["executions"])
@@ -50,6 +51,7 @@ async def create_execution(
     background_tasks: BackgroundTasks,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    user_id: str = Depends(get_current_user_id),
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
     workflow = await db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": payload.workflow_id}
@@ -62,7 +64,7 @@ async def create_execution(
 
     executor = _get_executor(request, db)
     row = await executor.start_execution(
-        workflow_id=payload.workflow_id, input=payload.input, user_id="dev"
+        workflow_id=payload.workflow_id, input=payload.input, user_id=user_id
     )
     # Schedule the actual run in the background. The response returns with
     # status='running' immediately; poll GET /executions/{id} for completion.

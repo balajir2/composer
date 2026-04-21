@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.engine.graph_builder import WorkflowValidationError, validate_workflow_shape
 from src.engine.workflow import Workflow, WorkflowEdge, WorkflowNode
+from src.security.auth import get_current_user_id
 from src.storage.db import get_db
 
 router = APIRouter(tags=["workflows"])
@@ -57,6 +58,7 @@ class WorkflowRead(BaseModel):
 async def create_workflow(
     payload: WorkflowCreate,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    user_id: str = Depends(get_current_user_id),
 ) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
     # Re-validate as Workflow to run graph_builder's shape check.
     workflow = Workflow.model_validate(payload.model_dump(by_alias=True))
@@ -85,7 +87,7 @@ async def create_workflow(
             "version": payload.version,
             "isTemplate": payload.is_template,
             "isPublic": payload.is_public,
-            "userId": "dev",  # anonymous in Phase 1 per ADR-0005
+            "userId": user_id,
         }
     )
     return WorkflowRead.model_validate(row)

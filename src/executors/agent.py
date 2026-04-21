@@ -52,12 +52,15 @@ class AgentExecutor:
             langsmith_config=get_current_langsmith(),
         )
 
+        # Phase 7a: user_id flows from WorkflowExecution.userId via state;
+        # fallback to 'dev' for pre-7a checkpoints still in flight.
+        user_id = state.get("user_id") or "dev"
         tools = await _registry.resolve_tools_for_node(
             self.node,
             BuildContext(
                 node=self.node,
                 state=state,
-                user_id="dev",  # matches API default per ADR-0005; Phase 7 wires real user_id
+                user_id=user_id,
                 db=get_current_db(),
             ),
         )

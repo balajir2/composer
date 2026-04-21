@@ -74,6 +74,7 @@ async def test_run_completes_start_to_end() -> None:
             workflowId="wf1",
             threadId="t1",
             input="hello",
+            userId=None,  # Phase 7a: nullable; executor checks before setting state
         )
     )
     db.workflowexecution.update = AsyncMock()
@@ -121,6 +122,7 @@ async def test_run_marks_failed_on_exception() -> None:
             workflowId="wf1",
             threadId="t1",
             input="",
+            userId=None,  # Phase 7a: nullable; executor checks before setting state
         )
     )
     db.workflowexecution.update = AsyncMock()

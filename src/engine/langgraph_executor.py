@@ -80,6 +80,8 @@ class LangGraphExecutor:
             compiled = build_graph(workflow, self.checkpointer)
 
             state = initial_state(execution.input if execution.input is not None else "")
+            if execution.userId:
+                state["user_id"] = execution.userId  # Phase 7a
             settings = get_settings()
             ls_config = (
                 LangSmithConfig(

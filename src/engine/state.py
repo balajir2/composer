@@ -5,7 +5,7 @@ See docs/superpowers/specs/2026-04-20-phase-1-execution-engine-design.md §5.3.
 """
 
 from operator import add
-from typing import Annotated, Any, TypedDict
+from typing import Annotated, Any, NotRequired, TypedDict
 
 
 def merge_dict(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
@@ -43,6 +43,7 @@ class WorkflowStateDict(TypedDict):
     node_results: Annotated[dict[str, NodeExecutionResult], merge_dict]
     pending_auth: Annotated[dict[str, Any] | None, last_wins]
     loop_results: Annotated[list[Any], add]
+    user_id: NotRequired[str]  # Phase 7a: propagated from WorkflowExecution.userId
 
 
 def initial_state(raw_input: Any = "") -> WorkflowStateDict:
