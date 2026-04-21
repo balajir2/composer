@@ -15,7 +15,7 @@ async def test_standalone_register_login_me_refresh(client: AsyncClient, app: Fa
     db: Any = app.state.db  # Prisma client attached by conftest lifespan
 
     # Uniqueify email per run to avoid colliding with prior test invocations
-    email = f"test-{secrets.token_hex(6)}@composer.test"
+    email = f"test-{secrets.token_hex(6)}@example.com"
     password = "correct-horse-battery-staple"
 
     # Register
@@ -55,7 +55,7 @@ async def test_standalone_register_login_me_refresh(client: AsyncClient, app: Fa
         # Unknown email → 401 (uniform 401, no enumeration)
         unknown = await client.post(
             "/auth/login",
-            json={"email": f"ghost-{secrets.token_hex(6)}@composer.test", "password": "x"},
+            json={"email": f"ghost-{secrets.token_hex(6)}@example.com", "password": "x"},
         )
         assert unknown.status_code == 401
 
@@ -72,7 +72,7 @@ async def test_standalone_register_duplicate_email_409(
 ) -> None:
     db: Any = app.state.db
 
-    email = f"test-dup-{secrets.token_hex(6)}@composer.test"
+    email = f"test-dup-{secrets.token_hex(6)}@example.com"
 
     # First register succeeds
     r1 = await client.post("/auth/register", json={"email": email, "password": "pass-12345"})
