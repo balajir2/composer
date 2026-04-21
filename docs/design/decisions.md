@@ -546,6 +546,6 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 - Retry counter bounded at `MAX_RETRIES=3` in `ArcadeExecutor` prevents infinite loops on broken OAuth URLs; stored in `state.variables["_arcade_retries_<node_id>"]`.
 - Payload extensibility: `approval-pending.payload` gains optional fields — existing SSE consumers are unaffected (dict, unknown keys ignored).
 
-**Implemented by.** Phase 6d (commits TBD).
+**Implemented by.** Phase 6d (commits `f847147`…`0f262c7`, 2026-04-21).
 
 **Related.** ADR-0016 (user-approval + interrupt/resume — the primitive being reused), ADR-0017 (SSE streaming — the `approval-pending` event type extended here), [Phase 6d spec](../superpowers/specs/2026-04-21-phase-6d-arcade-design.md).

@@ -6,6 +6,31 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 6d — Arcade (2026-04-21)
+
+#### Added
+- [Phase 6d design spec](docs/superpowers/specs/2026-04-21-phase-6d-arcade-design.md) + ADR-0019.
+- `src/executors/arcade.py` — `ArcadeExecutor` calls arcade.dev's tool-execution API via direct HTTP (no SDK). Two-step protocol: `POST /v1/tools/authorize` → `POST /v1/tools/execute`. If auth is pending, pauses via Phase 5a's `interrupt()` primitive; user completes OAuth externally and calls `POST /executions/{id}/resume` with `decision='approved'` (retry) or `'rejected'` (`ArcadeUserCanceledError`). Retry counter `_arcade_retries_<node_id>` caps resume attempts at `MAX_RETRIES=3` to prevent infinite loops on broken OAuth URLs.
+- `src/engine/workflow.py` — `ArcadeNodeData` tightened: `tool` (required, alias `arcadeTool`), `input` (default `{}`, alias `arcadeInput`), `user_id` (default `'workflow-builder'`, alias `arcadeUserId`).
+- `src/config.py` — `arcade_api_key` setting (env var `ARCADE_API_KEY`).
+- SSE `approval-pending` event payload extended with optional `auth_url` / `auth_id` / `tool_name` fields (back-compat: existing user-approval consumers ignore unknown keys).
+- Exception classes: `ArcadeNodeError` (config / network), `ArcadeAuthError` (auth failed or retry limit), `ArcadeUserCanceledError` (user rejected at resume).
+- Unit tests: 14 via `pytest-httpx`; `interrupt()` mocked to raise `GraphInterrupt` in the pending-auth case. Covers happy path, all three output-extraction branches, auth-pending with state mutation assertion, auth-failed, resume approved/rejected paths, retry-limit exceeded, variable substitution, missing key, network error, 4xx, missing id, registry.
+
+#### Changed
+- `/executions/{id}/resume` now serves TWO interrupt sources: user-approval (Phase 5a) AND arcade-auth (Phase 6d). Same endpoint, same event type, same retry primitive. Executor owns the re-entry semantic (ADR-0019).
+
+#### Notes
+- Max runtime unbounded (depends on user completing OAuth). Retry counter caps the number of resume cycles.
+- Variable substitution applies to each string value in `arcadeInput`; non-string values pass through unchanged.
+- Output extraction: `result.output.value` first, then `result.output`, then the whole `result` dict — matches OAB's fallback chain.
+- Retry counter persistence: executor mutates `state["variables"]["_arcade_retries_<node_id>"]` BEFORE calling `interrupt()`. LangGraph's Pregel captures pre-interrupt state in the checkpoint, so the counter survives through the pause.
+- **Integration test is manual-only.** Arcade's OAuth flow can't be automated in CI. Smoke-test pattern documented in spec §7.2.
+
+#### Verified
+- 468/468 unit tests green (+18 from Phase 6c 450: 4 Pydantic tests + 14 executor tests).
+- Pyright 0 errors, ruff + format clean.
+
 ### Phase 6c — Gamma-AI (2026-04-21)
 
 #### Added

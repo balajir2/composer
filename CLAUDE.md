@@ -82,8 +82,8 @@ Supporting docs in `docs/design/` provide historical context and product/strateg
 | 6a — Note + Join-Chunks | ✅ Complete | note visual-only (skip lock-test from Phase 1); join-chunks concatenates chunk lists with separator/prefix/suffix/metadata; verified against real Neon |
 | 6b — Guardrails | ✅ Complete | LLM-classifier (pii/moderation/jailbreak/hallucination); concurrent via asyncio.gather; verified against real Anthropic + Neon |
 | 6c — Gamma-AI | ✅ Complete | HTTP integration with gamma.app; 60s/10s/4min polling; exportAs pptx/pdf supported; 13 unit tests, smoke test manual |
-| 6d — Arcade | ⏭ Next | HTTP integration with auth-interrupt flow (reuses Phase 5a `/resume` pattern) |
-| 6e — Vector-DB | ⏸ | provider framework (embed/upsert/query) |
+| 6d — Arcade | ✅ Complete | HTTP integration with auth-interrupt flow; reuses Phase 5a `/resume`; retry counter MAX_RETRIES=3; 14 unit tests, smoke test manual |
+| 6e — Vector-DB | ⏭ Next | provider framework (embed/upsert/query) |
 | 6 — Guardrails, Note, Vector-DB, Gamma, Arcade | ⏸ | |
 | 7 — API parity + regression suite ported | ⏸ | |
 | 8 — Security + hardening | ⏸ | |
