@@ -64,6 +64,9 @@ class Settings(BaseSettings):
     firecrawl_api_key: str = Field(default="", description="Firecrawl web-scrape API key")
     browserless_api_key: str = Field(default="", description="Browserless headless-Chrome API key")
 
+    # ─── Gamma-AI (Phase 6c) ─────────────────────
+    gamma_api_key: str = Field(default="", description="Gamma.app public API key.")
+
     # ─── Deployment mode (Phase 7a, ADR-0014) ────────
     deployment_mode: Literal["standalone", "embedded"] = Field(
         default="standalone",

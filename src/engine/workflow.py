@@ -304,8 +304,20 @@ class VectorDbNode(BaseModel):
 
 
 class GammaAiNodeData(BaseNodeData):
-    # TODO(phase-6): tighten against OAB's Gamma AI node fields.
-    config: dict[str, Any] = Field(default_factory=dict)
+    model_config = ConfigDict(populate_by_name=True)
+
+    prompt: str | None = Field(default=None)
+    format: Literal["presentation", "document", "social"] = Field(default="presentation")
+    text_mode: Literal["generate", "condense", "preserve"] = Field(
+        default="generate", alias="textMode"
+    )
+    num_cards: int | None = Field(default=None, alias="numCards")
+    text_amount: Literal["brief", "medium", "detailed"] | None = Field(
+        default=None, alias="textAmount"
+    )
+    image_source: str | None = Field(default=None, alias="imageSource")
+    language: str | None = Field(default=None)
+    export_as: Literal["pptx", "pdf", "web"] = Field(default="web", alias="exportAs")
 
 
 class GammaAiNode(BaseModel):

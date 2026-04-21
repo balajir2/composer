@@ -387,3 +387,69 @@ def test_guardrails_node_full_round_trip() -> None:
     assert node.id == "g1"
     assert node.type == "guardrails"
     assert node.data.pii_enabled is True
+
+
+def test_gamma_ai_node_data_parses_camelcase_aliases() -> None:
+    from src.engine.workflow import GammaAiNodeData
+
+    data = GammaAiNodeData.model_validate(
+        {
+            "label": "GA",
+            "prompt": "Make a deck about {{topic}}",
+            "format": "presentation",
+            "textMode": "generate",
+            "numCards": 8,
+            "textAmount": "medium",
+            "imageSource": "unsplash",
+            "language": "en",
+            "exportAs": "pptx",
+        }
+    )
+    assert data.prompt == "Make a deck about {{topic}}"
+    assert data.format == "presentation"
+    assert data.text_mode == "generate"
+    assert data.num_cards == 8
+    assert data.text_amount == "medium"
+    assert data.image_source == "unsplash"
+    assert data.language == "en"
+    assert data.export_as == "pptx"
+
+
+def test_gamma_ai_node_data_defaults() -> None:
+    from src.engine.workflow import GammaAiNodeData
+
+    data = GammaAiNodeData.model_validate({"label": "GA"})
+    assert data.prompt is None
+    assert data.format == "presentation"
+    assert data.text_mode == "generate"
+    assert data.num_cards is None
+    assert data.text_amount is None
+    assert data.image_source is None
+    assert data.language is None
+    assert data.export_as == "web"
+
+
+def test_gamma_ai_node_data_invalid_format_raises() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from src.engine.workflow import GammaAiNodeData
+
+    with pytest.raises(ValidationError):
+        GammaAiNodeData.model_validate({"label": "GA", "format": "bogus"})
+
+
+def test_gamma_ai_node_full_round_trip() -> None:
+    from src.engine.workflow import GammaAiNode
+
+    node = GammaAiNode.model_validate(
+        {
+            "id": "ga1",
+            "type": "gamma-ai",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "GA", "prompt": "Hello"},
+        }
+    )
+    assert node.id == "ga1"
+    assert node.type == "gamma-ai"
+    assert node.data.prompt == "Hello"
