@@ -549,3 +549,33 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 **Implemented by.** Phase 6d (commits `f847147`…`0f262c7`, 2026-04-21).
 
 **Related.** ADR-0016 (user-approval + interrupt/resume — the primitive being reused), ADR-0017 (SSE streaming — the `approval-pending` event type extended here), [Phase 6d spec](../superpowers/specs/2026-04-21-phase-6d-arcade-design.md).
+
+---
+
+## ADR-0020: VectorDB provider framework — one file per provider
+
+**Status.** Accepted.
+**Date.** 2026-04-21.
+
+**Context.** Phase 6e ships the `vector-db` executor supporting 5 providers (Pinecone, Qdrant, Chroma, Weaviate, Milvus) with OpenAI embeddings. OAB's implementation is 613 LOC in a single file with an if-elif dispatch. Composer's structure options:
+1. Monolithic file (match OAB) — quick to port, hard to test providers in isolation.
+2. Abstract base class / Protocol with provider subclasses — idiomatic OO but overkill for stateless HTTP calls.
+3. One file per provider exporting a top-level `async def query(embedding, config) -> list[VectorDbResult]`. Executor dispatches via a dict map.
+
+**Decision.** Option 3. Same conceptual pattern as Phase 2's LLM provider framework (ADR-0006) but even lighter — no class hierarchy, just functions. `src/vectordb/providers/{pinecone,qdrant,chroma,weaviate,milvus}.py` each export `query()`. `src/vectordb/providers/base.py` defines the shared `VectorDbResult` + `QueryConfig` dataclasses (frozen, typed). Executor holds `_PROVIDERS: dict[str, _ProviderFn]` and looks up by `node.data.provider`.
+
+**Alternatives considered.**
+- **Monolithic (Option 1):** rejected on testability. Each provider deserves its own `pytest-httpx` test file.
+- **ABC/Protocol (Option 2):** rejected on YAGNI. Providers are stateless; no polymorphic object state to justify the ceremony.
+- **External plugin registry:** rejected on YAGNI. Providers are known + finite + internal; no need for dynamic registration.
+
+**Consequences.**
+- Each provider independently testable in isolation.
+- Adding a new provider = one new file + one new dict entry in the executor.
+- `QueryConfig` + `VectorDbResult` dataclasses are the interface contract; change them and all providers must adapt (compile-time check via type annotations).
+- Embedding providers (OpenAI only in 6e) follow the same shape — `src/vectordb/embedding.py` ships `embed_text_openai()`; non-OpenAI providers raise `NotImplementedError` until a later phase.
+- No shared HTTP client pool across providers (each opens/closes its own `httpx.AsyncClient` for one call). Acceptable — vector-db nodes are low-frequency relative to agent/mcp nodes.
+
+**Implemented by.** Phase 6e (commits TBD).
+
+**Related.** ADR-0006 (LLM provider framework — analogous pattern), [Phase 6e spec](../superpowers/specs/2026-04-21-phase-6e-vector-db-design.md).
