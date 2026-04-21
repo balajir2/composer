@@ -16,7 +16,6 @@ import json
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
 from httpx import AsyncClient
 
 pytestmark = pytest.mark.integration
@@ -63,7 +62,6 @@ async def _poll_until_status(
 
 async def test_sse_stream_emits_events_approved_path(
     client: AsyncClient,
-    app: FastAPI,
 ) -> None:
     wf = await client.post(
         "/workflows",
@@ -147,24 +145,27 @@ async def test_sse_stream_emits_events_approved_path(
     events = _parse_sse_frames(collected_text)
     types = [e["type"] for e in events]
 
-    # Events guaranteed to occur after the subscriber connects:
-    assert "approval-pending" in types, f"no approval-pending; types={types}"
+    # Events guaranteed after the subscriber connects + after /resume fires:
+    #
+    # - approval-resumed: emitted synchronously by POST /resume AFTER the
+    #   subscriber is established (we don't /resume until polling sees
+    #   waiting_approval, and the subscriber task started before that poll).
+    # - status-change(completed): the terminal event, emitted by
+    #   LangGraphExecutor.resume before close().
+    # - node-start/node-complete: at least one from the post-resume nodes
+    #   (ok + e).
+    #
+    # approval-pending is NOT asserted — it emits when the graph first pauses,
+    # which can race with the subscriber's HTTP connection. Snapshot-on-
+    # subscribe (spec §9) does not replay past events; clients that connect
+    # after the pause see a snapshot status-change(waiting_approval) instead.
     assert "approval-resumed" in types, f"no approval-resumed; types={types}"
 
-    # Terminal status-change(completed) must appear
     statuses = [e["data"]["payload"].get("status") for e in events if e["type"] == "status-change"]
     assert "completed" in statuses, f"no completed status-change; statuses={statuses}"
 
-    # At least one node-start or node-complete should appear (for ok/no/e nodes,
-    # which run AFTER /resume so the subscriber definitely saw them)
     assert "node-start" in types or "node-complete" in types, f"no node events; types={types}"
 
-    # approval-pending payload sanity
-    pending = next(e for e in events if e["type"] == "approval-pending")
-    assert pending["data"]["payload"]["node_id"] == "ua"
-    assert pending["data"]["payload"]["prompt"] == "Please approve"
-
-    # approval-resumed payload sanity
     resumed = next(e for e in events if e["type"] == "approval-resumed")
     assert resumed["data"]["payload"]["node_id"] == "ua"
     assert resumed["data"]["payload"]["decision"] == "approved"
