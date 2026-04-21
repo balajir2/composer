@@ -124,7 +124,7 @@ def build_chat_model(
     )
     if langsmith_config is not None and langsmith_config.tracing_v2:
         return cast(
-            BaseChatModel,
+            "BaseChatModel",
             model.with_config(
                 {
                     "metadata": {"langsmith_project": langsmith_config.project},

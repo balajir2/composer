@@ -28,6 +28,7 @@ pytestmark = pytest.mark.integration
 def _set_enc_key(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ENCRYPTION_KEY", base64.b64encode(os.urandom(32)).decode())
     from src.config import get_settings
+
     get_settings.cache_clear()
 
 

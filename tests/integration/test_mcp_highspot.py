@@ -116,7 +116,12 @@ async def test_agent_with_highspot_oauth(client: AsyncClient, app: FastAPI) -> N
             json={
                 "name": "Highspot OAuth Test",
                 "nodes": [
-                    {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                    {
+                        "id": "s",
+                        "type": "start",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "S"},
+                    },
                     {
                         "id": "a",
                         "type": "agent",
@@ -129,7 +134,12 @@ async def test_agent_with_highspot_oauth(client: AsyncClient, app: FastAPI) -> N
                             "mcpServerIds": [server_id],
                         },
                     },
-                    {"id": "e", "type": "end", "position": {"x": 200, "y": 0}, "data": {"label": "E"}},
+                    {
+                        "id": "e",
+                        "type": "end",
+                        "position": {"x": 200, "y": 0},
+                        "data": {"label": "E"},
+                    },
                 ],
                 "edges": [
                     {"id": "e1", "source": "s", "target": "a"},
@@ -139,7 +149,8 @@ async def test_agent_with_highspot_oauth(client: AsyncClient, app: FastAPI) -> N
         )
         assert wf.status_code == 201, wf.text
         start = await client.post(
-            "/executions", json={"workflowId": wf.json()["id"], "input": ""},
+            "/executions",
+            json={"workflowId": wf.json()["id"], "input": ""},
         )
         final = await _poll_until_terminal(client, start.json()["id"])
         assert final["status"] == "completed", f"Got: {final}"
