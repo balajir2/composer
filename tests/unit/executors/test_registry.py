@@ -33,20 +33,20 @@ def test_register_and_lookup() -> None:
 
 
 def test_unshipped_type_raises_with_phase_hint() -> None:
-    # user-approval shipped in Phase 5a; use a Phase 6 type that is still unregistered.
-    from src.engine.workflow import GuardrailsNode
+    # guardrails shipped in Phase 6b; use vector-db which is still unregistered.
+    from src.engine.workflow import VectorDbNode
 
-    node = GuardrailsNode.model_validate(
+    node = VectorDbNode.model_validate(
         {
             "id": "n",
-            "type": "guardrails",
+            "type": "vector-db",
             "position": {"x": 0, "y": 0},
             "data": {"label": "h"},
         }
     )
     with pytest.raises(NotImplementedError) as excinfo:
         build_executor(node)
-    assert "'guardrails'" in str(excinfo.value)
+    assert "'vector-db'" in str(excinfo.value)
     assert "Phase 6" in str(excinfo.value)
 
 

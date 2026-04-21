@@ -148,10 +148,11 @@ def test_build_graph_compiles_start_to_end() -> None:
 
 
 def test_build_graph_rejects_unshipped_executor_type() -> None:
+    # guardrails shipped in Phase 6b; use vector-db which is still unregistered.
     wf = _mk(
         nodes=[
             {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-            {"id": "h", "type": "guardrails", "position": {"x": 0, "y": 0}, "data": {"label": "H"}},
+            {"id": "h", "type": "vector-db", "position": {"x": 0, "y": 0}, "data": {"label": "H"}},
             {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
         ],
         edges=[

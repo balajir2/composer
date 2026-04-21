@@ -94,7 +94,7 @@ async def test_run_completes_start_to_end() -> None:
 
 
 async def test_run_marks_failed_on_exception() -> None:
-    # Construct a workflow that will blow up at graph-build time (guardrails node — Phase 6).
+    # Construct a workflow that will blow up at graph-build time (vector-db node — Phase 6).
     bad_wf = {
         "id": "wf1",
         "name": "Bad",
@@ -102,7 +102,7 @@ async def test_run_marks_failed_on_exception() -> None:
             {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
             {
                 "id": "h",
-                "type": "guardrails",
+                "type": "vector-db",
                 "position": {"x": 0, "y": 0},
                 "data": {"label": "H"},
             },
