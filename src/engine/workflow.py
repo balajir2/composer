@@ -352,6 +352,12 @@ class WorkflowEdge(BaseModel):
     type: str | None = None
     label: str | None = None
     source_handle: str | None = Field(default=None, alias="sourceHandle")
+    # Phase 4b: identifies which conditional branch this edge represents.
+    # Required when source is if-else or while; forbidden otherwise.
+    # if-else edges: branch ∈ {'true', 'false'}
+    # while edges:   branch ∈ {'body', 'exit'}
+    # normal edges:  branch is None
+    branch: str | None = None
 
 
 # ─── discriminated union ─────────────────────────────────────────────────

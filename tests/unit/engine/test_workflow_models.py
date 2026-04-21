@@ -230,3 +230,25 @@ def test_every_node_type_parses_minimal_instance(node_type: str) -> None:
 
 def test_all_18_types_exhaustive() -> None:
     assert len(ALL_NODE_TYPES) == 18
+
+
+def test_workflow_edge_branch_defaults_none() -> None:
+    from src.engine.workflow import WorkflowEdge
+
+    edge = WorkflowEdge.model_validate({"id": "e1", "source": "a", "target": "b"})
+    assert edge.branch is None
+
+
+def test_workflow_edge_branch_accepts_string() -> None:
+    from src.engine.workflow import WorkflowEdge
+
+    edge = WorkflowEdge.model_validate({"id": "e1", "source": "x", "target": "y", "branch": "true"})
+    assert edge.branch == "true"
+
+
+def test_workflow_edge_branch_round_trip_json() -> None:
+    from src.engine.workflow import WorkflowEdge
+
+    edge = WorkflowEdge.model_validate({"id": "e1", "source": "x", "target": "y", "branch": "body"})
+    dumped = edge.model_dump(mode="json")
+    assert dumped["branch"] == "body"
