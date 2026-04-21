@@ -283,14 +283,35 @@ class GuardrailsNode(BaseModel):
 
 # ─── vector-db (Phase 6) ─────────────────────────────────────────────────
 
+VectorDbProvider = Literal["pinecone", "qdrant", "chroma", "weaviate", "milvus"]
+EmbeddingProvider = Literal["openai", "cohere", "jina", "pinecone-inference"]
+
 
 class VectorDbNodeData(BaseNodeData):
-    vector_db_provider: str | None = Field(default=None, alias="vectorDbProvider")
-    endpoint: str | None = None
-    api_key: str | None = Field(default=None, alias="apiKey")
-    collection: str | None = None
-    # TODO(phase-6): embedding-specific fields (model, dimension, etc.)
-    embedding_config: dict[str, Any] = Field(default_factory=dict, alias="embeddingConfig")
+    model_config = ConfigDict(populate_by_name=True)
+
+    provider: VectorDbProvider = Field(default="pinecone", alias="vectorDbProvider")
+    endpoint: str = Field(default="", alias="vectorDbEndpoint")
+    api_key: str = Field(default="", alias="vectorDbApiKey")
+    collection: str = Field(default="", alias="vectorDbCollection")
+    dimension: int = Field(default=1536, alias="vectorDbDimension")
+    embedding_provider: EmbeddingProvider = Field(
+        default="openai", alias="vectorDbEmbeddingProvider"
+    )
+    embedding_model: str = Field(default="text-embedding-3-small", alias="vectorDbEmbeddingModel")
+    query_prompt: str = Field(default="", alias="vectorDbQueryPrompt")
+    top_k: int = Field(default=5, alias="vectorDbTopK")
+    score_threshold: float = Field(default=0.0, alias="vectorDbScoreThreshold")
+    namespace: str | None = Field(default=None, alias="vectorDbNamespace")
+    include_metadata: bool = Field(default=True, alias="vectorDbIncludeMetadata")
+    include_vector: bool = Field(default=False, alias="vectorDbIncludeVector")
+    text_field: str | None = Field(default=None, alias="vectorDbTextField")
+    output_variable: str = Field(default="vectorDbResults", alias="vectorDbOutputVariable")
+    metadata_filter: str | None = Field(default=None, alias="vectorDbMetadataFilter")
+    join_results: bool = Field(default=False, alias="vectorDbJoinResults")
+    join_separator: str = Field(default="----", alias="vectorDbJoinSeparator")
+    join_prefix: str = Field(default="", alias="vectorDbJoinPrefix")
+    join_suffix: str = Field(default="", alias="vectorDbJoinSuffix")
 
 
 class VectorDbNode(BaseModel):
@@ -444,6 +465,7 @@ __all__ = [
     "BaseNodeData",
     "DataTransformNode",
     "DataTransformNodeData",
+    "EmbeddingProvider",
     "EndNode",
     "EndNodeData",
     "ExtractNode",
@@ -474,6 +496,7 @@ __all__ = [
     "UserApprovalNodeData",
     "VectorDbNode",
     "VectorDbNodeData",
+    "VectorDbProvider",
     "WhileNode",
     "WhileNodeData",
     "Workflow",

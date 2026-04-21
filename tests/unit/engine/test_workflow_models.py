@@ -509,3 +509,102 @@ def test_arcade_node_full_round_trip() -> None:
     assert node.id == "ar1"
     assert node.type == "arcade"
     assert node.data.tool == "Tool@1"
+
+
+def test_vector_db_node_data_parses_camelcase_aliases() -> None:
+    from src.engine.workflow import VectorDbNodeData
+
+    data = VectorDbNodeData.model_validate(
+        {
+            "label": "VDB",
+            "vectorDbProvider": "qdrant",
+            "vectorDbEndpoint": "http://localhost:6333",
+            "vectorDbApiKey": "{{env.QDRANT_API_KEY}}",
+            "vectorDbCollection": "docs",
+            "vectorDbDimension": 768,
+            "vectorDbEmbeddingProvider": "openai",
+            "vectorDbEmbeddingModel": "text-embedding-3-large",
+            "vectorDbQueryPrompt": "find {{topic}}",
+            "vectorDbTopK": 10,
+            "vectorDbScoreThreshold": 0.7,
+            "vectorDbNamespace": "ns1",
+            "vectorDbIncludeMetadata": False,
+            "vectorDbIncludeVector": True,
+            "vectorDbTextField": "page_content",
+            "vectorDbOutputVariable": "hits",
+            "vectorDbMetadataFilter": '{"category":"docs"}',
+            "vectorDbJoinResults": True,
+            "vectorDbJoinSeparator": "\n---\n",
+            "vectorDbJoinPrefix": "> ",
+            "vectorDbJoinSuffix": " <",
+        }
+    )
+    assert data.provider == "qdrant"
+    assert data.endpoint == "http://localhost:6333"
+    assert data.api_key == "{{env.QDRANT_API_KEY}}"
+    assert data.collection == "docs"
+    assert data.dimension == 768
+    assert data.embedding_provider == "openai"
+    assert data.embedding_model == "text-embedding-3-large"
+    assert data.query_prompt == "find {{topic}}"
+    assert data.top_k == 10
+    assert data.score_threshold == 0.7
+    assert data.namespace == "ns1"
+    assert data.include_metadata is False
+    assert data.include_vector is True
+    assert data.text_field == "page_content"
+    assert data.output_variable == "hits"
+    assert data.metadata_filter == '{"category":"docs"}'
+    assert data.join_results is True
+    assert data.join_separator == "\n---\n"
+    assert data.join_prefix == "> "
+    assert data.join_suffix == " <"
+
+
+def test_vector_db_node_data_defaults() -> None:
+    from src.engine.workflow import VectorDbNodeData
+
+    data = VectorDbNodeData.model_validate({"label": "VDB"})
+    assert data.provider == "pinecone"
+    assert data.endpoint == ""
+    assert data.api_key == ""
+    assert data.collection == ""
+    assert data.dimension == 1536
+    assert data.embedding_provider == "openai"
+    assert data.embedding_model == "text-embedding-3-small"
+    assert data.query_prompt == ""
+    assert data.top_k == 5
+    assert data.score_threshold == 0.0
+    assert data.namespace is None
+    assert data.include_metadata is True
+    assert data.include_vector is False
+    assert data.text_field is None
+    assert data.output_variable == "vectorDbResults"
+    assert data.metadata_filter is None
+    assert data.join_results is False
+
+
+def test_vector_db_node_data_invalid_provider_raises() -> None:
+    import pytest
+    from pydantic import ValidationError
+
+    from src.engine.workflow import VectorDbNodeData
+
+    with pytest.raises(ValidationError):
+        VectorDbNodeData.model_validate({"label": "VDB", "vectorDbProvider": "bogus"})
+
+
+def test_vector_db_node_full_round_trip() -> None:
+    from src.engine.workflow import VectorDbNode
+
+    node = VectorDbNode.model_validate(
+        {
+            "id": "vdb1",
+            "type": "vector-db",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "VDB"},
+        }
+    )
+    assert node.id == "vdb1"
+    assert node.type == "vector-db"
+    assert node.data.provider == "pinecone"
