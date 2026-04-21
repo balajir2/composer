@@ -33,20 +33,21 @@ def test_register_and_lookup() -> None:
 
 
 def test_unshipped_type_raises_with_phase_hint() -> None:
-    from src.engine.workflow import UserApprovalNode
+    # user-approval shipped in Phase 5a; use a Phase 6 type that is still unregistered.
+    from src.engine.workflow import GuardrailsNode
 
-    node = UserApprovalNode.model_validate(
+    node = GuardrailsNode.model_validate(
         {
             "id": "n",
-            "type": "user-approval",
+            "type": "guardrails",
             "position": {"x": 0, "y": 0},
             "data": {"label": "h"},
         }
     )
     with pytest.raises(NotImplementedError) as excinfo:
         build_executor(node)
-    assert "'user-approval'" in str(excinfo.value)
-    assert "Phase 5" in str(excinfo.value)
+    assert "'guardrails'" in str(excinfo.value)
+    assert "Phase 6" in str(excinfo.value)
 
 
 def test_unknown_type_raises_generic_message() -> None:

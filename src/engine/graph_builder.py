@@ -48,6 +48,9 @@ from src.executors import (
     transform as _transform_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
 from src.executors import (
+    user_approval as _user_approval_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+)
+from src.executors import (
     while_loop as _while_loop_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
 from src.executors._eval import EvalError, evaluate
