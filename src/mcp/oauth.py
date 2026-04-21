@@ -284,6 +284,66 @@ async def refresh_token(
     )
 
 
+_EXPIRY_BUFFER_SECONDS = 60
+
+
+async def _find_token_for(mcp_server_id: str, user_id: str, db: Any) -> Any | None:
+    return await db.mcpoauthtoken.find_unique(
+        where={
+            "mcpServerId_userId": {
+                "mcpServerId": mcp_server_id,
+                "userId": user_id,
+            }
+        }
+    )
+
+
+async def get_valid_access_token(
+    server: Any,
+    user_id: str | None,
+    db: Any,
+    *,
+    expiry_buffer_seconds: int = _EXPIRY_BUFFER_SECONDS,
+) -> str:
+    """Return a decrypted plaintext access token, refreshing if near-expiry.
+
+    For shared servers, falls back to the owner's token when the user has no
+    personal one (fix #5). Never leaks a token to a caller that can't access
+    the server (resolver handles that check before we get here).
+    """
+    effective_user = user_id or ""
+    token = await _find_token_for(server.id, effective_user, db)
+
+    # Service-account fallback for shared servers (fix #5)
+    if token is None and server.isShared and effective_user != server.userId:
+        token = await _find_token_for(server.id, server.userId, db)
+        if token is None:
+            raise McpTokenMissingError(
+                f"No token for user {user_id!r} on MCP server {server.id!r}, "
+                f"and server owner {server.userId!r} has no token either "
+                f"(service-account fallback failed). "
+                f"The server owner must complete the OAuth flow to act as a service account."
+            )
+    elif token is None:
+        raise McpTokenMissingError(
+            f"No OAuth token found for user {user_id!r} on MCP server {server.id!r}. "
+            f"User must complete the OAuth flow first."
+        )
+
+    # Refresh-on-use with expiry buffer
+    if token.expiresAt is not None:
+        now = datetime.now(UTC)
+        if now >= token.expiresAt - timedelta(seconds=expiry_buffer_seconds):
+            if not token.encryptedRefreshToken:
+                raise McpTokenExpiredError(
+                    f"Token for server {server.id!r} expired and has no refresh token; "
+                    f"user must re-authorize."
+                )
+            token = await refresh_token(server, token, db)
+
+    return decrypt(token.encryptedAccessToken)  # type: ignore[no-any-return]
+
+
 __all__ = [
     "InvalidStateError",
     "McpTokenExpiredError",
@@ -296,5 +356,6 @@ __all__ = [
     "exchange_code_for_tokens",
     "generate_pkce_pair",
     "generate_state",
+    "get_valid_access_token",
     "refresh_token",
 ]
