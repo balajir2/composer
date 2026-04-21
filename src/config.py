@@ -5,6 +5,7 @@ This keeps config typed, validated, and documented in one place.
 """
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -62,6 +63,28 @@ class Settings(BaseSettings):
     serper_api_key: str = Field(default="", description="Serper.dev Google-search API key")
     firecrawl_api_key: str = Field(default="", description="Firecrawl web-scrape API key")
     browserless_api_key: str = Field(default="", description="Browserless headless-Chrome API key")
+
+    # ─── Deployment mode (Phase 7a, ADR-0014) ────────
+    deployment_mode: Literal["standalone", "embedded"] = Field(
+        default="standalone",
+        validation_alias="COMPOSER_DEPLOYMENT_MODE",
+        description="'standalone' owns users + issues its own JWTs; 'embedded' trusts JWTs from IEP.",
+    )
+
+    # ─── Embedded-mode (IEP integration) ─────────────
+    iep_jwt_issuer: str = Field(default="", description="Expected `iss` claim in IEP-issued JWTs.")
+    iep_jwks_url: str = Field(
+        default="", description="RS256: URL to fetch IEP's public keys (Phase 7b)."
+    )
+    iep_shared_secret: str = Field(
+        default="", description="HS256: shared secret with IEP (Phase 7a path)."
+    )
+    iep_ui_origin: str = Field(
+        default="", description="Exact origin allowed by CORS when embedded."
+    )
+
+    # ─── Standalone password hashing ─────────────────
+    bcrypt_rounds: int = Field(default=12, description="bcrypt cost factor.")
 
 
 @lru_cache
