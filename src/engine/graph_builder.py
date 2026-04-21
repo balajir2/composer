@@ -27,6 +27,9 @@ from src.executors import (
 )
 from src.executors import end as _end_executor  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from src.executors import (
+    extract as _extract_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+)
+from src.executors import (
     http as _http_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
 from src.executors import (

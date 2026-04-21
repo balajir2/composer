@@ -231,6 +231,8 @@ class ExtractNodeData(BaseNodeData):
     extract_config: dict[str, Any] | None = Field(default=None, alias="extractConfig")
     extract_tool: str | None = Field(default=None, alias="extractTool")
     json_schema: dict[str, Any] | None = Field(default=None, alias="jsonSchema")
+    input_text: str | None = Field(default=None, alias="input")
+    model: str | None = None
 
 
 class ExtractNode(BaseModel):
