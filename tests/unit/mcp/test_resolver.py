@@ -77,7 +77,7 @@ async def test_resolve_owner_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.mcp import resolver
 
     class _FakeProvider:
-        def __init__(self, server: Any) -> None:
+        def __init__(self, server: Any, *, db: Any = None, user_id: str | None = None) -> None:
             self.server = server
 
         async def tools(self) -> list[Any]:
@@ -114,7 +114,7 @@ async def test_resolve_shared_allowed_for_other_user(monkeypatch: pytest.MonkeyP
         x: str = ""
 
     class _FakeProvider:
-        def __init__(self, server: Any) -> None:
+        def __init__(self, server: Any, *, db: Any = None, user_id: str | None = None) -> None:
             pass
 
         async def tools(self) -> list[Any]:
@@ -152,7 +152,7 @@ async def test_resolve_single_mcp_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_tool = MagicMock()
 
     class _FakeProvider:
-        def __init__(self, server: Any) -> None:
+        def __init__(self, server: Any, *, db: Any = None, user_id: str | None = None) -> None:
             self.server = server
 
         async def build_tool(self, name: str, ctx: Any) -> Any:

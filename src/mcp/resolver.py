@@ -57,7 +57,7 @@ async def resolve_mcp_tools_for_node(
                 f"(owner={server.userId!r}, isShared={server.isShared})"
             )
 
-        provider = McpToolProvider(server)
+        provider = McpToolProvider(server, db=db, user_id=context.user_id)
         tool_defs = await provider.tools()
         for td in tool_defs:
             out.append(await provider.build_tool(td.name, context))
@@ -77,7 +77,7 @@ async def resolve_single_mcp_tool(
     if not _user_can_use(user_id, server):
         raise McpPermissionError(f"User {user_id!r} cannot use MCP server {mcp_server_id!r}")
 
-    provider = McpToolProvider(server)
+    provider = McpToolProvider(server, db=db, user_id=user_id)
     # Minimal BuildContext — the mcp node executor doesn't need `node` for static-auth.
     tool = await provider.build_tool(
         tool_name,
