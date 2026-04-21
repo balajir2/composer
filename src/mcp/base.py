@@ -13,6 +13,7 @@ from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, create_model
 
 from src.mcp.client import MCPClient
+from src.mcp.oauth import get_valid_access_token
 from src.mcp.schema_adapter import normalize_input_schema, substitute_url_placeholders
 from src.security.encryption import decrypt
 from src.tools.base import (
@@ -21,6 +22,7 @@ from src.tools.base import (
     BuildContext,
     HealthStatus,
     NoAuth,
+    OAuthAuth,
     ToolDefinition,
     ToolProvider,
 )
@@ -31,15 +33,36 @@ class McpToolProvider(ToolProvider):
 
     category: str = "mcp"  # pyright: ignore[reportIncompatibleVariableOverride]
 
-    def __init__(self, server: Any) -> None:
-        """`server` is a Prisma McpServer row (duck-typed — attribute access)."""
+    def __init__(
+        self,
+        server: Any,
+        *,
+        db: Any | None = None,
+        user_id: str | None = None,
+    ) -> None:
+        """`server` is a Prisma McpServer row (duck-typed — attribute access).
+
+        db + user_id are required for authType='oauth' — McpToolProvider looks
+        tokens up from Prisma on each outbound request. Static-auth callers
+        may omit both.
+        """
         self._server = server
+        self._db = db
+        self._user_id = user_id
         resolved_url = substitute_url_placeholders(server.url)
-        # OAuth servers skip header build — the auth property raises NotImplementedError
-        # when accessed, not at construction time. This lets callers construct the
-        # provider and inspect metadata before deciding whether to proceed with OAuth.
-        auth_header = None if server.authType == "oauth" else self._build_auth_header()
-        self._client = MCPClient(resolved_url, auth_header=auth_header)
+
+        if server.authType == "oauth":
+            # OAuth: use factory so token refreshes apply per outbound call.
+            self._client = MCPClient(
+                resolved_url,
+                auth_header_factory=self._build_oauth_auth_header,
+            )
+        else:
+            # Static auth: resolve header once at construction.
+            self._client = MCPClient(
+                resolved_url,
+                auth_header=self._build_auth_header(),
+            )
 
     @property
     def name(self) -> str:  # pyright: ignore[reportIncompatibleVariableOverride]
@@ -60,7 +83,13 @@ class McpToolProvider(ToolProvider):
                 settings_field=f"mcp_server_{self._server.id}_token",
             )
         if auth_type == "oauth":
-            raise NotImplementedError("OAuth auth for MCP lands in Phase 3b")
+            config = self._server.oauthConfig or {}
+            return OAuthAuth(
+                authorize_url=config.get("authorizeUrl", ""),
+                token_url=config.get("tokenUrl", ""),
+                scopes=list(config.get("scopes", []) or []),
+                include_rfc8707_resource=True,
+            )
         raise ValueError(f"Unknown authType {auth_type!r} on MCP server {self._server.id!r}")
 
     async def tools(self) -> list[ToolDefinition]:
@@ -103,13 +132,15 @@ class McpToolProvider(ToolProvider):
     # ─── private ───────────────────────────────────────────────────────
 
     def _build_auth_header(self) -> dict[str, str] | None:
+        """Static-auth header (api-key / bearer / none). Not used for oauth."""
         auth_type = self._server.authType
         if auth_type == "none":
             return None
         if auth_type in {"api-key", "bearer"}:
             if not self._server.encryptedAccessToken:
                 raise ValueError(
-                    f"MCP server {self._server.id!r} is authType={auth_type} but has no encryptedAccessToken"
+                    f"MCP server {self._server.id!r} is authType={auth_type} "
+                    f"but has no encryptedAccessToken"
                 )
             token = decrypt(self._server.encryptedAccessToken)
             if auth_type == "bearer":
@@ -117,8 +148,19 @@ class McpToolProvider(ToolProvider):
             header_name = self._server.headerName or "Authorization"
             return {header_name: token}
         if auth_type == "oauth":
-            raise NotImplementedError("OAuth auth for MCP lands in Phase 3b")
+            # Should never happen — __init__ routes oauth through the async factory.
+            raise RuntimeError("OAuth auth headers must be built via the async factory.")
         raise ValueError(f"Unknown authType {auth_type!r}")
+
+    async def _build_oauth_auth_header(self) -> dict[str, str]:
+        """Async factory: fetches a valid OAuth token per request (refreshes if needed)."""
+        if self._db is None:
+            raise RuntimeError(
+                f"McpToolProvider for oauth server {self._server.id!r} requires db+user_id; "
+                f"resolver must pass them."
+            )
+        token = await get_valid_access_token(self._server, self._user_id, self._db)
+        return {"Authorization": f"Bearer {token}"}
 
 
 class _McpBoundTool(BaseTool):

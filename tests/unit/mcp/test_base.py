@@ -58,13 +58,6 @@ async def test_provider_metadata_api_key(monkeypatch: pytest.MonkeyPatch) -> Non
     assert isinstance(provider.auth, ApiKeyAuth)
 
 
-async def test_provider_oauth_auth_not_implemented_in_3a() -> None:
-    srv = _server_row(authType="oauth")
-    provider = McpToolProvider(srv)
-    with pytest.raises(NotImplementedError, match="Phase 3b"):
-        _ = provider.auth  # property access triggers check
-
-
 async def test_tools_calls_tools_list(
     monkeypatch: pytest.MonkeyPatch,
     httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
@@ -188,3 +181,79 @@ async def test_bearer_auth_adds_bearer_prefix(
     req = httpx_mock.get_request()
     assert req is not None
     assert req.headers.get("authorization") == "Bearer bearer-token-xyz"
+
+
+async def test_oauth_auth_returns_oauthauth_descriptor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Phase 3b: authType='oauth' no longer raises NotImplementedError."""
+    from unittest.mock import MagicMock
+
+    _set_encryption_key(monkeypatch)
+    srv = _server_row(
+        authType="oauth",
+        oauthConfig={
+            "authorizeUrl": "https://idp/auth",
+            "tokenUrl": "https://idp/token",
+            "clientId": "c",
+            "clientSecret": "s",
+            "scopes": ["read"],
+        },
+    )
+    from src.tools.base import OAuthAuth
+
+    provider = McpToolProvider(srv, db=MagicMock(), user_id="user1")
+    assert isinstance(provider.auth, OAuthAuth)
+    assert provider.auth.include_rfc8707_resource is True
+
+
+async def test_oauth_auth_header_factory_calls_get_valid_access_token(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """When an OAuth provider's client fires a request, the auth header factory
+    must resolve via oauth.get_valid_access_token (fix #4)."""
+    from unittest.mock import MagicMock
+
+    _set_encryption_key(monkeypatch)
+    srv = _server_row(
+        authType="oauth",
+        oauthConfig={
+            "authorizeUrl": "https://idp/auth",
+            "tokenUrl": "https://idp/token",
+            "clientId": "c",
+            "clientSecret": "s",
+            "scopes": [],
+        },
+    )
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_get_valid(server: Any, user_id: str, db: Any) -> str:
+        captured["server_id"] = server.id
+        captured["user_id"] = user_id
+        return "bearer-xyz"
+
+    import src.mcp.base as base_mod
+
+    monkeypatch.setattr(base_mod, "get_valid_access_token", _fake_get_valid)
+
+    httpx_mock.add_response(
+        url="https://mcp.example.com/rpc",
+        method="POST",
+        json={"jsonrpc": "2.0", "id": 1, "result": {"tools": []}},
+    )
+
+    provider = McpToolProvider(srv, db=MagicMock(), user_id="user1")
+    await provider.tools()
+    req = httpx_mock.get_request()
+    assert req is not None
+    assert req.headers.get("authorization") == "Bearer bearer-xyz"
+    assert captured == {"server_id": "srv1", "user_id": "user1"}
+
+
+async def test_oauth_provider_without_db_raises() -> None:
+    """OAuth McpToolProvider requires db+user_id at construction; guards
+    against callers that wire it up incorrectly."""
+    srv = _server_row(authType="oauth", oauthConfig={"tokenUrl": "x", "clientId": "c"})
+    provider = McpToolProvider(srv)  # no db, no user_id
+    with pytest.raises(RuntimeError, match="db"):
+        await provider.tools()
