@@ -16,7 +16,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
-from src.engine.context import get_current_db
+from src.engine.context import get_current_db, get_current_langsmith
 from src.engine.state import WorkflowStateDict
 from src.engine.workflow import AgentNode
 from src.executors.base import register_executor
@@ -47,7 +47,10 @@ class AgentExecutor:
 
         messages = self._build_messages(instructions, state)
 
-        chat_model = _providers.build_chat_model(self.node.data.model or DEFAULT_MODEL)
+        chat_model = _providers.build_chat_model(
+            self.node.data.model or DEFAULT_MODEL,
+            langsmith_config=get_current_langsmith(),
+        )
 
         tools = await _registry.resolve_tools_for_node(
             self.node,

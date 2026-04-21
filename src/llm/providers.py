@@ -4,7 +4,7 @@ Maps `"provider/modelname"` strings to LangChain chat-model instances.
 See ADR-0006; spec §5.
 """
 
-from typing import Any
+from typing import Any, cast
 
 from langchain_anthropic import ChatAnthropic  # pyright: ignore[reportMissingImports]
 from langchain_core.language_models import BaseChatModel
@@ -13,6 +13,7 @@ from langchain_groq import ChatGroq  # pyright: ignore[reportMissingImports]
 from langchain_openai import ChatOpenAI  # pyright: ignore[reportMissingImports]
 
 from src.config import get_settings
+from src.engine.context import LangSmithConfig
 
 
 class UnsupportedProviderError(ValueError):
@@ -32,7 +33,7 @@ _KEY_MAP: dict[str, str] = {
 }
 
 
-def build_chat_model(
+def _build_raw_chat_model(
     model_string: str,
     *,
     token_limit: int | None = None,
@@ -98,6 +99,40 @@ def build_chat_model(
     if temperature is not None:
         kwargs["temperature"] = temperature
     return ChatGroq(**kwargs)  # pyright: ignore[reportCallIssue]
+
+
+def build_chat_model(
+    model_string: str,
+    *,
+    token_limit: int | None = None,
+    temperature: float | None = None,
+    extra: dict[str, Any] | None = None,
+    langsmith_config: LangSmithConfig | None = None,
+) -> BaseChatModel:
+    """Resolve and return a chat model, optionally wrapped with LangSmith config.
+
+    When langsmith_config is provided AND tracing_v2 is true, the returned
+    model carries a with_config call that tags outbound calls with the
+    project. When config is None, the model is returned unwrapped and
+    tracing falls back to env-var behavior (back-compat).
+    """
+    model = _build_raw_chat_model(
+        model_string,
+        token_limit=token_limit,
+        temperature=temperature,
+        extra=extra,
+    )
+    if langsmith_config is not None and langsmith_config.tracing_v2:
+        return cast(
+            BaseChatModel,
+            model.with_config(
+                {
+                    "metadata": {"langsmith_project": langsmith_config.project},
+                    "tags": ["composer"],
+                }
+            ),
+        )
+    return model
 
 
 __all__ = [

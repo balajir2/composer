@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from src.config import get_settings
 
 if TYPE_CHECKING:
+    from src.engine.context import LangSmithConfig
     from src.engine.state import WorkflowStateDict
     from src.engine.workflow import AgentNode
 
@@ -70,6 +71,7 @@ class BuildContext:
     state: "WorkflowStateDict"
     user_id: str | None = None
     db: Any | None = None  # Prisma client — populated when MCP resolution is needed
+    langsmith_config: "LangSmithConfig | None" = None
 
 
 @dataclass(frozen=True, kw_only=True)

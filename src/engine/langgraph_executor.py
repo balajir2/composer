@@ -14,7 +14,8 @@ from typing import Any
 from langgraph.checkpoint.base import BaseCheckpointSaver
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
-from src.engine.context import set_current_db
+from src.config import get_settings
+from src.engine.context import LangSmithConfig, set_current_db, set_current_langsmith
 from src.engine.graph_builder import build_graph
 from src.engine.state import initial_state
 from src.engine.workflow import Workflow
@@ -79,6 +80,18 @@ class LangGraphExecutor:
             compiled = build_graph(workflow, self.checkpointer)
 
             state = initial_state(execution.input if execution.input is not None else "")
+            settings = get_settings()
+            ls_config = (
+                LangSmithConfig(
+                    tracing_v2=settings.langchain_tracing_v2,
+                    project=settings.langchain_project,
+                    endpoint=settings.langchain_endpoint,
+                    api_key=settings.langchain_api_key,
+                )
+                if settings.langchain_tracing_v2
+                else None
+            )
+            set_current_langsmith(ls_config)
             set_current_db(self.db)
             final_state = await compiled.ainvoke(
                 state,
