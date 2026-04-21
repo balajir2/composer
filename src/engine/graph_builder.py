@@ -6,8 +6,8 @@ Reference: OAB lib/workflow/langgraph.ts:169-427.
 """
 
 from collections import deque
-from collections.abc import Iterable
-from typing import Any
+from collections.abc import Callable, Hashable, Iterable
+from typing import Any, cast
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import END, START
@@ -15,7 +15,7 @@ from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from src.engine.state import WorkflowStateDict
-from src.engine.workflow import Workflow, WorkflowEdge, WorkflowNode
+from src.engine.workflow import IfElseNode, WhileNode, Workflow, WorkflowEdge, WorkflowNode
 
 # Executors are registered as a side effect of import; importing them here
 # ensures the registry is populated before build_graph reads it.
@@ -50,6 +50,7 @@ from src.executors import (
 from src.executors import (
     while_loop as _while_loop_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
+from src.executors._eval import EvalError, evaluate
 from src.executors.base import build_executor
 
 
@@ -119,10 +120,103 @@ def validate_workflow_shape(workflow: Workflow) -> None:
         raise WorkflowValidationError("Workflow must contain at least one end node.")
 
     _check_edges(workflow.edges, set(nodes.keys()))
+
+    # Phase 4b: branch labels must match source type.
+    _conditional_types = {"if-else", "while"}
+    for edge in workflow.edges:
+        source = nodes[edge.source]
+        if source.type in _conditional_types:
+            if edge.branch is None:
+                raise WorkflowValidationError(
+                    f"Edge {edge.id!r} leaves {source.type} node {source.id!r} "
+                    f"but has no branch label."
+                )
+        else:
+            if edge.branch is not None:
+                raise WorkflowValidationError(
+                    f"Edge {edge.id!r} has branch={edge.branch!r} but its source "
+                    f"{source.id!r} is not a conditional node."
+                )
+
     _check_reachability(start_ids[0], nodes, workflow.edges)
 
 
 CONDITIONAL_SOURCE_TYPES = {"if-else", "while", "user-approval"}
+
+
+def _branch_mapping(
+    node: WorkflowNode,
+    edges: list[WorkflowEdge],
+    required_branches: set[str],
+) -> dict[str, str]:
+    """Build a {branch: target_node_id} mapping for a conditional source.
+
+    Raises WorkflowValidationError if any edge has no branch label, duplicate
+    branch labels exist, or the edge set doesn't exactly match
+    `required_branches`.
+    """
+    out_edges = [e for e in edges if e.source == node.id]
+    seen: dict[str, str] = {}
+    for e in out_edges:
+        if e.branch is None:
+            raise WorkflowValidationError(
+                f"Edge {e.id!r} leaving {node.type} node {node.id!r} has no branch label."
+            )
+        if e.branch in seen:
+            raise WorkflowValidationError(
+                f"Duplicate branch {e.branch!r} on edges leaving {node.id!r}."
+            )
+        if e.branch not in required_branches:
+            raise WorkflowValidationError(
+                f"Edge {e.id!r} leaving {node.type} node {node.id!r} has "
+                f"unexpected branch {e.branch!r}; allowed: {sorted(required_branches)}."
+            )
+        seen[e.branch] = e.target
+    missing = required_branches - seen.keys()
+    if missing:
+        raise WorkflowValidationError(
+            f"{node.type} node {node.id!r} branches mismatch: "
+            f"missing={sorted(missing)}, got={sorted(seen.keys())}."
+        )
+    return seen
+
+
+def _route_if_else(node: IfElseNode) -> Callable[[WorkflowStateDict], str]:
+    """Router closure for an if-else node.  Evaluates the condition fresh on
+    each traversal (not reading from node_results — that can be stale on retry).
+    Returns the fallback 'false' on EvalError to avoid wedging the graph.
+    """
+    expr = node.data.condition or ""
+
+    def _router(state: WorkflowStateDict) -> str:
+        if not expr:
+            return "false"
+        try:
+            result = evaluate(expr, state)
+        except EvalError:
+            return "false"
+        return "true" if result else "false"
+
+    return _router
+
+
+def _route_while(node: WhileNode) -> Callable[[WorkflowStateDict], str]:
+    """Router closure for a while node.  Same logic as _route_if_else but
+    returns 'body' / 'exit' branch keys.  The executor handles the
+    max-iterations check before this router runs.
+    """
+    expr = node.data.condition or ""
+
+    def _router(state: WorkflowStateDict) -> str:
+        if not expr:
+            return "exit"
+        try:
+            result = evaluate(expr, state)
+        except EvalError:
+            return "exit"
+        return "body" if result else "exit"
+
+    return _router
 
 
 def build_graph(
@@ -148,20 +242,42 @@ def build_graph(
         executor = build_executor(node)  # may raise NotImplementedError
         builder.add_node(node.id, executor.arun)  # pyright: ignore[reportUnknownMemberType]
 
+    # Emit normal edges first; conditional edges handled in a second pass.
     for edge in workflow.edges:
         source_node = nodes_by_id[edge.source]
-        if source_node.type in CONDITIONAL_SOURCE_TYPES:
-            phase = 4 if source_node.type in {"if-else", "while"} else 5
+        if source_node.type in {"if-else", "while"}:
+            continue  # handled by conditional-edges pass below
+        if source_node.type == "user-approval":
             raise NotImplementedError(
-                f"Conditional edges from node type {source_node.type!r} land in Phase {phase}."
+                "Conditional edges from node type 'user-approval' land in Phase 5."
             )
-        # Skip edges whose source is a note node (note is not in the graph)
+        # Skip edges whose source or target is a note node
         if source_node.type == "note":
             continue
-        # Skip edges whose target is a note node (same reason)
         if nodes_by_id[edge.target].type == "note":
             continue
-        builder.add_edge(edge.source, edge.target)
+        builder.add_edge(edge.source, edge.target)  # pyright: ignore[reportUnknownMemberType]
+
+    # Conditional edges pass — AFTER normal edges + all nodes are in place.
+    for node in workflow.nodes:
+        if node.type == "if-else":
+            assert isinstance(node, IfElseNode)
+            mapping = cast(
+                "dict[Hashable, str]",
+                _branch_mapping(node, list(workflow.edges), {"true", "false"}),
+            )
+            builder.add_conditional_edges(  # pyright: ignore[reportUnknownMemberType]
+                node.id, _route_if_else(node), mapping
+            )
+        elif node.type == "while":
+            assert isinstance(node, WhileNode)
+            mapping = cast(
+                "dict[Hashable, str]",
+                _branch_mapping(node, list(workflow.edges), {"body", "exit"}),
+            )
+            builder.add_conditional_edges(  # pyright: ignore[reportUnknownMemberType]
+                node.id, _route_while(node), mapping
+            )
 
     start_id = next(n.id for n in workflow.nodes if n.type == "start")
     end_ids = [n.id for n in workflow.nodes if n.type == "end"]

@@ -168,22 +168,6 @@ def test_build_graph_rejects_unshipped_executor_type() -> None:
         build_graph(wf, MemorySaver())
 
 
-def test_build_graph_rejects_conditional_edge_source() -> None:
-    wf = _mk(
-        nodes=[
-            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-            {"id": "cond", "type": "if-else", "position": {"x": 0, "y": 0}, "data": {"label": "C"}},
-            {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
-        ],
-        edges=[
-            {"id": "e1", "source": "s", "target": "cond"},
-            {"id": "e2", "source": "cond", "target": "e"},
-        ],
-    )
-    with pytest.raises(NotImplementedError, match="Phase 4"):
-        build_graph(wf, MemorySaver())
-
-
 def test_build_graph_skips_note_nodes() -> None:
     wf = _mk(
         nodes=[
@@ -236,3 +220,218 @@ async def test_build_graph_compiles_with_agent_node(monkeypatch: pytest.MonkeyPa
     g = compiled.get_graph()
     names = {n.id for n in g.nodes.values()}
     assert {"s", "a", "e"}.issubset(names)
+
+
+# ---------------------------------------------------------------------------
+# Task 4 (Phase 4b): conditional-edge emission + branch validation
+# ---------------------------------------------------------------------------
+
+
+def test_conditional_edges_compile_for_if_else() -> None:
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from src.engine.graph_builder import build_graph
+    from src.engine.workflow import Workflow
+
+    wf = Workflow.model_validate(
+        {
+            "id": "w1",
+            "name": "if-else test",
+            "nodes": [
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "ie",
+                    "type": "if-else",
+                    "position": {"x": 100, "y": 0},
+                    "data": {"label": "IE", "condition": "variables['x'] > 0"},
+                },
+                {"id": "a", "type": "end", "position": {"x": 200, "y": 0}, "data": {"label": "A"}},
+                {
+                    "id": "b",
+                    "type": "end",
+                    "position": {"x": 200, "y": 100},
+                    "data": {"label": "B"},
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "s", "target": "ie"},
+                {"id": "e2", "source": "ie", "target": "a", "branch": "true"},
+                {"id": "e3", "source": "ie", "target": "b", "branch": "false"},
+            ],
+        }
+    )
+    compiled = build_graph(wf, MemorySaver())
+    assert compiled is not None  # graph compiled successfully
+
+
+def test_conditional_edges_compile_for_while() -> None:
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from src.engine.graph_builder import build_graph
+    from src.engine.workflow import Workflow
+
+    wf = Workflow.model_validate(
+        {
+            "id": "w1",
+            "name": "while test",
+            "nodes": [
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "w",
+                    "type": "while",
+                    "position": {"x": 100, "y": 0},
+                    "data": {"label": "W", "condition": "variables['n'] > 0"},
+                },
+                {
+                    "id": "body",
+                    "type": "set-state",
+                    "position": {"x": 200, "y": 0},
+                    "data": {"label": "body", "stateKey": "n", "stateValue": 0},
+                },
+                {"id": "e", "type": "end", "position": {"x": 300, "y": 0}, "data": {"label": "E"}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "s", "target": "w"},
+                {"id": "e2", "source": "w", "target": "body", "branch": "body"},
+                {"id": "e3", "source": "w", "target": "e", "branch": "exit"},
+                {"id": "e4", "source": "body", "target": "w"},  # loop-back, normal edge
+            ],
+        }
+    )
+    compiled = build_graph(wf, MemorySaver())
+    assert compiled is not None
+
+
+def test_conditional_source_missing_branch_raises() -> None:
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from src.engine.graph_builder import WorkflowValidationError, build_graph
+    from src.engine.workflow import Workflow
+
+    wf = Workflow.model_validate(
+        {
+            "id": "w1",
+            "name": "bad",
+            "nodes": [
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "ie",
+                    "type": "if-else",
+                    "position": {"x": 100, "y": 0},
+                    "data": {"label": "IE", "condition": "True"},
+                },
+                {"id": "a", "type": "end", "position": {"x": 200, "y": 0}, "data": {"label": "A"}},
+                {
+                    "id": "b",
+                    "type": "end",
+                    "position": {"x": 200, "y": 100},
+                    "data": {"label": "B"},
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "s", "target": "ie"},
+                {"id": "e2", "source": "ie", "target": "a"},  # no branch
+                {"id": "e3", "source": "ie", "target": "b", "branch": "false"},
+            ],
+        }
+    )
+    with pytest.raises(WorkflowValidationError, match="branch"):
+        build_graph(wf, MemorySaver())
+
+
+def test_normal_source_with_branch_raises() -> None:
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from src.engine.graph_builder import WorkflowValidationError, build_graph
+    from src.engine.workflow import Workflow
+
+    wf = Workflow.model_validate(
+        {
+            "id": "w1",
+            "name": "bad-normal-branch",
+            "nodes": [
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {"id": "e", "type": "end", "position": {"x": 100, "y": 0}, "data": {"label": "E"}},
+            ],
+            "edges": [
+                # Start is a normal source -> branch should be None
+                {"id": "e1", "source": "s", "target": "e", "branch": "true"},
+            ],
+        }
+    )
+    with pytest.raises(WorkflowValidationError, match="branch"):
+        build_graph(wf, MemorySaver())
+
+
+def test_conditional_source_wrong_branch_name_raises() -> None:
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from src.engine.graph_builder import WorkflowValidationError, build_graph
+    from src.engine.workflow import Workflow
+
+    wf = Workflow.model_validate(
+        {
+            "id": "w1",
+            "name": "bad-branch-name",
+            "nodes": [
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "ie",
+                    "type": "if-else",
+                    "position": {"x": 100, "y": 0},
+                    "data": {"label": "IE", "condition": "True"},
+                },
+                {"id": "a", "type": "end", "position": {"x": 200, "y": 0}, "data": {"label": "A"}},
+                {
+                    "id": "b",
+                    "type": "end",
+                    "position": {"x": 200, "y": 100},
+                    "data": {"label": "B"},
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "s", "target": "ie"},
+                {"id": "e2", "source": "ie", "target": "a", "branch": "yes"},  # not "true"/"false"
+                {"id": "e3", "source": "ie", "target": "b", "branch": "false"},
+            ],
+        }
+    )
+    with pytest.raises(WorkflowValidationError, match="yes"):
+        build_graph(wf, MemorySaver())
+
+
+def test_conditional_source_duplicate_branch_raises() -> None:
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from src.engine.graph_builder import WorkflowValidationError, build_graph
+    from src.engine.workflow import Workflow
+
+    wf = Workflow.model_validate(
+        {
+            "id": "w1",
+            "name": "dup-branch",
+            "nodes": [
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "ie",
+                    "type": "if-else",
+                    "position": {"x": 100, "y": 0},
+                    "data": {"label": "IE", "condition": "True"},
+                },
+                {"id": "a", "type": "end", "position": {"x": 200, "y": 0}, "data": {"label": "A"}},
+                {
+                    "id": "b",
+                    "type": "end",
+                    "position": {"x": 200, "y": 100},
+                    "data": {"label": "B"},
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "s", "target": "ie"},
+                {"id": "e2", "source": "ie", "target": "a", "branch": "true"},
+                {"id": "e3", "source": "ie", "target": "b", "branch": "true"},  # duplicate
+            ],
+        }
+    )
+    with pytest.raises(WorkflowValidationError, match=r"[Dd]uplicate"):
+        build_graph(wf, MemorySaver())
