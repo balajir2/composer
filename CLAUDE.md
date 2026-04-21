@@ -76,7 +76,8 @@ Supporting docs in `docs/design/` provide historical context and product/strateg
 | 3b — MCP OAuth (Highspot + the six fixes) | ✅ Complete | All six OAB lessons encoded; real-Highspot MCP stack verified to auth boundary |
 | 4a — Linear executors (http, set-state, transform, data-transform, extract) | ✅ Complete | 5 executors + simpleeval wrapper + recursive substitution; integration verified against real Anthropic |
 | 4b — Control-flow (if-else, while) | ✅ Complete | add_conditional_edges; while cap 100; both if-else branches + while countdown verified against real Neon |
-| 5 — User-approval + SSE streaming | ⏭ Next | LangGraph `interrupt()` |
+| 7a — Deployment-mode toggle + auth middleware | ✅ Complete | standalone vs embedded; User table; dev-mode fallback (ADR-0015); brought forward from Phase 7 |
+| 5 — User-approval + SSE streaming | ⏭ Next | LangGraph `interrupt()` — now has authenticated user context thanks to 7a |
 | 6 — Guardrails, Note, Vector-DB, Gamma, Arcade | ⏸ | |
 | 7 — API parity + regression suite ported | ⏸ | |
 | 8 — Security + hardening | ⏸ | |

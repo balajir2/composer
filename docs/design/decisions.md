@@ -406,7 +406,7 @@ Scope exposes: `variables`, `lastOutput`, `node_results`, and a per-call `extra_
 - Redeploy is the correct boundary for a mode change (auth semantics mismatch is worse than a brief restart).
 - Env-var-driven config aligns with IE's Helm / Docker-Compose deployment patterns.
 
-**Implemented by.** Phase 7a (commits TBD).
+**Implemented by.** Phase 7a (commits `06642f0`..`7de8352` on `main`, 2026-04-21).
 
 **Related.** ADR-0004, ADR-0005, ADR-0015, [Phase 7a spec](../superpowers/specs/2026-04-21-phase-7a-deployment-mode-design.md).
 
@@ -434,6 +434,6 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 - Existing integration tests require zero changes.
 - Phase 7a's auth integration tests set real Authorization headers explicitly; they bypass the fallback.
 
-**Implemented by.** Phase 7a (commits TBD).
+**Implemented by.** Phase 7a (commits `06642f0`..`7de8352` on `main`, 2026-04-21).
 
 **Related.** ADR-0014, ADR-0005.

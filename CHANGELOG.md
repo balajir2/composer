@@ -6,6 +6,43 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 7a — Deployment-mode toggle + auth middleware (2026-04-21)
+
+Brought forward from Phase 7 because user-approval (Phase 5) needs authenticated user context. Phase 5 (user-approval + SSE) is re-sequenced to run next.
+
+#### Added
+- [Phase 7a design spec](docs/superpowers/specs/2026-04-21-phase-7a-deployment-mode-design.md) + ADR-0014 + ADR-0015.
+- Prisma `User` table + `UserRole` enum. Populated only in standalone deployments; embedded deployments leave it empty (userId strings come from IEP-signed JWT `sub` claims).
+- `src/config.py` — `deployment_mode`, `iep_jwt_issuer`, `iep_jwks_url`, `iep_shared_secret`, `iep_ui_origin`, `bcrypt_rounds`.
+- `src/security/auth.py` — `AuthError` + `get_current_user_id` FastAPI dependency with mode-aware dispatch (HS256 w/ Composer's `JWT_SECRET` in standalone vs HS256 w/ `IEP_SHARED_SECRET` in embedded) + dev-mode fallback (ADR-0015).
+- `src/security/passwords.py` — bcrypt hash + verify helpers (cost factor from `bcrypt_rounds`).
+- `src/api/auth_standalone.py` — `/auth/register`, `/auth/login`, `/auth/refresh`, `/auth/disconnect` (registered only in standalone).
+- `src/api/auth_common.py` — `/auth/me` (registered in both modes; standalone returns User row, embedded returns JWT claims).
+- Deps: `bcrypt>=4.0.0`, `email-validator>=2.0.0` (for Pydantic `EmailStr`).
+- 7 new integration tests: standalone register→login→me→refresh lifecycle, duplicate-email 409, missing-auth probe; embedded correct-issuer 200, wrong-issuer 401, missing-header 401, bad-signature 401 — all pass against real Neon.
+
+#### Changed
+- `src/main.py` — mode-aware router registration + CORS allowlist + startup validation. Embedded mode with missing `IEP_JWT_ISSUER` or both of `IEP_SHARED_SECRET`/`IEP_JWKS_URL` refuses to boot with a clear RuntimeError.
+- `src/engine/state.py` — `WorkflowStateDict` gains `user_id: NotRequired[str]`.
+- `src/engine/langgraph_executor.py` — propagates `execution.userId` into initial state before `compiled.ainvoke`.
+- Every route handler and executor that hardcoded `user_id="dev"` now declares `Depends(get_current_user_id)` or reads `state["user_id"]`. Only remaining `"dev"` literal in `src/` is the single ADR-0015 fallback inside `src/security/auth.py`.
+- Phase 5 (user-approval + SSE) is re-sequenced to run after 7a.
+
+#### Fixed
+- One integration-test bug caught by running against real Neon: `@composer.test` emails rejected by `email-validator` (reserved TLD per IANA). Changed to `@example.com` (RFC 2606 reserved-for-examples).
+
+#### Verified
+- 364/364 unit tests green (+48 from Phase 4b baseline of 316).
+- 7/7 Phase 7a integration tests green against real Neon.
+- 6/6 regression check: prior Phase 1/4a/4b integration tests (start→end, if-else, while, HTTP→Extract→Set-State) continue to pass via ADR-0015 dev-mode fallback.
+
+#### Deliberate design choices (see ADR-0014 + ADR-0015)
+- Deployment mode read from env var at startup; no live-switch. Auth semantics differ too fundamentally between modes for live-flipping to be safe.
+- Dev-mode fallback (`user_id="dev"` when no Authorization + `environment=development`) keeps existing integration tests working without JWT refactor. Production deploys (`ENVIRONMENT=production`) get no fallback; startup logs prominent WARN when fallback is active.
+- 7a ships HS256 shared-secret path for IEP JWT verification; JWKS/RS256 is Phase 7b.
+- Onboarding UI (standalone-mode register/invite flows) activates when `deployment_mode=standalone` — documented for Phase 10.
+- Login returns uniform 401 on unknown email OR wrong password (no enumeration side channel).
+
 ### Phase 4b — Control-flow executors (if-else, while) (2026-04-21)
 
 **Phase 4 is now complete overall.** Combined with Phase 4a, Composer can express any OAB workflow topology except user-approval (Phase 5).
