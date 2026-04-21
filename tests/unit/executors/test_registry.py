@@ -33,20 +33,20 @@ def test_register_and_lookup() -> None:
 
 
 def test_unshipped_type_raises_with_phase_hint() -> None:
-    from src.engine.workflow import HttpNode
+    from src.engine.workflow import UserApprovalNode
 
-    node = HttpNode.model_validate(
+    node = UserApprovalNode.model_validate(
         {
             "id": "n",
-            "type": "http",
+            "type": "user-approval",
             "position": {"x": 0, "y": 0},
             "data": {"label": "h"},
         }
     )
     with pytest.raises(NotImplementedError) as excinfo:
         build_executor(node)
-    assert "'http'" in str(excinfo.value)
-    assert "Phase 4" in str(excinfo.value)
+    assert "'user-approval'" in str(excinfo.value)
+    assert "Phase 5" in str(excinfo.value)
 
 
 def test_unknown_type_raises_generic_message() -> None:

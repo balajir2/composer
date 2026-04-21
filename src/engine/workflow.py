@@ -246,6 +246,7 @@ class HttpNodeData(BaseNodeData):
     http_method: str | None = Field(default=None, alias="httpMethod")
     http_headers: dict[str, str] = Field(default_factory=dict, alias="httpHeaders")
     http_body: Any | None = Field(default=None, alias="httpBody")
+    response_path: str | None = Field(default=None, alias="responsePath")
 
 
 class HttpNode(BaseModel):

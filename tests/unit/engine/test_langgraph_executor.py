@@ -92,13 +92,18 @@ async def test_run_completes_start_to_end() -> None:
 
 
 async def test_run_marks_failed_on_exception() -> None:
-    # Construct a workflow that will blow up at graph-build time (http node — Phase 4).
+    # Construct a workflow that will blow up at graph-build time (user-approval node — Phase 5).
     bad_wf = {
         "id": "wf1",
         "name": "Bad",
         "nodes": [
             {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-            {"id": "h", "type": "http", "position": {"x": 0, "y": 0}, "data": {"label": "H"}},
+            {
+                "id": "h",
+                "type": "user-approval",
+                "position": {"x": 0, "y": 0},
+                "data": {"label": "H"},
+            },
             {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
         ],
         "edges": [
@@ -127,4 +132,4 @@ async def test_run_marks_failed_on_exception() -> None:
     assert db.workflowexecution.update.await_args is not None
     update_kwargs = db.workflowexecution.update.await_args.kwargs["data"]
     assert update_kwargs["status"] == "failed"
-    assert "Phase 4" in update_kwargs["error"]
+    assert "Phase 5" in update_kwargs["error"]

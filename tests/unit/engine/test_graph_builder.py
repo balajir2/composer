@@ -151,7 +151,12 @@ def test_build_graph_rejects_unshipped_executor_type() -> None:
     wf = _mk(
         nodes=[
             {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-            {"id": "h", "type": "http", "position": {"x": 0, "y": 0}, "data": {"label": "H"}},
+            {
+                "id": "h",
+                "type": "user-approval",
+                "position": {"x": 0, "y": 0},
+                "data": {"label": "H"},
+            },
             {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
         ],
         edges=[
@@ -159,7 +164,7 @@ def test_build_graph_rejects_unshipped_executor_type() -> None:
             {"id": "e2", "source": "h", "target": "e"},
         ],
     )
-    with pytest.raises(NotImplementedError, match="Phase 4"):
+    with pytest.raises(NotImplementedError, match="Phase 5"):
         build_graph(wf, MemorySaver())
 
 
