@@ -66,3 +66,51 @@ def test_dict_value_renders_as_json() -> None:
 def test_no_braces_returns_template_unchanged() -> None:
     state = initial_state()
     assert substitute("plain text", state) == "plain text"
+
+
+def test_substitute_in_value_string_leaf() -> None:
+    from src.engine.state import initial_state
+    from src.variable_substitution import substitute_in_value
+
+    state = initial_state()
+    state["variables"]["name"] = "Ada"
+    assert substitute_in_value("hello {{name}}", state) == "hello Ada"
+
+
+def test_substitute_in_value_dict_recurses() -> None:
+    from src.engine.state import initial_state
+    from src.variable_substitution import substitute_in_value
+
+    state = initial_state()
+    state["variables"]["api_key"] = "sk-abc"
+    out = substitute_in_value({"Authorization": "Bearer {{api_key}}", "X-User": "dev"}, state)
+    assert out == {"Authorization": "Bearer sk-abc", "X-User": "dev"}
+
+
+def test_substitute_in_value_list_recurses() -> None:
+    from src.engine.state import initial_state
+    from src.variable_substitution import substitute_in_value
+
+    state = initial_state()
+    state["variables"]["pets"] = "cats and dogs"
+    assert substitute_in_value(["a", "{{pets}}", "b"], state) == ["a", "cats and dogs", "b"]
+
+
+def test_substitute_in_value_nested_dict_list() -> None:
+    from src.engine.state import initial_state
+    from src.variable_substitution import substitute_in_value
+
+    state = initial_state()
+    state["variables"]["x"] = 42
+    out = substitute_in_value({"items": [{"label": "n={{x}}"}, "raw"]}, state)
+    assert out == {"items": [{"label": "n=42"}, "raw"]}
+
+
+def test_substitute_in_value_leaves_non_str_types() -> None:
+    from src.engine.state import initial_state
+    from src.variable_substitution import substitute_in_value
+
+    state = initial_state()
+    assert substitute_in_value(42, state) == 42
+    assert substitute_in_value(True, state) is True
+    assert substitute_in_value(None, state) is None

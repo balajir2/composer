@@ -77,4 +77,22 @@ def _walk(root: Any, segments: list[str]) -> Any:
     return current
 
 
-__all__ = ["substitute"]
+def substitute_in_value(value: Any, state: WorkflowStateDict) -> Any:
+    """Recursively apply {{...}} substitution over nested structures.
+
+    Rules:
+      - str: substitute via `substitute()`
+      - dict: recurse into values; keys are left untouched
+      - list: recurse into items
+      - any other type (int, bool, None, etc.): returned unchanged
+    """
+    if isinstance(value, str):
+        return substitute(value, state)
+    if isinstance(value, dict):
+        return {k: substitute_in_value(v, state) for k, v in value.items()}
+    if isinstance(value, list):
+        return [substitute_in_value(item, state) for item in value]
+    return value
+
+
+__all__ = ["substitute", "substitute_in_value"]
