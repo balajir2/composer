@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
 from src.engine.langgraph_executor import LangGraphExecutor
@@ -135,3 +136,132 @@ async def test_run_marks_failed_on_exception() -> None:
     update_kwargs = db.workflowexecution.update.await_args.kwargs["data"]
     assert update_kwargs["status"] == "failed"
     assert "Phase 6" in update_kwargs["error"]
+
+
+async def test_run_marks_waiting_approval_on_interrupt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the compiled graph raises GraphInterrupt, the execution is marked
+    waiting_approval with _pending_approval_node + _pending_approval_prompt
+    in variables."""
+    from types import SimpleNamespace
+    from typing import Any
+    from unittest.mock import AsyncMock, MagicMock
+
+    from langgraph.errors import GraphInterrupt
+    from langgraph.types import Interrupt
+
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    db = MagicMock()
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="e1",
+            workflowId="w1",
+            userId="dev",
+            threadId="t1",
+            input=None,
+        )
+    )
+    db.workflow = MagicMock()
+    db.workflow.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="w1",
+            name="test",
+            nodes=[
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "ua",
+                    "type": "user-approval",
+                    "position": {"x": 0, "y": 0},
+                    "data": {"label": "UA", "approvalMessage": "Approve?"},
+                },
+                {"id": "a", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "A"}},
+                {"id": "b", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "B"}},
+            ],
+            edges=[
+                {"id": "e1", "source": "s", "target": "ua"},
+                {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
+                {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
+            ],
+        )
+    )
+    update_calls: list[dict[str, Any]] = []
+
+    async def _update(*, where: Any, data: Any) -> Any:
+        update_calls.append({"where": where, "data": data})
+        return None
+
+    db.workflowexecution.update = _update
+
+    # Patch build_graph to return a stub that raises GraphInterrupt
+    from src.engine import langgraph_executor as lge_mod
+
+    class _FakeCompiled:
+        async def ainvoke(self, *args: Any, **kwargs: Any) -> Any:
+            raise GraphInterrupt([Interrupt(value={"node_id": "ua", "prompt": "Approve?"})])
+
+    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+
+    orchestrator = LangGraphExecutor(db, MagicMock())
+    await orchestrator.run("e1")
+
+    assert any(call["data"].get("status") == "waiting_approval" for call in update_calls), (
+        f"Expected waiting_approval update; got: {update_calls}"
+    )
+
+
+async def test_resume_approved_continues_to_completion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """resume() calls compiled.ainvoke(Command(resume=...)) and marks completed."""
+    from types import SimpleNamespace
+    from typing import Any
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    db = MagicMock()
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="e1",
+            workflowId="w1",
+            userId="dev",
+            threadId="t1",
+            input=None,
+        )
+    )
+    db.workflow = MagicMock()
+    db.workflow.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="w1",
+            name="t",
+            nodes=[
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
+            ],
+            edges=[{"id": "e1", "source": "s", "target": "e"}],
+        )
+    )
+    update_calls: list[dict[str, Any]] = []
+
+    async def _update(*, where: Any, data: Any) -> Any:
+        update_calls.append(data)
+        return None
+
+    db.workflowexecution.update = _update
+
+    from src.engine import langgraph_executor as lge_mod
+
+    class _FakeCompiled:
+        async def ainvoke(self, state: Any, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            return {"variables": {"lastOutput": "done"}, "node_results": {}}
+
+    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+
+    orchestrator = LangGraphExecutor(db, MagicMock())
+    await orchestrator.resume("e1", "approved")
+
+    assert any(c.get("status") == "completed" for c in update_calls), update_calls

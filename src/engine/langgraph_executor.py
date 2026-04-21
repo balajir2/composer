@@ -12,6 +12,8 @@ from datetime import UTC, datetime
 from typing import Any
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.errors import GraphInterrupt
+from langgraph.types import Command  # pyright: ignore[reportUnknownVariableType]
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
@@ -49,78 +51,173 @@ class LangGraphExecutor:
             }
         )
 
+    async def _load_execution(self, execution_id: str) -> Any:
+        """Load and return the execution row, or None if not found."""
+        return await self.db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+            where={"id": execution_id}
+        )
+
+    async def _prepare_compiled(self, execution: Any) -> tuple[Any, Any, dict[str, Any]]:
+        """Load workflow, build graph, prepare state + LangGraph config.
+
+        Returns (compiled_graph, state, langgraph_config).
+        """
+        workflow_row = await self.db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+            where={"id": execution.workflowId}
+        )
+        if workflow_row is None:
+            raise RuntimeError(f"Workflow {execution.workflowId!r} not found")
+
+        workflow = Workflow.model_validate(
+            {
+                "id": workflow_row.id,
+                "name": workflow_row.name,
+                "nodes": workflow_row.nodes,
+                "edges": workflow_row.edges,
+            }
+        )
+        compiled = build_graph(workflow, self.checkpointer)
+
+        state = initial_state(execution.input if execution.input is not None else "")
+        if execution.userId:
+            state["user_id"] = execution.userId  # Phase 7a
+
+        settings = get_settings()
+        ls_config = (
+            LangSmithConfig(
+                tracing_v2=settings.langchain_tracing_v2,
+                project=settings.langchain_project,
+                endpoint=settings.langchain_endpoint,
+                api_key=settings.langchain_api_key,
+            )
+            if settings.langchain_tracing_v2
+            else None
+        )
+        set_current_langsmith(ls_config)
+        set_current_db(self.db)
+
+        lg_config: dict[str, Any] = {"configurable": {"thread_id": execution.threadId}}
+        return compiled, state, lg_config
+
+    async def _mark_completed(self, execution_id: str, final_state: dict[str, Any]) -> None:
+        """Persist completed status + output/variables/nodeResults."""
+        final_vars: dict[str, Any] = final_state.get("variables") or {}
+        await self.db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
+            where={"id": execution_id},
+            data={
+                "status": "completed",
+                "output": Json(final_vars.get("finalOutput")),
+                "variables": Json(final_vars),
+                "nodeResults": Json(final_state.get("node_results") or {}),
+                "completedAt": datetime.now(UTC),
+            },
+        )
+
+    async def _mark_waiting_approval(
+        self,
+        execution_id: str,
+        interrupt_exc: GraphInterrupt,
+    ) -> None:
+        """Persist waiting_approval status + pending node/prompt into variables."""
+        # LangGraph's GraphInterrupt.args[0] or .value semantics vary by version — be defensive.
+        info_raw = getattr(interrupt_exc, "value", None)
+        if info_raw is None and interrupt_exc.args:
+            info_raw = interrupt_exc.args[0]
+
+        # LangGraph sometimes wraps as a list of Interrupt objects
+        if isinstance(info_raw, list) and info_raw:
+            first = info_raw[0]
+            # Interrupt dataclass has .value; else fall back to dict
+            info_val = getattr(first, "value", first)
+            info: dict[str, Any] = info_val if isinstance(info_val, dict) else {}
+        elif isinstance(info_raw, dict):
+            info = info_raw
+        else:
+            info = {}
+
+        pending_variables: dict[str, Any] = {
+            "_pending_approval_node": info.get("node_id"),
+            "_pending_approval_prompt": info.get("prompt"),
+        }
+        await self.db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
+            where={"id": execution_id},
+            data={
+                "status": "waiting_approval",
+                "variables": Json(pending_variables),
+            },
+        )
+
+    async def _mark_failed(self, execution_id: str, exc: Exception) -> None:
+        """Persist failed status + error message."""
+        await self.db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
+            where={"id": execution_id},
+            data={
+                "status": "failed",
+                "error": f"{type(exc).__name__}: {exc}",
+                "completedAt": datetime.now(UTC),
+            },
+        )
+
     async def run(self, execution_id: str) -> None:
         """Drive the compiled graph to completion and persist results.
 
         Exceptions are caught here — they're recorded on the execution row so
         the API caller sees status='failed' rather than a background crash.
+
+        If the graph raises GraphInterrupt (user-approval node hit), the
+        execution is marked waiting_approval instead of failed.
         """
-        execution = await self.db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"id": execution_id}
-        )
+        execution = await self._load_execution(execution_id)
         if execution is None:
             logger.error("Execution %s not found at run time", execution_id)
             return
 
         try:
-            workflow_row = await self.db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-                where={"id": execution.workflowId}
-            )
-            if workflow_row is None:
-                raise RuntimeError(f"Workflow {execution.workflowId!r} not found")
+            compiled, state, lg_config = await self._prepare_compiled(execution)
 
-            workflow = Workflow.model_validate(
-                {
-                    "id": workflow_row.id,
-                    "name": workflow_row.name,
-                    "nodes": workflow_row.nodes,
-                    "edges": workflow_row.edges,
-                }
-            )
-            compiled = build_graph(workflow, self.checkpointer)
+            try:
+                final_state: dict[str, Any] = await compiled.ainvoke(state, config=lg_config)
+            except GraphInterrupt as interrupt_exc:
+                logger.info("Execution %s paused at user-approval node", execution_id)
+                await self._mark_waiting_approval(execution_id, interrupt_exc)
+                return
 
-            state = initial_state(execution.input if execution.input is not None else "")
-            if execution.userId:
-                state["user_id"] = execution.userId  # Phase 7a
-            settings = get_settings()
-            ls_config = (
-                LangSmithConfig(
-                    tracing_v2=settings.langchain_tracing_v2,
-                    project=settings.langchain_project,
-                    endpoint=settings.langchain_endpoint,
-                    api_key=settings.langchain_api_key,
-                )
-                if settings.langchain_tracing_v2
-                else None
-            )
-            set_current_langsmith(ls_config)
-            set_current_db(self.db)
-            final_state = await compiled.ainvoke(
-                state,
-                config={"configurable": {"thread_id": execution.threadId}},
-            )
+            await self._mark_completed(execution_id, final_state)
 
-            final_vars: dict[str, Any] = final_state.get("variables") or {}
-            await self.db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
-                where={"id": execution_id},
-                data={
-                    "status": "completed",
-                    "output": Json(final_vars.get("finalOutput")),
-                    "variables": Json(final_vars),
-                    "nodeResults": Json(final_state.get("node_results") or {}),
-                    "completedAt": datetime.now(UTC),
-                },
-            )
         except Exception as exc:
             logger.exception("Execution %s failed", execution_id)
-            await self.db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
-                where={"id": execution_id},
-                data={
-                    "status": "failed",
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "completedAt": datetime.now(UTC),
-                },
-            )
+            await self._mark_failed(execution_id, exc)
+
+    async def resume(self, execution_id: str, decision: str) -> None:
+        """Continue a paused execution with a user decision (approved/rejected).
+
+        Loads the execution checkpoint via LangGraph's PrismaCheckpointSaver and
+        feeds the decision via Command(resume=decision).  If another user-approval
+        node is hit during resume, the execution is marked waiting_approval again.
+        """
+        execution = await self._load_execution(execution_id)
+        if execution is None:
+            logger.error("Execution %s not found at resume time", execution_id)
+            return
+
+        try:
+            compiled, _state, lg_config = await self._prepare_compiled(execution)
+
+            try:
+                final_state: dict[str, Any] = await compiled.ainvoke(
+                    Command(resume=decision),  # pyright: ignore[reportArgumentType]
+                    config=lg_config,
+                )
+            except GraphInterrupt as interrupt_exc:
+                logger.info("Execution %s paused again at another user-approval node", execution_id)
+                await self._mark_waiting_approval(execution_id, interrupt_exc)
+                return
+
+            await self._mark_completed(execution_id, final_state)
+
+        except Exception as exc:
+            logger.exception("Execution %s failed during resume", execution_id)
+            await self._mark_failed(execution_id, exc)
 
 
 __all__ = ["LangGraphExecutor"]
