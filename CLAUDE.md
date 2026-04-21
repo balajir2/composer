@@ -78,7 +78,8 @@ Supporting docs in `docs/design/` provide historical context and product/strateg
 | 4b — Control-flow (if-else, while) | ✅ Complete | add_conditional_edges; while cap 100; both if-else branches + while countdown verified against real Neon |
 | 7a — Deployment-mode toggle + auth middleware | ✅ Complete | standalone vs embedded; User table; dev-mode fallback (ADR-0015); brought forward from Phase 7 |
 | 5a — User-approval + interrupt/resume | ✅ Complete | `interrupt()` pause via `aget_state`; `/executions/{id}/resume`; `Approval` table; both branches verified against real Neon |
-| 5b — SSE streaming | ⏭ Next | real-time execution events (`GET /executions/{id}/events`) |
+| 5b — SSE streaming | ✅ Complete | `GET /executions/{id}/events` with in-process asyncio bus; 5 event types; full taxonomy verified against real Neon |
+| 6 — Guardrails, Note, Vector-DB, Gamma, Arcade | ⏭ Next | visual + data executors (see design §6) |
 | 6 — Guardrails, Note, Vector-DB, Gamma, Arcade | ⏸ | |
 | 7 — API parity + regression suite ported | ⏸ | |
 | 8 — Security + hardening | ⏸ | |

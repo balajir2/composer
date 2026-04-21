@@ -490,6 +490,6 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 - Five event types in MVP: `status-change`, `node-start`, `node-complete`, `approval-pending`, `approval-resumed`. LLM token streaming is Phase 10+.
 - Keepalive via SSE comment every 15s — detects dead clients and prevents proxy idle-closes.
 
-**Implemented by.** Phase 5b (commits TBD).
+**Implemented by.** Phase 5b (commits `40ef435`…`a6a4a98`, 2026-04-21).
 
 **Related.** ADR-0001 (PrismaCheckpointSaver — same single-process assumption), ADR-0016 (Phase 5a emits `approval-pending` / `approval-resumed`), [Phase 5b spec](../superpowers/specs/2026-04-21-phase-5b-sse-streaming-design.md).

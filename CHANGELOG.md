@@ -6,6 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 5b — SSE streaming (2026-04-21)
+
+#### Added
+- [Phase 5b design spec](docs/superpowers/specs/2026-04-21-phase-5b-sse-streaming-design.md) + ADR-0017.
+- `src/engine/events.py` — `ExecutionEventBus` (in-process asyncio fanout, bounded per-subscriber queue with drop-oldest overflow) + `ExecutionEvent` frozen dataclass with typed `EventType` literal.
+- `src/engine/events_wrapper.py` — `wrap_executor_with_events` applied inside `graph_builder.build_graph`. Every executor emits `node-start` / `node-complete` automatically (no per-executor changes).
+- `src/engine/context.py` — new ContextVars `current_execution_id`, `current_event_bus`. Set by `LangGraphExecutor._prepare_compiled`; read by the node wrapper.
+- `src/engine/langgraph_executor.py` — emits `status-change(running/completed/failed/waiting_approval)` on every transition, `approval-pending` on pause; closes the event stream on every terminal path. `__init__` gains optional `event_bus` parameter (default None for back-compat).
+- `src/api/events.py` — `GET /executions/{id}/events` Server-Sent Events endpoint. Snapshot-on-subscribe (first frame is `status-change` with current DB status), 15s keepalive via SSE comment, auto-unsubscribe on client disconnect, bounded per-subscriber queue.
+- `src/api/executions.py` — `POST /resume` now emits `approval-resumed` with `{node_id, decision}` synchronously (before the BackgroundTask).
+- `src/storage/db.py` — `event_bus` attached to `app.state` in `prisma_lifespan` alongside the checkpointer; new `get_event_bus(request)` dependency.
+- Integration test: full approved-path SSE stream against real Neon; asserts `approval-resumed`, `status-change(completed)`, and post-resume `node-start`/`node-complete` events.
+
+#### Changed
+- `LangGraphExecutor.__init__` accepts optional `event_bus` parameter (defaults to None for back-compat with existing tests).
+- All executors participate in event emission via the graph-build-time wrapper — no per-executor edits needed.
+
+#### Fixed
+- Integration-test race caught by real Neon: `approval-pending` emits before the SSE subscriber's HTTP connection can establish. Snapshot-on-subscribe (spec §9) does not replay past events, so asserting on `approval-pending` in the integration test was racy. Revised assertions rely only on events guaranteed after the subscriber connects: `approval-resumed`, `status-change(completed)`, and post-resume node events. Commit `a6a4a98`.
+
+#### Verified
+- 401/401 unit tests green (+19 from Phase 5a baseline of 382).
+- 3/3 integration tests green against real Neon: SSE approved path + approved + rejected (Phase 5a regression).
+- Pyright 0 errors, ruff + format clean.
+
+#### Deliberate design choices (see ADR-0017)
+- In-process asyncio bus, not Postgres `LISTEN/NOTIFY` or Redis. Zero new infra; multi-worker fanout is a Phase 9 concern.
+- SSE over WebSocket — stateless, plays with standard HTTP middleware, no new dependencies.
+- Snapshot-on-subscribe: first frame is always `status-change` with current DB status. No event replay; DB remains authoritative for history via `GET /executions/{id}`.
+- Bounded per-subscriber queue (128) with drop-oldest overflow: slow subscribers never stall the emitter. Stream is advisory; authoritative state lives in Postgres.
+- Five event types only. LLM token streaming is a Phase 10 UI concern.
+- Any authenticated user can subscribe in 5b (same as `/resume`). RBAC is Phase 7b+.
+
 ### Phase 5a — User-approval + interrupt/resume (2026-04-21)
 
 #### Added
