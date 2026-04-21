@@ -354,6 +354,6 @@ Scope exposes: `variables`, `lastOutput`, `node_results`, and a per-call `extra_
 - Adding an operator / function means editing `_eval.py` once. No per-executor drift.
 - CI gate: ruff `S307` rule (use of `eval`) runs as error.
 
-**Implemented by.** Phase 4a (commits TBD).
+**Implemented by.** Phase 4a (commits `10e88ef`..`42fcf92` on `main`, 2026-04-21).
 
 **Related.** ADR-0002 (workflow schema), [Phase 4a spec](../superpowers/specs/2026-04-21-phase-4a-linear-executors-design.md), CLAUDE.md §Conventions ("NEVER `eval()`; use `simpleeval`").
