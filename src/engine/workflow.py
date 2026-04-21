@@ -329,8 +329,13 @@ class ArcadeNode(BaseModel):
 
 
 class JoinChunksNodeData(BaseNodeData):
-    # TODO(phase-6): tighten when OAB's join-chunks executor is studied.
-    config: dict[str, Any] = Field(default_factory=dict)
+    model_config = ConfigDict(populate_by_name=True)
+
+    variable: str = Field(alias="joinChunksVariable")
+    separator: str = Field(default="\n\n", alias="joinChunksSeparator")
+    prefix: str = Field(default="", alias="joinChunksPrefix")
+    suffix: str = Field(default="", alias="joinChunksSuffix")
+    include_metadata: bool = Field(default=False, alias="joinChunksIncludeMetadata")
 
 
 class JoinChunksNode(BaseModel):

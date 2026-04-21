@@ -203,8 +203,15 @@ ALL_NODE_TYPES = [
 ]
 
 
+# Minimal data overrides for node types that have required fields beyond `label`.
+_MINIMAL_DATA_OVERRIDES: dict[str, dict[str, object]] = {
+    "join-chunks": {"label": "X", "joinChunksVariable": "chunks"},
+}
+
+
 @pytest.mark.parametrize("node_type", ALL_NODE_TYPES)
 def test_every_node_type_parses_minimal_instance(node_type: str) -> None:
+    node_data = _MINIMAL_DATA_OVERRIDES.get(node_type, {"label": "X"})
     wf = Workflow.model_validate(
         {
             "name": "T",
@@ -214,7 +221,7 @@ def test_every_node_type_parses_minimal_instance(node_type: str) -> None:
                     "id": "x",
                     "type": node_type,
                     "position": {"x": 100, "y": 0},
-                    "data": {"label": "X"},
+                    "data": node_data,
                 },
                 {"id": "e", "type": "end", "position": {"x": 200, "y": 0}, "data": {"label": "E"}},
             ],
@@ -252,3 +259,67 @@ def test_workflow_edge_branch_round_trip_json() -> None:
     edge = WorkflowEdge.model_validate({"id": "e1", "source": "x", "target": "y", "branch": "body"})
     dumped = edge.model_dump(mode="json")
     assert dumped["branch"] == "body"
+
+
+def test_join_chunks_node_data_parses_camelcase_aliases() -> None:
+    from src.engine.workflow import JoinChunksNodeData
+
+    data = JoinChunksNodeData.model_validate(
+        {
+            "label": "JC",
+            "joinChunksVariable": "chunks",
+            "joinChunksSeparator": "\n---\n",
+            "joinChunksPrefix": "> ",
+            "joinChunksSuffix": " <",
+            "joinChunksIncludeMetadata": True,
+        }
+    )
+    assert data.variable == "chunks"
+    assert data.separator == "\n---\n"
+    assert data.prefix == "> "
+    assert data.suffix == " <"
+    assert data.include_metadata is True
+
+
+def test_join_chunks_node_data_defaults() -> None:
+    from src.engine.workflow import JoinChunksNodeData
+
+    data = JoinChunksNodeData.model_validate(
+        {
+            "label": "JC",
+            "joinChunksVariable": "chunks",
+        }
+    )
+    assert data.variable == "chunks"
+    assert data.separator == "\n\n"
+    assert data.prefix == ""
+    assert data.suffix == ""
+    assert data.include_metadata is False
+
+
+def test_join_chunks_node_data_missing_variable_raises() -> None:
+    from pydantic import ValidationError
+
+    from src.engine.workflow import JoinChunksNodeData
+
+    with pytest.raises(ValidationError):
+        JoinChunksNodeData.model_validate({"label": "JC"})
+
+
+def test_join_chunks_node_full_round_trip() -> None:
+    from src.engine.workflow import JoinChunksNode
+
+    node = JoinChunksNode.model_validate(
+        {
+            "id": "jc1",
+            "type": "join-chunks",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "JC",
+                "joinChunksVariable": "chunks",
+            },
+        }
+    )
+    assert node.id == "jc1"
+    assert node.type == "join-chunks"
+    assert node.data.variable == "chunks"
