@@ -40,6 +40,7 @@ def _client_with_execution(
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", "development")
     from src.config import get_settings
+    from src.engine.events import ExecutionEventBus
 
     get_settings.cache_clear()
     app = create_app()
@@ -52,6 +53,7 @@ def _client_with_execution(
     db.approval.create = AsyncMock()
     app.state.db = db
     app.state.checkpointer = MagicMock()
+    app.state.event_bus = ExecutionEventBus()
     return TestClient(app), db
 
 
@@ -133,3 +135,38 @@ def test_resume_marks_execution_running_before_scheduling_task(
     assert db.workflowexecution.update.await_count >= 1
     first_update = db.workflowexecution.update.await_args_list[0]
     assert first_update.kwargs["data"]["status"] == "running"
+
+
+def test_resume_emits_approval_resumed_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    """POST /resume emits approval-resumed to the event bus with the decision."""
+    import asyncio
+
+    client, _db = _client_with_execution(monkeypatch, _execution_row())
+    bus: Any = getattr(client.app, "state").event_bus  # noqa: B009
+
+    async def _collect_after_post() -> list[Any]:
+        q = await bus.subscribe("e1")
+        events: list[Any] = []
+        # Kick off the HTTP call while the subscriber is active
+        client.post(
+            "/executions/e1/resume",
+            json={"decision": "approved", "note": "ok"},
+        )
+        # Drain whatever is already in the queue
+        try:
+            while True:
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=0.2)
+                except TimeoutError:
+                    break
+                if ev is None:
+                    break
+                events.append(ev)
+        finally:
+            await bus.unsubscribe("e1", q)
+        return events
+
+    events = asyncio.run(_collect_after_post())
+    resumed = [e for e in events if e.type == "approval-resumed"]
+    assert resumed, f"no approval-resumed event; got {[(e.type, e.payload) for e in events]}"
+    assert resumed[0].payload == {"node_id": "ua", "decision": "approved"}
