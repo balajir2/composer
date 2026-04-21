@@ -195,9 +195,11 @@ class TransformNode(BaseModel):
 
 
 class DataTransformNodeData(BaseNodeData):
-    # OAB field shape: loose until Phase 4 inspects lib/workflow/executors/data-transform.ts
-    # TODO(phase-4): tighten against OAB's DataTransform node fields.
-    config: dict[str, Any] = Field(default_factory=dict)
+    operation: str = "map"  # map | filter | reduce
+    collection: str = ""  # simpleeval expression that yields an iterable
+    expression: str = ""  # per-item expression
+    item_var: str = Field(default="item", alias="itemVar")
+    initial: Any | None = None  # used only for reduce
 
 
 class DataTransformNode(BaseModel):
