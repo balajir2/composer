@@ -59,6 +59,7 @@ async def test_linear_workflow_http_extract_set_state(client: AsyncClient) -> No
                     "data": {
                         "label": "X",
                         "jsonSchema": {
+                            "title": "Todo",
                             "type": "object",
                             "properties": {
                                 "title": {"type": "string"},
