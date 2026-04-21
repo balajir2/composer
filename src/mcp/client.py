@@ -16,6 +16,7 @@ See Phase 3a spec §6.
 
 import itertools
 import json
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -47,10 +48,12 @@ class MCPClient:
         self,
         url: str,
         auth_header: dict[str, str] | None = None,
+        auth_header_factory: Callable[[], Awaitable[dict[str, str]]] | None = None,
         timeout: float = _DEFAULT_TIMEOUT,
     ) -> None:
         self._url = url
         self._auth_header = dict(auth_header) if auth_header else {}
+        self._auth_header_factory = auth_header_factory
         self._timeout = timeout
         # Per-instance counter so each MCPClient starts at id=1.
         # This keeps test isolation intact and matches OAB's spirit of
@@ -82,10 +85,14 @@ class MCPClient:
     async def _rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         rpc_id = next(self._counter)
         body = {"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params}
+        if self._auth_header_factory is not None:
+            auth: dict[str, str] = await self._auth_header_factory()
+        else:
+            auth = self._auth_header
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json, text/event-stream",
-            **self._auth_header,
+            **auth,
         }
         try:
             async with httpx.AsyncClient(timeout=self._timeout) as client:

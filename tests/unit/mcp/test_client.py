@@ -135,3 +135,58 @@ async def test_auth_header_sent(httpx_mock: HTTPXMock) -> None:  # pyright: igno
     req = httpx_mock.get_request()
     assert req is not None
     assert req.headers.get("authorization") == "Bearer abc"
+
+
+async def test_auth_header_factory_is_called_per_request(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
+    """For OAuth: the factory must fire on every _rpc call so near-expiry refreshes apply."""
+    call_count = {"n": 0}
+
+    async def _factory() -> dict[str, str]:
+        call_count["n"] += 1
+        return {"Authorization": f"Bearer token-{call_count['n']}"}
+
+    httpx_mock.add_response(
+        url="https://mcp.example.com/rpc",
+        method="POST",
+        json={"jsonrpc": "2.0", "id": 1, "result": {"tools": []}},
+    )
+    httpx_mock.add_response(
+        url="https://mcp.example.com/rpc",
+        method="POST",
+        json={"jsonrpc": "2.0", "id": 2, "result": {"tools": []}},
+    )
+
+    client = MCPClient(
+        "https://mcp.example.com/rpc",
+        auth_header_factory=_factory,
+    )
+    await client.tools_list()
+    await client.tools_list()
+
+    # Two outbound requests → two factory calls
+    assert call_count["n"] == 2
+    reqs = httpx_mock.get_requests()
+    assert reqs[0].headers.get("authorization") == "Bearer token-1"
+    assert reqs[1].headers.get("authorization") == "Bearer token-2"
+
+
+async def test_auth_header_factory_takes_precedence_over_dict(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
+    """If both auth_header and auth_header_factory are provided, factory wins."""
+
+    async def _factory() -> dict[str, str]:
+        return {"Authorization": "Bearer factory-wins"}
+
+    httpx_mock.add_response(
+        url="https://mcp.example.com/rpc",
+        method="POST",
+        json={"jsonrpc": "2.0", "id": 1, "result": {"tools": []}},
+    )
+    client = MCPClient(
+        "https://mcp.example.com/rpc",
+        auth_header={"Authorization": "Bearer dict-loses"},
+        auth_header_factory=_factory,
+    )
+    await client.tools_list()
+    req = httpx_mock.get_request()
+    assert req is not None
+    assert req.headers.get("authorization") == "Bearer factory-wins"
