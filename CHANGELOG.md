@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 6a — Note + Join-Chunks (2026-04-21)
+
+#### Added
+- [Phase 6a design spec](docs/superpowers/specs/2026-04-21-phase-6a-note-join-chunks-design.md).
+- `src/executors/join_chunks.py` — `JoinChunksExecutor` concatenates a list of chunks (strings, or dicts with `content`/`metadata`) with configurable separator/prefix/suffix; optionally appends `[metadata: {json}]` per chunk. Output to `lastOutput`. Errors: missing variable / non-list value → `JoinChunksNodeError`; empty list → empty string.
+- `src/engine/workflow.py` — `JoinChunksNodeData` tightened with explicit fields (replaces Phase 1 `config: dict[str, Any]` placeholder). Matches OAB `types.ts:132-137` aliases (`joinChunksVariable`, `joinChunksSeparator`, `joinChunksPrefix`, `joinChunksSuffix`, `joinChunksIncludeMetadata`).
+- Integration test against real Neon: `start → set-state(list) → join-chunks → end`, asserts final `lastOutput`.
+
+#### Notes
+- OAB did NOT ship an executor for `join-chunks` (the type was declared in `types.ts` but unwired in `langgraph.ts`). Composer implements the behavior per the declared field semantics.
+- `note` is visual-only; already skipped at graph-build time since Phase 1. The existing regression test at `tests/unit/engine/test_graph_builder.py:166` locks this behavior (inspects the compiled graph to confirm note nodes are NOT registered as LangGraph nodes).
+- Phase 6a is the "local executor" sub-phase; 6b (guardrails), 6c (gamma-ai + arcade), and 6d (vector-db) add external-API integrations next.
+
+#### Verified
+- 417/417 unit tests green (+16 from Phase 5b baseline of 401: 12 executor tests + 4 Pydantic model tests).
+- 1/1 integration test green against real Neon.
+- Pyright 0 errors, ruff + format clean.
+
 ### Phase 5b — SSE streaming (2026-04-21)
 
 #### Added
