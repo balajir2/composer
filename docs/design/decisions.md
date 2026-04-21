@@ -523,3 +523,29 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 **Implemented by.** Phase 6b (commits `c4904ed`…`9121111`, 2026-04-21).
 
 **Related.** ADR-0006 (LLM provider framework — Phase 2), ADR-0012 (simpleeval for if-else conditions — how downstream branches on `_guardrails_result.passed`), [Phase 6b spec](../superpowers/specs/2026-04-21-phase-6b-guardrails-design.md).
+
+---
+
+## ADR-0019: `/executions/{id}/resume` handles both user-approval and arcade-auth flows
+
+**Status.** Accepted.
+**Date.** 2026-04-21.
+
+**Context.** Phase 6d ships the `arcade` executor — HTTP integration with arcade.dev's tool-execution API. Arcade's auth flow requires the user to visit an OAuth URL externally and return to the workflow. That's structurally identical to Phase 5a's user-approval pattern (pause via `interrupt()`, resume via `POST /executions/{id}/resume`). Two options:
+1. **Reuse `/resume`** — the same endpoint handles both user-approval decisions AND arcade-auth retries. The executor owns the re-entry semantic.
+2. **Dedicated `/arcade-auth-check` endpoint** — separate surface area for each interrupt source.
+
+**Decision.** Option 1 — reuse `/resume`. `ArcadeExecutor` reads `_approval_<node_id>` from state on re-entry: `approved` means "retry auth", `rejected` means cancel (raise `ArcadeUserCanceledError`). The SSE `approval-pending` event payload carries optional `auth_url` / `auth_id` / `tool_name` fields for Arcade-style interrupts; existing user-approval consumers ignore unknown keys.
+
+**Alternatives considered.** Option 2 was rejected on YAGNI: the interrupt/resume shape is identical across both cases, only the executor's re-entry logic differs. Adding a second endpoint duplicates auth/validation/BackgroundTask scheduling for no gain.
+
+**Consequences.**
+- Single endpoint, single event type, single bus primitive — less surface area.
+- Future auth-interrupt executors (Phase 7+ Slack/Gmail/etc. tool integrations) reuse the same pattern without new infrastructure.
+- `_approval_<node_id>` in state becomes a generic "resume decision" signal, not specifically a user-approval artifact. Documented.
+- Retry counter bounded at `MAX_RETRIES=3` in `ArcadeExecutor` prevents infinite loops on broken OAuth URLs; stored in `state.variables["_arcade_retries_<node_id>"]`.
+- Payload extensibility: `approval-pending.payload` gains optional fields — existing SSE consumers are unaffected (dict, unknown keys ignored).
+
+**Implemented by.** Phase 6d (commits TBD).
+
+**Related.** ADR-0016 (user-approval + interrupt/resume — the primitive being reused), ADR-0017 (SSE streaming — the `approval-pending` event type extended here), [Phase 6d spec](../superpowers/specs/2026-04-21-phase-6d-arcade-design.md).
