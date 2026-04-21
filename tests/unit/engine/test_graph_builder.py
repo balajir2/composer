@@ -151,12 +151,7 @@ def test_build_graph_rejects_unshipped_executor_type() -> None:
     wf = _mk(
         nodes=[
             {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-            {
-                "id": "h",
-                "type": "user-approval",
-                "position": {"x": 0, "y": 0},
-                "data": {"label": "H"},
-            },
+            {"id": "h", "type": "guardrails", "position": {"x": 0, "y": 0}, "data": {"label": "H"}},
             {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
         ],
         edges=[
@@ -164,7 +159,7 @@ def test_build_graph_rejects_unshipped_executor_type() -> None:
             {"id": "e2", "source": "h", "target": "e"},
         ],
     )
-    with pytest.raises(NotImplementedError, match="Phase 5"):
+    with pytest.raises(NotImplementedError, match="Phase 6"):
         build_graph(wf, MemorySaver())
 
 
@@ -434,4 +429,113 @@ def test_conditional_source_duplicate_branch_raises() -> None:
         }
     )
     with pytest.raises(WorkflowValidationError, match=r"[Dd]uplicate"):
+        build_graph(wf, MemorySaver())
+
+
+# ---------------------------------------------------------------------------
+# Task 3 (Phase 5a): user-approval conditional-edge emission
+# ---------------------------------------------------------------------------
+
+
+def test_conditional_edges_compile_for_user_approval() -> None:
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from src.engine.graph_builder import build_graph
+    from src.engine.workflow import Workflow
+
+    wf = Workflow.model_validate(
+        {
+            "id": "w1",
+            "name": "user-approval test",
+            "nodes": [
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "ua",
+                    "type": "user-approval",
+                    "position": {"x": 100, "y": 0},
+                    "data": {"label": "UA", "approvalMessage": "Please approve"},
+                },
+                {"id": "a", "type": "end", "position": {"x": 200, "y": 0}, "data": {"label": "A"}},
+                {
+                    "id": "b",
+                    "type": "end",
+                    "position": {"x": 200, "y": 100},
+                    "data": {"label": "B"},
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "s", "target": "ua"},
+                {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
+                {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
+            ],
+        }
+    )
+    compiled = build_graph(wf, MemorySaver())
+    assert compiled is not None
+
+
+def test_user_approval_missing_approved_branch_raises() -> None:
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from src.engine.graph_builder import WorkflowValidationError, build_graph
+    from src.engine.workflow import Workflow
+
+    wf = Workflow.model_validate(
+        {
+            "id": "w1",
+            "name": "bad user-approval",
+            "nodes": [
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "ua",
+                    "type": "user-approval",
+                    "position": {"x": 100, "y": 0},
+                    "data": {"label": "UA", "approvalMessage": "Please approve"},
+                },
+                {"id": "b", "type": "end", "position": {"x": 200, "y": 0}, "data": {"label": "B"}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "s", "target": "ua"},
+                {"id": "e2", "source": "ua", "target": "b", "branch": "rejected"},
+            ],
+        }
+    )
+    with pytest.raises(WorkflowValidationError, match="approved"):
+        build_graph(wf, MemorySaver())
+
+
+def test_user_approval_wrong_branch_name_raises() -> None:
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from src.engine.graph_builder import WorkflowValidationError, build_graph
+    from src.engine.workflow import Workflow
+
+    wf = Workflow.model_validate(
+        {
+            "id": "w1",
+            "name": "bad branch name",
+            "nodes": [
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "ua",
+                    "type": "user-approval",
+                    "position": {"x": 100, "y": 0},
+                    "data": {"label": "UA", "approvalMessage": "Approve?"},
+                },
+                {"id": "a", "type": "end", "position": {"x": 200, "y": 0}, "data": {"label": "A"}},
+                {
+                    "id": "b",
+                    "type": "end",
+                    "position": {"x": 200, "y": 100},
+                    "data": {"label": "B"},
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "s", "target": "ua"},
+                {"id": "e2", "source": "ua", "target": "a", "branch": "yes"},
+                {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
+            ],
+        }
+    )
+    with pytest.raises(WorkflowValidationError, match="yes"):
         build_graph(wf, MemorySaver())

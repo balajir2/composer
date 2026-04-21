@@ -15,7 +15,14 @@ from langgraph.graph import StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from src.engine.state import WorkflowStateDict
-from src.engine.workflow import IfElseNode, WhileNode, Workflow, WorkflowEdge, WorkflowNode
+from src.engine.workflow import (
+    IfElseNode,
+    UserApprovalNode,
+    WhileNode,
+    Workflow,
+    WorkflowEdge,
+    WorkflowNode,
+)
 
 # Executors are registered as a side effect of import; importing them here
 # ensures the registry is populated before build_graph reads it.
@@ -124,8 +131,8 @@ def validate_workflow_shape(workflow: Workflow) -> None:
 
     _check_edges(workflow.edges, set(nodes.keys()))
 
-    # Phase 4b: branch labels must match source type.
-    _conditional_types = {"if-else", "while"}
+    # Phase 4b/5a: branch labels must match source type.
+    _conditional_types = {"if-else", "while", "user-approval"}
     for edge in workflow.edges:
         source = nodes[edge.source]
         if source.type in _conditional_types:
@@ -222,6 +229,19 @@ def _route_while(node: WhileNode) -> Callable[[WorkflowStateDict], str]:
     return _router
 
 
+def _route_user_approval(
+    node: UserApprovalNode,
+) -> Callable[[WorkflowStateDict], str]:
+    """Router for user-approval: reads _approval_<node_id> from variables."""
+
+    def _router(state: WorkflowStateDict) -> str:
+        variables = state.get("variables") or {}
+        decision = variables.get(f"_approval_{node.id}")
+        return "approved" if decision == "approved" else "rejected"
+
+    return _router
+
+
 def build_graph(
     workflow: Workflow,
     checkpointer: BaseCheckpointSaver[Any],
@@ -248,12 +268,8 @@ def build_graph(
     # Emit normal edges first; conditional edges handled in a second pass.
     for edge in workflow.edges:
         source_node = nodes_by_id[edge.source]
-        if source_node.type in {"if-else", "while"}:
+        if source_node.type in {"if-else", "while", "user-approval"}:
             continue  # handled by conditional-edges pass below
-        if source_node.type == "user-approval":
-            raise NotImplementedError(
-                "Conditional edges from node type 'user-approval' land in Phase 5."
-            )
         # Skip edges whose source or target is a note node
         if source_node.type == "note":
             continue
@@ -280,6 +296,15 @@ def build_graph(
             )
             builder.add_conditional_edges(  # pyright: ignore[reportUnknownMemberType]
                 node.id, _route_while(node), mapping
+            )
+        elif node.type == "user-approval":
+            assert isinstance(node, UserApprovalNode)
+            mapping = cast(
+                "dict[Hashable, str]",
+                _branch_mapping(node, list(workflow.edges), {"approved", "rejected"}),
+            )
+            builder.add_conditional_edges(  # pyright: ignore[reportUnknownMemberType]
+                node.id, _route_user_approval(node), mapping
             )
 
     start_id = next(n.id for n in workflow.nodes if n.type == "start")
