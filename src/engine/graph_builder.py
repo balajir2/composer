@@ -31,6 +31,9 @@ from src.executors import (
     agent as _agent_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
 from src.executors import (
+    arcade as _arcade_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+)
+from src.executors import (
     data_transform as _data_transform_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
 from src.executors import end as _end_executor  # noqa: F401  # pyright: ignore[reportUnusedImport]
