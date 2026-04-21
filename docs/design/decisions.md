@@ -357,3 +357,28 @@ Scope exposes: `variables`, `lastOutput`, `node_results`, and a per-call `extra_
 **Implemented by.** Phase 4a (commits `10e88ef`..`42fcf92` on `main`, 2026-04-21).
 
 **Related.** ADR-0002 (workflow schema), [Phase 4a spec](../superpowers/specs/2026-04-21-phase-4a-linear-executors-design.md), CLAUDE.md §Conventions ("NEVER `eval()`; use `simpleeval`").
+
+---
+
+## ADR-0013: Conditional edges carry a `branch` label on `WorkflowEdge`
+
+**Status.** Accepted.
+**Date.** 2026-04-21.
+
+**Context.** Phase 4b introduces conditional routing (`if-else`, `while`). Three options for teaching `graph_builder` which outgoing edge represents which branch:
+1. Runtime inference from node-data fields (`true_path` / `false_path`). Two sources of truth; UI-drawn edge can silently disagree.
+2. Position-based (first edge = true, second = false). Edge-list order is not stable across serialise/deserialise.
+3. Explicit `branch` label on each edge. Validation: conditional source requires branch; normal source forbids it.
+
+**Decision.** Option 3. `WorkflowEdge` gains `branch: str | None = None`. Values: `{"true","false"}` for `if-else`, `{"body","exit"}` for `while`. `graph_builder` builds its routing mapping from edge labels at compile time. Legacy data-level fields (`true_path`/`false_path`/`false_path`) become UI-only; the executor + router ignore them.
+
+**Alternatives considered.** (See above.)
+
+**Consequences.**
+- Workflow JSON schema gains one optional field. Back-compatible: Phase 1–3 workflows (no `branch`) still validate.
+- `_branch_mapping` helper in `graph_builder.py` validates the edge set matches the required branch set exactly (missing/extra/duplicate → WorkflowValidationError).
+- Phase 10 UI auto-assigns `branch` when the user drags edges from a conditional node.
+
+**Implemented by.** Phase 4b (commits TBD).
+
+**Related.** ADR-0002 (workflow schema), ADR-0012 (simpleeval is the only eval primitive), [Phase 4b spec](../superpowers/specs/2026-04-21-phase-4b-control-flow-design.md).
