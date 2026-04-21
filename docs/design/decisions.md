@@ -493,3 +493,33 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 **Implemented by.** Phase 5b (commits `40ef435`…`a6a4a98`, 2026-04-21).
 
 **Related.** ADR-0001 (PrismaCheckpointSaver — same single-process assumption), ADR-0016 (Phase 5a emits `approval-pending` / `approval-resumed`), [Phase 5b spec](../superpowers/specs/2026-04-21-phase-5b-sse-streaming-design.md).
+
+---
+
+## ADR-0018: Guardrails implemented as LLM-based classifier
+
+**Status.** Accepted.
+**Date.** 2026-04-21.
+
+**Context.** OAB's guardrails executor shipped a 4-word hardcoded bad-word list with an explicit `TODO: Integrate with content moderation APIs`. Composer rebuilds the feature per OAB's data-shape contract (`piiEnabled`, `moderationEnabled`, `jailbreakEnabled`, `hallucinationEnabled`, `actionOnViolation`). Three implementation options:
+1. Faithful stub port (copy the hardcoded word list). Matches OAB exactly but is useless in prod.
+2. LLM-based classifier using the Phase 2 `build_chat_model` framework. One LLM call per enabled check; concurrent via `asyncio.gather`.
+3. Direct integration with a purpose-built moderation API (e.g., OpenAI Moderation). Most accurate for moderation specifically, but adds a new API dependency and doesn't cover PII/jailbreak/hallucination.
+
+**Decision.** Option 2. Prompts are frozen in source (not user-configurable) — guardrails is a safety feature whose behavior should be deterministic and auditable; users who want custom rules compose `agent + if-else`.
+
+**Alternatives considered.** Option 1 rejected on usefulness. Option 3 rejected on dependency + coverage (only covers one of four check types). A future phase may add a provider framework (like LLM providers) if multiple guardrails backends are demanded.
+
+**Consequences.**
+- Works across all four Phase 2 LLM providers without additional deps.
+- Latency scales with enabled-check count; `asyncio.gather` parallelizes.
+- Cost per execution is 1 LLM call per enabled check — documented in CHANGELOG so users can pick cheap models (Haiku) when guardrails run hot.
+- Accuracy depends on the chosen model. Fast/cheap models (e.g., Haiku) may have more false negatives on subtle attacks. Users can tune.
+- Prompt changes are code changes — gives us an audit trail via git history.
+- Response parsing is conservative: ambiguous answers are treated as `NO` (pass). This is a deliberate anti-false-positive bias; guardrails is defense-in-depth.
+- Output dual-written: structured dict on `_guardrails_result` (for `if-else` branching) + human-readable summary on `lastOutput` (for downstream display).
+- `action_on_violation='block'` raises `GuardrailViolationError` → execution fails.
+
+**Implemented by.** Phase 6b (commits TBD).
+
+**Related.** ADR-0006 (LLM provider framework — Phase 2), ADR-0012 (simpleeval for if-else conditions — how downstream branches on `_guardrails_result.passed`), [Phase 6b spec](../superpowers/specs/2026-04-21-phase-6b-guardrails-design.md).
