@@ -12,6 +12,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.mcp.base import McpToolProvider
+from src.mcp.oauth import (
+    InvalidStateError,
+    OAuthError,
+    build_authorize_url,
+    exchange_code_for_tokens,
+)
 from src.mcp.schema_adapter import (
     UnresolvedUrlTemplateError,
     substitute_url_placeholders,
@@ -63,6 +69,24 @@ class McpServerRead(BaseModel):
 class TestConnectionResponse(BaseModel):
     ok: bool
     message: str
+
+
+class OAuthAuthorizeRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    redirect_uri: str = Field(alias="redirectUri")
+
+
+class OAuthAuthorizeResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    authorize_url: str = Field(alias="authorizeUrl")
+
+
+class OAuthCallbackResponse(BaseModel):
+    ok: bool
+    server_id: str = Field(alias="serverId")
+    model_config = ConfigDict(populate_by_name=True)
 
 
 def _to_read(row: Any) -> McpServerRead:
@@ -211,4 +235,90 @@ async def delete_mcp_server(
     await db.mcpserver.delete(where={"id": server_id})  # pyright: ignore[reportAttributeAccessIssue]
 
 
-__all__ = ["McpServerCreate", "McpServerRead", "TestConnectionResponse", "router"]
+@router.post(
+    "/mcp-servers/{server_id}/oauth/authorize",
+    response_model=OAuthAuthorizeResponse,
+)
+async def oauth_authorize(
+    server_id: str,
+    payload: OAuthAuthorizeRequest,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+) -> OAuthAuthorizeResponse:
+    server = await db.mcpserver.find_unique(where={"id": server_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if server is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"MCP server {server_id!r} not found.",
+        )
+    if server.authType != "oauth":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"MCP server authType must be 'oauth' (got {server.authType!r}).",
+        )
+    url = await build_authorize_url(server, user_id="dev", redirect_uri=payload.redirect_uri, db=db)
+    return OAuthAuthorizeResponse.model_validate({"authorizeUrl": url})
+
+
+@router.post(
+    "/mcp-servers/{server_id}/oauth/disconnect",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def oauth_disconnect(
+    server_id: str,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    token = await db.mcpoauthtoken.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+        where={
+            "mcpServerId_userId": {
+                "mcpServerId": server_id,
+                "userId": "dev",
+            }
+        }
+    )
+    if token is None:
+        # Idempotent: no token means nothing to disconnect.
+        return
+    await db.mcpoauthtoken.delete(where={"id": token.id})  # pyright: ignore[reportAttributeAccessIssue]
+
+
+oauth_router = APIRouter(tags=["oauth"])
+
+
+@oauth_router.get("/oauth/callback", response_model=OAuthCallbackResponse)
+async def oauth_callback(
+    code: str,
+    state: str,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+) -> OAuthCallbackResponse:
+    # Look up state row to find which server this callback is for
+    state_row = await db.mcpoauthstate.find_unique(where={"state": state})  # pyright: ignore[reportAttributeAccessIssue]
+    if state_row is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="OAuth state not found (CSRF or replay).",
+        )
+    server = await db.mcpserver.find_unique(where={"id": state_row.mcpServerId})  # pyright: ignore[reportAttributeAccessIssue]
+    if server is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"OAuth state references unknown server {state_row.mcpServerId!r}.",
+        )
+    try:
+        await exchange_code_for_tokens(server, code=code, state=state, db=db)
+    except InvalidStateError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    except OAuthError as exc:
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+    return OAuthCallbackResponse.model_validate({"ok": True, "serverId": server.id})
+
+
+__all__ = [
+    "McpServerCreate",
+    "McpServerRead",
+    "OAuthAuthorizeRequest",
+    "OAuthAuthorizeResponse",
+    "OAuthCallbackResponse",
+    "TestConnectionResponse",
+    "oauth_router",
+    "router",
+]
