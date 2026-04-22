@@ -45,6 +45,9 @@ def _client(
     db.workflowexecution = MagicMock()
     db.workflowexecution.count = AsyncMock(return_value=total)
     db.workflowexecution.find_many = AsyncMock(return_value=rows)
+    # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
+    db.user = MagicMock()
+    db.user.find_unique = AsyncMock(return_value=None)
     app.state.db = db
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
@@ -104,3 +107,40 @@ def test_list_executions_scopes_to_caller(monkeypatch: pytest.MonkeyPatch) -> No
     assert resp.status_code == 200
     where = db.workflowexecution.find_many.await_args.kwargs["where"]
     assert where["userId"] == "dev"  # dev-mode fallback caller
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 Task 5 — Admin role bypass on executions list
+# ---------------------------------------------------------------------------
+
+
+def test_admin_list_executions_sees_all(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admin bypasses the userId filter and sees all executions."""
+    from src.security.auth import get_current_role
+
+    other_exec = _exec_row(id="e-other", userId="other-user")
+    client, db = _client(monkeypatch, [other_exec], total=1)
+    client.app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")  # type: ignore[attr-defined]
+    try:
+        resp = client.get("/executions")
+    finally:
+        client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
+    assert resp.status_code == 200
+    where = db.workflowexecution.find_many.await_args.kwargs["where"]
+    # Admin — no userId filter in where clause
+    assert "userId" not in where
+
+
+def test_admin_get_execution_for_other_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admin can GET an execution belonging to another user."""
+    from src.security.auth import get_current_role
+
+    other_exec = _exec_row(id="e-other", userId="other-user")
+    client, db = _client(monkeypatch, [], total=0)
+    db.workflowexecution.find_unique = AsyncMock(return_value=other_exec)
+    client.app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")  # type: ignore[attr-defined]
+    try:
+        resp = client.get("/executions/e-other")
+    finally:
+        client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
+    assert resp.status_code == 200

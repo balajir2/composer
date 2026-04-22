@@ -56,6 +56,9 @@ def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     db.mcpserver.find_unique = AsyncMock(return_value=_server_row())
     db.mcpserver.update = AsyncMock(return_value=_server_row())
     db.mcpserver.delete = AsyncMock()
+    # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
+    db.user = MagicMock()
+    db.user.find_unique = AsyncMock(return_value=None)
     app.state.db = db
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
@@ -187,4 +190,91 @@ def test_delete_shared_by_non_owner_denied() -> None:
         return_value=_server_row(userId="someone-else", isShared=True)
     )
     resp = client.delete("/mcp-servers/srv1")
+    assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 Task 5 — PATCH /mcp-servers/{id}/owner (admin-only)
+# ---------------------------------------------------------------------------
+
+
+def test_patch_mcp_server_owner_by_user_id() -> None:
+    """Admin reassigns MCP server ownership by userId."""
+    from src.security.auth import ensure_admin
+
+    client, db = _client_with_mock_db()
+    target = SimpleNamespace(id="new-owner", email="target@x.com")
+    db.user.find_unique = AsyncMock(return_value=target)
+    updated = _server_row(userId="new-owner")
+    db.mcpserver.update = AsyncMock(return_value=updated)
+    client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
+    try:
+        resp = client.patch("/mcp-servers/srv1/owner", json={"userId": "new-owner"})
+    finally:
+        client.app.dependency_overrides.pop(ensure_admin, None)  # type: ignore[attr-defined]
+    assert resp.status_code == 200
+    db.mcpserver.update.assert_awaited_once()
+    call_data = db.mcpserver.update.await_args.kwargs["data"]  # type: ignore[union-attr]
+    assert call_data["userId"] == "new-owner"
+
+
+def test_patch_mcp_server_owner_by_email() -> None:
+    """Admin reassigns MCP server ownership by email lookup."""
+    from src.security.auth import ensure_admin
+
+    client, db = _client_with_mock_db()
+    target = SimpleNamespace(id="uid-email", email="target@x.com")
+    db.user.find_unique = AsyncMock(return_value=target)
+    updated = _server_row(userId="uid-email")
+    db.mcpserver.update = AsyncMock(return_value=updated)
+    client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
+    try:
+        resp = client.patch("/mcp-servers/srv1/owner", json={"email": "target@x.com"})
+    finally:
+        client.app.dependency_overrides.pop(ensure_admin, None)  # type: ignore[attr-defined]
+    assert resp.status_code == 200
+    db.mcpserver.update.assert_awaited_once()
+    call_data = db.mcpserver.update.await_args.kwargs["data"]  # type: ignore[union-attr]
+    assert call_data["userId"] == "uid-email"
+
+
+def test_patch_mcp_server_owner_unknown_email_404() -> None:
+    """PATCH with unknown email → 404."""
+    from src.security.auth import ensure_admin
+
+    client, db = _client_with_mock_db()
+    db.user.find_unique = AsyncMock(return_value=None)
+    client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
+    try:
+        resp = client.patch("/mcp-servers/srv1/owner", json={"email": "ghost@x.com"})
+    finally:
+        client.app.dependency_overrides.pop(ensure_admin, None)  # type: ignore[attr-defined]
+    assert resp.status_code == 404
+
+
+def test_patch_mcp_server_owner_unknown_server_404() -> None:
+    """PATCH with unknown server → 404."""
+    from src.security.auth import ensure_admin
+
+    client, db = _client_with_mock_db()
+    target = SimpleNamespace(id="new-owner", email="t@x.com")
+    db.user.find_unique = AsyncMock(return_value=target)
+    db.mcpserver.find_unique = AsyncMock(return_value=None)
+    client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
+    try:
+        resp = client.patch("/mcp-servers/ghost/owner", json={"userId": "new-owner"})
+    finally:
+        client.app.dependency_overrides.pop(ensure_admin, None)  # type: ignore[attr-defined]
+    assert resp.status_code == 404
+
+
+def test_patch_mcp_server_owner_member_403() -> None:
+    """Non-admin calling PATCH /owner → 403.
+
+    In test mode the db is a MagicMock (not Prisma), so get_current_role
+    returns ('dev', 'member') and ensure_admin raises 403.
+    """
+    client, _ = _client_with_mock_db()
+    # No admin override → dev-mode 'dev' user → member → ensure_admin raises 403
+    resp = client.patch("/mcp-servers/srv1/owner", json={"userId": "new-owner"})
     assert resp.status_code == 403

@@ -9,7 +9,7 @@ from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
 from src.engine.graph_builder import WorkflowValidationError, validate_workflow_shape
 from src.engine.workflow import Workflow, WorkflowEdge, WorkflowNode
-from src.security.auth import get_current_user_id
+from src.security.auth import ensure_admin, get_current_role, get_current_user_id
 from src.storage.db import get_db
 
 router = APIRouter(tags=["workflows"])
@@ -129,18 +129,22 @@ async def create_workflow(
 @router.get("/workflows/search", response_model=WorkflowListResponse)
 async def search_workflows(
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    user_id: str = Depends(get_current_user_id),
+    _role: tuple[str, str] = Depends(get_current_role),
     q: str = Query(..., min_length=1),
     limit: int = Query(default=50, ge=1, le=100),
 ) -> WorkflowListResponse:  # pyright: ignore[reportUnusedFunction]
+    user_id, role = _role
     text_match: dict[str, Any] = {
         "OR": [
             {"name": {"contains": q, "mode": "insensitive"}},
             {"description": {"contains": q, "mode": "insensitive"}},
         ]
     }
-    authz: dict[str, Any] = {"OR": [{"isPublic": True}, {"userId": user_id}]}
-    where: dict[str, Any] = {"AND": [authz, text_match]}
+    if role == "admin":
+        where: dict[str, Any] = text_match
+    else:
+        authz: dict[str, Any] = {"OR": [{"isPublic": True}, {"userId": user_id}]}
+        where = {"AND": [authz, text_match]}
     total = await db.workflow.count(where=where)  # pyright: ignore[reportAttributeAccessIssue]
     rows = await db.workflow.find_many(  # pyright: ignore[reportAttributeAccessIssue]
         where=where,
@@ -154,7 +158,7 @@ async def search_workflows(
 @router.get("/workflows", response_model=WorkflowListResponse)
 async def list_workflows(
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    user_id: str = Depends(get_current_user_id),
+    _role: tuple[str, str] = Depends(get_current_role),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
     is_template: bool | None = Query(default=None, alias="isTemplate"),
@@ -162,10 +166,13 @@ async def list_workflows(
     category: str | None = Query(default=None),
     mine: bool | None = Query(default=None),
 ) -> WorkflowListResponse:  # pyright: ignore[reportUnusedFunction]
-    # Authz: public-OR-owned by default.  `mine=true` restricts to owned only.
-    authz_where: dict[str, Any] = (
-        {"userId": user_id} if mine else {"OR": [{"isPublic": True}, {"userId": user_id}]}
-    )
+    user_id, role = _role
+    # Admins see all workflows; non-admins scoped by authz.
+    authz_where: dict[str, Any] | None = None
+    if role != "admin":
+        authz_where = (
+            {"userId": user_id} if mine else {"OR": [{"isPublic": True}, {"userId": user_id}]}
+        )
 
     filter_conditions: list[dict[str, Any]] = []
     if is_template is not None:
@@ -175,8 +182,11 @@ async def list_workflows(
     if category is not None:
         filter_conditions.append({"category": category})
 
-    if filter_conditions:
-        where: dict[str, Any] = {"AND": [authz_where, *filter_conditions]}
+    where: dict[str, Any] | None
+    if authz_where is None:
+        where = {"AND": filter_conditions} if filter_conditions else None
+    elif filter_conditions:
+        where = {"AND": [authz_where, *filter_conditions]}
     else:
         where = authz_where
 
@@ -195,13 +205,21 @@ async def list_workflows(
 async def get_workflow(
     workflow_id: str,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    user_id: str = Depends(get_current_user_id),
+    _role: tuple[str, str] = Depends(get_current_role),
 ) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
+    user_id, role = _role
     row = await db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": workflow_id}
     )
-    if row is None or (not row.isPublic and row.userId != user_id):
-        # 404 for "not found" AND "private, not owner" — info-leak tight (ADR-0021)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow {workflow_id!r} not found.",
+        )
+    if role == "admin":
+        return WorkflowRead.model_validate(row)
+    if not row.isPublic and row.userId != user_id:
+        # 404 for private, not owner — info-leak tight (ADR-0021)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow {workflow_id!r} not found.",
@@ -214,8 +232,9 @@ async def update_workflow(
     workflow_id: str,
     payload: WorkflowCreate,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    user_id: str = Depends(get_current_user_id),
+    _role: tuple[str, str] = Depends(get_current_role),
 ) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
+    user_id, role = _role
     existing = await db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": workflow_id}
     )
@@ -224,7 +243,7 @@ async def update_workflow(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow {workflow_id!r} not found.",
         )
-    if existing.userId != user_id:
+    if role != "admin" and existing.userId != user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Forbidden: not workflow owner.",
@@ -287,4 +306,41 @@ async def delete_workflow(
     )
 
 
-__all__ = ["WorkflowCreate", "WorkflowListResponse", "WorkflowRead", "router"]
+class OwnerAssignRequest(BaseModel):
+    user_id: str | None = Field(default=None, alias="userId")
+    email: str | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+@router.patch("/workflows/{workflow_id}/owner", response_model=WorkflowRead)
+async def assign_workflow_owner(
+    workflow_id: str,
+    payload: OwnerAssignRequest,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _admin: str = Depends(ensure_admin),
+) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
+    target_user_id = payload.user_id
+    if target_user_id is None:
+        if not payload.email:
+            raise HTTPException(422, "must provide user_id or email")
+        target_user = await db.user.find_unique(where={"email": payload.email.lower()})  # pyright: ignore[reportAttributeAccessIssue]
+        if target_user is None:
+            raise HTTPException(404, f"user with email {payload.email!r} not found")
+        target_user_id = target_user.id
+    else:
+        target_user = await db.user.find_unique(where={"id": target_user_id})  # pyright: ignore[reportAttributeAccessIssue]
+        if target_user is None:
+            raise HTTPException(404, f"user {target_user_id!r} not found")
+
+    existing = await db.workflow.find_unique(where={"id": workflow_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if existing is None:
+        raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
+
+    updated = await db.workflow.update(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": workflow_id}, data={"userId": target_user_id}
+    )
+    return WorkflowRead.model_validate(updated)
+
+
+__all__ = ["OwnerAssignRequest", "WorkflowCreate", "WorkflowListResponse", "WorkflowRead", "router"]

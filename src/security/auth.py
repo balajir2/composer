@@ -135,4 +135,41 @@ async def get_current_user_id(
     return await _verify_standalone_jwt(token, settings)
 
 
-__all__ = ["AuthError", "get_current_user_id"]
+async def get_current_role(
+    request: Request,
+    settings: Settings = Depends(get_settings),  # pyright: ignore[reportCallIssue]
+) -> tuple[str, str]:
+    """Returns (user_id, role).  role is 'admin' or 'member'.
+
+    Fetches the User row to read role.  Dev-mode fallback ('dev' user_id)
+    returns 'member' — dev-mode is never admin unless the 'dev' User row
+    is explicitly seeded with role=admin in the DB (which Composer's
+    standalone auth does NOT do automatically).
+    """
+    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+
+    user_id = await get_current_user_id(request, settings)
+
+    # Fetch role from DB — cheap single-row lookup keyed on primary id.
+    db = getattr(request.app.state, "db", None)
+    if db is None or not isinstance(db, Prisma):
+        return user_id, "member"
+    user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
+    role = getattr(user, "role", None)
+    role_str = (
+        str(role.value) if role is not None and hasattr(role, "value") else str(role or "member")
+    )
+    return user_id, role_str
+
+
+async def ensure_admin(
+    user_and_role: tuple[str, str] = Depends(get_current_role),
+) -> str:
+    """Admin-only gate.  Returns caller user_id.  Raises 403 if not admin."""
+    user_id, role = user_and_role
+    if role != "admin":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="admin role required")
+    return user_id
+
+
+__all__ = ["AuthError", "ensure_admin", "get_current_role", "get_current_user_id"]
