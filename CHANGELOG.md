@@ -6,6 +6,35 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 8 — Security + hardening (2026-04-22)
+
+#### Added
+- [Phase 8 design spec](docs/superpowers/specs/2026-04-21-phase-8-security-hardening-design.md) + ADR-0021.
+- **Authz hardening:**
+  - `GET /workflows/{id}` returns 404 for non-owner private workflows (info-leak tight; not 403).
+  - `GET /workflows` list and `GET /workflows/search` filter to `OR(isPublic=True, userId=caller)`.
+  - `GET /executions/{id}`, `POST /executions/{id}/resume`, `GET /executions/{id}/events` require `execution.userId == caller`; 404 for non-owner.
+  - `GET /executions` list scopes to caller's own executions; removed the `?userId=...` query param.
+- **Size caps:** `max_workflow_nodes=100`, `max_workflow_edges=200`, `max_execution_input_bytes=1_000_000`. Settings-tunable; enforced at write time. Violations → 422 (workflow) / 413 (execution input).
+- **Rate limiting:** in-memory token-bucket `RateLimiter` + `TokenBucket` + `enforce()` helper in `src/security/rate_limit.py`. Per-key buckets (`user_id` authenticated / IP pre-auth). Applied to `POST /executions` (30/min/user), `POST /resume` (60/min/user), `POST /auth/login` (10/min/IP), `/auth/register` (5/min/IP), `/auth/refresh` (30/min/IP), `POST /mcp-servers/{id}/test-connection` (10/min/user). 429 with `Retry-After` header on breach.
+- **Security regression tests:** parametric tests for Unicode/emoji/HTML/SQL-meta in workflow names, path-traversal IDs → 404.
+- **Integration test:** real-Neon two-user scenario — public workflows cross-read, private rejection, update/delete authz, execution authz, list filters.
+
+#### Changed
+- **Breaking:** Phase 7b tests that assumed world-read on `GET /workflows/{id}` updated to set mock rows to `userId="dev"` (dev-mode caller) or `isPublic=True`.
+- `GET /executions` list no longer accepts `?userId=...` — caller-scoped always.
+- 404 (not 403) for private-read-by-non-owner — matches info-leak policy (ADR-0021).
+
+#### Notes
+- **In-memory rate limiter** — state resets on worker restart and is not shared across workers. Phase 9 replaces with a Redis-backed limiter for multi-worker scale-out.
+- **No SSRF protection** on the `http` executor — internal-network URLs reachable. Deferred to Phase 9+.
+- **No request-body ASGI-level size limit** — Phase 8 validates shape-after-parse; pathological payloads (>100 MB) could exhaust worker memory before validation. Tighten at ingress in Phase 9.
+
+#### Verified
+- 556/556 unit tests green (+27 from Phase 7b 529: Task 1/2/3/4 authz + size caps already counted above + 8 rate-limit unit tests + 8 hardening regression tests + a few updated/migrated test helpers).
+- 1/1 new integration test green against real Neon (two-user authz boundaries).
+- Pyright 0 errors, ruff + format clean.
+
 ### Phase 7b — Workflow CRUD (2026-04-21)
 
 #### Added

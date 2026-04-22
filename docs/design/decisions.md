@@ -609,6 +609,6 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 - **Info-leak via timing.** Tight-read-authz returns 404 for both "doesn't exist" and "not owner" — but the timing might differ (owner path reads from DB, non-owner path reads + checks + 404). Phase 9+ could constant-time this if demanded; not in scope for Phase 8.
 - **No SSRF protection on `http` executor.** Private-network targets (169.254.169.254, 10.0.0.0/8) are reachable. Phase 9+ adds allowlist/blocklist.
 
-**Implemented by.** Phase 8 (commits TBD).
+**Implemented by.** Phase 8 (commits `222749e`…`20c4309` on `main`, 2026-04-22).
 
 **Related.** ADR-0014 (deployment mode — shapes the auth model this builds on), ADR-0015 (dev-mode fallback), ADR-0016 (user-approval), [Phase 8 spec](../superpowers/specs/2026-04-21-phase-8-security-hardening-design.md).
