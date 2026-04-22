@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 9 — Cutover readiness (2026-04-22)
+
+#### Added
+- [Phase 9 design spec](docs/superpowers/specs/2026-04-22-phase-9-cutover-readiness-design.md) + ADR-0022.
+- **9b — Convex→Postgres migration.** `composer migrate --export-dir=<path>` script. New `original_owner_email` column on `Workflow`/`WorkflowExecution`/`McpServer`. `McpServer.user_id` made nullable for uniform "orphaned pending reconciliation" semantics. Email-based reconciliation CLI: `composer reconcile --email X`. Skips users/approvals/checkpoints/ephemeral tables per spec §4.2. In-flight OAB executions rewritten to status=failed with explanatory error. Json-typed fields wrapped by writer via `prisma.Json(...)`.
+- **9f — Admin capabilities.** New deps `get_current_role` (returns user_id+role) and `ensure_admin`. Admin bypass on GET `/workflows/{id}`/`/executions/{id}`/list/search/events (SSE; later removed in 9a) and on PUT `/workflows/{id}`. DELETE stays strict owner-only. New admin-only ownership endpoints: `PATCH /workflows/{id}/owner`, `PATCH /mcp-servers/{id}/owner` — accept `{user_id}` or `{email}`.
+- **9e — LLM keys in Postgres.** New `LlmApiKey` Prisma model (AES-256-GCM encrypted via existing `ENCRYPTION_KEY`). Admin CRUD: `GET/PUT/DELETE /admin/llm-keys[/{provider}]`. CLI: `composer keys {list|set|delete|sync}`. Vercel sync uploads decrypted values via Vercel API; `--prune` removes tracked env vars absent from Postgres. Runtime unchanged — workflow code still reads env vars at startup.
+- **9a — WebSocket streaming.** `GET /executions/{id}/ws` (replaces SSE). Auth via `Sec-WebSocket-Protocol: bearer, <jwt>` subprotocol header. Event bus switched to DES-007 shapes (`workflow_started`, `node_started`, `node_completed`, `node_failed`, `workflow_completed`, `approval_required`) with camelCase JSON output + `tenantId` field (always null in standalone mode). Admin bypass on ownership. Close codes: 4401 unauth, 4403 forbidden, 4404 not found, 1000 normal.
+- **9c — Deployment docs.** Five new docs under `docs/deployment/`: `vercel-setup`, `postgres-setup`, `llm-keys`, `admin-operations`, `monitoring`.
+- **9d — `.env.example` finalize.** LLM-keys / LangSmith / agent-tool-key blocks marked DEV-ONLY (production reads from Postgres-synced Vercel env). New entries: `VERCEL_API_TOKEN`, `VERCEL_PROJECT_ID`, `OAB_MCP_OAUTH_ENCRYPTION_KEY`.
+- **Integration tests.** `test_migration.py` (OAB→Composer cycle on real Neon); `test_events_ws_hardening.py` (two-user WS authz on real Neon).
+
+#### Changed
+- **Breaking:** SSE endpoint `GET /executions/{id}/events` DELETED. Clients use WebSocket `/executions/{id}/ws`.
+- **Breaking:** event bus event-type vocabulary changed (DES-007 snake_case, split `status-change` into `workflow_started`/`workflow_completed`/`approval_required`, dropped `stream-chunk` and `approval-resumed`).
+- **Breaking:** `McpServer.user_id` is now nullable (new Prisma migration). Existing rows with user_id set are unaffected.
+- Removed orphaned `tests/integration/test_user_approval_events.py` (SSE-specific; doesn't translate to DES-007).
+
+#### Notes
+- User migration NOT performed (ADR-0022). OAB Clerk IDs are dropped; email is the cross-system identity.
+- DES-007 event shape taken from Composer's own blueprint (§7.3); cross-check against IE source recommended before Phase 10 frontend locks its client.
+- In-memory rate limiter from Phase 8 unchanged; multi-worker Redis-backed limiter still deferred.
+- No SSRF protection yet (deferred).
+- WS integration test uses Starlette's sync `TestClient` (httpx.AsyncClient doesn't do WebSocket; mixing fixture loops deadlocks Prisma).
+
+#### Verified
+- 600/600 unit tests green (+44 from Phase 8's 556: migration transforms 8, reconcile 2, admin 17, llm-keys CRUD 8, vercel client 4, keys CLI 5, WS unit 5, minus 6 deleted SSE tests, plus test-helper updates).
+- 2/2 new integration tests green against real Neon (migration + reconciliation cycle; WebSocket two-user authz).
+- Pyright 0 errors, ruff + format clean.
+
 ### Phase 8 — Security + hardening (2026-04-22)
 
 #### Added

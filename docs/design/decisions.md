@@ -612,3 +612,34 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 **Implemented by.** Phase 8 (commits `222749e`…`20c4309` on `main`, 2026-04-22).
 
 **Related.** ADR-0014 (deployment mode — shapes the auth model this builds on), ADR-0015 (dev-mode fallback), ADR-0016 (user-approval), [Phase 8 spec](../superpowers/specs/2026-04-21-phase-8-security-hardening-design.md).
+
+---
+
+## ADR-0022: Composer's Phase 9 cutover policy
+
+**Status.** Accepted 2026-04-22.
+
+**Context.** Phase 9 moves Composer from feature-complete to production-deployable. The cutover touches data migration (OAB Convex → Composer Postgres), deploy-time secrets management (LLM keys), an auth role expansion (admin), and a real-time protocol change (SSE → WebSocket per IE DES-007). Each decision below was made deliberately during Phase 9 brainstorming; together they define what "cutover readiness" means.
+
+**Decision.**
+
+1. **No user migration.** OAB's `users` table is not copied. Clerk IDs are dropped. Email is the stable cross-system identity.
+2. **Email-based reconciliation.** Migrated rows carry `original_owner_email` (nullable, lower-cased); `user_id = NULL` until a Composer User with matching email exists, after which `composer reconcile --email X` or `PATCH /workflows/{id}/owner` claims the rows. `original_owner_email` stays indefinitely as an audit column. `McpServer.user_id` was made nullable in a follow-on migration so all three migratable tables share this "orphaned pending reconciliation" shape.
+3. **Admin read/publish bypass; no admin DELETE bypass.** Admins bypass the Phase 8 owner/public check on reads (workflows/executions/events) and on `PUT /workflows/{id}` (including flipping `isPublic`). DELETE remains strict owner-only to avoid silent destructive bypass.
+4. **LLM keys in Postgres; Vercel sync at deploy time.** Bounteous owns the source of truth. Runtime reads env vars (unchanged); `composer keys sync --target vercel` pushes decrypted values to Vercel env via Vercel API. Same AES-256-GCM encryption mechanism as MCP OAuth tokens.
+5. **WebSocket replaces SSE atomically.** Event bus switches to DES-007 event shapes in the same commit that deletes the SSE endpoint. No transitional window; no "legacy SSE" endpoint kept.
+6. **DES-007 event contract from blueprint.** Phase 9 uses the event shape documented in Composer's own blueprint `docs/design/2026-04-15-composer-03-engineering-blueprint.md` §7.3. Verification against IE source is a Phase 10 pre-work checkpoint — any drift gets fixed as a bugfix commit then.
+7. **Skip approvals + LangGraph checkpoints migration.** Approvals are audit-only data; JS checkpoints are Python-incompatible. In-flight OAB executions (status=running/waiting_approval) are rewritten to `status=failed` with an explanatory error and are not recoverable on Composer.
+
+**Consequences.**
+- **Simpler migration path:** no password migration, no forced reset flow, no Clerk-ID-to-cuid mapping table.
+- **Post-cutover manual step:** ops runs `composer reconcile --email X` once per user (automatable via post-login hook in Phase 10 SSO).
+- **Admins exist but have no self-serve promote endpoint** — requires DB write.
+- **One-time data loss:** OAB executions in flight at cutover become `failed` records with an explanatory error. Acceptable given the internal user base.
+- **Vercel lock-in for LLM keys is mitigated:** keys live in Bounteous-owned Postgres; Vercel can be replaced without losing the keys.
+- **WebSocket-only streaming** means dev tooling can't use `curl` for live events anymore. Alternative: small Python WS client for ad-hoc debugging (`starlette.testclient.TestClient.websocket_connect` or the `websockets` package).
+- **`McpServer.user_id` nullable** is a schema widening — existing rows unaffected; enables uniform orphan semantics across the three migratable tables.
+
+**Implemented by.** Phase 9 (commits `fc059e1`…`5b9bf5f` on `main`, 2026-04-22).
+
+**Related.** ADR-0014 (deployment mode), ADR-0015 (dev-mode auth fallback), ADR-0021 (Phase 8 security policy — Phase 9 admin bypass amends this), [Phase 9 spec](../superpowers/specs/2026-04-22-phase-9-cutover-readiness-design.md).
