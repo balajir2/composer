@@ -6,12 +6,33 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from src.config import get_settings
 from src.engine.graph_builder import WorkflowValidationError, validate_workflow_shape
 from src.engine.workflow import Workflow, WorkflowEdge, WorkflowNode
 from src.security.auth import get_current_user_id
 from src.storage.db import get_db
 
 router = APIRouter(tags=["workflows"])
+
+
+def _check_workflow_size_limits(workflow: Workflow) -> None:
+    settings = get_settings()
+    if len(workflow.nodes) > settings.max_workflow_nodes:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"workflow exceeds max_nodes={settings.max_workflow_nodes}; "
+                f"got {len(workflow.nodes)}"
+            ),
+        )
+    if len(workflow.edges) > settings.max_workflow_edges:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"workflow exceeds max_edges={settings.max_workflow_edges}; "
+                f"got {len(workflow.edges)}"
+            ),
+        )
 
 
 class WorkflowCreate(BaseModel):
@@ -77,6 +98,7 @@ async def create_workflow(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
+    _check_workflow_size_limits(workflow)
 
     nodes_json = [
         node.model_dump(by_alias=True)  # pyright: ignore[reportAttributeAccessIssue]
@@ -215,6 +237,7 @@ async def update_workflow(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
         ) from exc
+    _check_workflow_size_limits(workflow)
 
     nodes_json = [
         node.model_dump(by_alias=True)  # pyright: ignore[reportAttributeAccessIssue]
