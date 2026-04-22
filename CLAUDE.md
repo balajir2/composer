@@ -83,9 +83,8 @@ Supporting docs in `docs/design/` provide historical context and product/strateg
 | 6b — Guardrails | ✅ Complete | LLM-classifier (pii/moderation/jailbreak/hallucination); concurrent via asyncio.gather; verified against real Anthropic + Neon |
 | 6c — Gamma-AI | ✅ Complete | HTTP integration with gamma.app; 60s/10s/4min polling; exportAs pptx/pdf supported; 13 unit tests, smoke test manual |
 | 6d — Arcade | ✅ Complete | HTTP integration with auth-interrupt flow; reuses Phase 5a `/resume`; retry counter MAX_RETRIES=3; 14 unit tests, smoke test manual |
-| 6e — Vector-DB | ⏭ Next | provider framework (embed/upsert/query) |
-| 6 — Guardrails, Note, Vector-DB, Gamma, Arcade | ⏸ | |
-| 7 — API parity + regression suite ported | ⏸ | |
+| 6e — Vector-DB | ✅ Complete | 5 providers (Pinecone/Qdrant/Chroma/Weaviate/Milvus) + OpenAI embeddings; provider framework per ADR-0020; ~30 unit tests, smoke test manual |
+| 7 — API parity + regression suite ported | ⏭ Next | port OAB's ~72 pytest tests (objective parity check) |
 | 8 — Security + hardening | ⏸ | |
 | 9 — Cutover (Convex→Postgres migration, WebSocket) | ⏸ | |
 | 10 — UI fork from OAB | ⏸ | Fork OAB's Next.js frontend, swap client layer |

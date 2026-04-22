@@ -576,6 +576,6 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 - Embedding providers (OpenAI only in 6e) follow the same shape — `src/vectordb/embedding.py` ships `embed_text_openai()`; non-OpenAI providers raise `NotImplementedError` until a later phase.
 - No shared HTTP client pool across providers (each opens/closes its own `httpx.AsyncClient` for one call). Acceptable — vector-db nodes are low-frequency relative to agent/mcp nodes.
 
-**Implemented by.** Phase 6e (commits TBD).
+**Implemented by.** Phase 6e (commits `e2068d2`…`84cd4a5`, 2026-04-21).
 
 **Related.** ADR-0006 (LLM provider framework — analogous pattern), [Phase 6e spec](../superpowers/specs/2026-04-21-phase-6e-vector-db-design.md).

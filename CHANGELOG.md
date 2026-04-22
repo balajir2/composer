@@ -6,6 +6,38 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 6e — Vector-DB (2026-04-21)
+
+#### Added
+- [Phase 6e design spec](docs/superpowers/specs/2026-04-21-phase-6e-vector-db-design.md) + ADR-0020.
+- `src/vectordb/` module — new top-level package.
+  - `src/vectordb/embedding.py` — `embed_text_openai()` via the OpenAI embeddings API. `text-embedding-3-*` models accept `dimensions` param; older models omit it.
+  - `src/vectordb/providers/` — one file per provider, each exporting `async def query(embedding, config) -> list[VectorDbResult]`. Shared `QueryConfig` + `VectorDbResult` frozen dataclasses in `base.py`.
+  - **5 providers:** Pinecone (REST `/query`), Qdrant (REST `/collections/{name}/points/search`), Chroma (REST batch-indexed with `1 - distance` score), Weaviate (GraphQL with `_additional {id,distance,vector}` + `1 - distance` score), Milvus (REST `/v1/vector/search`; DSL-only filter — dict filters log warn + skip).
+- `src/executors/vector_db.py` — orchestrator. Substitutes config fields, embeds via OpenAI, dispatches via `_PROVIDERS` dict map, applies score-threshold filter, optionally joins results with separator/prefix/suffix + `{{index}}` placeholder. Dual output: `variables[output_variable]` + `variables.lastOutput` (joined text if `joinResults=True`, else the full output dict).
+- `src/engine/workflow.py` — `VectorDbNodeData` tightened with 18+ explicit fields matching OAB `types.ts` + executor reads. `VectorDbProvider` + `EmbeddingProvider` Literal aliases exported.
+- Unit tests: ~30 across `tests/unit/vectordb/` + `tests/unit/executors/test_vector_db.py` (6 embedding + 4 Pydantic + 3-4 per provider × 5 + 14 executor with 5-way parametric dispatch).
+
+#### Changed
+- Non-OpenAI embedding providers (`cohere`/`jina`/`pinecone-inference`) raise `NotImplementedError` until a later phase.
+- Stale "unshipped Phase 6 sentinel" tests removed — Phase 6 closes the executor catalog, all 18 node types now have registered executors: `test_unshipped_type_raises_with_phase_hint` (registry) and `test_build_graph_rejects_unshipped_executor_type` (graph_builder) deleted. `test_run_marks_failed_on_exception` (langgraph_executor) migrated to monkeypatch `build_graph` → raise, preserving the behavioral contract.
+
+#### Notes
+- **Phase 6 is now complete.** All 18 node types in OAB's catalog have Composer executors:
+  - Phase 1: start, end
+  - Phase 2: agent
+  - Phase 3a/3b: mcp
+  - Phase 4a/4b: http, transform, data-transform, extract, set-state, if-else, while
+  - Phase 5a: user-approval
+  - Phase 6a-e: note (skip), join-chunks, guardrails, gamma-ai, arcade, vector-db
+- No automated integration tests for vector-db: each provider requires real credentials + a populated index. Unit tests via `pytest-httpx` pin the wire shapes for all 5 providers.
+- Per-node API keys (`vectorDbApiKey`) use `{{...}}` substitution — users parameterize via state/env.
+- `OPENAI_API_KEY` is the only global (for embeddings); per-provider keys live on the node.
+
+#### Verified
+- 509/509 unit tests green (+41 from Phase 6d 468 — net after 2 stale sentinel deletions).
+- Pyright 0 errors, ruff + format clean.
+
 ### Phase 6d — Arcade (2026-04-21)
 
 #### Added
