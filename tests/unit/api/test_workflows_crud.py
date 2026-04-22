@@ -215,3 +215,51 @@ def test_put_workflow_invalid_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     }
     resp = client.put("/workflows/w1", json=bad_body)
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Task 4 — DELETE /workflows/{workflow_id}
+# ---------------------------------------------------------------------------
+
+
+def _client_delete(
+    monkeypatch: pytest.MonkeyPatch, existing: Any | None
+) -> tuple[TestClient, MagicMock]:
+    monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    app = create_app()
+
+    db = MagicMock()
+    db.workflow = MagicMock()
+    db.workflow.find_unique = AsyncMock(return_value=existing)
+    db.workflow.delete = AsyncMock()
+    app.state.db = db
+    app.state.checkpointer = MagicMock()
+    from src.engine.events import ExecutionEventBus
+
+    app.state.event_bus = ExecutionEventBus()
+    return TestClient(app), db
+
+
+def test_delete_workflow_owner_happy(monkeypatch: pytest.MonkeyPatch) -> None:
+    existing = _wf_row(id="w1", userId="dev")
+    client, db = _client_delete(monkeypatch, existing)
+    resp = client.delete("/workflows/w1")
+    assert resp.status_code == 204
+    db.workflow.delete.assert_awaited_once()
+
+
+def test_delete_workflow_not_owner_forbidden(monkeypatch: pytest.MonkeyPatch) -> None:
+    existing = _wf_row(id="w1", userId="other")
+    client, _ = _client_delete(monkeypatch, existing)
+    resp = client.delete("/workflows/w1")
+    assert resp.status_code == 403
+
+
+def test_delete_workflow_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _ = _client_delete(monkeypatch, None)
+    resp = client.delete("/workflows/ghost")
+    assert resp.status_code == 404

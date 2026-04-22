@@ -229,4 +229,28 @@ async def update_workflow(
     return WorkflowRead.model_validate(updated)
 
 
+@router.delete("/workflows/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_workflow(
+    workflow_id: str,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    user_id: str = Depends(get_current_user_id),
+) -> None:  # pyright: ignore[reportUnusedFunction]
+    existing = await db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": workflow_id}
+    )
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow {workflow_id!r} not found.",
+        )
+    if existing.userId != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: not workflow owner.",
+        )
+    await db.workflow.delete(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": workflow_id}
+    )
+
+
 __all__ = ["WorkflowCreate", "WorkflowListResponse", "WorkflowRead", "router"]
