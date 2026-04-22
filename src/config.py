@@ -92,6 +92,14 @@ class Settings(BaseSettings):
     # ─── Standalone password hashing ─────────────────
     bcrypt_rounds: int = Field(default=12, description="bcrypt cost factor.")
 
+    # ─── Size caps (Phase 8) ──────────────────────
+    max_workflow_nodes: int = Field(default=100, description="Max nodes per workflow.")
+    max_workflow_edges: int = Field(default=200, description="Max edges per workflow.")
+    max_execution_input_bytes: int = Field(
+        default=1_000_000,
+        description="Max bytes for POST /executions input (JSON-serialized).",
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:

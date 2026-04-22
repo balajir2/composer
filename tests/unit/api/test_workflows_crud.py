@@ -10,6 +10,29 @@ from fastapi.testclient import TestClient
 from src.main import create_app
 
 
+def _wf_row_create(**overrides: Any) -> SimpleNamespace:
+    """Minimal workflow row for POST /workflows create tests."""
+    base: dict[str, Any] = {
+        "id": "w-new",
+        "userId": "dev",
+        "name": "Created",
+        "description": None,
+        "category": None,
+        "tags": [],
+        "difficulty": None,
+        "estimatedTime": None,
+        "nodes": [],
+        "edges": [],
+        "version": None,
+        "isTemplate": False,
+        "isPublic": False,
+        "createdAt": "2026-04-22T00:00:00Z",
+        "updatedAt": "2026-04-22T00:00:00Z",
+    }
+    base.update(overrides)
+    return SimpleNamespace(**base)
+
+
 def _wf_row(**overrides: Any) -> SimpleNamespace:
     base: dict[str, Any] = {
         "id": "w1",
@@ -310,3 +333,102 @@ def test_list_workflows_where_clause_has_authz_or(
     where_str = str(where)
     assert "isPublic" in where_str
     assert "OR" in where_str
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 Task 3 — workflow size caps (ADR-0022)
+# ---------------------------------------------------------------------------
+
+
+def test_create_workflow_over_node_limit_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """101 nodes → 422."""
+    # Build an over-limit workflow: 1 start + 100 set-state + 1 end = 102 nodes
+    nodes: list[dict[str, Any]] = [
+        {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+    ]
+    for i in range(100):
+        nodes.append(
+            {
+                "id": f"n{i}",
+                "type": "set-state",
+                "position": {"x": i + 1, "y": 0},
+                "data": {"label": f"N{i}", "stateKey": "k", "stateValue": "v"},
+            }
+        )
+    nodes.append({"id": "e", "type": "end", "position": {"x": 999, "y": 0}, "data": {"label": "E"}})
+    edges: list[dict[str, Any]] = []
+    for i in range(101):
+        source = "s" if i == 0 else f"n{i - 1}"
+        target = f"n{i}" if i < 100 else "e"
+        edges.append({"id": f"e{i}", "source": source, "target": target})
+
+    monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+
+    app = create_app()
+    db = MagicMock()
+    db.workflow = MagicMock()
+    db.workflow.create = AsyncMock(return_value=_wf_row_create(id="w-big", userId="dev"))
+    app.state.db = db
+    app.state.checkpointer = MagicMock()
+    from src.engine.events import ExecutionEventBus
+
+    app.state.event_bus = ExecutionEventBus()
+    client = TestClient(app)
+
+    body: dict[str, Any] = {"name": "Too big", "nodes": nodes, "edges": edges}
+    resp = client.post("/workflows", json=body)
+    assert resp.status_code == 422
+    assert "max_nodes" in resp.json()["detail"]
+
+
+def test_create_workflow_at_node_limit_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exactly 100 nodes is allowed (boundary inclusive)."""
+    nodes: list[dict[str, Any]] = [
+        {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+    ]
+    for i in range(98):
+        nodes.append(
+            {
+                "id": f"n{i}",
+                "type": "set-state",
+                "position": {"x": i + 1, "y": 0},
+                "data": {"label": f"N{i}", "stateKey": "k", "stateValue": "v"},
+            }
+        )
+    nodes.append({"id": "e", "type": "end", "position": {"x": 999, "y": 0}, "data": {"label": "E"}})
+    assert len(nodes) == 100
+
+    edges: list[dict[str, Any]] = []
+    for i in range(99):
+        source = "s" if i == 0 else f"n{i - 1}"
+        target = f"n{i}" if i < 98 else "e"
+        edges.append({"id": f"e{i}", "source": source, "target": target})
+
+    monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+
+    app = create_app()
+    db = MagicMock()
+    db.workflow = MagicMock()
+    db.workflow.create = AsyncMock(return_value=_wf_row_create(id="w-big", userId="dev"))
+    app.state.db = db
+    app.state.checkpointer = MagicMock()
+    from src.engine.events import ExecutionEventBus
+
+    app.state.event_bus = ExecutionEventBus()
+    client = TestClient(app)
+
+    body: dict[str, Any] = {"name": "Big", "nodes": nodes, "edges": edges}
+    resp = client.post("/workflows", json=body)
+    assert resp.status_code == 201, resp.text
