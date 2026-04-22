@@ -36,6 +36,7 @@ model Workflow {
   isPublic      Boolean  @default(false) @map("is_public")
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt      @map("updated_at")
+  originalOwnerEmail String? @map("original_owner_email")
 
   executions    WorkflowExecution[]
 
@@ -57,6 +58,7 @@ model WorkflowExecution {
   startedAt     DateTime  @default(now()) @map("started_at")
   completedAt   DateTime? @map("completed_at")
   threadId      String    @unique         @map("thread_id")
+  originalOwnerEmail String? @map("original_owner_email")
 
   workflow      Workflow  @relation(fields: [workflowId], references: [id], onDelete: Cascade)
   approvals     Approval[]
@@ -116,6 +118,7 @@ model McpServer {
   headers              Json?
   createdAt            DateTime  @default(now()) @map("created_at")
   updatedAt            DateTime  @updatedAt       @map("updated_at")
+  originalOwnerEmail String? @map("original_owner_email")
 
   @@map("mcp_servers")
   @@index([userId])
