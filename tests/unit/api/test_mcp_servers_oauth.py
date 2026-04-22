@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.main import create_app
+from src.security.rate_limit import RateLimiter
 
 
 def _set_enc_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -66,6 +67,7 @@ def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     db.mcpoauthstate.delete_many = AsyncMock()
     app.state.db = db
     app.state.checkpointer = MagicMock()
+    app.state.rate_limiter = RateLimiter()
     return TestClient(app), db
 
 

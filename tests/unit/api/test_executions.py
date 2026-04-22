@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 from fastapi.testclient import TestClient
 
 from src.main import create_app
+from src.security.rate_limit import RateLimiter
 
 
 def _execution_row(status: str = "running") -> SimpleNamespace:
@@ -50,6 +51,7 @@ def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     db.workflowexecution.update = AsyncMock(return_value=_execution_row(status="completed"))
     app.state.db = db
     app.state.checkpointer = MagicMock()
+    app.state.rate_limiter = RateLimiter()
     return TestClient(app), db
 
 

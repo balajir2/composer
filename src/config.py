@@ -100,6 +100,14 @@ class Settings(BaseSettings):
         description="Max bytes for POST /executions input (JSON-serialized).",
     )
 
+    # ─── Rate limits (Phase 8) ────────────────────
+    rate_limit_executions_per_minute: int = 30
+    rate_limit_login_per_minute: int = 10
+    rate_limit_register_per_minute: int = 5
+    rate_limit_refresh_per_minute: int = 30
+    rate_limit_resume_per_minute: int = 60
+    rate_limit_mcp_test_per_minute: int = 10
+
 
 @lru_cache
 def get_settings() -> Settings:
