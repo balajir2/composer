@@ -69,13 +69,17 @@ def test_list_workflows_filters_by_is_template(monkeypatch: pytest.MonkeyPatch) 
     client, db = _client(monkeypatch, [_wf_row(isTemplate=True)], total=1)
     resp = client.get("/workflows?isTemplate=true")
     assert resp.status_code == 200
-    assert db.workflow.find_many.await_args.kwargs["where"].get("isTemplate") is True
+    # With authz, where is {"AND": [authz_or, {"isTemplate": True}]}
+    where = db.workflow.find_many.await_args.kwargs["where"]
+    and_clauses = where.get("AND", [])
+    assert any(c.get("isTemplate") is True for c in and_clauses)
 
 
 def test_list_workflows_mine_filters_by_user(monkeypatch: pytest.MonkeyPatch) -> None:
     client, db = _client(monkeypatch, [_wf_row(userId="dev")], total=1)
     resp = client.get("/workflows?mine=true")
     assert resp.status_code == 200
+    # mine=true → authz_where = {"userId": user_id} (no OR wrapper)
     # dev-mode fallback (ADR-0015) sets user_id='dev'
     assert db.workflow.find_many.await_args.kwargs["where"].get("userId") == "dev"
 
@@ -94,7 +98,10 @@ def test_search_workflows_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert body["total"] == 1
     assert body["items"][0]["name"] == "SearchTest"
     where = db.workflow.find_many.await_args.kwargs["where"]
-    assert "OR" in where
+    # With authz: where = {"AND": [authz_or, text_match_or]}
+    assert "AND" in where
+    where_str = str(where)
+    assert "OR" in where_str
 
 
 def test_search_workflows_empty_q_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -128,7 +135,7 @@ def _client_fetch(monkeypatch: pytest.MonkeyPatch, row: Any | None) -> tuple[Tes
 
 
 def test_get_workflow_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    row = _wf_row(id="wx", name="Hello")
+    row = _wf_row(id="wx", name="Hello", userId="dev")  # match dev-mode caller
     client, _ = _client_fetch(monkeypatch, row)
     resp = client.get("/workflows/wx")
     assert resp.status_code == 200
@@ -263,3 +270,43 @@ def test_delete_workflow_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _ = _client_delete(monkeypatch, None)
     resp = client.delete("/workflows/ghost")
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Phase 8 — workflow read authz (ADR-0021)
+# ---------------------------------------------------------------------------
+
+
+def test_get_workflow_private_not_owner_returns_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-owner reading a private workflow gets 404 (info-leak tight)."""
+    row = _wf_row(id="wx", userId="someone-else", isPublic=False)
+    client, _ = _client_fetch(monkeypatch, row)
+    resp = client.get("/workflows/wx")
+    assert resp.status_code == 404
+
+
+def test_get_workflow_public_non_owner_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Public workflows are readable by non-owners."""
+    row = _wf_row(id="wx", userId="other", isPublic=True, name="Public")
+    client, _ = _client_fetch(monkeypatch, row)
+    resp = client.get("/workflows/wx")
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "Public"
+
+
+def test_list_workflows_where_clause_has_authz_or(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """List query must OR(isPublic=true, userId=caller)."""
+    client, db = _client(monkeypatch, [], total=0)
+    resp = client.get("/workflows")
+    assert resp.status_code == 200
+    where = db.workflow.find_many.await_args.kwargs["where"]
+    # Inspect: the authz OR should be nested somewhere
+    where_str = str(where)
+    assert "isPublic" in where_str
+    assert "OR" in where_str

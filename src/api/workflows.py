@@ -107,16 +107,18 @@ async def create_workflow(
 @router.get("/workflows/search", response_model=WorkflowListResponse)
 async def search_workflows(
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    _user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_current_user_id),
     q: str = Query(..., min_length=1),
     limit: int = Query(default=50, ge=1, le=100),
 ) -> WorkflowListResponse:  # pyright: ignore[reportUnusedFunction]
-    where: dict[str, Any] = {
+    text_match: dict[str, Any] = {
         "OR": [
             {"name": {"contains": q, "mode": "insensitive"}},
             {"description": {"contains": q, "mode": "insensitive"}},
         ]
     }
+    authz: dict[str, Any] = {"OR": [{"isPublic": True}, {"userId": user_id}]}
+    where: dict[str, Any] = {"AND": [authz, text_match]}
     total = await db.workflow.count(where=where)  # pyright: ignore[reportAttributeAccessIssue]
     rows = await db.workflow.find_many(  # pyright: ignore[reportAttributeAccessIssue]
         where=where,
@@ -138,15 +140,23 @@ async def list_workflows(
     category: str | None = Query(default=None),
     mine: bool | None = Query(default=None),
 ) -> WorkflowListResponse:  # pyright: ignore[reportUnusedFunction]
-    where: dict[str, Any] = {}
+    # Authz: public-OR-owned by default.  `mine=true` restricts to owned only.
+    authz_where: dict[str, Any] = (
+        {"userId": user_id} if mine else {"OR": [{"isPublic": True}, {"userId": user_id}]}
+    )
+
+    filter_conditions: list[dict[str, Any]] = []
     if is_template is not None:
-        where["isTemplate"] = is_template
+        filter_conditions.append({"isTemplate": is_template})
     if is_public is not None:
-        where["isPublic"] = is_public
+        filter_conditions.append({"isPublic": is_public})
     if category is not None:
-        where["category"] = category
-    if mine:
-        where["userId"] = user_id
+        filter_conditions.append({"category": category})
+
+    if filter_conditions:
+        where: dict[str, Any] = {"AND": [authz_where, *filter_conditions]}
+    else:
+        where = authz_where
 
     total = await db.workflow.count(where=where)  # pyright: ignore[reportAttributeAccessIssue]
     rows = await db.workflow.find_many(  # pyright: ignore[reportAttributeAccessIssue]
@@ -163,12 +173,13 @@ async def list_workflows(
 async def get_workflow(
     workflow_id: str,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    _user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_current_user_id),
 ) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
     row = await db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": workflow_id}
     )
-    if row is None:
+    if row is None or (not row.isPublic and row.userId != user_id):
+        # 404 for "not found" AND "private, not owner" — info-leak tight (ADR-0021)
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow {workflow_id!r} not found.",
