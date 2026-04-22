@@ -93,3 +93,12 @@ def test_list_executions_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     body = resp.json()
     assert body["total"] == 0
     assert body["items"] == []
+
+
+def test_list_executions_scopes_to_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Without any filter, list always scopes to the caller's own executions."""
+    client, db = _client(monkeypatch, [], total=0)
+    resp = client.get("/executions")
+    assert resp.status_code == 200
+    where = db.workflowexecution.find_many.await_args.kwargs["where"]
+    assert where["userId"] == "dev"  # dev-mode fallback caller

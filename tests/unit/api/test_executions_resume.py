@@ -137,6 +137,25 @@ def test_resume_marks_execution_running_before_scheduling_task(
     assert first_update.kwargs["data"]["status"] == "running"
 
 
+def test_get_execution_non_owner_returns_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-owner reading an execution gets 404 (info-leak tight)."""
+    client, _ = _client_with_execution(monkeypatch, _execution_row(id="e1", userId="someone-else"))
+    resp = client.get("/executions/e1")
+    assert resp.status_code == 404
+
+
+def test_resume_non_owner_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-owner resuming an execution gets 404 (info-leak tight)."""
+    client, _ = _client_with_execution(
+        monkeypatch,
+        _execution_row(id="e1", userId="someone-else", status="waiting_approval"),
+    )
+    resp = client.post("/executions/e1/resume", json={"decision": "approved"})
+    assert resp.status_code == 404
+
+
 def test_resume_emits_approval_resumed_event(monkeypatch: pytest.MonkeyPatch) -> None:
     """POST /resume emits approval-resumed to the event bus with the decision."""
     import asyncio
