@@ -32,24 +32,6 @@ def test_register_and_lookup() -> None:
     assert isinstance(executor, FakeExec)
 
 
-def test_unshipped_type_raises_with_phase_hint() -> None:
-    # guardrails shipped in Phase 6b; use vector-db which is still unregistered.
-    from src.engine.workflow import VectorDbNode
-
-    node = VectorDbNode.model_validate(
-        {
-            "id": "n",
-            "type": "vector-db",
-            "position": {"x": 0, "y": 0},
-            "data": {"label": "h"},
-        }
-    )
-    with pytest.raises(NotImplementedError) as excinfo:
-        build_executor(node)
-    assert "'vector-db'" in str(excinfo.value)
-    assert "Phase 6" in str(excinfo.value)
-
-
 def test_unknown_type_raises_generic_message() -> None:
     # Fabricate a node with an unmapped type by constructing StartNode then
     # tampering with its .type attribute in a model_copy.

@@ -93,29 +93,21 @@ async def test_run_completes_start_to_end() -> None:
     assert "completedAt" in update_kwargs
 
 
-async def test_run_marks_failed_on_exception() -> None:
-    # Construct a workflow that will blow up at graph-build time (vector-db node — Phase 6).
-    bad_wf = {
-        "id": "wf1",
-        "name": "Bad",
-        "nodes": [
-            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-            {
-                "id": "h",
-                "type": "vector-db",
-                "position": {"x": 0, "y": 0},
-                "data": {"label": "H"},
-            },
-            {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
-        ],
-        "edges": [
-            {"id": "e1", "source": "s", "target": "h"},
-            {"id": "e2", "source": "h", "target": "e"},
-        ],
-    }
+async def test_run_marks_failed_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Simulate a graph-build failure by patching build_graph to raise.
+    # The vector-db executor now ships in Phase 6e; this test covers the general
+    # "run() catches any exception and marks the execution failed" contract.
+    from src.engine import langgraph_executor as lge_mod
+
+    def _boom(*args: Any, **kwargs: Any) -> None:
+        raise RuntimeError("simulated build failure")
+
+    monkeypatch.setattr(lge_mod, "build_graph", _boom)
+
+    wf_dict = _start_to_end_workflow_dict()
     db = MagicMock()
     db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(return_value=_workflow_row(bad_wf))
+    db.workflow.find_unique = AsyncMock(return_value=_workflow_row(wf_dict))
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
         return_value=SimpleNamespace(
@@ -135,7 +127,7 @@ async def test_run_marks_failed_on_exception() -> None:
     assert db.workflowexecution.update.await_args is not None
     update_kwargs = db.workflowexecution.update.await_args.kwargs["data"]
     assert update_kwargs["status"] == "failed"
-    assert "Phase 6" in update_kwargs["error"]
+    assert "simulated build failure" in update_kwargs["error"]
 
 
 async def test_run_marks_waiting_approval_on_interrupt(

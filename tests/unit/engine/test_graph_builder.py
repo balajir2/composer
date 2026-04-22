@@ -147,23 +147,6 @@ def test_build_graph_compiles_start_to_end() -> None:
     assert "e" in names
 
 
-def test_build_graph_rejects_unshipped_executor_type() -> None:
-    # guardrails shipped in Phase 6b; use vector-db which is still unregistered.
-    wf = _mk(
-        nodes=[
-            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-            {"id": "h", "type": "vector-db", "position": {"x": 0, "y": 0}, "data": {"label": "H"}},
-            {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
-        ],
-        edges=[
-            {"id": "e1", "source": "s", "target": "h"},
-            {"id": "e2", "source": "h", "target": "e"},
-        ],
-    )
-    with pytest.raises(NotImplementedError, match="Phase 6"):
-        build_graph(wf, MemorySaver())
-
-
 def test_build_graph_skips_note_nodes() -> None:
     wf = _mk(
         nodes=[

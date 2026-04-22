@@ -71,6 +71,9 @@ from src.executors import (
     user_approval as _user_approval_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
 from src.executors import (
+    vector_db as _vector_db_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+)
+from src.executors import (
     while_loop as _while_loop_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
 from src.executors._eval import EvalError, evaluate
