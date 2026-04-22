@@ -33,8 +33,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--email", required=True, help="Email of the Composer user to claim rows for"
     )
 
-    # keys (added in Task 7)
-    # (subparsers for keys registered in Task 7; kept out here intentionally)
+    # keys
+    p_keys = sub.add_parser("keys", help="LLM API key management (Phase 9e)")
+    keys_sub = p_keys.add_subparsers(dest="keys_cmd", required=True)
+    keys_sub.add_parser("list", help="list configured keys")
+    p_set = keys_sub.add_parser("set", help="set/upsert one key")
+    p_set.add_argument("provider")
+    p_set.add_argument("value", help="plaintext key, or '-' to read from stdin")
+    p_del = keys_sub.add_parser("delete", help="delete one key")
+    p_del.add_argument("provider")
+    p_sync = keys_sub.add_parser("sync", help="push all keys to deploy target")
+    p_sync.add_argument("--target", default="vercel", choices=["vercel"])
+    p_sync.add_argument(
+        "--prune", action="store_true", help="remove tracked env vars not in Postgres"
+    )
 
     return parser
 
@@ -53,6 +65,18 @@ def main(argv: list[str] | None = None) -> NoReturn:
 
         exit_code = asyncio.run(run_reconcile(email=args.email))
         sys.exit(exit_code)
+
+    if args.subcommand == "keys":
+        from src.cli import keys as keys_mod
+
+        if args.keys_cmd == "list":
+            sys.exit(asyncio.run(keys_mod.keys_list()))
+        if args.keys_cmd == "set":
+            sys.exit(asyncio.run(keys_mod.keys_set(args.provider, args.value)))
+        if args.keys_cmd == "delete":
+            sys.exit(asyncio.run(keys_mod.keys_delete(args.provider)))
+        if args.keys_cmd == "sync":
+            sys.exit(asyncio.run(keys_mod.keys_sync(args.target, args.prune)))
 
     parser.error(f"unknown subcommand: {args.subcommand}")
 
