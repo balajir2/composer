@@ -176,4 +176,57 @@ async def get_workflow(
     return WorkflowRead.model_validate(row)
 
 
+@router.put("/workflows/{workflow_id}", response_model=WorkflowRead)
+async def update_workflow(
+    workflow_id: str,
+    payload: WorkflowCreate,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    user_id: str = Depends(get_current_user_id),
+) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
+    existing = await db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": workflow_id}
+    )
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow {workflow_id!r} not found.",
+        )
+    if existing.userId != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Forbidden: not workflow owner.",
+        )
+
+    workflow = Workflow.model_validate(payload.model_dump(by_alias=True))
+    try:
+        validate_workflow_shape(workflow)
+    except WorkflowValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+        ) from exc
+
+    nodes_json = [
+        node.model_dump(by_alias=True)  # pyright: ignore[reportAttributeAccessIssue]
+        for node in workflow.nodes
+    ]
+    edges_json = [edge.model_dump(by_alias=True) for edge in workflow.edges]
+    updated = await db.workflow.update(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": workflow_id},
+        data={
+            "name": payload.name,
+            "description": payload.description,
+            "category": payload.category,
+            "tags": payload.tags,
+            "difficulty": payload.difficulty,
+            "estimatedTime": payload.estimated_time,
+            "nodes": Json(nodes_json),
+            "edges": Json(edges_json),
+            "version": payload.version,
+            "isTemplate": payload.is_template,
+            "isPublic": payload.is_public,
+        },
+    )
+    return WorkflowRead.model_validate(updated)
+
+
 __all__ = ["WorkflowCreate", "WorkflowListResponse", "WorkflowRead", "router"]
