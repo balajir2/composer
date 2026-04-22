@@ -3,7 +3,7 @@
 from enum import StrEnum
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
@@ -38,6 +38,15 @@ class ExecutionRead(BaseModel):
     started_at: Any = Field(alias="startedAt")
     completed_at: Any = Field(default=None, alias="completedAt")
     thread_id: str = Field(alias="threadId")
+
+
+class ExecutionListResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    total: int
+    items: list[ExecutionRead]
+    limit: int
+    offset: int
 
 
 class ResumeDecision(StrEnum):
@@ -85,6 +94,35 @@ async def create_execution(
     # status='running' immediately; poll GET /executions/{id} for completion.
     background_tasks.add_task(executor.run, row.id)
     return ExecutionRead.model_validate(row)
+
+
+@router.get("/executions", response_model=ExecutionListResponse)
+async def list_executions(
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _user_id: str = Depends(get_current_user_id),
+    workflow_id: str | None = Query(default=None, alias="workflowId"),
+    user_id_filter: str | None = Query(default=None, alias="userId"),
+    status_filter: str | None = Query(default=None, alias="status"),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+) -> ExecutionListResponse:  # pyright: ignore[reportUnusedFunction]
+    where: dict[str, Any] = {}
+    if workflow_id is not None:
+        where["workflowId"] = workflow_id
+    if user_id_filter is not None:
+        where["userId"] = user_id_filter
+    if status_filter is not None:
+        where["status"] = status_filter
+
+    total = await db.workflowexecution.count(where=where)  # pyright: ignore[reportAttributeAccessIssue]
+    rows = await db.workflowexecution.find_many(  # pyright: ignore[reportAttributeAccessIssue]
+        where=where,
+        take=limit,
+        skip=offset,
+        order={"startedAt": "desc"},
+    )
+    items = [ExecutionRead.model_validate(row) for row in rows]
+    return ExecutionListResponse(total=total, items=items, limit=limit, offset=offset)
 
 
 @router.get("/executions/{execution_id}", response_model=ExecutionRead)
@@ -175,4 +213,11 @@ async def resume_execution(
     return ExecutionRead.model_validate(updated)
 
 
-__all__ = ["ExecutionCreate", "ExecutionRead", "ResumeDecision", "ResumeRequest", "router"]
+__all__ = [
+    "ExecutionCreate",
+    "ExecutionListResponse",
+    "ExecutionRead",
+    "ResumeDecision",
+    "ResumeRequest",
+    "router",
+]
