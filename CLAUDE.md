@@ -86,9 +86,9 @@ Supporting docs in `docs/design/` provide historical context and product/strateg
 | 6e — Vector-DB | ✅ Complete | 5 providers (Pinecone/Qdrant/Chroma/Weaviate/Milvus) + OpenAI embeddings; provider framework per ADR-0020; ~30 unit tests, smoke test manual |
 | 7b — Workflow CRUD | ✅ Complete | GET list/search, GET/PUT/DELETE by id, GET /executions list; owner-only PUT/DELETE; cascade via Prisma; verified against real Neon |
 | 7c — API auxiliaries | ⏸ | vector-db test endpoint, config endpoint (optional) |
-| 7d — Regression suite port from OAB | ⏭ Next | port behavioral tests from OAB's Playwright specs |
-| 8 — Security + hardening | ⏸ | |
-| 9 — Cutover (Convex→Postgres migration, WebSocket) | ⏸ | |
+| 7d — Regression suite port from OAB | ⏸ | deferred; Composer's 556+ tests already cover behavioral parity |
+| 8 — Security + hardening | ✅ Complete | authz (private = 404 for non-owner; execution owner-only), size caps (100 nodes / 200 edges / 1 MB input), in-memory token-bucket rate limits, security regression tests; verified against real Neon (two-user) |
+| 9 — Cutover (Convex→Postgres migration, WebSocket) | ⏭ Next | |
 | 10 — UI fork from OAB | ⏸ | Fork OAB's Next.js frontend, swap client layer |
 
 Backend phases 0–9 ≈ 10 weeks. UI phase 10 ≈ 3 weeks. Total ≈ 13 weeks.
