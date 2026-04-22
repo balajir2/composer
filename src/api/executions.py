@@ -1,5 +1,6 @@
 """POST /executions (start a run) + GET /executions/{id} (fetch state)."""
 
+import json as _json
 from enum import StrEnum
 from typing import Any
 
@@ -7,6 +8,7 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, R
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from src.config import get_settings
 from src.engine.events import ExecutionEvent, ExecutionEventBus
 from src.engine.langgraph_executor import LangGraphExecutor
 from src.security.auth import get_current_user_id
@@ -77,6 +79,14 @@ async def create_execution(
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     user_id: str = Depends(get_current_user_id),
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
+    input_size = len(_json.dumps(payload.input, default=str))
+    max_bytes = get_settings().max_execution_input_bytes
+    if input_size > max_bytes:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"execution input exceeds max_bytes={max_bytes}; got {input_size}",
+        )
+
     workflow = await db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": payload.workflow_id}
     )
