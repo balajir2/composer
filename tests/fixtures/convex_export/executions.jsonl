@@ -1,0 +1,2 @@
+{"_id":"oab-exec-1","workflowId":"oab-wf-1","userId":"user_2alice","status":"completed","nodeResults":{},"variables":{},"input":null,"output":"ok","threadId":"oab-thread-1"}
+{"_id":"oab-exec-2","workflowId":"oab-wf-1","userId":"user_2alice","status":"running","nodeResults":{},"variables":{},"input":null,"threadId":"oab-thread-2"}

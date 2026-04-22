@@ -1,0 +1,2 @@
+{"_id":"oab-wf-1","userId":"user_2alice","name":"Alice private","nodes":[],"edges":[],"isPublic":false,"isTemplate":false,"tags":[]}
+{"_id":"oab-wf-2","userId":"user_2bob","name":"Bob public","nodes":[],"edges":[],"isPublic":true,"isTemplate":false,"tags":[]}
