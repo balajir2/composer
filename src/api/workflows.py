@@ -102,6 +102,8 @@ async def create_workflow(
     return WorkflowRead.model_validate(row)
 
 
+# NOTE: /workflows/search must be registered BEFORE /workflows/{workflow_id}
+# so that FastAPI does not swallow "search" as a path parameter.
 @router.get("/workflows/search", response_model=WorkflowListResponse)
 async def search_workflows(
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
@@ -155,6 +157,23 @@ async def list_workflows(
     )
     items = [WorkflowRead.model_validate(row) for row in rows]
     return WorkflowListResponse(total=total, items=items, limit=limit, offset=offset)
+
+
+@router.get("/workflows/{workflow_id}", response_model=WorkflowRead)
+async def get_workflow(
+    workflow_id: str,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _user_id: str = Depends(get_current_user_id),
+) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
+    row = await db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": workflow_id}
+    )
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow {workflow_id!r} not found.",
+        )
+    return WorkflowRead.model_validate(row)
 
 
 __all__ = ["WorkflowCreate", "WorkflowListResponse", "WorkflowRead", "router"]

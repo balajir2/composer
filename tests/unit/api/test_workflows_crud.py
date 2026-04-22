@@ -101,3 +101,41 @@ def test_search_workflows_empty_q_rejected(monkeypatch: pytest.MonkeyPatch) -> N
     client, _ = _client(monkeypatch, [], total=0)
     resp = client.get("/workflows/search?q=")
     assert resp.status_code == 422
+
+
+# ---------------------------------------------------------------------------
+# Task 2 — GET /workflows/{workflow_id}
+# ---------------------------------------------------------------------------
+
+
+def _client_fetch(monkeypatch: pytest.MonkeyPatch, row: Any | None) -> tuple[TestClient, MagicMock]:
+    monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    app = create_app()
+
+    db = MagicMock()
+    db.workflow = MagicMock()
+    db.workflow.find_unique = AsyncMock(return_value=row)
+    app.state.db = db
+    app.state.checkpointer = MagicMock()
+    from src.engine.events import ExecutionEventBus
+
+    app.state.event_bus = ExecutionEventBus()
+    return TestClient(app), db
+
+
+def test_get_workflow_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    row = _wf_row(id="wx", name="Hello")
+    client, _ = _client_fetch(monkeypatch, row)
+    resp = client.get("/workflows/wx")
+    assert resp.status_code == 200
+    assert resp.json()["name"] == "Hello"
+
+
+def test_get_workflow_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _ = _client_fetch(monkeypatch, None)
+    resp = client.get("/workflows/ghost")
+    assert resp.status_code == 404
