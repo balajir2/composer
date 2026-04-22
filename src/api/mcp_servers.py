@@ -23,7 +23,7 @@ from src.mcp.schema_adapter import (
     UnresolvedUrlTemplateError,
     substitute_url_placeholders,
 )
-from src.security.auth import get_current_user_id
+from src.security.auth import ensure_admin, get_current_user_id
 from src.security.encryption import encrypt
 from src.security.rate_limit import (
     RateLimiter,
@@ -233,6 +233,41 @@ async def test_mcp_connection(
     return TestConnectionResponse(ok=health.ok, message=health.message)
 
 
+class McpOwnerAssignRequest(BaseModel):
+    user_id: str | None = Field(default=None, alias="userId")
+    email: str | None = None
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+@router.patch("/mcp-servers/{server_id}/owner", response_model=McpServerRead)
+async def assign_mcp_server_owner(
+    server_id: str,
+    payload: McpOwnerAssignRequest,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _admin: str = Depends(ensure_admin),
+) -> McpServerRead:  # pyright: ignore[reportUnusedFunction]
+    target_user_id = payload.user_id
+    if target_user_id is None:
+        if not payload.email:
+            raise HTTPException(422, "must provide user_id or email")
+        target = await db.user.find_unique(where={"email": payload.email.lower()})  # pyright: ignore[reportAttributeAccessIssue]
+        if target is None:
+            raise HTTPException(404, f"user with email {payload.email!r} not found")
+        target_user_id = target.id
+    else:
+        target = await db.user.find_unique(where={"id": target_user_id})  # pyright: ignore[reportAttributeAccessIssue]
+        if target is None:
+            raise HTTPException(404, f"user {target_user_id!r} not found")
+    existing = await db.mcpserver.find_unique(where={"id": server_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if existing is None:
+        raise HTTPException(404, f"MCP server {server_id!r} not found.")
+    updated = await db.mcpserver.update(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": server_id}, data={"userId": target_user_id}
+    )
+    return _to_read(updated)
+
+
 @router.delete("/mcp-servers/{server_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_mcp_server(
     server_id: str,
@@ -336,6 +371,7 @@ async def oauth_callback(
 
 
 __all__ = [
+    "McpOwnerAssignRequest",
     "McpServerCreate",
     "McpServerRead",
     "OAuthAuthorizeRequest",

@@ -11,7 +11,7 @@ from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
 from src.engine.events import ExecutionEvent, ExecutionEventBus
 from src.engine.langgraph_executor import LangGraphExecutor
-from src.security.auth import get_current_user_id
+from src.security.auth import get_current_role, get_current_user_id
 from src.security.rate_limit import (
     RateLimiter,
     enforce,
@@ -122,13 +122,16 @@ async def create_execution(
 @router.get("/executions", response_model=ExecutionListResponse)
 async def list_executions(
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    user_id: str = Depends(get_current_user_id),
+    _role: tuple[str, str] = Depends(get_current_role),
     workflow_id: str | None = Query(default=None, alias="workflowId"),
     status_filter: str | None = Query(default=None, alias="status"),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> ExecutionListResponse:  # pyright: ignore[reportUnusedFunction]
-    where: dict[str, Any] = {"userId": user_id}
+    user_id, role = _role
+    where: dict[str, Any] = {}
+    if role != "admin":
+        where["userId"] = user_id
     if workflow_id is not None:
         where["workflowId"] = workflow_id
     if status_filter is not None:
@@ -149,12 +152,18 @@ async def list_executions(
 async def get_execution(
     execution_id: str,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    user_id: str = Depends(get_current_user_id),
+    _role: tuple[str, str] = Depends(get_current_role),
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
+    user_id, role = _role
     row = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": execution_id}
     )
-    if row is None or row.userId != user_id:
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execution {execution_id!r} not found.",
+        )
+    if role != "admin" and row.userId != user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Execution {execution_id!r} not found.",
@@ -169,9 +178,10 @@ async def resume_execution(
     background_tasks: BackgroundTasks,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    user_id: str = Depends(get_current_user_id),
+    _role: tuple[str, str] = Depends(get_current_role),
     limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
+    user_id, role = _role
     await enforce(
         limiter,
         route_key="resume",
@@ -186,7 +196,7 @@ async def resume_execution(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Execution {execution_id!r} not found.",
         )
-    if execution.userId != user_id:
+    if role != "admin" and execution.userId != user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Execution {execution_id!r} not found.",

@@ -13,7 +13,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import StreamingResponse
 
 from src.engine.events import ExecutionEvent, ExecutionEventBus
-from src.security.auth import get_current_user_id
+from src.security.auth import get_current_role
 from src.storage.db import get_db, get_event_bus
 
 if TYPE_CHECKING:
@@ -35,8 +35,9 @@ async def stream_events(
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     event_bus: ExecutionEventBus = Depends(get_event_bus),
-    user_id: str = Depends(get_current_user_id),
+    _role: tuple[str, str] = Depends(get_current_role),
 ) -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
+    user_id, role = _role
     execution = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": execution_id}
     )
@@ -45,7 +46,7 @@ async def stream_events(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Execution {execution_id!r} not found.",
         )
-    if execution.userId != user_id:
+    if role != "admin" and execution.userId != user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Execution {execution_id!r} not found.",

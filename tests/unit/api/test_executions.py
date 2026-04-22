@@ -49,6 +49,9 @@ def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     db.workflowexecution.create = AsyncMock(return_value=_execution_row())
     db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="completed"))
     db.workflowexecution.update = AsyncMock(return_value=_execution_row(status="completed"))
+    # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
+    db.user = MagicMock()
+    db.user.find_unique = AsyncMock(return_value=None)
     app.state.db = db
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()

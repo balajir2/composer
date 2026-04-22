@@ -35,6 +35,9 @@ def _build_app(monkeypatch: pytest.MonkeyPatch, execution: Any | None) -> Any:
     db = MagicMock()
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(return_value=execution)
+    # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
+    db.user = MagicMock()
+    db.user.find_unique = AsyncMock(return_value=None)
     app.state.db = db
     app.state.checkpointer = MagicMock()
     app.state.event_bus = ExecutionEventBus()
@@ -84,6 +87,22 @@ async def test_stream_events_non_owner_returns_404(
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
         resp = await ac.get("/executions/e1/events")
     assert resp.status_code == 404
+
+
+async def test_admin_can_stream_other_users_execution(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Admin can stream events for an execution belonging to another user."""
+    from src.security.auth import get_current_role
+
+    app = _build_app(monkeypatch, _execution_row(status="completed", userId="someone-else"))
+    app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")
+    try:
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+            resp = await ac.get("/executions/e1/events")
+    finally:
+        app.dependency_overrides.pop(get_current_role, None)
+    assert resp.status_code == 200
 
 
 async def test_events_stream_live_delivers_emitted_event(

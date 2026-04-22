@@ -52,6 +52,9 @@ def _client_with_execution(
     db.workflowexecution.update = AsyncMock(return_value=execution)
     db.approval = MagicMock()
     db.approval.create = AsyncMock()
+    # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
+    db.user = MagicMock()
+    db.user.find_unique = AsyncMock(return_value=None)
     app.state.db = db
     app.state.checkpointer = MagicMock()
     app.state.event_bus = ExecutionEventBus()
@@ -156,6 +159,26 @@ def test_resume_non_owner_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     resp = client.post("/executions/e1/resume", json={"decision": "approved"})
     assert resp.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Phase 9 Task 5 — Admin role bypass on resume
+# ---------------------------------------------------------------------------
+
+
+def test_admin_can_resume_other_users_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admin can resume an execution belonging to another user."""
+    from src.security.auth import get_current_role
+
+    execution = _execution_row(userId="someone-else")
+    client, db = _client_with_execution(monkeypatch, execution)
+    client.app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")  # type: ignore[attr-defined]
+    try:
+        resp = client.post("/executions/e1/resume", json={"decision": "approved"})
+    finally:
+        client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
+    assert resp.status_code == 200
+    db.approval.create.assert_awaited_once()
 
 
 def test_resume_emits_approval_resumed_event(monkeypatch: pytest.MonkeyPatch) -> None:
