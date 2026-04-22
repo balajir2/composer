@@ -1,22 +1,25 @@
-"""Execution event bus — in-process asyncio fanout for SSE streaming.
+"""Execution event bus — in-process asyncio fanout for WebSocket streaming.
 
-See Phase 5b spec §5 + ADR-0017.
+Event shapes match IE's DES-007 protocol (Phase 9a spec §7.2).
+
+See Phase 9 spec §7 + ADR-0022.
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextlib
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
 EventType = Literal[
-    "status-change",
-    "node-start",
-    "node-complete",
-    "approval-pending",
-    "approval-resumed",
+    "workflow_started",
+    "node_started",
+    "node_completed",
+    "node_failed",
+    "workflow_completed",
+    "approval_required",
 ]
 
 
@@ -27,12 +30,21 @@ def _now_iso() -> str:
 @dataclass(frozen=True)
 class ExecutionEvent:
     type: EventType
-    execution_id: str
-    payload: dict[str, Any] = field(default_factory=dict)
+    execution_id: str = field(metadata={"alias": "executionId"})
+    tenant_id: str | None = field(default=None, metadata={"alias": "tenantId"})
     timestamp: str = field(default_factory=_now_iso)
+    payload: dict[str, Any] = field(default_factory=dict)
 
     def as_json(self) -> dict[str, Any]:
-        return asdict(self)
+        """Returns DES-007-shape dict with camelCase keys."""
+        out: dict[str, Any] = {
+            "type": self.type,
+            "executionId": self.execution_id,
+            "tenantId": self.tenant_id,
+            "timestamp": self.timestamp,
+        }
+        out.update(self.payload)
+        return out
 
 
 class ExecutionEventBus:
@@ -55,11 +67,7 @@ class ExecutionEventBus:
             self._queues.setdefault(execution_id, []).append(q)
         return q
 
-    async def unsubscribe(
-        self,
-        execution_id: str,
-        q: asyncio.Queue[ExecutionEvent | None],
-    ) -> None:
+    async def unsubscribe(self, execution_id: str, q: asyncio.Queue[ExecutionEvent | None]) -> None:
         async with self._lock:
             queues = self._queues.get(execution_id, [])
             if q in queues:

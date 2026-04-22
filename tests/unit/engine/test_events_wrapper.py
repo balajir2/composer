@@ -54,9 +54,9 @@ async def test_wrapper_emits_start_and_complete_on_success() -> None:
         events.append(ev)
 
     types = [e.type for e in events]
-    assert types == ["node-start", "node-complete"]
+    assert types == ["node_started", "node_completed"]
     for e in events:
-        assert e.payload == {"node_id": "n1", "node_type": "http"}
+        assert e.payload == {"nodeId": "n1", "nodeName": "http"}
 
 
 async def test_wrapper_emits_start_but_not_complete_on_exception() -> None:
@@ -86,7 +86,7 @@ async def test_wrapper_emits_start_but_not_complete_on_exception() -> None:
         events.append(ev)
 
     types = [e.type for e in events]
-    assert types == ["node-start"]
+    assert types == ["node_started"]
 
 
 async def test_wrapper_noop_when_context_unset() -> None:
@@ -146,7 +146,7 @@ async def test_build_graph_wraps_executors() -> None:
 
     types_by_node: dict[str, list[str]] = {}
     for ev in events:
-        types_by_node.setdefault(ev.payload["node_id"], []).append(ev.type)
+        types_by_node.setdefault(ev.payload["nodeId"], []).append(ev.type)
 
-    assert types_by_node["s"] == ["node-start", "node-complete"]
-    assert types_by_node["e"] == ["node-start", "node-complete"]
+    assert types_by_node["s"] == ["node_started", "node_completed"]
+    assert types_by_node["e"] == ["node_started", "node_completed"]
