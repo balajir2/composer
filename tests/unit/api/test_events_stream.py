@@ -16,6 +16,7 @@ def _execution_row(**overrides: Any) -> SimpleNamespace:
     base: dict[str, Any] = {
         "id": "e1",
         "status": "running",
+        "userId": "dev",
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -71,6 +72,16 @@ async def test_events_stream_terminal_sends_snapshot_and_closes(
     payload = json.loads(data_line.removeprefix("data: "))
     assert payload["type"] == "status-change"
     assert payload["payload"]["status"] == "completed"
+
+
+async def test_stream_events_non_owner_returns_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-owner streaming an execution's events gets 404 (info-leak tight)."""
+    app = _build_app(monkeypatch, _execution_row(id="e1", status="running", userId="someone-else"))
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as ac:
+        resp = await ac.get("/executions/e1/events")
+    assert resp.status_code == 404
 
 
 async def test_events_stream_live_delivers_emitted_event(

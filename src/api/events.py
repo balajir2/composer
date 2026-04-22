@@ -35,12 +35,17 @@ async def stream_events(
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     event_bus: ExecutionEventBus = Depends(get_event_bus),
-    _user_id: str = Depends(get_current_user_id),
+    user_id: str = Depends(get_current_user_id),
 ) -> StreamingResponse:  # pyright: ignore[reportUnusedFunction]
     execution = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": execution_id}
     )
     if execution is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execution {execution_id!r} not found.",
+        )
+    if execution.userId != user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Execution {execution_id!r} not found.",
