@@ -579,3 +579,36 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 **Implemented by.** Phase 6e (commits `e2068d2`…`84cd4a5`, 2026-04-21).
 
 **Related.** ADR-0006 (LLM provider framework — analogous pattern), [Phase 6e spec](../superpowers/specs/2026-04-21-phase-6e-vector-db-design.md).
+
+---
+
+## ADR-0021: Composer's Phase 8 security policy
+
+**Status.** Accepted.
+**Date.** 2026-04-21.
+
+**Context.** At end of Phase 7b, Composer has functional auth (Phase 7a) but loose read-authz (anyone authenticated can `GET /workflows/{id}` or `/executions/{id}` regardless of owner), no rate limits, and no size caps. This is fine for dev but not production-shippable. Phase 8 closes these gaps before Phase 9 cutover / Phase 10 UI fork.
+
+**Decision.**
+- **Authz policy.** Private workflows + all executions are owner-only for read. Non-owner reads of private resources return **404** (not 403) to avoid a tight info leak that reveals existence. Public workflows (`is_public=True`) are world-readable for any authenticated user. MCP servers remain owner-only as-shipped.
+- **Size caps.** Workflows capped at `max_workflow_nodes=100`, `max_workflow_edges=200`. Execution inputs capped at `max_execution_input_bytes=1_000_000` (1 MB, JSON-serialized). All three settings are tunable via env. Enforcement at write time (create/update/POST /executions), not at execution time — rejecting late wastes LLM calls.
+- **Rate limiting.** In-memory token-bucket per-key (user_id for authenticated, IP for anonymous). Defaults: 30/min `/executions`, 10/min `/auth/login`, 5/min `/auth/register`, 30/min `/auth/refresh`, 60/min `/resume`, 10/min `/mcp-servers/{id}/test-connection`. 429 response with `Retry-After: N` header and JSON `{detail}`. Not rate-limited: list/search GETs, workflow CRUD, SSE, `/health`, `/auth/me`.
+- **Security regression tests.** 13 unit tests + 1 real-Neon integration test pin the invariants above.
+
+**Alternatives considered.**
+- **Redis-based rate limiter:** rejected for Phase 8 as overkill for single-worker target. Phase 9 introduces Redis when we scale horizontally; a thin `RateLimiter` class makes the swap mechanical.
+- **403 on private-read-by-non-owner:** rejected in favor of **404** — 403 reveals resource existence, 404 doesn't. Both are strictly compliant with REST; 404 is tighter in the security sense.
+- **No size caps:** rejected because a user could DoS the worker with a 10,000-node workflow.
+- **Rate-limit via storage (Postgres):** rejected for latency (one round-trip per request).
+
+**Consequences.**
+- **Breaking change vs Phase 7b:** existing integration tests assumed world-read access. Phase 8 Task 1 tightens that to owner-only-for-private + public-for-world. Pre-existing tests that use dev-mode `user_id="dev"` continue to work (owner = dev). Tests that simulate "user A reads user B's workflow" will start returning 404 (behavioral change).
+- **In-memory rate-limit state** is lost on worker restart. Acceptable for single-worker deployment. Phase 9 cutover replaces with Redis-backed storage as part of the multi-worker scale-out.
+- **Rate-limit header leak:** the `Retry-After` header technically reveals rate-limit state. Standard REST behavior; accepted.
+- **Size caps are defense-in-depth.** Real OAB workflows are 10-30 nodes; 100 is comfortable. Users hitting the cap can tune via env or split workflows.
+- **Info-leak via timing.** Tight-read-authz returns 404 for both "doesn't exist" and "not owner" — but the timing might differ (owner path reads from DB, non-owner path reads + checks + 404). Phase 9+ could constant-time this if demanded; not in scope for Phase 8.
+- **No SSRF protection on `http` executor.** Private-network targets (169.254.169.254, 10.0.0.0/8) are reachable. Phase 9+ adds allowlist/blocklist.
+
+**Implemented by.** Phase 8 (commits TBD).
+
+**Related.** ADR-0014 (deployment mode — shapes the auth model this builds on), ADR-0015 (dev-mode fallback), ADR-0016 (user-approval), [Phase 8 spec](../superpowers/specs/2026-04-21-phase-8-security-hardening-design.md).
