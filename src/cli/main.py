@@ -49,7 +49,7 @@ def main(argv: list[str] | None = None) -> NoReturn:
         exit_code = asyncio.run(run_migration(export_dir=args.export_dir, dry_run=args.dry_run))
         sys.exit(exit_code)
     if args.subcommand == "reconcile":
-        from src.migration.reconcile import run_reconcile  # pyright: ignore[reportMissingImports]
+        from src.migration.reconcile import run_reconcile
 
         exit_code = asyncio.run(run_reconcile(email=args.email))
         sys.exit(exit_code)
