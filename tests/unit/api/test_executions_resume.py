@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.main import create_app
+from src.security.rate_limit import RateLimiter
 
 
 def _execution_row(**overrides: Any) -> SimpleNamespace:
@@ -54,6 +55,7 @@ def _client_with_execution(
     app.state.db = db
     app.state.checkpointer = MagicMock()
     app.state.event_bus = ExecutionEventBus()
+    app.state.rate_limiter = RateLimiter()
     return TestClient(app), db
 
 

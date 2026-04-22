@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.main import create_app
+from src.security.rate_limit import RateLimiter
 
 
 def _exec_row(**overrides: Any) -> SimpleNamespace:
@@ -49,6 +50,7 @@ def _client(
     from src.engine.events import ExecutionEventBus
 
     app.state.event_bus = ExecutionEventBus()
+    app.state.rate_limiter = RateLimiter()
     return TestClient(app), db
 
 

@@ -10,6 +10,7 @@ import pytest
 from httpx import ASGITransport, AsyncClient
 
 from src.main import create_app
+from src.security.rate_limit import RateLimiter
 
 
 def _execution_row(**overrides: Any) -> SimpleNamespace:
@@ -37,6 +38,7 @@ def _build_app(monkeypatch: pytest.MonkeyPatch, execution: Any | None) -> Any:
     app.state.db = db
     app.state.checkpointer = MagicMock()
     app.state.event_bus = ExecutionEventBus()
+    app.state.rate_limiter = RateLimiter()
     return app
 
 

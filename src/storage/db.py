@@ -32,6 +32,9 @@ async def prisma_lifespan(  # pyright: ignore[reportUnknownParameterType]
     from src.engine.events import ExecutionEventBus
 
     app.state.event_bus = ExecutionEventBus()
+    from src.security.rate_limit import RateLimiter
+
+    app.state.rate_limiter = RateLimiter()
     try:
         yield db
     finally:

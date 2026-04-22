@@ -12,6 +12,12 @@ from src.config import get_settings
 from src.engine.events import ExecutionEvent, ExecutionEventBus
 from src.engine.langgraph_executor import LangGraphExecutor
 from src.security.auth import get_current_user_id
+from src.security.rate_limit import (
+    RateLimiter,
+    enforce,
+    get_rate_limiter,
+    per_minute_config,
+)
 from src.storage.db import get_db
 
 router = APIRouter(tags=["executions"])
@@ -78,7 +84,14 @@ async def create_execution(
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     user_id: str = Depends(get_current_user_id),
+    limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
+    await enforce(
+        limiter,
+        route_key="executions",
+        client_key=user_id,
+        config=per_minute_config(get_settings().rate_limit_executions_per_minute),
+    )
     input_size = len(_json.dumps(payload.input, default=str))
     max_bytes = get_settings().max_execution_input_bytes
     if input_size > max_bytes:
@@ -157,7 +170,14 @@ async def resume_execution(
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     user_id: str = Depends(get_current_user_id),
+    limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
+    await enforce(
+        limiter,
+        route_key="resume",
+        client_key=user_id,
+        config=per_minute_config(get_settings().rate_limit_resume_per_minute),
+    )
     execution = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": execution_id}
     )

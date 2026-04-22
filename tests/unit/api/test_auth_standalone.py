@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.security.rate_limit import RateLimiter
+
 
 def _user_row(**overrides: Any) -> SimpleNamespace:
     base: dict[str, Any] = {
@@ -39,6 +41,7 @@ def _client_standalone(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, Mag
     db.user.find_unique = AsyncMock(return_value=None)
     db.user.create = AsyncMock(return_value=_user_row())
     app.state.db = db
+    app.state.rate_limiter = RateLimiter()
     # get_db dependency reads from request.app.state.db — set above
     return TestClient(app), db
 

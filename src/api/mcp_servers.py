@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from src.config import get_settings
 from src.mcp.base import McpToolProvider
 from src.mcp.oauth import (
     InvalidStateError,
@@ -24,6 +25,12 @@ from src.mcp.schema_adapter import (
 )
 from src.security.auth import get_current_user_id
 from src.security.encryption import encrypt
+from src.security.rate_limit import (
+    RateLimiter,
+    enforce,
+    get_rate_limiter,
+    per_minute_config,
+)
 from src.storage.db import get_db
 
 router = APIRouter(tags=["mcp-servers"])
@@ -183,7 +190,15 @@ async def list_mcp_servers(
 async def test_mcp_connection(
     server_id: str,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    user_id: str = Depends(get_current_user_id),
+    limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> TestConnectionResponse:
+    await enforce(
+        limiter,
+        route_key="mcp_test",
+        client_key=user_id,
+        config=per_minute_config(get_settings().rate_limit_mcp_test_per_minute),
+    )
     server = await db.mcpserver.find_unique(where={"id": server_id})  # pyright: ignore[reportAttributeAccessIssue]
     if server is None:
         raise HTTPException(

@@ -8,10 +8,11 @@ See Phase 7a spec §8.1.
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from src.config import get_settings
 from src.security.jwt import (
     TokenVerificationError,
     create_access_token,
@@ -19,6 +20,12 @@ from src.security.jwt import (
     verify_refresh_token,
 )
 from src.security.passwords import hash_password, verify_password
+from src.security.rate_limit import (
+    RateLimiter,
+    enforce,
+    get_rate_limiter,
+    per_minute_config,
+)
 from src.storage.db import get_db
 
 router = APIRouter(tags=["auth"])
@@ -67,8 +74,17 @@ def _issue_pair(user_id: str) -> tuple[str, str]:
 @router.post("/auth/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
 async def register(
     payload: RegisterRequest,
+    request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> AuthResponse:  # pyright: ignore[reportUnusedFunction]
+    ip = request.client.host if request.client else "unknown"
+    await enforce(
+        limiter,
+        route_key="auth_register",
+        client_key=ip,
+        config=per_minute_config(get_settings().rate_limit_register_per_minute),
+    )
     existing = await db.user.find_unique(where={"email": str(payload.email)})  # pyright: ignore[reportAttributeAccessIssue]
     if existing is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="email already registered")
@@ -95,8 +111,17 @@ async def register(
 @router.post("/auth/login", response_model=TokenPairResponse)
 async def login(
     payload: LoginRequest,
+    request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> TokenPairResponse:  # pyright: ignore[reportUnusedFunction]
+    ip = request.client.host if request.client else "unknown"
+    await enforce(
+        limiter,
+        route_key="auth_login",
+        client_key=ip,
+        config=per_minute_config(get_settings().rate_limit_login_per_minute),
+    )
     user = await db.user.find_unique(where={"email": str(payload.email)})  # pyright: ignore[reportAttributeAccessIssue]
     # Uniform 401: don't distinguish unknown-email from wrong-password
     if user is None or not verify_password(payload.password, user.passwordHash):
@@ -110,8 +135,17 @@ async def login(
 @router.post("/auth/refresh", response_model=TokenPairResponse)
 async def refresh(
     payload: RefreshRequest,
+    request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> TokenPairResponse:  # pyright: ignore[reportUnusedFunction]
+    ip = request.client.host if request.client else "unknown"
+    await enforce(
+        limiter,
+        route_key="auth_refresh",
+        client_key=ip,
+        config=per_minute_config(get_settings().rate_limit_refresh_per_minute),
+    )
     try:
         claims = verify_refresh_token(payload.refresh_token)
     except TokenVerificationError as exc:
