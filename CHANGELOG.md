@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 7b — Workflow CRUD (2026-04-21)
+
+#### Added
+- [Phase 7b design spec](docs/superpowers/specs/2026-04-21-phase-7b-workflow-crud-design.md).
+- `GET /workflows` — paginated list with filters (`isTemplate`, `isPublic`, `category`, `mine`). Envelope: `{total, items, limit, offset}`. Ordered by `updatedAt DESC`. Limit capped at 100.
+- `GET /workflows/search?q=...` — name/description search via Prisma `contains` + case-insensitive. Empty `q` is 422.
+- `GET /workflows/{id}` — fetch one; 404 if unknown.
+- `PUT /workflows/{id}` — owner-only update. Full replacement (not PATCH). 403 if not owner; 404 if unknown; 422 if shape invalid.
+- `DELETE /workflows/{id}` — owner-only hard-delete. Cascades to executions + checkpoints via existing Prisma `ON DELETE CASCADE`. 204 on success; 403/404 as above.
+- `GET /executions` — paginated list with filters (`workflowId`, `userId`, `status`). Envelope same shape. Ordered by `startedAt DESC`.
+- `WorkflowListResponse` + `ExecutionListResponse` Pydantic envelopes.
+- Integration test: full CRUD cycle against real Neon.
+
+#### Notes
+- Phase 7 was scoped via spec into three sub-phases: **7b — Workflow CRUD (this phase)**, **7c — API auxiliaries** (deferred), **7d — Regression suite port from OAB** (deferred). Phase 7b closes the OAB API parity gap that blocks Phase 10 UI work.
+- Route-ordering fix during implementation: `GET /workflows/search` registered BEFORE `GET /workflows/{id}` so FastAPI doesn't swallow `search` as a path parameter.
+- No new ADR — conventional REST CRUD extensions.
+- `mine=true` on `GET /workflows` uses the current user id (dev-mode fallback to `'dev'` per ADR-0015 in development).
+
+#### Verified
+- 529/529 unit tests green (+20 from Phase 6e 509: 15 workflow-CRUD + 5 executions-list).
+- 1/1 integration test green against real Neon (full CRUD cycle — create → get → list → search → update → delete → 404).
+- Pyright 0 errors, ruff + format clean.
+
 ### Phase 6e — Vector-DB (2026-04-21)
 
 #### Added

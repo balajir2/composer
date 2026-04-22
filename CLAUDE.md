@@ -84,7 +84,9 @@ Supporting docs in `docs/design/` provide historical context and product/strateg
 | 6c — Gamma-AI | ✅ Complete | HTTP integration with gamma.app; 60s/10s/4min polling; exportAs pptx/pdf supported; 13 unit tests, smoke test manual |
 | 6d — Arcade | ✅ Complete | HTTP integration with auth-interrupt flow; reuses Phase 5a `/resume`; retry counter MAX_RETRIES=3; 14 unit tests, smoke test manual |
 | 6e — Vector-DB | ✅ Complete | 5 providers (Pinecone/Qdrant/Chroma/Weaviate/Milvus) + OpenAI embeddings; provider framework per ADR-0020; ~30 unit tests, smoke test manual |
-| 7 — API parity + regression suite ported | ⏭ Next | port OAB's ~72 pytest tests (objective parity check) |
+| 7b — Workflow CRUD | ✅ Complete | GET list/search, GET/PUT/DELETE by id, GET /executions list; owner-only PUT/DELETE; cascade via Prisma; verified against real Neon |
+| 7c — API auxiliaries | ⏸ | vector-db test endpoint, config endpoint (optional) |
+| 7d — Regression suite port from OAB | ⏭ Next | port behavioral tests from OAB's Playwright specs |
 | 8 — Security + hardening | ⏸ | |
 | 9 — Cutover (Convex→Postgres migration, WebSocket) | ⏸ | |
 | 10 — UI fork from OAB | ⏸ | Fork OAB's Next.js frontend, swap client layer |
