@@ -99,7 +99,7 @@ model LangGraphCheckpointWrite {
 
 model McpServer {
   id                   String    @id @default(cuid())
-  userId               String    @map("user_id")
+  userId               String?   @map("user_id")
   name                 String
   url                  String
   description          String?
