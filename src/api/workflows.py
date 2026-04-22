@@ -2,7 +2,7 @@
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
@@ -54,6 +54,15 @@ class WorkflowRead(BaseModel):
     updated_at: Any = Field(alias="updatedAt")
 
 
+class WorkflowListResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    total: int
+    items: list[WorkflowRead]
+    limit: int
+    offset: int
+
+
 @router.post("/workflows", response_model=WorkflowRead, status_code=status.HTTP_201_CREATED)
 async def create_workflow(
     payload: WorkflowCreate,
@@ -93,4 +102,59 @@ async def create_workflow(
     return WorkflowRead.model_validate(row)
 
 
-__all__ = ["WorkflowCreate", "WorkflowRead", "router"]
+@router.get("/workflows/search", response_model=WorkflowListResponse)
+async def search_workflows(
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _user_id: str = Depends(get_current_user_id),
+    q: str = Query(..., min_length=1),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> WorkflowListResponse:  # pyright: ignore[reportUnusedFunction]
+    where: dict[str, Any] = {
+        "OR": [
+            {"name": {"contains": q, "mode": "insensitive"}},
+            {"description": {"contains": q, "mode": "insensitive"}},
+        ]
+    }
+    total = await db.workflow.count(where=where)  # pyright: ignore[reportAttributeAccessIssue]
+    rows = await db.workflow.find_many(  # pyright: ignore[reportAttributeAccessIssue]
+        where=where,
+        take=limit,
+        order={"updatedAt": "desc"},
+    )
+    items = [WorkflowRead.model_validate(row) for row in rows]
+    return WorkflowListResponse(total=total, items=items, limit=limit, offset=0)
+
+
+@router.get("/workflows", response_model=WorkflowListResponse)
+async def list_workflows(
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    user_id: str = Depends(get_current_user_id),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    is_template: bool | None = Query(default=None, alias="isTemplate"),
+    is_public: bool | None = Query(default=None, alias="isPublic"),
+    category: str | None = Query(default=None),
+    mine: bool | None = Query(default=None),
+) -> WorkflowListResponse:  # pyright: ignore[reportUnusedFunction]
+    where: dict[str, Any] = {}
+    if is_template is not None:
+        where["isTemplate"] = is_template
+    if is_public is not None:
+        where["isPublic"] = is_public
+    if category is not None:
+        where["category"] = category
+    if mine:
+        where["userId"] = user_id
+
+    total = await db.workflow.count(where=where)  # pyright: ignore[reportAttributeAccessIssue]
+    rows = await db.workflow.find_many(  # pyright: ignore[reportAttributeAccessIssue]
+        where=where,
+        take=limit,
+        skip=offset,
+        order={"updatedAt": "desc"},
+    )
+    items = [WorkflowRead.model_validate(row) for row in rows]
+    return WorkflowListResponse(total=total, items=items, limit=limit, offset=offset)
+
+
+__all__ = ["WorkflowCreate", "WorkflowListResponse", "WorkflowRead", "router"]
