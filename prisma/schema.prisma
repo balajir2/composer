@@ -197,3 +197,14 @@ model Approval {
   @@index([executionId])
   @@index([approverUserId])
 }
+
+model LlmApiKey {
+  id            String   @id @default(cuid())
+  provider      String   @unique
+  encryptedKey  String   @map("encrypted_key")
+  keyPrefix     String   @map("key_prefix")
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt      @map("updated_at")
+
+  @@map("llm_api_keys")
+}
