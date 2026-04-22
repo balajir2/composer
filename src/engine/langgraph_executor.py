@@ -203,7 +203,7 @@ class LangGraphExecutor:
             logger.error("Execution %s not found at run time", execution_id)
             return
 
-        await self._emit("status-change", execution_id, {"status": "running", "previous": None})
+        await self._emit("workflow_started", execution_id, {"status": "running"})
 
         try:
             compiled, state, lg_config = await self._prepare_compiled(execution)
@@ -219,26 +219,22 @@ class LangGraphExecutor:
                     existing_vars = final_state["variables"]
                 await self._mark_waiting_approval(execution_id, pending_info, existing_vars)
                 await self._emit(
-                    "approval-pending",
+                    "approval_required",
                     execution_id,
                     {
                         "node_id": pending_info.get("node_id"),
                         "prompt": pending_info.get("prompt"),
+                        "status": "waiting_approval",
                     },
-                )
-                await self._emit(
-                    "status-change",
-                    execution_id,
-                    {"status": "waiting_approval", "previous": "running"},
                 )
                 await self._close_event_bus(execution_id)
                 return
 
             await self._mark_completed(execution_id, final_state)
             await self._emit(
-                "status-change",
+                "workflow_completed",
                 execution_id,
-                {"status": "completed", "previous": "running"},
+                {"status": "completed"},
             )
             await self._close_event_bus(execution_id)
 
@@ -247,9 +243,9 @@ class LangGraphExecutor:
             await self._mark_failed(execution_id, exc)
             try:
                 await self._emit(
-                    "status-change",
+                    "workflow_completed",
                     execution_id,
-                    {"status": "failed", "previous": "running"},
+                    {"status": "failed"},
                 )
                 await self._close_event_bus(execution_id)
             except Exception:
@@ -268,9 +264,9 @@ class LangGraphExecutor:
             return
 
         await self._emit(
-            "status-change",
+            "workflow_started",
             execution_id,
-            {"status": "running", "previous": "waiting_approval"},
+            {"status": "running"},
         )
 
         try:
@@ -290,26 +286,22 @@ class LangGraphExecutor:
                     existing_vars = final_state["variables"]
                 await self._mark_waiting_approval(execution_id, pending_info, existing_vars)
                 await self._emit(
-                    "approval-pending",
+                    "approval_required",
                     execution_id,
                     {
                         "node_id": pending_info.get("node_id"),
                         "prompt": pending_info.get("prompt"),
+                        "status": "waiting_approval",
                     },
-                )
-                await self._emit(
-                    "status-change",
-                    execution_id,
-                    {"status": "waiting_approval", "previous": "running"},
                 )
                 await self._close_event_bus(execution_id)
                 return
 
             await self._mark_completed(execution_id, final_state)
             await self._emit(
-                "status-change",
+                "workflow_completed",
                 execution_id,
-                {"status": "completed", "previous": "running"},
+                {"status": "completed"},
             )
             await self._close_event_bus(execution_id)
 
@@ -318,9 +310,9 @@ class LangGraphExecutor:
             await self._mark_failed(execution_id, exc)
             try:
                 await self._emit(
-                    "status-change",
+                    "workflow_completed",
                     execution_id,
-                    {"status": "failed", "previous": "running"},
+                    {"status": "failed"},
                 )
                 await self._close_event_bus(execution_id)
             except Exception:

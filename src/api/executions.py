@@ -9,7 +9,6 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
-from src.engine.events import ExecutionEvent, ExecutionEventBus
 from src.engine.langgraph_executor import LangGraphExecutor
 from src.security.auth import get_current_role, get_current_user_id
 from src.security.rate_limit import (
@@ -234,16 +233,6 @@ async def resume_execution(
         where={"id": execution_id},
         data={"status": "running"},
     )
-
-    event_bus: ExecutionEventBus | None = getattr(request.app.state, "event_bus", None)
-    if event_bus is not None:
-        await event_bus.emit(
-            ExecutionEvent(
-                type="approval-resumed",
-                execution_id=execution_id,
-                payload={"node_id": pending_node_id, "decision": payload.decision.value},
-            )
-        )
 
     executor = _get_executor(request, db)
     background_tasks.add_task(executor.resume, execution_id, payload.decision.value)

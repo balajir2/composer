@@ -181,8 +181,12 @@ def test_admin_can_resume_other_users_execution(monkeypatch: pytest.MonkeyPatch)
     db.approval.create.assert_awaited_once()
 
 
-def test_resume_emits_approval_resumed_event(monkeypatch: pytest.MonkeyPatch) -> None:
-    """POST /resume emits approval-resumed to the event bus with the decision."""
+def test_resume_does_not_emit_approval_resumed_event(monkeypatch: pytest.MonkeyPatch) -> None:
+    """POST /resume no longer emits approval-resumed (dropped in DES-007 Phase 9a).
+
+    DES-007 covers the post-resume activity via the subsequent node_started event
+    emitted by the LangGraphExecutor after resume() drives the graph.
+    """
     import asyncio
 
     client, _db = _client_with_execution(monkeypatch, _execution_row())
@@ -191,12 +195,10 @@ def test_resume_emits_approval_resumed_event(monkeypatch: pytest.MonkeyPatch) ->
     async def _collect_after_post() -> list[Any]:
         q = await bus.subscribe("e1")
         events: list[Any] = []
-        # Kick off the HTTP call while the subscriber is active
         client.post(
             "/executions/e1/resume",
             json={"decision": "approved", "note": "ok"},
         )
-        # Drain whatever is already in the queue
         try:
             while True:
                 try:
@@ -211,6 +213,9 @@ def test_resume_emits_approval_resumed_event(monkeypatch: pytest.MonkeyPatch) ->
         return events
 
     events = asyncio.run(_collect_after_post())
-    resumed = [e for e in events if e.type == "approval-resumed"]
-    assert resumed, f"no approval-resumed event; got {[(e.type, e.payload) for e in events]}"
-    assert resumed[0].payload == {"node_id": "ua", "decision": "approved"}
+    # approval-resumed is dropped in DES-007; the bus should have no events
+    # from the HTTP layer (only the executor emits workflow_started after resume).
+    approval_resumed = [e for e in events if getattr(e, "type", None) == "approval-resumed"]
+    assert not approval_resumed, (
+        f"unexpected approval-resumed event; got {[(e.type, e.payload) for e in events]}"
+    )

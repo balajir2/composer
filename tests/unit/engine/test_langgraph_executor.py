@@ -274,7 +274,7 @@ async def test_resume_approved_continues_to_completion(
 async def test_run_emits_status_change_on_start_and_complete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """run() emits status-change(running) before ainvoke and status-change(completed)
+    """run() emits workflow_started(running) before ainvoke and workflow_completed(completed)
     + close() after."""
     from types import SimpleNamespace
     from typing import Any as _Any
@@ -341,10 +341,12 @@ async def test_run_emits_status_change_on_start_and_complete(
         events.append(ev)
 
     types = [e.type for e in events]
-    statuses = [e.payload.get("status") for e in events if e.type == "status-change"]
-    assert "status-change" in types
-    assert "running" in statuses
-    assert "completed" in statuses
+    assert "workflow_started" in types
+    assert "workflow_completed" in types
+    started_statuses = [e.payload.get("status") for e in events if e.type == "workflow_started"]
+    completed_statuses = [e.payload.get("status") for e in events if e.type == "workflow_completed"]
+    assert "running" in started_statuses
+    assert "completed" in completed_statuses
 
 
 async def test_run_emits_approval_pending_on_pause(
@@ -433,16 +435,11 @@ async def test_run_emits_approval_pending_on_pause(
         events.append(ev)
 
     types = [e.type for e in events]
-    assert "approval-pending" in types
-    pending = next(e for e in events if e.type == "approval-pending")
+    assert "approval_required" in types
+    pending = next(e for e in events if e.type == "approval_required")
     assert pending.payload["node_id"] == "ua"
     assert pending.payload["prompt"] == "Approve?"
-    waiting = [
-        e
-        for e in events
-        if e.type == "status-change" and e.payload.get("status") == "waiting_approval"
-    ]
-    assert waiting
+    assert pending.payload.get("status") == "waiting_approval"
 
 
 async def test_run_emits_failed_on_exception(
@@ -488,5 +485,5 @@ async def test_run_emits_failed_on_exception(
             break
         events.append(ev)
 
-    statuses = [e.payload.get("status") for e in events if e.type == "status-change"]
+    statuses = [e.payload.get("status") for e in events if e.type == "workflow_completed"]
     assert "failed" in statuses

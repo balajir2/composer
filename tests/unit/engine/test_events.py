@@ -11,11 +11,11 @@ async def test_subscribe_emit_receive() -> None:
     bus = ExecutionEventBus()
     q = await bus.subscribe("e1")
     await bus.emit(
-        ExecutionEvent(type="status-change", execution_id="e1", payload={"status": "running"})
+        ExecutionEvent(type="workflow_started", execution_id="e1", payload={"status": "running"})
     )
     got = await asyncio.wait_for(q.get(), timeout=1.0)
     assert got is not None
-    assert got.type == "status-change"
+    assert got.type == "workflow_started"
     assert got.execution_id == "e1"
     assert got.payload == {"status": "running"}
 
@@ -24,17 +24,17 @@ async def test_multi_subscriber_fanout() -> None:
     bus = ExecutionEventBus()
     q1 = await bus.subscribe("e1")
     q2 = await bus.subscribe("e1")
-    await bus.emit(ExecutionEvent(type="node-start", execution_id="e1", payload={"node_id": "n"}))
+    await bus.emit(ExecutionEvent(type="node_started", execution_id="e1", payload={"nodeId": "n"}))
     g1 = await asyncio.wait_for(q1.get(), timeout=1.0)
     g2 = await asyncio.wait_for(q2.get(), timeout=1.0)
     assert g1 is not None and g2 is not None
-    assert g1.type == g2.type == "node-start"
+    assert g1.type == g2.type == "node_started"
 
 
 async def test_emit_ignores_unrelated_execution() -> None:
     bus = ExecutionEventBus()
     q = await bus.subscribe("e1")
-    await bus.emit(ExecutionEvent(type="status-change", execution_id="e2", payload={}))
+    await bus.emit(ExecutionEvent(type="workflow_started", execution_id="e2", payload={}))
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(q.get(), timeout=0.05)
 
@@ -43,7 +43,7 @@ async def test_unsubscribe_removes_queue() -> None:
     bus = ExecutionEventBus()
     q = await bus.subscribe("e1")
     await bus.unsubscribe("e1", q)
-    await bus.emit(ExecutionEvent(type="status-change", execution_id="e1", payload={}))
+    await bus.emit(ExecutionEvent(type="workflow_started", execution_id="e1", payload={}))
     with pytest.raises(asyncio.TimeoutError):
         await asyncio.wait_for(q.get(), timeout=0.05)
 
@@ -60,7 +60,7 @@ async def test_queue_overflow_drops_oldest() -> None:
     bus = ExecutionEventBus()
     q = await bus.subscribe("e1")
     for i in range(200):
-        await bus.emit(ExecutionEvent(type="node-start", execution_id="e1", payload={"i": i}))
+        await bus.emit(ExecutionEvent(type="node_started", execution_id="e1", payload={"i": i}))
     drained: list[int] = []
     while True:
         try:
@@ -77,11 +77,12 @@ async def test_queue_overflow_drops_oldest() -> None:
 async def test_event_as_json_roundtrippable() -> None:
     import json
 
-    e = ExecutionEvent(type="status-change", execution_id="e1", payload={"status": "running"})
+    e = ExecutionEvent(type="workflow_started", execution_id="e1", payload={"status": "running"})
     body = e.as_json()
-    assert body["type"] == "status-change"
-    assert body["execution_id"] == "e1"
-    assert body["payload"] == {"status": "running"}
+    assert body["type"] == "workflow_started"
+    assert body["executionId"] == "e1"
+    assert body["tenantId"] is None
+    assert body["status"] == "running"
     assert "timestamp" in body
     json.dumps(body)
 
