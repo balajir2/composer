@@ -1,10 +1,82 @@
-export default function AdminHome() {
+"use client";
+
+import { useQuery } from "@tanstack/react-query";
+import { listAdminUsers } from "@/lib/api/admin";
+import { listWorkflows } from "@/lib/api/workflows";
+import { listExecutions } from "@/lib/api/executions";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Skeleton } from "@/components/ui/skeleton";
+
+function StatCard({
+  title,
+  value,
+  isLoading,
+}: {
+  title: string;
+  value: number | undefined;
+  isLoading: boolean;
+}) {
   return (
-    <div className="space-y-2">
-      <h2 className="text-2xl font-semibold">Admin</h2>
-      <p className="text-muted-foreground">
-        Admin dashboard arrives in Phase 10d. This stub confirms the role route is reachable.
-      </p>
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-muted-foreground text-sm font-medium">{title}</CardTitle>
+      </CardHeader>
+      <CardContent>
+        {isLoading ? (
+          <Skeleton className="h-8 w-16" />
+        ) : (
+          <p className="text-3xl font-bold">{value ?? 0}</p>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
+export default function AdminDashboard() {
+  const usersQ = useQuery({
+    queryKey: ["admin-users"],
+    queryFn: () => listAdminUsers(),
+  });
+
+  const workflowsQ = useQuery({
+    queryKey: ["admin-workflows"],
+    queryFn: () => listWorkflows({ limit: 500 }),
+  });
+
+  const executionsQ = useQuery({
+    queryKey: ["admin-executions-recent"],
+    queryFn: () => listExecutions({ limit: 20 }),
+  });
+
+  const totalUsers = usersQ.data?.length;
+  const totalWorkflows = workflowsQ.data?.items.length;
+  const productionCount = workflowsQ.data?.items.filter((wf) => wf.isProduction).length;
+  const recentExecutions = executionsQ.data?.items.length;
+
+  const isLoading = usersQ.isLoading || workflowsQ.isLoading || executionsQ.isLoading;
+
+  return (
+    <div className="space-y-6">
+      <h2 className="text-2xl font-semibold">Admin dashboard</h2>
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard title="Total users" value={totalUsers} isLoading={usersQ.isLoading} />
+        <StatCard title="Total workflows" value={totalWorkflows} isLoading={workflowsQ.isLoading} />
+        <StatCard
+          title="Production workflows"
+          value={productionCount}
+          isLoading={workflowsQ.isLoading}
+        />
+        <StatCard
+          title="Recent executions (last 20)"
+          value={recentExecutions}
+          isLoading={executionsQ.isLoading}
+        />
+      </div>
+      {!isLoading && (usersQ.isError || workflowsQ.isError || executionsQ.isError) && (
+        <p className="text-destructive text-sm">
+          Some stats could not be loaded. Check your connection and try again.
+        </p>
+      )}
     </div>
   );
 }
