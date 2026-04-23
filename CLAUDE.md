@@ -89,7 +89,7 @@ Supporting docs in `docs/design/` provide historical context and product/strateg
 | 7d — Regression suite port from OAB | ⏸ | deferred; Composer's 600+ tests already cover behavioral parity |
 | 8 — Security + hardening | ✅ Complete | authz (private = 404 for non-owner; execution owner-only), size caps (100 nodes / 200 edges / 1 MB input), in-memory token-bucket rate limits, security regression tests; verified against real Neon (two-user) |
 | 9 — Cutover (Convex→Postgres migration, WebSocket) | ✅ Complete | OAB→Composer migration + email-based reconciliation; admin capabilities; Postgres-SoT LLM keys w/ Vercel sync; WebSocket replaces SSE (DES-007); deployment docs |
-| 10 — UI fork from OAB | ⏭ Next | Fork OAB's Next.js frontend, swap client layer, Azure SSO via NextAuth |
+| 10 — Composer frontend + enterprise UX | ✅ Complete | Next.js 14 + Tailwind + shadcn/ui; three role-aware audiences (Designer / End User / Admin); Azure SSO via NextAuth; production workflows + external-invoke API (`POST /api/run/{slug}` with per-user API keys); unified tools/MCPs catalog; Playwright e2e suite |
 
 Backend phases 0–9 ≈ 10 weeks. UI phase 10 ≈ 3 weeks. Total ≈ 13 weeks.
 
