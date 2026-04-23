@@ -205,6 +205,31 @@ var or a Postgres connection failure.
 
 ---
 
+## 8. WebSocket streaming note
+
+`/executions/{id}/ws` is a long-lived WebSocket. Vercel's default Serverless
+Function model doesn't support WebSocket connections longer than the
+platform's idle timeout.
+
+Three deployment options, in order of preference:
+
+1. **Deploy the FastAPI backend as a separate long-running container** (e.g.,
+   Fly.io, Render, AWS App Runner, or a lightweight VM). The Next.js frontend
+   stays on Vercel and calls the backend via `NEXT_PUBLIC_COMPOSER_API_URL`.
+   WebSocket works natively. Recommended.
+
+2. **Vercel Edge Functions with streaming** — supports SSE (not WebSocket) and
+   has lower time limits. Would require reverting to SSE; not supported in
+   Phase 10.
+
+3. **Managed WS service in front of Vercel** (Ably, Pusher, AWS AppSync) —
+   adds a broker; Composer emits events to the broker, clients subscribe.
+   Larger architectural change; out of scope.
+
+Phase 10 assumes option 1 for production deployment.
+
+---
+
 ## Cross-references
 
 - [postgres-setup.md](postgres-setup.md) — Neon provisioning, DATABASE_URL format

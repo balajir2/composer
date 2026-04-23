@@ -286,6 +286,36 @@ Run reconcile with the lowercase value: `composer reconcile --email alice@bounte
 
 ---
 
+## 7. Promoting admins (post-Phase 10)
+
+The DB-only approach from Phase 9 still works, but the preferred path is
+now via the Admin UI:
+
+1. Log in as an existing admin.
+2. Navigate to `/admin/users`.
+3. Click **Promote to admin** next to the target user's row.
+
+The SQL fallback (`UPDATE users SET role='admin' WHERE email='…'`) is only
+needed to bootstrap the very first admin or to recover if the Admin UI is
+down.
+
+---
+
+## 8. Running the Playwright smoke suite
+
+As a post-deploy smoke test, run:
+
+```bash
+cd composer/frontend
+PW_BASE_URL=https://composer.your-domain npx playwright test e2e/auth.spec.ts e2e/end-user.spec.ts
+```
+
+This hits the deployed UI + API with real credentials; set `PW_BASE_URL` to
+the target environment. Don't run the destructive specs (admin, designer) on
+production without a dry-run flag.
+
+---
+
 ## Cross-references
 
 - [postgres-setup.md](postgres-setup.md) — Neon access, psql setup
