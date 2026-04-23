@@ -109,6 +109,17 @@ class Settings(BaseSettings):
     rate_limit_mcp_test_per_minute: int = 10
     rate_limit_api_run_per_minute: int = 60
 
+    # ─── SSO (Phase 10a) ────────────────────────
+    sso_enabled: bool = Field(default=False, description="Enable /auth/sso-exchange endpoint.")
+    sso_azure_ad_tenant_id: str = Field(
+        default="",
+        description="Azure AD tenant ID; required when sso_enabled=True.",
+    )
+    sso_azure_ad_expected_audience: str = Field(
+        default="",
+        description="Expected 'aud' claim in Azure-issued JWTs.",
+    )
+
 
 @lru_cache
 def get_settings() -> Settings:
