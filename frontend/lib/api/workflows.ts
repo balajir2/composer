@@ -34,6 +34,25 @@ export async function deleteWorkflow(id: string): Promise<void> {
   return apiFetch<void>(`/workflows/${id}`, { method: "DELETE" });
 }
 
+export async function duplicateWorkflow(id: string): Promise<WorkflowRead> {
+  const fetched = await getWorkflow(id);
+  return createWorkflow({
+    name: fetched.name + " (copy)",
+    description: fetched.description ?? null,
+    category: fetched.category ?? null,
+    tags: fetched.tags ?? [],
+    difficulty: fetched.difficulty ?? null,
+    estimatedTime: fetched.estimatedTime ?? null,
+    nodes: fetched.nodes as WorkflowCreate["nodes"],
+    edges: fetched.edges as WorkflowCreate["edges"],
+    version: fetched.version ?? null,
+    isTemplate: fetched.isTemplate,
+    isPublic: fetched.isPublic,
+    isProduction: fetched.isProduction ?? null,
+    externalSlug: null,
+  });
+}
+
 export async function reassignWorkflowOwner(
   workflowId: string,
   body: { userId?: string; email?: string }
