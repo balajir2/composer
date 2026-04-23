@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from src import __version__
 from src.api.admin_llm_keys import router as admin_llm_keys_router
+from src.api.api_keys import router as api_keys_router
 from src.api.auth_common import router as auth_common_router
 from src.api.auth_standalone import router as auth_standalone_router
 from src.api.events_ws import router as events_ws_router
@@ -81,6 +82,7 @@ def create_app() -> FastAPI:
     )
 
     app.include_router(admin_llm_keys_router)
+    app.include_router(api_keys_router)
     app.include_router(workflows_router)
     app.include_router(executions_router)
     app.include_router(events_ws_router)
