@@ -33,3 +33,13 @@ export async function updateWorkflow(id: string, body: WorkflowCreate): Promise<
 export async function deleteWorkflow(id: string): Promise<void> {
   return apiFetch<void>(`/workflows/${id}`, { method: "DELETE" });
 }
+
+export async function reassignWorkflowOwner(
+  workflowId: string,
+  body: { userId?: string; email?: string }
+): Promise<WorkflowRead> {
+  return apiFetch<WorkflowRead>(`/workflows/${workflowId}/owner`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}
