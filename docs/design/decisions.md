@@ -643,3 +643,41 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 **Implemented by.** Phase 9 (commits `fc059e1`…`5b9bf5f` on `main`, 2026-04-22).
 
 **Related.** ADR-0014 (deployment mode), ADR-0015 (dev-mode auth fallback), ADR-0021 (Phase 8 security policy — Phase 9 admin bypass amends this), [Phase 9 spec](../superpowers/specs/2026-04-22-phase-9-cutover-readiness-design.md).
+
+---
+
+## ADR-0023: Composer frontend policy + three-audience enterprise UX
+
+**Status.** Accepted 2026-04-23.
+
+**Context.** Phase 10 shipped Composer as a usable enterprise product. The original 2026-04-20 design doc called for forking OAB's Next.js frontend; during Phase 10 brainstorming this was replaced with a fresh enterprise UX build. Three audiences (Designer / End User / Admin), external-invoke API endpoints, and a unified tools-and-MCPs catalog were added.
+
+**Decision.**
+
+1. **Fresh UX, not OAB visual port.** OAB is behavioral reference; frontend built fresh in Next.js 14 App Router + Tailwind + shadcn/ui.
+2. **Monorepo under `composer/frontend/`.** Not a separate repo. OpenAPI TS types generated in-place from Composer's FastAPI schema.
+3. **Single Next.js app, role-aware routes.** `/designer/*`, `/runs/*`, `/admin/*` guarded at layout level. One build, one deploy.
+4. **Tailwind + shadcn/ui over Ant/Mantine.** Installed `base-nova` style (on `@base-ui/react`, not Radix — the default shipped by `shadcn init` as of v4); CSS variables hook for future Bounteous branding. `Button asChild` is unsupported in this style; use `<Link>` + `buttonVariants()`.
+5. **Three audiences, not two.** Admin added as first-class with dedicated UI (user management, catalog publishing, LLM keys, workflow override).
+6. **Unified Tools palette for designers.** Built-in providers + shared MCPs merge into one palette; architectural distinction hidden from designers (visible only in Admin UI).
+7. **Email as Azure SSO identity link.** Phase 9's email-as-cross-system-identity extended to Azure AD via `/auth/sso-exchange`. Standalone `/auth/login` preserved. `User.passwordHash` nullable.
+8. **Role-based workflow access, no groups.** `isPublic=true` → any authenticated user + any API key; private → owner + admin.
+9. **Production-workflow state + externalSlug + ApiKey.** OAB's "production" ported as `Workflow.isProduction` + globally-unique `externalSlug`. External invoke via `POST /api/run/{slug}` with `Authorization: Bearer ck_<key>`.
+10. **Async default, sync opt-in.** External invoke returns 200 + async shape by default; `sync=true` waits up to `timeoutSeconds` (max 300).
+11. **No workflow versioning.** Edits to production workflows propagate immediately. Versioning deferred.
+12. **SSO exchange via backend endpoint.** NextAuth validates Azure token client-side, then calls `POST /auth/sso-exchange` — Composer stays the JWT authority.
+13. **New admin-surgical PATCH endpoints** (`PATCH /mcp-servers/{id}/shared`, `POST /admin/users/{id}/role`) supplant the Phase 9 SQL-only promotion path and avoid the full-body PUT contract.
+14. **Vercel for frontend, container for backend.** Long-lived WebSocket (DES-007) doesn't work on Vercel Serverless Functions; backend recommended on Fly/Render/App Runner. Frontend stays on Vercel.
+
+**Consequences.**
+- **Simpler deployment.** Single Next.js app + single backend; Vercel for frontend; separate container for backend.
+- **Fresh UX cost ≫ port cost.** Offset by not carrying OAB's design debt.
+- **Admin UI surface small but real.** Tool catalog + LLM keys + workflow override + user management cover the common ops scenarios; advanced flows (audit trails, groups) deferred.
+- **API keys as new auth path.** Coexists with JWT; distinguished at the `Authorization: Bearer` prefix (`ck_` → API key; otherwise JWT).
+- **shadcn base-nova divergence.** Documented in Phase 10 Task 6 concerns; downstream subagents adapted (e.g., `<Link>` + `buttonVariants()` instead of `<Button asChild>`).
+- **NextAuth v5 still in beta.** Pinned to `5.0.0-beta.31`; upgrade to stable when released.
+- **WebSocket deployment constraint** forces a container-based backend, documented in `docs/deployment/vercel-setup.md`.
+
+**Implemented by.** Phase 10 (commits `a6cd130`…`4f3a4d0` on `main`, 2026-04-23).
+
+**Related.** ADR-0022 (Phase 9 cutover — email identity extended here), ADR-0021 (Phase 8 security — admin-bypass policy reused), ADR-0014 (deployment modes), [Phase 10 spec](../superpowers/specs/2026-04-22-phase-10-composer-frontend-design.md).

@@ -6,6 +6,41 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 10 — Composer frontend + enterprise UX (2026-04-23)
+
+#### Added
+- [Phase 10 design spec](docs/superpowers/specs/2026-04-22-phase-10-composer-frontend-design.md) + ADR-0023.
+- **10a — Backend extensions.**
+  - `Workflow.isProduction` + `Workflow.externalSlug` (globally unique); `User.passwordHash` nullable for SSO-provisioned users.
+  - New `ApiKey` Prisma model (per-user, bcrypt-hashed, soft-delete via `revokedAt`); `POST/GET/DELETE /api-keys`.
+  - `POST /api/run/{slug}` — external invoke with `Authorization: Bearer ck_<key>`; async default + opt-in sync (`timeoutSeconds` max 300); owner/admin/public authz.
+  - `POST /auth/sso-exchange` — Azure AD JWT → Composer JWT handoff (auto-provisions User by email; JWKS cached 24h).
+  - Rate limit `rate_limit_api_run_per_minute` (60/min per API key).
+- **10b — Frontend scaffold.** Next.js 14 App Router + Tailwind CSS + shadcn/ui (base-nova style on `@base-ui/react`); NextAuth v5 with Azure AD + Credentials providers; OpenAPI TS client generated from Composer's schema; React Query; native WebSocket wrapper; role-aware layouts (`/designer`, `/runs`, `/admin`).
+- **10c — End User UI.** List runnable workflows; workflow-details + input form driven by Start-node schema; live execution progress via WebSocket; result view; execution history; API key management with plaintext-once modal; approval dialog for `waiting_approval` state.
+- **10d — Admin UI.** Backend additions: `/admin/users*` + `/admin/deployment-settings` + `DeploymentSetting` model + new admin-only `PATCH /mcp-servers/{id}/shared` endpoint. Frontend: dashboard, users list + role toggle, MCP shared toggle, built-in tool toggles, LLM keys CRUD (wraps Phase 9e), all-workflows override + reassign-owner dialog.
+- **10e — Designer UI.** Workflow list + new/duplicate/delete; React Flow canvas with all 18 node types registered; unified Tools palette (shared MCPs + enabled built-ins); 18 node property panels (react-hook-form-driven); publish dialog with `slugify` pre-fill + URL preview; settings page.
+- **10f — Polish + e2e.** Shared `ErrorBoundary` wrapping each role layout; `Skeleton` + `EmptyState` + error branches audited across all data pages; Tailwind config tightened (Inter via CSS variable, `--radius` token); Playwright end-to-end suite (auth / end-user / designer / admin / external-invoke — 11 tests across 5 files).
+- **Integration tests.** `test_external_invoke.py` on real Neon — publish → API key → external invoke → revoke rejection.
+
+#### Changed
+- **Breaking:** `User.passwordHash` is nullable.
+- **Breaking:** Phase 9's admin-via-SQL promotion supplanted by `POST /admin/users/{id}/role`.
+- **Breaking:** `McpServer` now has `PATCH /mcp-servers/{id}/shared` as the admin-surgical path to flip `isShared`; the existing PUT requires a full `McpServerCreate` body.
+
+#### Notes
+- **WebSocket + Vercel:** Vercel Serverless Functions don't support long-lived WS connections; deploy the FastAPI backend as a separate container (Fly/Render/App Runner). Frontend remains on Vercel. See `docs/deployment/vercel-setup.md`.
+- **shadcn style:** installed `base-nova` (built on `@base-ui/react`, not Radix); component API is largely the same but `Button asChild` is unsupported — use `Link` + `buttonVariants()` wherever a Link needs button styling.
+- **Playwright suite:** ships with specs + Chromium installed; full run requires local uvicorn + next dev or a staging environment.
+- **NextAuth v5 beta.31:** pinned since v5 hasn't gone stable; Azure AD provider uses the `issuer` param (not `tenantId`) in this beta.
+
+#### Verified
+- 642/642 unit tests green (baseline Phase 9: 600; +42 across API keys, publish + external invoke, SSO, admin endpoints).
+- 5/5 frontend vitest tests (auth helper + workflow input form).
+- 1/1 new Phase 10 integration test green against real Neon (`test_external_invoke.py`).
+- Playwright: 11 tests parse across 5 specs (full run deferred to staging / CI).
+- Pyright 0 errors, ruff + format + ESLint + Prettier + TypeScript all clean.
+
 ### Phase 9 — Cutover readiness (2026-04-22)
 
 #### Added
