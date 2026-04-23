@@ -37,11 +37,14 @@ model Workflow {
   createdAt     DateTime @default(now()) @map("created_at")
   updatedAt     DateTime @updatedAt      @map("updated_at")
   originalOwnerEmail String? @map("original_owner_email")
+  isProduction  Boolean  @default(false) @map("is_production")
+  externalSlug  String?  @unique         @map("external_slug")
 
   executions    WorkflowExecution[]
 
   @@map("workflows")
   @@index([userId])
+  @@index([externalSlug])
 }
 
 model WorkflowExecution {
@@ -167,11 +170,13 @@ enum UserRole {
 model User {
   id            String    @id @default(cuid())
   email         String    @unique
-  passwordHash  String    @map("password_hash")
+  passwordHash  String?   @map("password_hash")
   displayName   String?   @map("display_name")
   role          UserRole  @default(member)
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt       @map("updated_at")
+
+  apiKeys       ApiKey[]
 
   @@map("users")
   @@index([email])
@@ -196,6 +201,24 @@ model Approval {
   @@map("approvals")
   @@index([executionId])
   @@index([approverUserId])
+}
+
+model ApiKey {
+  id            String    @id @default(cuid())
+  userId        String    @map("user_id")
+  label         String
+  keyHash       String    @unique         @map("key_hash")
+  keyPrefix     String                    @map("key_prefix")
+  createdAt     DateTime  @default(now()) @map("created_at")
+  lastUsedAt    DateTime?                 @map("last_used_at")
+  expiresAt     DateTime?                 @map("expires_at")
+  revokedAt     DateTime?                 @map("revoked_at")
+
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("api_keys")
+  @@index([userId])
+  @@index([keyPrefix])
 }
 
 model LlmApiKey {
