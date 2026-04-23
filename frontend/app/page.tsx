@@ -1,6 +1,10 @@
+import { auth } from "@/auth";
 import { redirect } from "next/navigation";
 
-export default function Home() {
-  // 10c+ will redirect to /runs or /designer based on role.
-  redirect("/login");
+export default async function Home() {
+  const session = await auth();
+  if (!session) redirect("/login");
+  const role = (session as unknown as { role?: "admin" | "member" }).role ?? "member";
+  if (role === "admin") redirect("/admin");
+  redirect("/runs");
 }
