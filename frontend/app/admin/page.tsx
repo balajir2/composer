@@ -6,6 +6,7 @@ import { listWorkflows } from "@/lib/api/workflows";
 import { listExecutions } from "@/lib/api/executions";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/composer/empty-state";
 
 function StatCard({
   title,
@@ -19,7 +20,7 @@ function StatCard({
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-muted-foreground text-sm font-medium">{title}</CardTitle>
+        <CardTitle className="text-sm font-medium text-muted-foreground">{title}</CardTitle>
       </CardHeader>
       <CardContent>
         {isLoading ? (
@@ -73,9 +74,10 @@ export default function AdminDashboard() {
         />
       </div>
       {!isLoading && (usersQ.isError || workflowsQ.isError || executionsQ.isError) && (
-        <p className="text-destructive text-sm">
-          Some stats could not be loaded. Check your connection and try again.
-        </p>
+        <EmptyState
+          title="Some stats could not be loaded"
+          description="Check your connection and try again."
+        />
       )}
     </div>
   );

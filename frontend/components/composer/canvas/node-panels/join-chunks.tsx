@@ -19,7 +19,7 @@ export default function JoinChunksPanel({
           onChange={(e) => onChange({ inputVariable: e.target.value })}
           placeholder="state.chunks"
         />
-        <p className="text-muted-foreground text-xs">State key holding the chunks array.</p>
+        <p className="text-xs text-muted-foreground">State key holding the chunks array.</p>
       </div>
 
       <div className="space-y-2">

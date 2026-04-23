@@ -75,7 +75,7 @@ export function WorkflowInputForm({ workflow }: { workflow: Workflow }) {
             <div key={f.name} className="space-y-2">
               <Label htmlFor={`f-${f.name}`}>
                 {f.label}
-                {f.required && <span className="text-destructive pl-0.5">*</span>}
+                {f.required && <span className="pl-0.5 text-destructive">*</span>}
               </Label>
               {f.type === "json" ? (
                 <Textarea
@@ -93,7 +93,7 @@ export function WorkflowInputForm({ workflow }: { workflow: Workflow }) {
                 />
               )}
               {form.formState.errors[f.name] && (
-                <p className="text-destructive text-xs">
+                <p className="text-xs text-destructive">
                   {String(form.formState.errors[f.name]?.message)}
                 </p>
               )}

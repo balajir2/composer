@@ -28,7 +28,7 @@ export default function WorkflowDetails({ params }: { params: { workflowId: stri
       <div>
         <h2 className="text-2xl font-semibold">{data.name}</h2>
         {data.description && (
-          <p className="text-muted-foreground pt-1 text-sm">{data.description}</p>
+          <p className="pt-1 text-sm text-muted-foreground">{data.description}</p>
         )}
       </div>
       <WorkflowInputForm workflow={data} />

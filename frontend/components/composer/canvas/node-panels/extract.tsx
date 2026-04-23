@@ -31,7 +31,7 @@ export default function ExtractPanel({
           placeholder='{"name": "string", "age": "number"}'
           className="font-mono text-xs"
         />
-        <p className="text-muted-foreground text-xs">
+        <p className="text-xs text-muted-foreground">
           JSON schema describing the fields to extract.
         </p>
       </div>

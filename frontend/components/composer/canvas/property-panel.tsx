@@ -93,12 +93,18 @@ export function PropertyPanel({ node, onChange, onClose }: PropertyPanelProps) {
       {/* Header */}
       <div className="flex items-center justify-between border-b px-4 py-3">
         <div>
-          <p className="text-muted-foreground text-xs font-semibold uppercase tracking-wide">
+          <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Properties
           </p>
           <p className="text-sm font-medium">{title}</p>
         </div>
-        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={onClose}>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7"
+          onClick={onClose}
+          aria-label="Close properties panel"
+        >
           <X className="h-4 w-4" />
         </Button>
       </div>
@@ -108,7 +114,7 @@ export function PropertyPanel({ node, onChange, onClose }: PropertyPanelProps) {
         {PanelContent ? (
           <PanelContent data={nodeData} onChange={onChange} />
         ) : (
-          <p className="text-muted-foreground text-sm">
+          <p className="text-sm text-muted-foreground">
             No properties available for this node type.
           </p>
         )}

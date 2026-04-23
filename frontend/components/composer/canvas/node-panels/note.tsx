@@ -21,7 +21,7 @@ export default function NotePanel({
           placeholder="# Note&#10;&#10;Write your notes here…"
           className="font-mono text-xs"
         />
-        <p className="text-muted-foreground text-xs">Visual-only — no runtime effect.</p>
+        <p className="text-xs text-muted-foreground">Visual-only — no runtime effect.</p>
       </div>
     </div>
   );

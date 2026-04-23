@@ -118,7 +118,7 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
 
   if (isError || !workflow) {
     return (
-      <div className="text-destructive flex h-[calc(100vh-8rem)] items-center justify-center text-sm">
+      <div className="flex h-[calc(100vh-8rem)] items-center justify-center text-sm text-destructive">
         Failed to load workflow.{" "}
         <Link href="/designer" className="ml-2 underline">
           Go back
@@ -133,7 +133,7 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
       <div className="flex items-center gap-3">
         <Link
           href={`/designer/${workflowId}`}
-          className="text-muted-foreground flex items-center gap-1 text-sm hover:text-foreground"
+          className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
         >
           <ArrowLeft className="h-4 w-4" />
           Back to canvas
@@ -164,7 +164,7 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
 
         <div className="space-y-1.5">
           <Label htmlFor="settings-description">
-            Description <span className="text-muted-foreground font-normal">(optional)</span>
+            Description <span className="font-normal text-muted-foreground">(optional)</span>
           </Label>
           <Textarea
             id="settings-description"
@@ -177,7 +177,7 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
 
         <div className="space-y-1.5">
           <Label htmlFor="settings-category">
-            Category <span className="text-muted-foreground font-normal">(optional)</span>
+            Category <span className="font-normal text-muted-foreground">(optional)</span>
           </Label>
           <Input
             id="settings-category"
@@ -190,7 +190,7 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
         <div className="space-y-1.5">
           <Label htmlFor="settings-tags">
             Tags{" "}
-            <span className="text-muted-foreground font-normal">(comma-separated, optional)</span>
+            <span className="font-normal text-muted-foreground">(comma-separated, optional)</span>
           </Label>
           <Input
             id="settings-tags"
@@ -204,7 +204,7 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
         <div className="flex items-center justify-between rounded-lg border px-4 py-3">
           <div>
             <p className="text-sm font-medium">Public workflow</p>
-            <p className="text-muted-foreground text-xs">
+            <p className="text-xs text-muted-foreground">
               Allow anyone to discover and view this workflow.
             </p>
           </div>
@@ -231,7 +231,7 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
             <div className="flex items-center gap-3">
               <Badge variant="default">Published</Badge>
               {workflow.externalSlug && (
-                <span className="text-muted-foreground font-mono text-xs">
+                <span className="font-mono text-xs text-muted-foreground">
                   /api/run/{workflow.externalSlug}
                 </span>
               )}
@@ -249,7 +249,7 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
           <div className="flex items-center justify-between rounded-lg border px-4 py-3">
             <div>
               <p className="text-sm font-medium">Not published</p>
-              <p className="text-muted-foreground text-xs">
+              <p className="text-xs text-muted-foreground">
                 Publish to expose this workflow via an external API endpoint.
               </p>
             </div>

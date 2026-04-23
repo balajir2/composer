@@ -83,7 +83,7 @@ export function ApiKeyCreateDialog() {
           ) : (
             <div className="space-y-3">
               <p className="text-sm">Copy this key now. You won&apos;t be able to see it again.</p>
-              <pre className="bg-muted break-all rounded-md p-3 text-xs">{plaintext}</pre>
+              <pre className="break-all rounded-md bg-muted p-3 text-xs">{plaintext}</pre>
               <DialogFooter>
                 <Button onClick={handleCopy}>Copy</Button>
                 <Button variant="outline" onClick={() => setOpen(false)}>

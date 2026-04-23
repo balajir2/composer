@@ -7,6 +7,7 @@ import { ExecutionProgress } from "@/components/composer/execution-progress";
 import { ExecutionResult } from "@/components/composer/execution-result";
 import { ApproveDialog } from "@/components/composer/approve-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyState } from "@/components/composer/empty-state";
 
 export default function ExecutionPage({
   params,
@@ -17,13 +18,25 @@ export default function ExecutionPage({
   const [finalStatus, setFinalStatus] = useState<string | null>(null);
   const [finalOutput, setFinalOutput] = useState<unknown>(null);
 
-  const { data: execution, isLoading } = useQuery({
+  const {
+    data: execution,
+    isLoading,
+    isError,
+  } = useQuery({
     queryKey: ["execution", executionId],
     queryFn: () => getExecution(executionId),
     refetchInterval: finalStatus ? false : 2000, // fall-back polling if WS drops
   });
 
-  if (isLoading || !execution) return <Skeleton className="h-64 w-full" />;
+  if (isLoading) return <Skeleton className="h-64 w-full" />;
+  if (isError || !execution) {
+    return (
+      <EmptyState
+        title="Execution not found"
+        description="This execution doesn't exist or you don't have access to it."
+      />
+    );
+  }
 
   const status = finalStatus ?? execution.status;
 

@@ -16,12 +16,20 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/composer/empty-state";
 
 export default function HistoryPage() {
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, isError } = useQuery({
     queryKey: ["executions"],
     queryFn: () => listExecutions({ limit: 100 }),
   });
 
   if (isLoading) return <Skeleton className="h-64 w-full" />;
+  if (isError) {
+    return (
+      <EmptyState
+        title="Could not load history"
+        description="Try refreshing the page. If this keeps happening, check your network."
+      />
+    );
+  }
   if (!data || data.items.length === 0) {
     return (
       <EmptyState title="No runs yet" description="Executions you trigger will show up here." />
@@ -57,7 +65,7 @@ export default function HistoryPage() {
                   {e.status}
                 </Badge>
               </TableCell>
-              <TableCell className="text-muted-foreground text-xs">
+              <TableCell className="text-xs text-muted-foreground">
                 {new Date(String(e.startedAt)).toLocaleString()}
               </TableCell>
             </TableRow>

@@ -63,7 +63,7 @@ export default function ApiKeysPage() {
                 <TableRow key={k.id}>
                   <TableCell>{k.label}</TableCell>
                   <TableCell className="font-mono text-xs">{k.keyPrefix}…</TableCell>
-                  <TableCell className="text-muted-foreground text-xs">
+                  <TableCell className="text-xs text-muted-foreground">
                     {k.lastUsedAt ? new Date(k.lastUsedAt).toLocaleString() : "never"}
                   </TableCell>
                   <TableCell>

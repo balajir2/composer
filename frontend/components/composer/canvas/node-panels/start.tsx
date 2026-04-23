@@ -46,18 +46,19 @@ export default function StartPanel({
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        <Label className="text-muted-foreground text-xs font-semibold uppercase">
+        <Label className="text-xs font-semibold uppercase text-muted-foreground">
           Input fields
         </Label>
         {inputs.map((field, i) => (
           <div key={i} className="space-y-1.5 rounded-md border p-2">
             <div className="flex items-center justify-between">
-              <span className="text-muted-foreground text-xs">Field {i + 1}</span>
+              <span className="text-xs text-muted-foreground">Field {i + 1}</span>
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-5 w-5"
                 onClick={() => removeField(i)}
+                aria-label={`Remove field ${i + 1}`}
               >
                 <Trash2 className="h-3 w-3" />
               </Button>

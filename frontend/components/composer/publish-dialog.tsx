@@ -103,12 +103,12 @@ export function PublishDialog({ open, onOpenChange, workflow }: PublishDialogPro
               autoFocus
             />
             {slugError !== null && (
-              <p className="text-destructive text-sm font-medium">{slugError}</p>
+              <p className="text-sm font-medium text-destructive">{slugError}</p>
             )}
           </div>
           <div className="space-y-1">
-            <p className="text-muted-foreground text-xs">External URL preview:</p>
-            <p className="bg-muted break-all rounded-md px-3 py-2 font-mono text-xs text-foreground">
+            <p className="text-xs text-muted-foreground">External URL preview:</p>
+            <p className="break-all rounded-md bg-muted px-3 py-2 font-mono text-xs text-foreground">
               {previewUrl}
             </p>
           </div>

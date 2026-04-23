@@ -65,7 +65,7 @@ export function ExecutionProgress({
   return (
     <div className="space-y-4">
       <div>
-        <span className="text-muted-foreground pr-2 text-sm">Status:</span>
+        <span className="pr-2 text-sm text-muted-foreground">Status:</span>
         <Badge variant={status === "failed" ? "destructive" : "default"}>{status}</Badge>
       </div>
       <div className="space-y-2">
@@ -76,13 +76,13 @@ export function ExecutionProgress({
           >
             <div>
               <div className="font-medium">{n.nodeName}</div>
-              {n.error && <div className="text-destructive text-xs">{n.error}</div>}
+              {n.error && <div className="text-xs text-destructive">{n.error}</div>}
             </div>
             <Badge variant={n.status === "failed" ? "destructive" : "secondary"}>{n.status}</Badge>
           </div>
         ))}
         {nodes.length === 0 && (
-          <div className="text-muted-foreground rounded-md border border-dashed px-3 py-6 text-center text-xs">
+          <div className="rounded-md border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
             Waiting for node events…
           </div>
         )}

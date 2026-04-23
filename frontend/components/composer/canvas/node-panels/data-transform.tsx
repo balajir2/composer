@@ -21,7 +21,7 @@ export default function DataTransformPanel({
           placeholder='{"result": "{{input.field}}"}'
           className="font-mono text-xs"
         />
-        <p className="text-muted-foreground text-xs">
+        <p className="text-xs text-muted-foreground">
           JSON-path expression or Handlebars-style template.
         </p>
       </div>
