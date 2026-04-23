@@ -604,3 +604,102 @@ def test_patch_workflow_owner_member_403(monkeypatch: pytest.MonkeyPatch) -> Non
     # No admin override → dev-mode 'dev' user → member → ensure_admin raises 403
     resp = client.patch("/workflows/wx/owner", json={"userId": "new-owner"})
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Phase 10a Task 3 — workflow publish / unpublish (isProduction + externalSlug)
+# ---------------------------------------------------------------------------
+
+_PUBLISH_BODY: dict[str, Any] = {
+    **_VALID_BODY,
+    "isProduction": True,
+    "externalSlug": "my-workflow",
+}
+
+
+def test_put_publish_requires_external_slug(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Setting isProduction=True without externalSlug → 422."""
+    existing = _wf_row(id="w1", userId="dev")
+    client, _ = _client_put(monkeypatch, existing, None)
+    body: dict[str, Any] = {**_VALID_BODY, "isProduction": True}
+    resp = client.put("/workflows/w1", json=body)
+    assert resp.status_code == 422
+    assert "external_slug is required" in resp.json()["detail"]
+
+
+def test_put_publish_invalid_slug_format_422(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Invalid slug (uppercase, starts with hyphen) → 422."""
+    existing = _wf_row(id="w1", userId="dev")
+    client, _ = _client_put(monkeypatch, existing, None)
+    for bad_slug in ("-bad-slug", "UPPERCASE", "has space", "a"):
+        body: dict[str, Any] = {**_VALID_BODY, "isProduction": True, "externalSlug": bad_slug}
+        resp = client.put("/workflows/w1", json=body)
+        assert resp.status_code == 422, (
+            f"expected 422 for slug {bad_slug!r}, got {resp.status_code}"
+        )
+
+
+def test_put_publish_sets_isproduction_and_slug(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Valid publish request updates both isProduction and externalSlug."""
+    existing = _wf_row(id="w1", userId="dev")
+    updated = _wf_row(
+        id="w1",
+        userId="dev",
+        name="Updated",
+        isProduction=True,
+        externalSlug="my-workflow",
+    )
+    client, db = _client_put(monkeypatch, existing, updated)
+    resp = client.put("/workflows/w1", json=_PUBLISH_BODY)
+    assert resp.status_code == 200, resp.text
+    call_data = db.workflow.update.await_args.kwargs["data"]  # type: ignore[union-attr]
+    assert call_data["isProduction"] is True
+    assert call_data["externalSlug"] == "my-workflow"
+
+
+def test_put_unpublish_clears_slug(monkeypatch: pytest.MonkeyPatch) -> None:
+    """isProduction=False clears externalSlug (sets to None)."""
+    existing = _wf_row(id="w1", userId="dev", isProduction=True, externalSlug="my-workflow")
+    updated = _wf_row(id="w1", userId="dev", name="Updated", isProduction=False, externalSlug=None)
+    client, db = _client_put(monkeypatch, existing, updated)
+    body: dict[str, Any] = {**_VALID_BODY, "isProduction": False}
+    resp = client.put("/workflows/w1", json=body)
+    assert resp.status_code == 200, resp.text
+    call_data = db.workflow.update.await_args.kwargs["data"]  # type: ignore[union-attr]
+    assert call_data["isProduction"] is False
+    assert call_data["externalSlug"] is None
+
+
+def test_put_slug_conflict_returns_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prisma UniqueViolationError on slug collision → 409."""
+    from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
+
+    existing = _wf_row(id="w1", userId="dev")
+    monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    app = create_app()
+
+    db = MagicMock()
+    db.workflow = MagicMock()
+    db.workflow.find_unique = AsyncMock(return_value=existing)
+    # Simulate a Prisma unique violation on update
+    db.workflow.update = AsyncMock(
+        side_effect=UniqueViolationError(
+            {"user_facing_error": {"message": "Unique constraint failed"}}
+        )
+    )
+    db.user = MagicMock()
+    db.user.find_unique = AsyncMock(return_value=None)
+    app.state.db = db
+    app.state.checkpointer = MagicMock()
+    from src.engine.events import ExecutionEventBus
+
+    app.state.event_bus = ExecutionEventBus()
+    client = TestClient(app)
+
+    resp = client.put("/workflows/w1", json=_PUBLISH_BODY)
+    assert resp.status_code == 409
+    assert "external_slug already in use" in resp.json()["detail"]

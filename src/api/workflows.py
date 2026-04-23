@@ -1,8 +1,10 @@
 """POST /workflows — create a workflow from JSON."""
 
+import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
@@ -11,6 +13,20 @@ from src.engine.graph_builder import WorkflowValidationError, validate_workflow_
 from src.engine.workflow import Workflow, WorkflowEdge, WorkflowNode
 from src.security.auth import ensure_admin, get_current_role, get_current_user_id
 from src.storage.db import get_db
+
+_SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
+
+
+def _validate_slug(slug: str) -> None:
+    if not _SLUG_PATTERN.match(slug):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                "external_slug must be lowercase alphanumeric + hyphens, "
+                "start with alphanumeric, and be 2-64 chars"
+            ),
+        )
+
 
 router = APIRouter(tags=["workflows"])
 
@@ -51,6 +67,8 @@ class WorkflowCreate(BaseModel):
     version: str | None = None
     is_template: bool = Field(default=False, alias="isTemplate")
     is_public: bool = Field(default=False, alias="isPublic")
+    is_production: bool | None = Field(default=None, alias="isProduction")
+    external_slug: str | None = Field(default=None, alias="externalSlug")
 
 
 class WorkflowRead(BaseModel):
@@ -71,6 +89,8 @@ class WorkflowRead(BaseModel):
     version: str | None = None
     is_template: bool = Field(default=False, alias="isTemplate")
     is_public: bool = Field(default=False, alias="isPublic")
+    is_production: bool = Field(default=False, alias="isProduction")
+    external_slug: str | None = Field(default=None, alias="externalSlug")
     created_at: Any = Field(alias="createdAt")
     updated_at: Any = Field(alias="updatedAt")
 
@@ -263,22 +283,47 @@ async def update_workflow(
         for node in workflow.nodes
     ]
     edges_json = [edge.model_dump(by_alias=True) for edge in workflow.edges]
-    updated = await db.workflow.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": workflow_id},
-        data={
-            "name": payload.name,
-            "description": payload.description,
-            "category": payload.category,
-            "tags": payload.tags,
-            "difficulty": payload.difficulty,
-            "estimatedTime": payload.estimated_time,
-            "nodes": Json(nodes_json),
-            "edges": Json(edges_json),
-            "version": payload.version,
-            "isTemplate": payload.is_template,
-            "isPublic": payload.is_public,
-        },
-    )
+
+    # Publish / unpublish handling
+    publish_data: dict[str, Any] = {}
+    if payload.is_production is True:
+        if not payload.external_slug:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="external_slug is required when isProduction=True",
+            )
+        _validate_slug(payload.external_slug)
+        publish_data["isProduction"] = True
+        publish_data["externalSlug"] = payload.external_slug
+    elif payload.is_production is False:
+        publish_data["isProduction"] = False
+        publish_data["externalSlug"] = None
+
+    update_data: dict[str, Any] = {
+        "name": payload.name,
+        "description": payload.description,
+        "category": payload.category,
+        "tags": payload.tags,
+        "difficulty": payload.difficulty,
+        "estimatedTime": payload.estimated_time,
+        "nodes": Json(nodes_json),
+        "edges": Json(edges_json),
+        "version": payload.version,
+        "isTemplate": payload.is_template,
+        "isPublic": payload.is_public,
+        **publish_data,
+    }
+
+    try:
+        updated = await db.workflow.update(  # pyright: ignore[reportAttributeAccessIssue]
+            where={"id": workflow_id},
+            data=update_data,
+        )
+    except UniqueViolationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"external_slug already in use: {exc}",
+        ) from exc
     return WorkflowRead.model_validate(updated)
 
 
