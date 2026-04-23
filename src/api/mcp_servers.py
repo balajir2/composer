@@ -370,10 +370,33 @@ async def oauth_callback(
     return OAuthCallbackResponse.model_validate({"ok": True, "serverId": server.id})
 
 
+class McpSharedRequest(BaseModel):
+    is_shared: bool = Field(..., alias="isShared")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+@router.patch("/mcp-servers/{server_id}/shared", response_model=McpServerRead)
+async def set_mcp_shared(
+    server_id: str,
+    payload: McpSharedRequest,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _admin: str = Depends(ensure_admin),
+) -> McpServerRead:  # pyright: ignore[reportUnusedFunction]
+    existing = await db.mcpserver.find_unique(where={"id": server_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if existing is None:
+        raise HTTPException(status_code=404, detail=f"MCP server {server_id!r} not found.")
+    updated = await db.mcpserver.update(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": server_id}, data={"isShared": payload.is_shared}
+    )
+    return _to_read(updated)
+
+
 __all__ = [
     "McpOwnerAssignRequest",
     "McpServerCreate",
     "McpServerRead",
+    "McpSharedRequest",
     "OAuthAuthorizeRequest",
     "OAuthAuthorizeResponse",
     "OAuthCallbackResponse",

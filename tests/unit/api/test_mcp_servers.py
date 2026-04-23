@@ -278,3 +278,36 @@ def test_patch_mcp_server_owner_member_403() -> None:
     # No admin override → dev-mode 'dev' user → member → ensure_admin raises 403
     resp = client.patch("/mcp-servers/srv1/owner", json={"userId": "new-owner"})
     assert resp.status_code == 403
+
+
+# ---------------------------------------------------------------------------
+# Phase 10 Task 16 — PATCH /mcp-servers/{id}/shared (admin-only)
+# ---------------------------------------------------------------------------
+
+
+def test_admin_patch_shared_flips_isshared() -> None:
+    """Admin flips isShared via PATCH /mcp-servers/{id}/shared."""
+    from src.security.auth import ensure_admin
+
+    client, db = _client_with_mock_db()
+    updated = _server_row(isShared=True)
+    db.mcpserver.update = AsyncMock(return_value=updated)
+    client.app.dependency_overrides[ensure_admin] = lambda: "admin-caller"  # type: ignore[attr-defined]
+    try:
+        resp = client.patch("/mcp-servers/srv1/shared", json={"isShared": True})
+    finally:
+        client.app.dependency_overrides.pop(ensure_admin, None)  # type: ignore[attr-defined]
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["isShared"] is True
+    db.mcpserver.find_unique.assert_awaited()
+    call_data = db.mcpserver.update.await_args.kwargs["data"]  # type: ignore[union-attr]
+    assert call_data == {"isShared": True}
+
+
+def test_member_patch_shared_403() -> None:
+    """Non-admin calling PATCH /mcp-servers/{id}/shared → 403."""
+    client, _ = _client_with_mock_db()
+    # No admin override → dev-mode 'dev' user → member → ensure_admin raises 403
+    resp = client.patch("/mcp-servers/srv1/shared", json={"isShared": True})
+    assert resp.status_code == 403
