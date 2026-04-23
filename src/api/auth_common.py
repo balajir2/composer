@@ -1,8 +1,8 @@
 """Auth endpoints common to both standalone and embedded deployment modes.
 
-Currently just /auth/me.  Registered in both modes.
+Currently /auth/me and /auth/sso-exchange.  Registered in both modes.
 
-See Phase 7a spec §8.2.
+See Phase 7a spec §8.2, Phase 10a spec §4.4.
 """
 
 from typing import Any
@@ -12,8 +12,10 @@ from jose import jwt as jose_jwt  # pyright: ignore[reportMissingImports, report
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from src.api.auth_standalone import TokenPairResponse
 from src.config import Settings, get_settings
-from src.security.auth import get_current_user_id
+from src.security.auth import AuthError, get_current_user_id
+from src.security.jwt import create_access_token, create_refresh_token
 from src.storage.db import get_db
 
 router = APIRouter(tags=["auth"])
@@ -65,4 +67,51 @@ async def me(
     return EmbeddedMeResponse(id=user_id, claims=claims)
 
 
-__all__ = ["EmbeddedMeResponse", "StandaloneMeResponse", "router"]
+class SsoExchangeRequest(BaseModel):
+    azure_token: str = Field(..., alias="azureToken")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+@router.post("/auth/sso-exchange", response_model=TokenPairResponse)
+async def sso_exchange(
+    payload: SsoExchangeRequest,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+) -> TokenPairResponse:  # pyright: ignore[reportUnusedFunction]
+    settings = get_settings()
+    if not settings.sso_enabled:
+        raise HTTPException(400, "SSO is disabled")
+    if not (settings.sso_azure_ad_tenant_id and settings.sso_azure_ad_expected_audience):
+        raise HTTPException(500, "SSO misconfigured on server")
+
+    from src.security.sso_azure import verify_azure_jwt
+
+    claims = await verify_azure_jwt(
+        payload.azure_token,
+        tenant_id=settings.sso_azure_ad_tenant_id,
+        expected_audience=settings.sso_azure_ad_expected_audience,
+    )
+
+    email_raw = claims.get("email") or claims.get("preferred_username")
+    if not email_raw:
+        raise AuthError("Azure JWT missing email claim")
+    email = str(email_raw).lower()
+    display_name = claims.get("name") or email
+
+    # Look up or auto-provision.
+    user = await db.user.find_unique(where={"email": email})  # pyright: ignore[reportAttributeAccessIssue]
+    if user is None:
+        user = await db.user.create(  # pyright: ignore[reportAttributeAccessIssue]
+            data={
+                "email": email,
+                "passwordHash": None,
+                "displayName": display_name,
+            }
+        )
+
+    access = create_access_token(user.id)
+    refresh = create_refresh_token(user.id)
+    return TokenPairResponse(accessToken=access, refreshToken=refresh)
+
+
+__all__ = ["EmbeddedMeResponse", "SsoExchangeRequest", "StandaloneMeResponse", "router"]
