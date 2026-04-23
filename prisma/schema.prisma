@@ -231,3 +231,11 @@ model LlmApiKey {
 
   @@map("llm_api_keys")
 }
+
+model DeploymentSetting {
+  key        String   @id
+  value      String
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  @@map("deployment_settings")
+}
