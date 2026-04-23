@@ -5,6 +5,7 @@ Currently /auth/me and /auth/sso-exchange.  Registered in both modes.
 See Phase 7a spec §8.2, Phase 10a spec §4.4.
 """
 
+import time
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -111,7 +112,13 @@ async def sso_exchange(
 
     access = create_access_token(user.id)
     refresh = create_refresh_token(user.id)
-    return TokenPairResponse(accessToken=access, refreshToken=refresh)
+    now = int(time.time())
+    return TokenPairResponse(
+        accessToken=access,
+        refreshToken=refresh,
+        accessTokenExpiresAt=now + settings.jwt_access_ttl_seconds,
+        refreshTokenExpiresAt=now + settings.jwt_refresh_ttl_seconds,
+    )
 
 
 __all__ = ["EmbeddedMeResponse", "SsoExchangeRequest", "StandaloneMeResponse", "router"]

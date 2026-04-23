@@ -57,7 +57,7 @@ async def query(
     if config.api_key:
         headers["Authorization"] = f"Bearer {config.api_key}"
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
         try:
             resp = await client.post(url, headers=headers, json={"query": graphql_query})
         except httpx.HTTPError as exc:

@@ -173,6 +173,7 @@ model User {
   passwordHash  String?   @map("password_hash")
   displayName   String?   @map("display_name")
   role          UserRole  @default(member)
+  isActive      Boolean   @default(true) @map("is_active")
   createdAt     DateTime  @default(now()) @map("created_at")
   updatedAt     DateTime  @updatedAt       @map("updated_at")
 
@@ -238,4 +239,18 @@ model DeploymentSetting {
   updatedAt  DateTime @updatedAt @map("updated_at")
 
   @@map("deployment_settings")
+}
+
+model LlmModel {
+  id        String   @id @default(cuid())
+  provider  String
+  modelId   String                @map("model_id")
+  label     String?
+  enabled   Boolean  @default(true)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt      @map("updated_at")
+
+  @@unique([provider, modelId])
+  @@map("llm_models")
+  @@index([provider, enabled])
 }

@@ -178,7 +178,7 @@ async def exchange_code_for_tokens(
         "resource": derive_resource(server.url),  # fix #1
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
         resp = await client.post(
             token_url,
             data=form,
@@ -252,7 +252,7 @@ async def refresh_token(
         "resource": derive_resource(server.url),  # fix #1
     }
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
         resp = await client.post(
             token_url,
             data=form,

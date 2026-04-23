@@ -1,7 +1,7 @@
 """Admin-only endpoints for user management (Phase 10d)."""
 
 from datetime import UTC, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -22,10 +22,28 @@ class UserSummary(BaseModel):
     email: str
     role: str
     display_name: str | None = Field(default=None, alias="displayName")
+    is_active: bool = Field(default=True, alias="isActive")
 
     class Config:
         populate_by_name = True
         from_attributes = True
+
+
+def _summary_from_row(row: Any) -> "UserSummary":
+    """Build a UserSummary from a Prisma User row, coercing the role enum."""
+    role_attr = row.role
+    role_val = (
+        role_attr.value  # pyright: ignore[reportOptionalMemberAccess]
+        if hasattr(role_attr, "value")
+        else str(role_attr)
+    )
+    return UserSummary(
+        id=row.id,
+        email=row.email,
+        role=role_val,
+        displayName=row.displayName,
+        isActive=getattr(row, "isActive", True),
+    )
 
 
 @router.get("/users", response_model=list[UserSummary])
@@ -34,11 +52,7 @@ async def list_users(
     _admin: str = Depends(ensure_admin),
 ) -> list[UserSummary]:  # pyright: ignore[reportUnusedFunction]
     rows = await db.user.find_many(order={"email": "asc"})  # pyright: ignore[reportAttributeAccessIssue]
-    out: list[UserSummary] = []
-    for r in rows:
-        role_val = r.role.value if hasattr(r.role, "value") else str(r.role)
-        out.append(UserSummary(id=r.id, email=r.email, role=role_val, displayName=r.displayName))
-    return out
+    return [_summary_from_row(r) for r in rows]
 
 
 @router.post("/users/{user_id}/role", response_model=UserSummary)
@@ -54,10 +68,48 @@ async def update_user_role(
     updated = await db.user.update(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": user_id}, data={"role": payload.role}
     )
-    role_val = updated.role.value if hasattr(updated.role, "value") else str(updated.role)
-    return UserSummary(
-        id=updated.id, email=updated.email, role=role_val, displayName=updated.displayName
+    return _summary_from_row(updated)
+
+
+@router.delete("/users/{user_id}", response_model=UserSummary)
+async def deactivate_user(
+    user_id: str,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _admin: str = Depends(ensure_admin),
+) -> UserSummary:  # pyright: ignore[reportUnusedFunction]
+    """Soft-delete: mark inactive + revoke all API keys.
+
+    Preserves audit trail (workflows, executions, approvals keep their
+    userId).  Use POST /users/{id}/reactivate to restore access.
+    """
+    user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if user is None:
+        raise HTTPException(404, f"user {user_id!r} not found")
+    # Revoke all non-revoked API keys.
+    now = datetime.now(UTC)
+    await db.apikey.update_many(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"userId": user_id, "revokedAt": None},
+        data={"revokedAt": now},
     )
+    updated = await db.user.update(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": user_id}, data={"isActive": False}
+    )
+    return _summary_from_row(updated)
+
+
+@router.post("/users/{user_id}/reactivate", response_model=UserSummary)
+async def reactivate_user(
+    user_id: str,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _admin: str = Depends(ensure_admin),
+) -> UserSummary:  # pyright: ignore[reportUnusedFunction]
+    user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if user is None:
+        raise HTTPException(404, f"user {user_id!r} not found")
+    updated = await db.user.update(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": user_id}, data={"isActive": True}
+    )
+    return _summary_from_row(updated)
 
 
 @router.post("/users/{user_id}/api-keys/{key_id}/revoke", status_code=status.HTTP_204_NO_CONTENT)

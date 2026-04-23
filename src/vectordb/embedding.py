@@ -37,7 +37,7 @@ async def embed_text_openai(
     if dimension and model.startswith("text-embedding-3-"):
         payload["dimensions"] = dimension
 
-    async with httpx.AsyncClient(timeout=30.0) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
         try:
             resp = await client.post(
                 OPENAI_EMBEDDINGS_URL,

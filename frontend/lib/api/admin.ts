@@ -23,6 +23,14 @@ export async function deleteLlmKey(provider: string): Promise<void> {
   return apiFetch<void>(`/admin/llm-keys/${provider}`, { method: "DELETE" });
 }
 
+export type LlmKeyTestResult = { ok: boolean; status: number | null; message: string };
+
+export async function testLlmKey(provider: string): Promise<LlmKeyTestResult> {
+  return apiFetch<LlmKeyTestResult>(`/admin/llm-keys/${provider}/test-connection`, {
+    method: "POST",
+  });
+}
+
 // ── Admin: users ────────────────────────────────────────────────────────────
 
 export type AdminUser = {
@@ -30,6 +38,7 @@ export type AdminUser = {
   email: string;
   role: "admin" | "member";
   displayName: string | null;
+  isActive?: boolean;
 };
 
 export async function listAdminUsers(): Promise<AdminUser[]> {
@@ -41,6 +50,14 @@ export async function updateUserRole(id: string, role: "admin" | "member"): Prom
     method: "POST",
     body: JSON.stringify({ role }),
   });
+}
+
+export async function deactivateUser(id: string): Promise<AdminUser> {
+  return apiFetch<AdminUser>(`/admin/users/${id}`, { method: "DELETE" });
+}
+
+export async function reactivateUser(id: string): Promise<AdminUser> {
+  return apiFetch<AdminUser>(`/admin/users/${id}/reactivate`, { method: "POST" });
 }
 
 // ── Admin: deployment settings ──────────────────────────────────────────────
@@ -58,5 +75,20 @@ export async function upsertDeploymentSetting(
   return apiFetch<DeploymentSetting>(`/admin/deployment-settings/${key}`, {
     method: "PUT",
     body: JSON.stringify({ value }),
+  });
+}
+
+// ── Admin: built-in tools ───────────────────────────────────────────────────
+
+export type BuiltInToolTestResult = {
+  ok: boolean;
+  message: string;
+  has_db_key: boolean;
+  has_runtime_key: boolean;
+};
+
+export async function testBuiltInTool(toolId: string): Promise<BuiltInToolTestResult> {
+  return apiFetch<BuiltInToolTestResult>(`/admin/tools/${toolId}/test-connection`, {
+    method: "POST",
   });
 }

@@ -58,6 +58,8 @@ class AuthResponse(BaseModel):
     display_name: str | None = Field(default=None, alias="displayName")
     access_token: str = Field(alias="accessToken")
     refresh_token: str = Field(alias="refreshToken")
+    access_token_expires_at: int = Field(alias="accessTokenExpiresAt")
+    refresh_token_expires_at: int = Field(alias="refreshTokenExpiresAt")
 
 
 class TokenPairResponse(BaseModel):
@@ -65,10 +67,23 @@ class TokenPairResponse(BaseModel):
 
     access_token: str = Field(alias="accessToken")
     refresh_token: str = Field(alias="refreshToken")
+    access_token_expires_at: int = Field(alias="accessTokenExpiresAt")
+    refresh_token_expires_at: int = Field(alias="refreshTokenExpiresAt")
 
 
-def _issue_pair(user_id: str) -> tuple[str, str]:
-    return create_access_token(user_id), create_refresh_token(user_id)
+def _issue_pair(user_id: str) -> tuple[str, str, int, int]:
+    """Returns (access_token, refresh_token, access_exp, refresh_exp) where
+    the `*_exp` values are unix epoch seconds."""
+    import time
+
+    settings = get_settings()
+    now = int(time.time())
+    return (
+        create_access_token(user_id),
+        create_refresh_token(user_id),
+        now + settings.jwt_access_ttl_seconds,
+        now + settings.jwt_refresh_ttl_seconds,
+    )
 
 
 @router.post("/auth/register", response_model=AuthResponse, status_code=status.HTTP_201_CREATED)
@@ -98,13 +113,15 @@ async def register(
 
     user = await db.user.create(data=data)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
 
-    access, refresh = _issue_pair(user.id)
+    access, refresh, access_exp, refresh_exp = _issue_pair(user.id)
     return AuthResponse(
         id=user.id,
         email=user.email,
         displayName=getattr(user, "displayName", None),
         accessToken=access,
         refreshToken=refresh,
+        accessTokenExpiresAt=access_exp,
+        refreshTokenExpiresAt=refresh_exp,
     )
 
 
@@ -128,8 +145,15 @@ async def login(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid email or password"
         )
-    access, refresh = _issue_pair(user.id)
-    return TokenPairResponse(accessToken=access, refreshToken=refresh)
+    if getattr(user, "isActive", True) is False:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account is deactivated")
+    access, refresh, access_exp, refresh_exp = _issue_pair(user.id)
+    return TokenPairResponse(
+        accessToken=access,
+        refreshToken=refresh,
+        accessTokenExpiresAt=access_exp,
+        refreshTokenExpiresAt=refresh_exp,
+    )
 
 
 @router.post("/auth/refresh", response_model=TokenPairResponse)
@@ -167,8 +191,13 @@ async def refresh(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="user no longer exists"
         )
-    access, new_refresh = _issue_pair(user.id)
-    return TokenPairResponse(accessToken=access, refreshToken=new_refresh)
+    access, new_refresh, access_exp, refresh_exp = _issue_pair(user.id)
+    return TokenPairResponse(
+        accessToken=access,
+        refreshToken=new_refresh,
+        accessTokenExpiresAt=access_exp,
+        refreshTokenExpiresAt=refresh_exp,
+    )
 
 
 @router.post("/auth/disconnect", status_code=status.HTTP_204_NO_CONTENT)

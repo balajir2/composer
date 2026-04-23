@@ -62,3 +62,13 @@ export async function reassignWorkflowOwner(
     body: JSON.stringify(body),
   });
 }
+
+export async function adminUpdateWorkflowFlags(
+  workflowId: string,
+  body: { isPublic?: boolean; isProduction?: boolean; externalSlug?: string | null }
+): Promise<WorkflowRead> {
+  return apiFetch<WorkflowRead>(`/workflows/${workflowId}/admin-flags`, {
+    method: "PATCH",
+    body: JSON.stringify(body),
+  });
+}

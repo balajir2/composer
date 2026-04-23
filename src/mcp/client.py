@@ -95,7 +95,9 @@ class MCPClient:
             **auth,
         }
         try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(self._timeout, connect=5.0)
+            ) as client:
                 resp = await client.post(self._url, json=body, headers=headers)
         except httpx.TimeoutException as exc:
             raise MCPTimeoutError(f"MCP {method} request timed out after {self._timeout}s") from exc

@@ -45,7 +45,7 @@ class _TavilySearchTool(BaseTool):
     async def _arun(self, query: str, max_results: int = 5) -> str:
         api_key = get_settings().tavily_api_key
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
                 resp = await client.post(
                     "https://api.tavily.com/search",
                     json={
@@ -105,7 +105,7 @@ class TavilyProvider(ToolProvider):
         if not key:
             return HealthStatus(ok=False, message="TAVILY_API_KEY missing in settings")
         try:
-            async with httpx.AsyncClient(timeout=5.0) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as client:
                 resp = await client.post(
                     "https://api.tavily.com/search",
                     json={

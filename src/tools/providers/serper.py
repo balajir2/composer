@@ -36,7 +36,7 @@ class _SerperSearchTool(BaseTool):
     async def _arun(self, query: str, num: int = 10) -> str:
         api_key = get_settings().serper_api_key
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
                 resp = await client.post(
                     "https://google.serper.dev/search",
                     headers={"X-API-KEY": api_key, "Content-Type": "application/json"},

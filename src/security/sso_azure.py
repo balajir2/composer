@@ -32,7 +32,7 @@ async def _fetch_jwks(tenant_id: str) -> list[dict[str, Any]]:
     discovery_url = (
         f"https://login.microsoftonline.com/{tenant_id}/v2.0/.well-known/openid-configuration"
     )
-    async with httpx.AsyncClient(timeout=30) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
         disc = await client.get(discovery_url)
         disc.raise_for_status()
         jwks_uri = disc.json()["jwks_uri"]

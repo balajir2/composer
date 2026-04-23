@@ -41,7 +41,7 @@ export default function AdminDashboard() {
 
   const workflowsQ = useQuery({
     queryKey: ["admin-workflows"],
-    queryFn: () => listWorkflows({ limit: 500 }),
+    queryFn: () => listWorkflows({ limit: 100 }),
   });
 
   const executionsQ = useQuery({
@@ -50,9 +50,11 @@ export default function AdminDashboard() {
   });
 
   const totalUsers = usersQ.data?.length;
-  const totalWorkflows = workflowsQ.data?.items.length;
+  // listWorkflows returns {total, items, limit, offset} — use `total` for the
+  // true workflow count (items is capped at `limit` = 100).
+  const totalWorkflows = workflowsQ.data?.total;
   const productionCount = workflowsQ.data?.items.filter((wf) => wf.isProduction).length;
-  const recentExecutions = executionsQ.data?.items.length;
+  const recentExecutions = executionsQ.data?.total;
 
   const isLoading = usersQ.isLoading || workflowsQ.isLoading || executionsQ.isLoading;
 

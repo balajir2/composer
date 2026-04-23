@@ -1,7 +1,9 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
-import { listMcpServers } from "@/lib/api/mcp-servers";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { toast } from "sonner";
+
+import { deleteMcpServer, listMcpServers } from "@/lib/api/mcp-servers";
 import {
   Table,
   TableBody,
@@ -11,19 +13,43 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/composer/empty-state";
+import { CreateMcpDialog } from "@/components/composer/create-mcp-dialog";
 import { McpSharedToggle } from "@/components/composer/mcp-shared-toggle";
+import { McpTestButton } from "@/components/composer/mcp-test-button";
 
 export default function AdminMcpServersPage() {
+  const qc = useQueryClient();
   const { data, isLoading, isError } = useQuery({
     queryKey: ["admin-mcp-servers"],
     queryFn: () => listMcpServers(),
   });
 
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => deleteMcpServer(id),
+    onSuccess: () => {
+      toast.success("MCP server deleted.");
+      void qc.invalidateQueries({ queryKey: ["admin-mcp-servers"] });
+    },
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Failed."),
+  });
+
   return (
     <div className="space-y-4">
-      <h2 className="text-2xl font-semibold">MCP servers</h2>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-semibold">MCP servers</h2>
+          <p className="text-sm text-muted-foreground">
+            Model Context Protocol servers that expose tools to agents. Click{" "}
+            <strong>Test</strong> to verify the connection and refresh the tool
+            list. Mark as &ldquo;shared&rdquo; to make them visible in every
+            designer&apos;s Tools palette.
+          </p>
+        </div>
+        <CreateMcpDialog />
+      </div>
       {isLoading ? (
         <div className="space-y-2">
           {Array.from({ length: 5 }).map((_, i) => (
@@ -48,33 +74,85 @@ export default function AdminMcpServersPage() {
               <TableHead>URL</TableHead>
               <TableHead>Auth</TableHead>
               <TableHead>Status</TableHead>
-              <TableHead className="w-36">Shared</TableHead>
+              <TableHead>Last tested</TableHead>
+              <TableHead className="w-28">Shared</TableHead>
+              <TableHead className="w-48">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {data.map((server) => (
-              <TableRow key={server.id}>
-                <TableCell className="font-medium">{server.name}</TableCell>
-                <TableCell>
-                  <code className="break-all text-xs text-muted-foreground">{server.url}</code>
-                </TableCell>
-                <TableCell>
-                  <Badge variant="secondary">{server.authType}</Badge>
-                </TableCell>
-                <TableCell>
-                  <Badge variant={server.connectionStatus === "connected" ? "default" : "outline"}>
-                    {server.connectionStatus}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <McpSharedToggle
-                    serverId={server.id}
-                    serverName={server.name}
-                    isShared={server.isShared}
-                  />
-                </TableCell>
-              </TableRow>
-            ))}
+            {data.map((server) => {
+              const lastTested = server.lastTested
+                ? new Date(server.lastTested as string).toLocaleString()
+                : "—";
+              const status = server.connectionStatus ?? "untested";
+              const variant: "default" | "outline" | "destructive" =
+                status === "connected"
+                  ? "default"
+                  : status === "error"
+                    ? "destructive"
+                    : "outline";
+              return (
+                <TableRow key={server.id}>
+                  <TableCell className="font-medium">{server.name}</TableCell>
+                  <TableCell>
+                    <code className="break-all text-xs text-muted-foreground">
+                      {server.url}
+                    </code>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="secondary">{server.authType}</Badge>
+                  </TableCell>
+                  <TableCell>
+                    <Badge
+                      variant={variant}
+                      title={server.lastError ?? undefined}
+                    >
+                      {status}
+                    </Badge>
+                    {server.lastError && (
+                      <div
+                        className="mt-1 max-w-xs truncate text-xs text-destructive"
+                        title={server.lastError}
+                      >
+                        {server.lastError}
+                      </div>
+                    )}
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">
+                    {lastTested}
+                  </TableCell>
+                  <TableCell>
+                    <McpSharedToggle
+                      serverId={server.id}
+                      serverName={server.name}
+                      isShared={server.isShared}
+                    />
+                  </TableCell>
+                  <TableCell className="flex items-center gap-2">
+                    <McpTestButton
+                      serverId={server.id}
+                      serverName={server.name}
+                    />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        if (
+                          window.confirm(
+                            `Delete "${server.name}"? This cannot be undone.`
+                          )
+                        ) {
+                          deleteMutation.mutate(server.id);
+                        }
+                      }}
+                      disabled={deleteMutation.isPending}
+                    >
+                      Delete
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       )}

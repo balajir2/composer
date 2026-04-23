@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/composer/empty-state";
+import { LlmKeyTestButton } from "@/components/composer/llm-key-test-button";
 import { toast } from "sonner";
 
 type LlmKeySummary = components["schemas"]["LlmKeySummary"];
@@ -45,10 +46,12 @@ const PROVIDERS = [
 function SetKeyDialog({
   provider,
   providerLabel,
+  hasExistingKey,
   onClose,
 }: {
   provider: string;
   providerLabel: string;
+  hasExistingKey: boolean;
   onClose: () => void;
 }) {
   const [value, setValue] = useState("");
@@ -58,7 +61,7 @@ function SetKeyDialog({
     mutationFn: (v: string) => upsertLlmKey(provider, { value: v }),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: ["llm-keys"] });
-      toast.success(`${providerLabel} key saved.`);
+      toast.success(`${providerLabel} key ${hasExistingKey ? "updated" : "saved"}.`);
       onClose();
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Failed to save key."),
@@ -67,9 +70,13 @@ function SetKeyDialog({
   return (
     <DialogContent>
       <DialogHeader>
-        <DialogTitle>Set {providerLabel} key</DialogTitle>
+        <DialogTitle>
+          {hasExistingKey ? `Update ${providerLabel} key` : `Set ${providerLabel} key`}
+        </DialogTitle>
         <DialogDescription>
-          Enter the API key. It will be stored encrypted and never displayed again.
+          Keys live in Postgres, encrypted with AES-256-GCM. The existing value
+          can never be revealed — only replaced. Paste the new key below to
+          overwrite.
         </DialogDescription>
       </DialogHeader>
       <form
@@ -147,17 +154,20 @@ function LlmKeyRow({
         </TableCell>
         <TableCell className="flex items-center gap-2">
           <Button size="sm" variant="outline" onClick={() => setDialogOpen(true)}>
-            Set
+            {summary ? "Update" : "Set"}
           </Button>
           {summary && (
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => deleteMutation.mutate()}
-              disabled={deleteMutation.isPending}
-            >
-              {deleteMutation.isPending ? "Removing…" : "Delete"}
-            </Button>
+            <>
+              <LlmKeyTestButton provider={provider} providerLabel={providerLabel} />
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => deleteMutation.mutate()}
+                disabled={deleteMutation.isPending}
+              >
+                {deleteMutation.isPending ? "Removing…" : "Delete"}
+              </Button>
+            </>
           )}
         </TableCell>
       </TableRow>
@@ -166,6 +176,7 @@ function LlmKeyRow({
           <SetKeyDialog
             provider={provider}
             providerLabel={providerLabel}
+            hasExistingKey={Boolean(summary)}
             onClose={() => setDialogOpen(false)}
           />
         )}

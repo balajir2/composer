@@ -35,7 +35,7 @@ class _FirecrawlScrapeTool(BaseTool):
     async def _arun(self, url: str) -> str:
         api_key = get_settings().firecrawl_api_key
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=5.0)) as client:
                 resp = await client.post(
                     "https://api.firecrawl.dev/v1/scrape",
                     headers={

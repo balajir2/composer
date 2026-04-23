@@ -1,17 +1,19 @@
 "use client";
 
-import { Label } from "@/components/ui/label";
-import { Input } from "@/components/ui/input";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { useQuery } from "@tanstack/react-query";
+
+import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
+import { Textarea } from "@/components/ui/textarea";
 import { getCatalog } from "@/lib/api/catalog";
+import { listEnabledLlmModels } from "@/lib/api/llm-models";
+
+const PROVIDER_OPTIONS = [
+  { value: "anthropic", label: "Anthropic" },
+  { value: "openai", label: "OpenAI" },
+  { value: "google", label: "Google" },
+  { value: "groq", label: "Groq" },
+];
 
 export default function AgentPanel({
   data,
@@ -20,9 +22,17 @@ export default function AgentPanel({
   data: Record<string, unknown>;
   onChange: (patch: Record<string, unknown>) => void;
 }) {
+  const provider = (data.provider as string) ?? "";
+
   const { data: catalog = [] } = useQuery({
     queryKey: ["catalog"],
     queryFn: getCatalog,
+  });
+
+  const { data: models = [], isLoading: modelsLoading } = useQuery({
+    queryKey: ["llm-models", provider],
+    queryFn: () => listEnabledLlmModels(provider),
+    enabled: Boolean(provider),
   });
 
   const selectedTools = Array.isArray(data.tools) ? (data.tools as string[]) : [];
@@ -34,33 +44,46 @@ export default function AgentPanel({
     onChange({ tools: next });
   }
 
+  const modelOptions = models.map((m) => ({
+    value: m.modelId,
+    label: m.label ?? m.modelId,
+  }));
+
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        <Label>Provider</Label>
-        <Select
-          value={(data.provider as string) ?? ""}
-          onValueChange={(v) => onChange({ provider: v })}
-        >
-          <SelectTrigger>
-            <SelectValue placeholder="Select provider" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="anthropic">Anthropic</SelectItem>
-            <SelectItem value="openai">OpenAI</SelectItem>
-            <SelectItem value="google">Google</SelectItem>
-            <SelectItem value="groq">Groq</SelectItem>
-          </SelectContent>
-        </Select>
+        <Label htmlFor="agent-provider">Provider</Label>
+        <NativeSelect
+          id="agent-provider"
+          value={provider}
+          onValueChange={(v) => onChange({ provider: v, model: "" })}
+          options={PROVIDER_OPTIONS}
+          placeholder="Select provider"
+        />
       </div>
 
       <div className="space-y-2">
-        <Label>Model</Label>
-        <Input
-          value={(data.model as string) ?? ""}
-          onChange={(e) => onChange({ model: e.target.value })}
-          placeholder="claude-sonnet-4-6"
-        />
+        <Label htmlFor="agent-model">Model</Label>
+        {provider ? (
+          modelsLoading ? (
+            <p className="text-xs text-muted-foreground">Loading models…</p>
+          ) : modelOptions.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              No models configured for this provider. Ask an admin to add one under
+              Admin → LLM models.
+            </p>
+          ) : (
+            <NativeSelect
+              id="agent-model"
+              value={(data.model as string) ?? ""}
+              onValueChange={(v) => onChange({ model: v })}
+              options={modelOptions}
+              placeholder="Select model"
+            />
+          )
+        ) : (
+          <p className="text-xs text-muted-foreground">Select a provider first.</p>
+        )}
       </div>
 
       <div className="space-y-2">

@@ -8,8 +8,9 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from src.api.admin_llm_keys_test import run_key_test
 from src.security.auth import ensure_admin
-from src.security.encryption import encrypt
+from src.security.encryption import EncryptionError, decrypt, encrypt
 from src.storage.db import get_db
 
 router = APIRouter(prefix="/admin/llm-keys", tags=["admin-llm-keys"])
@@ -94,6 +95,31 @@ async def upsert_llm_key(
     return LlmKeySummary(
         provider=row.provider, key_prefix=row.keyPrefix, updated_at=str(row.updatedAt)
     )
+
+
+class LlmKeyTestResponse(BaseModel):
+    ok: bool
+    status: int | None = None
+    message: str
+
+
+@router.post("/{provider}/test-connection", response_model=LlmKeyTestResponse)
+async def test_llm_key(
+    provider: str,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _admin: str = Depends(ensure_admin),
+) -> LlmKeyTestResponse:  # pyright: ignore[reportUnusedFunction]
+    if provider not in _ALLOWED_PROVIDERS:
+        raise HTTPException(422, f"unsupported provider {provider!r}")
+    row = await db.llmapikey.find_unique(where={"provider": provider})  # pyright: ignore[reportAttributeAccessIssue]
+    if row is None:
+        raise HTTPException(404, f"no key set for provider {provider!r}")
+    try:
+        key = decrypt(row.encryptedKey)
+    except EncryptionError as exc:
+        raise HTTPException(500, f"failed to decrypt key: {exc}") from exc
+    result = await run_key_test(provider, key)
+    return LlmKeyTestResponse(ok=result.ok, status=result.status, message=result.message)
 
 
 @router.delete("/{provider}", status_code=status.HTTP_204_NO_CONTENT)

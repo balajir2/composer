@@ -13,6 +13,7 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/composer/empty-state";
+import { UserActiveToggle } from "@/components/composer/user-active-toggle";
 import { UserRoleToggle } from "@/components/composer/user-role-toggle";
 
 export default function AdminUsersPage() {
@@ -47,24 +48,36 @@ export default function AdminUsersPage() {
               <TableHead>Email</TableHead>
               <TableHead>Display name</TableHead>
               <TableHead>Role</TableHead>
-              <TableHead className="w-40"></TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead className="w-64 text-right"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {data.map((user) => (
-              <TableRow key={user.id}>
-                <TableCell>{user.email}</TableCell>
-                <TableCell className="text-muted-foreground">{user.displayName ?? "—"}</TableCell>
-                <TableCell>
-                  <Badge variant={user.role === "admin" ? "default" : "secondary"}>
-                    {user.role}
-                  </Badge>
-                </TableCell>
-                <TableCell>
-                  <UserRoleToggle user={user} />
-                </TableCell>
-              </TableRow>
-            ))}
+            {data.map((user) => {
+              const active = user.isActive !== false;
+              return (
+                <TableRow key={user.id}>
+                  <TableCell>{user.email}</TableCell>
+                  <TableCell className="text-muted-foreground">
+                    {user.displayName ?? "—"}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={user.role === "admin" ? "default" : "secondary"}>
+                      {user.role}
+                    </Badge>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={active ? "secondary" : "destructive"}>
+                      {active ? "active" : "inactive"}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="flex items-center justify-end gap-2">
+                    <UserRoleToggle user={user} />
+                    <UserActiveToggle user={user} />
+                  </TableCell>
+                </TableRow>
+              );
+            })}
           </TableBody>
         </Table>
       )}

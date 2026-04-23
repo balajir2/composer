@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
@@ -85,6 +86,12 @@ export default function LoginPage() {
             {submitting ? "Signing in…" : "Sign in"}
           </Button>
         </form>
+        <p className="text-center text-sm text-muted-foreground">
+          New to Composer?{" "}
+          <Link href="/register" className="text-primary underline-offset-4 hover:underline">
+            Create an account
+          </Link>
+        </p>
       </CardContent>
     </Card>
   );

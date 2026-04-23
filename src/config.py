@@ -37,8 +37,14 @@ class Settings(BaseSettings):
         description="JWT signing secret. Rotate for production.",
     )
     jwt_algorithm: str = "HS256"
-    jwt_access_ttl_seconds: int = 3600  # 1 hour
-    jwt_refresh_ttl_seconds: int = 604800  # 7 days
+    # Access token: 8h — enterprise norm (balance between re-auth friction and
+    # blast-radius of a leaked token).  Rotated transparently by the NextAuth
+    # JWT callback well before expiry, so users never see 401 in practice.
+    jwt_access_ttl_seconds: int = 28800  # 8 hours
+    # Refresh token: 30 days.  Idle users must re-auth after this window;
+    # active users rotate their refresh token on every /auth/refresh call,
+    # so continuous activity extends the window indefinitely.
+    jwt_refresh_ttl_seconds: int = 2592000  # 30 days
 
     # ─── Encryption (AES-256-GCM for secrets at rest) ─────
     encryption_key: str = Field(

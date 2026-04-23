@@ -358,6 +358,63 @@ class OwnerAssignRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class AdminFlagsRequest(BaseModel):
+    """Admin-only partial update for visibility / production flags."""
+
+    is_public: bool | None = Field(default=None, alias="isPublic")
+    is_production: bool | None = Field(default=None, alias="isProduction")
+    external_slug: str | None = Field(default=None, alias="externalSlug")
+
+    model_config = ConfigDict(populate_by_name=True)
+
+
+@router.patch("/workflows/{workflow_id}/admin-flags", response_model=WorkflowRead)
+async def admin_update_workflow_flags(
+    workflow_id: str,
+    payload: AdminFlagsRequest,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _admin: str = Depends(ensure_admin),
+) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
+    existing = await db.workflow.find_unique(where={"id": workflow_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if existing is None:
+        raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
+
+    data: dict[str, Any] = {}
+    if payload.is_public is not None:
+        data["isPublic"] = payload.is_public
+    if payload.is_production is True:
+        slug = payload.external_slug or getattr(existing, "externalSlug", None)
+        if not slug:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="external_slug is required when isProduction=True",
+            )
+        _validate_slug(slug)
+        data["isProduction"] = True
+        data["externalSlug"] = slug
+    elif payload.is_production is False:
+        data["isProduction"] = False
+        data["externalSlug"] = None
+    elif payload.external_slug is not None:
+        # Slug change without flipping isProduction
+        _validate_slug(payload.external_slug)
+        data["externalSlug"] = payload.external_slug
+
+    if not data:
+        return WorkflowRead.model_validate(existing)
+
+    try:
+        updated = await db.workflow.update(  # pyright: ignore[reportAttributeAccessIssue]
+            where={"id": workflow_id}, data=data
+        )
+    except UniqueViolationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"external_slug already in use: {exc}",
+        ) from exc
+    return WorkflowRead.model_validate(updated)
+
+
 @router.patch("/workflows/{workflow_id}/owner", response_model=WorkflowRead)
 async def assign_workflow_owner(
     workflow_id: str,

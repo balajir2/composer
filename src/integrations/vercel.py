@@ -30,7 +30,7 @@ class VercelClient:
         return {"Authorization": f"Bearer {self.api_token}"}
 
     async def list_env(self) -> list[dict[str, Any]]:
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
             resp = await client.get(
                 f"{self.base_url}/v10/projects/{self.project_id}/env",
                 headers=self._headers(),
@@ -47,7 +47,7 @@ class VercelClient:
         """
         existing = await self.list_env()
         match = next((e for e in existing if e["key"] == var.key), None)
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
             if match is None:
                 resp = await client.post(
                     f"{self.base_url}/v10/projects/{self.project_id}/env",
@@ -73,7 +73,7 @@ class VercelClient:
         match = next((e for e in existing if e["key"] == key), None)
         if match is None:
             return False
-        async with httpx.AsyncClient(timeout=30) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
             resp = await client.delete(
                 f"{self.base_url}/v9/projects/{self.project_id}/env/{match['id']}",
                 headers=self._headers(),

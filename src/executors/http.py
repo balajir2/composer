@@ -61,7 +61,9 @@ class HttpExecutor:
             body_kwargs["content"] = body_raw
 
         try:
-            async with httpx.AsyncClient(timeout=_DEFAULT_TIMEOUT) as client:
+            async with httpx.AsyncClient(
+                timeout=httpx.Timeout(_DEFAULT_TIMEOUT, connect=5.0)
+            ) as client:
                 resp = await client.request(method, url, headers=headers, **body_kwargs)
         except httpx.HTTPError as exc:
             raise HttpNodeError(

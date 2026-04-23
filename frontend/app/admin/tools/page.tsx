@@ -13,6 +13,7 @@ import {
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/composer/empty-state";
 import { ToolEnabledToggle } from "@/components/composer/tool-enabled-toggle";
+import { BuiltInToolTestButton } from "@/components/composer/built-in-tool-test-button";
 
 const BUILT_IN_TOOLS = [
   { id: "tavily", label: "Tavily (web search)" },
@@ -37,10 +38,23 @@ export default function AdminToolsPage() {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-2xl font-semibold">Built-in tools</h2>
-      <p className="text-sm text-muted-foreground">
-        Toggle which built-in tools are available to workflow designers.
-      </p>
+      <div>
+        <h2 className="text-2xl font-semibold">Built-in tools</h2>
+        <p className="text-sm text-muted-foreground">
+          Native integrations compiled into Composer. Each tool requires an
+          API key (Admin → LLM keys). Use <strong>Test</strong> to verify the
+          currently-loaded key can reach the upstream service. Toggle a tool
+          off here to hide it from designers without removing its key.
+        </p>
+        <p className="mt-2 text-sm text-muted-foreground">
+          <strong>Adding a new tool without deploying code?</strong> Use an{" "}
+          <a className="underline" href="/admin/mcp-servers">
+            MCP server
+          </a>{" "}
+          instead — mark it <em>shared</em> and it appears in every
+          designer&apos;s Tools palette alongside these built-ins.
+        </p>
+      </div>
       {isLoading ? (
         <div className="space-y-2">
           {Array.from({ length: 4 }).map((_, i) => (
@@ -59,6 +73,7 @@ export default function AdminToolsPage() {
               <TableHead>Tool</TableHead>
               <TableHead>Setting key</TableHead>
               <TableHead className="w-36">Status</TableHead>
+              <TableHead className="w-28">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -77,6 +92,9 @@ export default function AdminToolsPage() {
                       toolLabel={tool.label}
                       enabled={enabled}
                     />
+                  </TableCell>
+                  <TableCell>
+                    <BuiltInToolTestButton toolId={tool.id} toolLabel={tool.label} />
                   </TableCell>
                 </TableRow>
               );

@@ -36,3 +36,12 @@ export async function oauthAuthorize(
     body: JSON.stringify(body),
   });
 }
+
+export async function testMcpConnection(
+  serverId: string
+): Promise<{ ok: boolean; message: string }> {
+  return apiFetch<{ ok: boolean; message: string }>(
+    `/mcp-servers/${serverId}/test-connection`,
+    { method: "POST" }
+  );
+}

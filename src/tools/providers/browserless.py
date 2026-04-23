@@ -33,7 +33,7 @@ class _BrowserlessFetchTool(BaseTool):
     async def _arun(self, url: str) -> str:
         api_key = get_settings().browserless_api_key
         try:
-            async with httpx.AsyncClient(timeout=60.0) as client:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=5.0)) as client:
                 resp = await client.post(
                     f"https://chrome.browserless.io/content?token={api_key}",
                     json={"url": url},

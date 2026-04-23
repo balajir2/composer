@@ -76,7 +76,7 @@ class GammaAiExecutor:
         async with httpx.AsyncClient(
             base_url=GAMMA_API_BASE,
             headers={"X-API-KEY": api_key, "Content-Type": "application/json"},
-            timeout=30.0,
+            timeout=httpx.Timeout(30.0, connect=5.0),
         ) as client:
             generation_id = await self._create_generation(client, request_body)
             status = await self._poll_until_complete(client, generation_id)

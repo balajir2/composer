@@ -6,49 +6,83 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import ReactFlow, {
   Background,
   Controls,
+  Handle,
+  Position,
+  addEdge,
   useNodesState,
   useEdgesState,
+  type Connection,
   type Node as RFNode,
   type Edge as RFEdge,
   type NodeTypes,
   type NodeMouseHandler,
+  type NodeProps,
+  type ReactFlowInstance,
 } from "reactflow";
 import { ToolsPalette } from "./tools-palette";
 import { PropertyPanel } from "./property-panel";
 import type { PaletteDragData } from "./tools-palette";
 
 // ---------------------------------------------------------------------------
-// GenericNode — visual stub for all Composer node types.
-// Property behavior is handled by the PropertyPanel sidebar.
+// Node variants — all render the same visual box but with different handles.
+// Start: source-only.  End: target-only.  All others: both.
 // ---------------------------------------------------------------------------
 
-function GenericNode({ data }: { data: { label?: string } }) {
+function NodeBox({ label }: { label?: string }) {
   return (
     <div className="min-w-[160px] rounded-md border bg-card px-3 py-2 shadow-sm">
-      <div className="text-sm font-medium">{data.label ?? "Node"}</div>
+      <div className="text-sm font-medium">{label ?? "Node"}</div>
     </div>
   );
 }
 
+function StartNode({ data }: NodeProps<{ label?: string }>) {
+  return (
+    <>
+      <NodeBox label={data.label ?? "Start"} />
+      <Handle type="source" position={Position.Right} />
+    </>
+  );
+}
+
+function EndNode({ data }: NodeProps<{ label?: string }>) {
+  return (
+    <>
+      <Handle type="target" position={Position.Left} />
+      <NodeBox label={data.label ?? "End"} />
+    </>
+  );
+}
+
+function InnerNode({ data }: NodeProps<{ label?: string }>) {
+  return (
+    <>
+      <Handle type="target" position={Position.Left} />
+      <NodeBox label={data.label} />
+      <Handle type="source" position={Position.Right} />
+    </>
+  );
+}
+
 export const COMPOSER_NODE_TYPES: NodeTypes = {
-  start: GenericNode,
-  end: GenericNode,
-  agent: GenericNode,
-  mcp: GenericNode,
-  http: GenericNode,
-  "set-state": GenericNode,
-  transform: GenericNode,
-  "data-transform": GenericNode,
-  extract: GenericNode,
-  "if-else": GenericNode,
-  while: GenericNode,
-  "user-approval": GenericNode,
-  "join-chunks": GenericNode,
-  note: GenericNode,
-  guardrails: GenericNode,
-  "gamma-ai": GenericNode,
-  arcade: GenericNode,
-  "vector-db": GenericNode,
+  start: StartNode,
+  end: EndNode,
+  agent: InnerNode,
+  mcp: InnerNode,
+  http: InnerNode,
+  "set-state": InnerNode,
+  transform: InnerNode,
+  "data-transform": InnerNode,
+  extract: InnerNode,
+  "if-else": InnerNode,
+  while: InnerNode,
+  "user-approval": InnerNode,
+  "join-chunks": InnerNode,
+  note: InnerNode,
+  guardrails: InnerNode,
+  "gamma-ai": InnerNode,
+  arcade: InnerNode,
+  "vector-db": InnerNode,
 };
 
 // ---------------------------------------------------------------------------
@@ -80,13 +114,56 @@ export function WorkflowCanvas({
   onEdgesChange,
 }: WorkflowCanvasProps) {
   const [nodes, setNodes, handleNodesChange] = useNodesState(initialNodes);
-  const [edges, , handleEdgesChange] = useEdgesState(initialEdges);
+  const [edges, setEdges, handleEdgesChange] = useEdgesState(initialEdges);
+
+  // onConnect — ReactFlow calls this when the user drags a connection
+  // between two handles.  addEdge appends a new RFEdge with a unique id.
+  const handleConnect = useCallback(
+    (params: Connection) => {
+      setEdges((prev) =>
+        addEdge(
+          { ...params, id: `edge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` },
+          prev
+        )
+      );
+    },
+    [setEdges]
+  );
 
   // Selected node id — drives the right-panel.
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
 
+  // Context menu state — shown on right-click of a node or edge.
+  const [contextMenu, setContextMenu] = useState<{
+    kind: "node" | "edge";
+    id: string;
+    x: number;
+    y: number;
+  } | null>(null);
+
   // Ref to the ReactFlow wrapper div for coordinate math on drop.
   const rfWrapperRef = useRef<HTMLDivElement>(null);
+
+  // Captured on ReactFlow's onInit — used to project pixel coords into flow
+  // coords (accounts for pan + zoom) for drop-position calculations.
+  const rfInstanceRef = useRef<ReactFlowInstance | null>(null);
+
+  // Close the context menu on Escape or any outside click.
+  useEffect(() => {
+    if (!contextMenu) return;
+    function close() {
+      setContextMenu(null);
+    }
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") close();
+    }
+    window.addEventListener("click", close);
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [contextMenu]);
 
   // Keep the parent's refs in sync after each render cycle.
   useEffect(() => {
@@ -102,6 +179,50 @@ export function WorkflowCanvas({
   const handleNodeClick: NodeMouseHandler = useCallback((_event, node) => {
     setSelectedNodeId(node.id);
   }, []);
+
+  // ── Right-click context menu ───────────────────────────────────────────────
+
+  const handleNodeContextMenu = useCallback(
+    (event: React.MouseEvent, node: RFNode) => {
+      event.preventDefault();
+      const rect = rfWrapperRef.current?.getBoundingClientRect();
+      setContextMenu({
+        kind: "node",
+        id: node.id,
+        x: rect ? event.clientX - rect.left : event.clientX,
+        y: rect ? event.clientY - rect.top : event.clientY,
+      });
+    },
+    []
+  );
+
+  const handleEdgeContextMenu = useCallback(
+    (event: React.MouseEvent, edge: RFEdge) => {
+      event.preventDefault();
+      const rect = rfWrapperRef.current?.getBoundingClientRect();
+      setContextMenu({
+        kind: "edge",
+        id: edge.id,
+        x: rect ? event.clientX - rect.left : event.clientX,
+        y: rect ? event.clientY - rect.top : event.clientY,
+      });
+    },
+    []
+  );
+
+  function handleContextDelete() {
+    if (!contextMenu) return;
+    if (contextMenu.kind === "node") {
+      const id = contextMenu.id;
+      setNodes((prev) => prev.filter((n) => n.id !== id));
+      setEdges((prev) => prev.filter((e) => e.source !== id && e.target !== id));
+      if (selectedNodeId === id) setSelectedNodeId(null);
+    } else {
+      const id = contextMenu.id;
+      setEdges((prev) => prev.filter((e) => e.id !== id));
+    }
+    setContextMenu(null);
+  }
 
   const selectedNode = selectedNodeId ? nodes.find((n) => n.id === selectedNodeId) : null;
 
@@ -137,44 +258,57 @@ export function WorkflowCanvas({
       return;
     }
 
-    // Compute drop position relative to the ReactFlow wrapper.
+    // Compute drop position in flow coordinates.  Raw pixel coords need to be
+    // projected through ReactFlow's viewport transform (pan/zoom), otherwise
+    // nodes land wherever the default transform puts them — often far off-screen.
     const wrapper = rfWrapperRef.current;
     const rect = wrapper?.getBoundingClientRect();
-    const x = rect ? e.clientX - rect.left : e.clientX;
-    const y = rect ? e.clientY - rect.top : e.clientY;
+    const pixelX = rect ? e.clientX - rect.left : e.clientX;
+    const pixelY = rect ? e.clientY - rect.top : e.clientY;
+    const instance = rfInstanceRef.current;
+    const projected = instance
+      ? instance.project({ x: pixelX, y: pixelY })
+      : { x: pixelX, y: pixelY };
+    const x = projected.x;
+    const y = projected.y;
 
     const id = nextNodeId();
+    let newNode: RFNode | null = null;
 
     if (dragData.kind === "node") {
       // Generic node drop — create a node of the specified type.
-      const newNode: RFNode = {
+      newNode = {
         id,
         type: dragData.nodeType,
         position: { x, y },
         data: { label: dragData.label },
       };
-      setNodes((prev) => [...prev, newNode]);
-      setSelectedNodeId(id);
     } else if (dragData.kind === "builtin") {
       // Built-in tool → create an agent node pre-configured with the tool.
-      const newNode: RFNode = {
+      newNode = {
         id,
         type: "agent",
         position: { x, y },
         data: { label: `Agent (${dragData.label})`, tools: [dragData.id] },
       };
-      setNodes((prev) => [...prev, newNode]);
-      setSelectedNodeId(id);
     } else if (dragData.kind === "mcp") {
       // Shared MCP → create a dedicated mcp node.
-      const newNode: RFNode = {
+      newNode = {
         id,
         type: "mcp",
         position: { x, y },
         data: { label: dragData.name, serverId: dragData.id },
       };
-      setNodes((prev) => [...prev, newNode]);
-      setSelectedNodeId(id);
+    }
+
+    if (newNode) {
+      setNodes((prev) => [...prev, newNode as RFNode]);
+      // Auto-fit on next frame so the new node is definitely visible.
+      // We wait one animation frame so ReactFlow's internal store has
+      // committed the new node before fitView reads node bounds.
+      requestAnimationFrame(() => {
+        rfInstanceRef.current?.fitView({ padding: 0.2, duration: 400 });
+      });
     }
   }
 
@@ -188,17 +322,27 @@ export function WorkflowCanvas({
       {/* Canvas center */}
       <div
         ref={rfWrapperRef}
-        className="flex-1 overflow-hidden"
+        className="relative flex-1 overflow-hidden"
         onDrop={handleDrop}
         onDragOver={handleDragOver}
       >
         <ReactFlow
           nodes={nodes}
           edges={edges}
+          onInit={(instance) => {
+            rfInstanceRef.current = instance;
+          }}
           onNodesChange={handleNodesChange}
           onEdgesChange={handleEdgesChange}
+          onConnect={handleConnect}
           onNodeClick={handleNodeClick}
-          onPaneClick={() => setSelectedNodeId(null)}
+          onNodeContextMenu={handleNodeContextMenu}
+          onEdgeContextMenu={handleEdgeContextMenu}
+          onPaneClick={() => {
+            setSelectedNodeId(null);
+            setContextMenu(null);
+          }}
+          deleteKeyCode={["Delete", "Backspace"]}
           nodeTypes={COMPOSER_NODE_TYPES}
           fitView
           className="h-full w-full"
@@ -206,6 +350,23 @@ export function WorkflowCanvas({
           <Background />
           <Controls />
         </ReactFlow>
+
+        {/* Right-click context menu */}
+        {contextMenu && (
+          <div
+            className="absolute z-50 min-w-[140px] rounded-md border bg-popover text-popover-foreground shadow-md"
+            style={{ left: contextMenu.x, top: contextMenu.y }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              type="button"
+              onClick={handleContextDelete}
+              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+            >
+              Delete {contextMenu.kind}
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Right sidebar — Property panel */}

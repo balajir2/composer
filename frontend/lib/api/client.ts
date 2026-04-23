@@ -1,5 +1,4 @@
-import { auth, signOut } from "@/auth";
-import { composerRefresh } from "@/lib/composer-api";
+import { getSession, signOut } from "next-auth/react";
 
 const baseUrl = process.env.NEXT_PUBLIC_COMPOSER_API_URL ?? "http://localhost:8000";
 
@@ -13,39 +12,58 @@ export class ComposerApiError extends Error {
   }
 }
 
-async function getAccessToken(): Promise<string | null> {
-  const session = await auth();
-  return (session as unknown as { accessToken?: string } | null)?.accessToken ?? null;
+type Session = {
+  accessToken?: string;
+  accessTokenExpiresAt?: number;
+  refreshTokenExpiresAt?: number;
+  error?: "RefreshAccessTokenError";
+} | null;
+
+async function currentSession(): Promise<Session> {
+  // `getSession()` triggers the NextAuth JWT callback, which proactively
+  // refreshes the Composer access token when it's near expiry.  This
+  // means fetch calls don't need their own refresh plumbing.
+  return (await getSession()) as Session;
 }
 
-type FetchOpts = RequestInit & {
-  /** When true, don't attempt refresh on 401 (used by the refresh call itself). */
-  skipRefresh?: boolean;
-};
+async function signOutAndThrow(status: number, detail: unknown): Promise<never> {
+  try {
+    await signOut({ redirect: true, callbackUrl: "/login?reason=session-expired" });
+  } catch {
+    /* redirect will still fire on unmount in most cases */
+  }
+  throw new ComposerApiError(status, detail, "Session expired — please sign in again.");
+}
 
-export async function apiFetch<T>(path: string, opts: FetchOpts = {}): Promise<T> {
-  const token = await getAccessToken();
+export async function apiFetch<T>(path: string, opts: RequestInit = {}): Promise<T> {
+  const session = await currentSession();
+
+  // If the JWT callback couldn't refresh (revoked / expired), short-circuit.
+  if (session?.error === "RefreshAccessTokenError") {
+    return signOutAndThrow(401, { detail: session.error });
+  }
+
   const headers = new Headers(opts.headers);
-  if (token) headers.set("Authorization", `Bearer ${token}`);
+  if (session?.accessToken) {
+    headers.set("Authorization", `Bearer ${session.accessToken}`);
+  }
   if (opts.body && !headers.has("Content-Type")) {
     headers.set("Content-Type", "application/json");
   }
 
   const res = await fetch(`${baseUrl}${path}`, { ...opts, headers });
 
-  if (res.status === 401 && !opts.skipRefresh) {
-    // Attempt a single refresh.  On success retry once; on failure, sign out.
-    const session = await auth();
-    const refreshToken = (session as unknown as { refreshToken?: string } | null)?.refreshToken;
-    if (refreshToken) {
-      try {
-        await composerRefresh(refreshToken);
-        return apiFetch<T>(path, { ...opts, skipRefresh: true });
-      } catch {
-        await signOut();
-        throw new ComposerApiError(401, null, "authentication expired");
-      }
+  if (res.status === 401) {
+    // Backend rejected the token despite our best efforts to keep it fresh.
+    // Could happen if the backend JWT secret rotated, the user was
+    // deactivated, or the token was revoked out-of-band.  Sign out cleanly.
+    let detail: unknown = null;
+    try {
+      detail = await res.json();
+    } catch {
+      /* ignore */
     }
+    return signOutAndThrow(401, detail);
   }
 
   if (!res.ok) {

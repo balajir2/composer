@@ -15,8 +15,9 @@ const ADMIN_NAV: NavItem[] = [
   { href: "/admin", label: "Dashboard" },
   { href: "/admin/users", label: "Users" },
   { href: "/admin/mcp-servers", label: "MCP servers" },
-  { href: "/admin/tools", label: "Tools" },
+  { href: "/admin/tools", label: "Built-in tools" },
   { href: "/admin/llm-keys", label: "LLM keys" },
+  { href: "/admin/llm-models", label: "LLM models" },
   { href: "/admin/workflows", label: "Workflows" },
 ];
 
