@@ -16,6 +16,7 @@ from src.api.events_ws import router as events_ws_router
 from src.api.executions import router as executions_router
 from src.api.mcp_servers import oauth_router
 from src.api.mcp_servers import router as mcp_servers_router
+from src.api.run import router as run_router
 from src.api.workflows import router as workflows_router
 from src.config import get_settings
 from src.storage.db import prisma_lifespan
@@ -88,6 +89,7 @@ def create_app() -> FastAPI:
     app.include_router(events_ws_router)
     app.include_router(mcp_servers_router)
     app.include_router(oauth_router)
+    app.include_router(run_router)
 
     # Phase 7a: auth
     if settings.deployment_mode == "standalone":
