@@ -3,7 +3,8 @@
 import { useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, Settings } from "lucide-react";
+import { buttonVariants } from "@/components/ui/button";
 import { getWorkflow, updateWorkflow } from "@/lib/api/workflows";
 import { WorkflowCanvas } from "@/components/composer/canvas/workflow-canvas";
 import { SaveControls } from "@/components/composer/canvas/save-controls";
@@ -116,7 +117,16 @@ export default function DesignerCanvasPage({ params }: PageProps) {
           <span className="text-muted-foreground">/</span>
           <span className="text-sm font-medium">{workflow.name}</span>
         </div>
-        <SaveControls workflowId={workflowId} isSaving={isSaving} onSave={handleSave} />
+        <div className="flex items-center gap-2">
+          <Link
+            href={`/designer/${workflowId}/settings`}
+            className={buttonVariants({ variant: "outline", size: "sm" })}
+          >
+            <Settings className="mr-1.5 h-3.5 w-3.5" />
+            Settings
+          </Link>
+          <SaveControls workflowId={workflowId} isSaving={isSaving} onSave={handleSave} />
+        </div>
       </div>
 
       {/* Canvas area fills remaining viewport */}
