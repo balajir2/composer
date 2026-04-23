@@ -13,7 +13,10 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from jose import jwt as jose_jwt
 
 from src.security.auth import AuthError
-from src.security.sso_azure import _JWKS_CACHE, verify_azure_jwt  # pyright: ignore[reportPrivateUsage]
+from src.security.sso_azure import (
+    _JWKS_CACHE,  # pyright: ignore[reportPrivateUsage]
+    verify_azure_jwt,
+)
 
 
 def _gen_rsa_key() -> tuple[Any, dict[str, Any]]:
