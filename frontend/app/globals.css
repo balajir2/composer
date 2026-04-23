@@ -83,7 +83,7 @@
     --sidebar-ring: oklch(0.556 0 0);
   }
   * {
-    @apply border-border outline-ring/50;
+    @apply outline-ring/50 border-border;
   }
   body {
     @apply bg-background text-foreground;
@@ -96,6 +96,6 @@
   }
   /* Accessible focus ring on any focusable element */
   :focus-visible {
-    @apply ring-ring outline-none ring-2 ring-offset-2 ring-offset-background;
+    @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
   }
 }

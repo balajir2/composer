@@ -113,7 +113,7 @@ export function DesignerWorkflowCard({ wf }: { wf: Workflow }) {
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
-          <p className="text-muted-foreground line-clamp-2 min-h-[2.5em] text-sm">
+          <p className="line-clamp-2 min-h-[2.5em] text-sm text-muted-foreground">
             {wf.description ?? "No description."}
           </p>
           <Link

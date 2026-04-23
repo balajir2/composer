@@ -31,7 +31,7 @@ export default function TransformPanel({
           placeholder="input.upper()"
           className="font-mono text-xs"
         />
-        <p className="text-muted-foreground text-xs">
+        <p className="text-xs text-muted-foreground">
           simpleeval expression. Use <code>input</code> to reference the input variable.
         </p>
       </div>

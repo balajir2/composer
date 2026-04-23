@@ -20,7 +20,7 @@ export default function WhilePanel({
           placeholder="state.count < 5"
           className="font-mono text-sm"
         />
-        <p className="text-muted-foreground text-xs">
+        <p className="text-xs text-muted-foreground">
           simpleeval expression. Loop continues while this is true.
         </p>
       </div>
@@ -35,7 +35,7 @@ export default function WhilePanel({
           onChange={(e) => onChange({ maxIterations: parseInt(e.target.value, 10) || 10 })}
           placeholder="10"
         />
-        <p className="text-muted-foreground text-xs">Maximum 100.</p>
+        <p className="text-xs text-muted-foreground">Maximum 100.</p>
       </div>
     </div>
   );

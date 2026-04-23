@@ -57,7 +57,7 @@ function PaletteItem({
     <div
       draggable
       onDragStart={handleDragStart}
-      className="bg-card hover:bg-accent flex cursor-grab items-center gap-2 rounded-md border px-2 py-1.5 text-sm shadow-sm active:cursor-grabbing"
+      className="flex cursor-grab items-center gap-2 rounded-md border bg-card px-2 py-1.5 text-sm shadow-sm hover:bg-accent active:cursor-grabbing"
     >
       {icon}
       <span className="truncate">{label}</span>
@@ -96,7 +96,7 @@ export function ToolsPalette() {
     <div className="flex h-full w-52 flex-col gap-3 overflow-y-auto border-r bg-background p-3">
       {/* Search */}
       <div className="relative">
-        <Search className="text-muted-foreground absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2" />
+        <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
         <Input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
@@ -108,7 +108,7 @@ export function ToolsPalette() {
       {/* Node types */}
       {filteredNodes.length > 0 && (
         <section>
-          <p className="text-muted-foreground mb-1.5 text-xs font-semibold uppercase tracking-wide">
+          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Nodes
           </p>
           <div className="flex flex-col gap-1">
@@ -126,7 +126,7 @@ export function ToolsPalette() {
       {/* Built-in tools */}
       {builtins.length > 0 && (
         <section>
-          <p className="text-muted-foreground mb-1.5 text-xs font-semibold uppercase tracking-wide">
+          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             Built-in Tools
           </p>
           <div className="flex flex-col gap-1">
@@ -145,7 +145,7 @@ export function ToolsPalette() {
       {/* Shared MCPs */}
       {mcps.length > 0 && (
         <section>
-          <p className="text-muted-foreground mb-1.5 text-xs font-semibold uppercase tracking-wide">
+          <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             MCP Servers
           </p>
           <div className="flex flex-col gap-1">
@@ -161,10 +161,10 @@ export function ToolsPalette() {
         </section>
       )}
 
-      {isLoading && <p className="text-muted-foreground text-center text-xs">Loading catalog…</p>}
+      {isLoading && <p className="text-center text-xs text-muted-foreground">Loading catalog…</p>}
 
       {!isLoading && filteredNodes.length === 0 && filteredCatalog.length === 0 && (
-        <p className="text-muted-foreground text-center text-xs">No matches</p>
+        <p className="text-center text-xs text-muted-foreground">No matches</p>
       )}
     </div>
   );

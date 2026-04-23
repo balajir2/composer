@@ -24,7 +24,7 @@ import type { PaletteDragData } from "./tools-palette";
 
 function GenericNode({ data }: { data: { label?: string } }) {
   return (
-    <div className="bg-card min-w-[160px] rounded-md border px-3 py-2 shadow-sm">
+    <div className="min-w-[160px] rounded-md border bg-card px-3 py-2 shadow-sm">
       <div className="text-sm font-medium">{data.label ?? "Node"}</div>
     </div>
   );

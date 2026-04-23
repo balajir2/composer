@@ -53,7 +53,7 @@ export default function LoginPage() {
             </Button>
             <div className="flex items-center gap-4">
               <Separator className="flex-1" />
-              <span className="text-muted-foreground text-xs">OR</span>
+              <span className="text-xs text-muted-foreground">OR</span>
               <Separator className="flex-1" />
             </div>
           </>

@@ -102,7 +102,7 @@ export function NewWorkflowDialog({
           </div>
           <div className="space-y-1.5">
             <Label htmlFor="wf-description">
-              Description <span className="text-muted-foreground font-normal">(optional)</span>
+              Description <span className="font-normal text-muted-foreground">(optional)</span>
             </Label>
             <Textarea
               id="wf-description"

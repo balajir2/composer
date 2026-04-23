@@ -131,12 +131,12 @@ function LlmKeyRow({
         <TableCell className="font-medium">{providerLabel}</TableCell>
         <TableCell>
           {summary ? (
-            <code className="text-muted-foreground text-xs">{summary.key_prefix}…</code>
+            <code className="text-xs text-muted-foreground">{summary.key_prefix}…</code>
           ) : (
             <span className="text-muted-foreground">—</span>
           )}
         </TableCell>
-        <TableCell className="text-muted-foreground text-xs">
+        <TableCell className="text-xs text-muted-foreground">
           {summary
             ? new Date(summary.updated_at).toLocaleDateString(undefined, {
                 year: "numeric",
@@ -187,7 +187,7 @@ export default function AdminLlmKeysPage() {
   return (
     <div className="space-y-4">
       <h2 className="text-2xl font-semibold">LLM keys</h2>
-      <p className="text-muted-foreground text-sm">
+      <p className="text-sm text-muted-foreground">
         Manage API keys for LLM providers and integrations. Keys are stored encrypted.
       </p>
       {isLoading ? (

@@ -72,7 +72,7 @@ export default function DesignerCanvasPage({ params }: PageProps) {
 
   if (isLoading) {
     return (
-      <div className="text-muted-foreground flex h-[calc(100vh-8rem)] items-center justify-center text-sm">
+      <div className="flex h-[calc(100vh-8rem)] items-center justify-center text-sm text-muted-foreground">
         Loading workflow…
       </div>
     );
@@ -80,7 +80,7 @@ export default function DesignerCanvasPage({ params }: PageProps) {
 
   if (isError || !workflow) {
     return (
-      <div className="text-destructive flex h-[calc(100vh-8rem)] items-center justify-center text-sm">
+      <div className="flex h-[calc(100vh-8rem)] items-center justify-center text-sm text-destructive">
         Failed to load workflow.{" "}
         <Link href="/designer" className="ml-2 underline">
           Go back
@@ -109,7 +109,7 @@ export default function DesignerCanvasPage({ params }: PageProps) {
         <div className="flex items-center gap-3">
           <Link
             href="/designer"
-            className="text-muted-foreground flex items-center gap-1 text-sm hover:text-foreground"
+            className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
           >
             <ArrowLeft className="h-4 w-4" />
             Workflows

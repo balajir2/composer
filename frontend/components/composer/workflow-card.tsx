@@ -25,7 +25,7 @@ export function WorkflowCard({ wf, href }: { wf: Workflow; href: string }) {
         </div>
       </CardHeader>
       <CardContent className="space-y-4">
-        <p className="text-muted-foreground line-clamp-2 min-h-[2.5em] text-sm">
+        <p className="line-clamp-2 min-h-[2.5em] text-sm text-muted-foreground">
           {wf.description ?? "No description."}
         </p>
         <Link href={href} className={cn(buttonVariants({ size: "sm" }), "w-full")}>

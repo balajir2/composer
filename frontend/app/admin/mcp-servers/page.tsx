@@ -56,7 +56,7 @@ export default function AdminMcpServersPage() {
               <TableRow key={server.id}>
                 <TableCell className="font-medium">{server.name}</TableCell>
                 <TableCell>
-                  <code className="text-muted-foreground break-all text-xs">{server.url}</code>
+                  <code className="break-all text-xs text-muted-foreground">{server.url}</code>
                 </TableCell>
                 <TableCell>
                   <Badge variant="secondary">{server.authType}</Badge>

@@ -57,7 +57,7 @@ export default function AdminWorkflowsPage() {
               <TableRow key={workflow.id}>
                 <TableCell className="font-medium">{workflow.name}</TableCell>
                 <TableCell>
-                  <code className="bg-muted text-muted-foreground rounded px-2 py-1 font-mono text-xs">
+                  <code className="rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">
                     {workflow.userId ?? "—"}
                   </code>
                 </TableCell>
@@ -73,11 +73,11 @@ export default function AdminWorkflowsPage() {
                 </TableCell>
                 <TableCell>
                   {workflow.externalSlug ? (
-                    <code className="bg-muted text-muted-foreground rounded px-2 py-1 font-mono text-xs">
+                    <code className="rounded bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">
                       {workflow.externalSlug}
                     </code>
                   ) : (
-                    <span className="text-muted-foreground text-xs">—</span>
+                    <span className="text-xs text-muted-foreground">—</span>
                   )}
                 </TableCell>
                 <TableCell>

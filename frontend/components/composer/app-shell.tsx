@@ -26,7 +26,7 @@ export function AppShell({
           {userRole === "admin" && role !== "admin" && (
             <Link
               href="/admin"
-              className="text-muted-foreground block pb-2 text-xs hover:underline"
+              className="block pb-2 text-xs text-muted-foreground hover:underline"
             >
               Admin console →
             </Link>
@@ -34,13 +34,13 @@ export function AppShell({
           {role !== "designer" && (
             <Link
               href="/designer"
-              className="text-muted-foreground block pb-2 text-xs hover:underline"
+              className="block pb-2 text-xs text-muted-foreground hover:underline"
             >
               Designer →
             </Link>
           )}
           {role !== "runs" && (
-            <Link href="/runs" className="text-muted-foreground block pb-2 text-xs hover:underline">
+            <Link href="/runs" className="block pb-2 text-xs text-muted-foreground hover:underline">
               Run workflows →
             </Link>
           )}

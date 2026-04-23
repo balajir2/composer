@@ -28,7 +28,7 @@ export default function SetStatePanel({
           onChange={(e) => onChange({ stateValue: e.target.value })}
           placeholder="{{previous_node.output}}"
         />
-        <p className="text-muted-foreground text-xs">Supports {"{{variable}}"} substitution.</p>
+        <p className="text-xs text-muted-foreground">Supports {"{{variable}}"} substitution.</p>
       </div>
     </div>
   );

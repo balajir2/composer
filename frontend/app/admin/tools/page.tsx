@@ -38,7 +38,7 @@ export default function AdminToolsPage() {
   return (
     <div className="space-y-4">
       <h2 className="text-2xl font-semibold">Built-in tools</h2>
-      <p className="text-muted-foreground text-sm">
+      <p className="text-sm text-muted-foreground">
         Toggle which built-in tools are available to workflow designers.
       </p>
       {isLoading ? (
@@ -69,7 +69,7 @@ export default function AdminToolsPage() {
                 <TableRow key={tool.id}>
                   <TableCell className="font-medium">{tool.label}</TableCell>
                   <TableCell>
-                    <code className="text-muted-foreground text-xs">{settingKey}</code>
+                    <code className="text-xs text-muted-foreground">{settingKey}</code>
                   </TableCell>
                   <TableCell>
                     <ToolEnabledToggle
