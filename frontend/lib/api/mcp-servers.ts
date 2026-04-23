@@ -20,6 +20,13 @@ export async function deleteMcpServer(serverId: string): Promise<void> {
   return apiFetch<void>(`/mcp-servers/${serverId}`, { method: "DELETE" });
 }
 
+export async function setMcpShared(serverId: string, isShared: boolean): Promise<McpServerRead> {
+  return apiFetch<McpServerRead>(`/mcp-servers/${serverId}/shared`, {
+    method: "PATCH",
+    body: JSON.stringify({ isShared }),
+  });
+}
+
 export async function oauthAuthorize(
   serverId: string,
   body: { redirectUri: string }
