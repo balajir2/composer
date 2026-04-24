@@ -8,6 +8,10 @@ import { buttonVariants } from "@/components/ui/button";
 import { getWorkflow, updateWorkflow } from "@/lib/api/workflows";
 import { WorkflowCanvas } from "@/components/composer/canvas/workflow-canvas";
 import { SaveControls } from "@/components/composer/canvas/save-controls";
+import {
+  DesignerExecutionPanel,
+  type DesignerExecutionState,
+} from "@/components/composer/canvas/designer-execution-panel";
 import { toReactFlow, fromReactFlow } from "@/lib/workflow-to-rf";
 import type { ComposerNode, ComposerEdge } from "@/lib/workflow-to-rf";
 import type { Node as RFNode, Edge as RFEdge } from "reactflow";
@@ -26,6 +30,13 @@ export default function DesignerCanvasPage({ params }: PageProps) {
   const edgesRef = useRef<RFEdge[]>([]);
 
   const [isSaving, setIsSaving] = useState(false);
+  // The draft-run currently in flight (if any).  Set when Run Draft
+  // successfully starts an execution; cleared when the user closes the
+  // execution panel.  The run stays in-canvas — we do NOT navigate away.
+  const [draftExecutionId, setDraftExecutionId] = useState<string | null>(null);
+  // Live node-run state, pushed up from DesignerExecutionPanel so the canvas
+  // can decorate nodes (running / completed / failed).
+  const [runState, setRunState] = useState<DesignerExecutionState | null>(null);
 
   const {
     data: workflow,
@@ -125,22 +136,49 @@ export default function DesignerCanvasPage({ params }: PageProps) {
             <Settings className="mr-1.5 h-3.5 w-3.5" />
             Settings
           </Link>
-          <SaveControls workflowId={workflowId} isSaving={isSaving} onSave={handleSave} />
+          <SaveControls
+            workflowId={workflowId}
+            isSaving={isSaving}
+            onSave={handleSave}
+            getCurrentNodes={() =>
+              nodesRef.current.map((n) => ({
+                type: String(n.type ?? ""),
+                data: (n.data as Record<string, unknown>) ?? {},
+              }))
+            }
+            onExecutionStarted={(executionId) => {
+              setDraftExecutionId(executionId);
+              setRunState(null);
+            }}
+          />
         </div>
       </div>
 
-      {/* Canvas area fills remaining viewport */}
-      <div className="flex-1 overflow-hidden">
-        <WorkflowCanvas
-          initialNodes={rfNodes}
-          initialEdges={rfEdges}
-          onNodesChange={(nodes) => {
-            nodesRef.current = nodes;
-          }}
-          onEdgesChange={(edges) => {
-            edgesRef.current = edges;
-          }}
-        />
+      {/* Canvas + execution panel */}
+      <div className="flex flex-1 overflow-hidden">
+        <div className="flex-1 overflow-hidden">
+          <WorkflowCanvas
+            initialNodes={rfNodes}
+            initialEdges={rfEdges}
+            onNodesChange={(nodes) => {
+              nodesRef.current = nodes;
+            }}
+            onEdgesChange={(edges) => {
+              edgesRef.current = edges;
+            }}
+            runState={runState ?? undefined}
+          />
+        </div>
+        {draftExecutionId && (
+          <DesignerExecutionPanel
+            executionId={draftExecutionId}
+            onClose={() => {
+              setDraftExecutionId(null);
+              setRunState(null);
+            }}
+            onRunStateChange={setRunState}
+          />
+        )}
       </div>
     </div>
   );

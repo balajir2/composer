@@ -90,7 +90,7 @@ async def test_resolve_owner_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
 
             return [ToolDefinition(name="echo", description="e", args_schema=_In)]
 
-        async def build_tool(self, tool_name: str, context: Any) -> Any:
+        def build_tool_from_def(self, td: Any) -> Any:
             return MagicMock()
 
     monkeypatch.setattr(resolver, "McpToolProvider", _FakeProvider)
@@ -122,7 +122,7 @@ async def test_resolve_shared_allowed_for_other_user(monkeypatch: pytest.MonkeyP
 
             return [ToolDefinition(name="t", description="", args_schema=_In)]
 
-        async def build_tool(self, n: str, c: Any) -> Any:
+        def build_tool_from_def(self, td: Any) -> Any:
             return MagicMock()
 
     monkeypatch.setattr(resolver, "McpToolProvider", _FakeProvider)

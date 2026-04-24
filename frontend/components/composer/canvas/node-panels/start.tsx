@@ -3,21 +3,46 @@
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Plus, Trash2 } from "lucide-react";
 
+// Mirrors backend StartInputVariable (src/engine/workflow.py).
+// type values are what the End-User input form + runtime renderer understand:
+// "text" → plain string, "number" → numeric, "boolean" → checkbox,
+// "json" → Textarea (accepts any JSON-serializable value).
 type InputField = {
   name: string;
-  label: string;
-  type: string;
+  type: "text" | "number" | "boolean" | "json";
   required: boolean;
+  description?: string;
+  defaultValue?: unknown;
 };
+
+const TYPE_OPTIONS = [
+  { value: "text", label: "text" },
+  { value: "number", label: "number" },
+  { value: "boolean", label: "boolean" },
+  { value: "json", label: "json (object / array)" },
+];
+
+function readVariables(data: Record<string, unknown>): InputField[] {
+  // Prefer new inputVariables; fall back to legacy inputs saved by older builds.
+  const fromNew = data.inputVariables;
+  if (Array.isArray(fromNew)) return fromNew as InputField[];
+  const legacy = data.inputs;
+  if (Array.isArray(legacy)) {
+    return (legacy as Array<Record<string, unknown>>).map((f) => ({
+      name: String(f.name ?? ""),
+      type: (["text", "number", "boolean", "json"].includes(String(f.type))
+        ? (f.type as InputField["type"])
+        : "text"),
+      required: Boolean(f.required),
+      description: typeof f.description === "string" ? f.description : undefined,
+      defaultValue: f.defaultValue,
+    }));
+  }
+  return [];
+}
 
 export default function StartPanel({
   data,
@@ -26,39 +51,49 @@ export default function StartPanel({
   data: Record<string, unknown>;
   onChange: (patch: Record<string, unknown>) => void;
 }) {
-  const inputs: InputField[] = Array.isArray(data.inputs) ? (data.inputs as InputField[]) : [];
+  const inputVariables = readVariables(data);
+
+  function commit(next: InputField[]) {
+    // Drop legacy `inputs` so downstream readers only see one source of truth.
+    onChange({ inputVariables: next, inputs: undefined });
+  }
 
   function updateField(index: number, patch: Partial<InputField>) {
-    const updated = inputs.map((f, i) => (i === index ? { ...f, ...patch } : f));
-    onChange({ inputs: updated });
+    commit(inputVariables.map((f, i) => (i === index ? { ...f, ...patch } : f)));
   }
 
   function addField() {
-    onChange({
-      inputs: [...inputs, { name: "", label: "", type: "string", required: false }],
-    });
+    commit([
+      ...inputVariables,
+      { name: "", type: "text", required: false, description: "" },
+    ]);
   }
 
   function removeField(index: number) {
-    onChange({ inputs: inputs.filter((_, i) => i !== index) });
+    commit(inputVariables.filter((_, i) => i !== index));
   }
 
   return (
     <div className="space-y-4">
       <div className="space-y-2">
         <Label className="text-xs font-semibold uppercase text-muted-foreground">
-          Input fields
+          Input variables
         </Label>
-        {inputs.map((field, i) => (
+        <p className="text-xs text-muted-foreground">
+          Declared here become state variables available to every downstream
+          node. Reference as <code>{"{{name}}"}</code> in prompts, URLs, and
+          transforms.
+        </p>
+        {inputVariables.map((field, i) => (
           <div key={i} className="space-y-1.5 rounded-md border p-2">
             <div className="flex items-center justify-between">
-              <span className="text-xs text-muted-foreground">Field {i + 1}</span>
+              <span className="text-xs text-muted-foreground">Variable {i + 1}</span>
               <Button
                 variant="ghost"
                 size="icon"
                 className="h-5 w-5"
                 onClick={() => removeField(i)}
-                aria-label={`Remove field ${i + 1}`}
+                aria-label={`Remove variable ${i + 1}`}
               >
                 <Trash2 className="h-3 w-3" />
               </Button>
@@ -68,36 +103,48 @@ export default function StartPanel({
               <Input
                 value={field.name}
                 onChange={(e) => updateField(i, { name: e.target.value })}
-                placeholder="field_name"
+                placeholder="customer_name"
                 className="h-7 text-xs"
               />
             </div>
             <div className="space-y-1">
-              <Label className="text-xs">Label</Label>
+              <Label className="text-xs">Description (shown to end-users)</Label>
               <Input
-                value={field.label}
-                onChange={(e) => updateField(i, { label: e.target.value })}
-                placeholder="Display label"
+                value={field.description ?? ""}
+                onChange={(e) => updateField(i, { description: e.target.value })}
+                placeholder="Full legal name of the customer"
                 className="h-7 text-xs"
               />
             </div>
             <div className="space-y-1">
               <Label className="text-xs">Type</Label>
-              <Select
+              <NativeSelect
                 value={field.type}
-                onValueChange={(v) => updateField(i, { type: v ?? "string" })}
-              >
-                <SelectTrigger className="h-7 text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="string">string</SelectItem>
-                  <SelectItem value="number">number</SelectItem>
-                  <SelectItem value="boolean">boolean</SelectItem>
-                  <SelectItem value="array">array</SelectItem>
-                  <SelectItem value="object">object</SelectItem>
-                </SelectContent>
-              </Select>
+                onValueChange={(v) =>
+                  updateField(i, { type: v as InputField["type"] })
+                }
+                options={TYPE_OPTIONS}
+                className="h-7 text-xs"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label className="text-xs">Default value (optional)</Label>
+              <Input
+                value={
+                  field.defaultValue === undefined || field.defaultValue === null
+                    ? ""
+                    : String(field.defaultValue)
+                }
+                onChange={(e) =>
+                  updateField(i, {
+                    defaultValue: e.target.value === "" ? undefined : e.target.value,
+                  })
+                }
+                placeholder={
+                  field.type === "json" ? '{"key": "value"}' : "leave blank for none"
+                }
+                className="h-7 text-xs"
+              />
             </div>
             <div className="flex items-center gap-2">
               <input
@@ -115,7 +162,7 @@ export default function StartPanel({
         ))}
         <Button variant="outline" size="sm" className="w-full text-xs" onClick={addField}>
           <Plus className="mr-1 h-3.5 w-3.5" />
-          Add field
+          Add variable
         </Button>
       </div>
     </div>

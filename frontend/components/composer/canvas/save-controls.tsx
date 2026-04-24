@@ -1,20 +1,34 @@
 "use client";
 
 import { useState } from "react";
-import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
-import { createExecution } from "@/lib/api/executions";
 import { toast } from "sonner";
+
+import { RunDraftDialog } from "./run-draft-dialog";
 
 interface SaveControlsProps {
   workflowId: string;
   isSaving?: boolean;
   onSave: () => Promise<void>;
+  /** Snapshot of the current canvas — used to read the Start node's
+   *  declared inputVariables so Run Draft can prompt for them.
+   *  Called only when Run Draft is clicked (not on every render). */
+  getCurrentNodes: () => Array<{ type: string; data: Record<string, unknown> }>;
+  /** Called when the Run Draft dialog successfully starts an execution.
+   *  The designer uses this to pin the executionId and render live progress
+   *  in-canvas — we deliberately do NOT navigate away. */
+  onExecutionStarted: (executionId: string) => void;
 }
 
-export function SaveControls({ workflowId, isSaving = false, onSave }: SaveControlsProps) {
-  const router = useRouter();
-  const [isRunning, setIsRunning] = useState(false);
+export function SaveControls({
+  workflowId,
+  isSaving = false,
+  onSave,
+  getCurrentNodes,
+  onExecutionStarted,
+}: SaveControlsProps) {
+  const [isPreparing, setIsPreparing] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
 
   async function handleSave() {
     try {
@@ -26,27 +40,40 @@ export function SaveControls({ workflowId, isSaving = false, onSave }: SaveContr
   }
 
   async function handleRunDraft() {
-    setIsRunning(true);
+    setIsPreparing(true);
     try {
-      // Save first so the latest canvas state is persisted before running.
+      // Save first so the latest canvas state is persisted before the run.
       await onSave();
-      const execution = await createExecution({ workflowId, input: {} });
-      router.push(`/runs/${workflowId}/executions/${execution.id}`);
+      setDialogOpen(true);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to start execution.");
+      toast.error(
+        err instanceof Error ? err.message : "Failed to save before running."
+      );
     } finally {
-      setIsRunning(false);
+      setIsPreparing(false);
     }
   }
 
   return (
     <div className="flex items-center gap-2">
-      <Button variant="outline" size="sm" onClick={handleSave} disabled={isSaving || isRunning}>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={handleSave}
+        disabled={isSaving || isPreparing}
+      >
         {isSaving ? "Saving…" : "Save"}
       </Button>
-      <Button size="sm" onClick={handleRunDraft} disabled={isSaving || isRunning}>
-        {isRunning ? "Starting…" : "Run draft"}
+      <Button size="sm" onClick={handleRunDraft} disabled={isSaving || isPreparing}>
+        {isPreparing ? "Saving…" : "Run draft"}
       </Button>
+      <RunDraftDialog
+        open={dialogOpen}
+        onOpenChange={setDialogOpen}
+        workflowId={workflowId}
+        workflow={{ nodes: getCurrentNodes() }}
+        onStarted={(executionId) => onExecutionStarted(executionId)}
+      />
     </div>
   );
 }

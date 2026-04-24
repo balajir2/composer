@@ -22,6 +22,7 @@ import ReactFlow, {
 import { ToolsPalette } from "./tools-palette";
 import { PropertyPanel } from "./property-panel";
 import type { PaletteDragData } from "./tools-palette";
+import type { DesignerExecutionState } from "./designer-execution-panel";
 
 // ---------------------------------------------------------------------------
 // Node variants — all render the same visual box but with different handles.
@@ -88,10 +89,27 @@ export const COMPOSER_NODE_TYPES: NodeTypes = {
 // ---------------------------------------------------------------------------
 // ID generator
 // ---------------------------------------------------------------------------
-let _nodeCounter = 0;
-function nextNodeId(): string {
-  _nodeCounter += 1;
-  return `dropped-${Date.now()}-${_nodeCounter}`;
+//
+// IDs are used as the node's stable handle in edges AND as the canonical
+// variable-substitution key (e.g. `{{agent_1.field}}`).  Friendly
+// per-type sequential IDs (agent-1, agent-2, http-1, …) are much nicer
+// than opaque `dropped-1777011314708-1` strings.
+//
+// Uniqueness: scan the existing canvas for IDs starting with the same
+// type prefix, take the highest suffix number, add one.  Works even when
+// the user deletes nodes from the middle (next insert jumps past gaps).
+function nextNodeId(type: string, existing: { id: string }[]): string {
+  const safeType = type || "node";
+  let max = 0;
+  const pattern = new RegExp(`^${safeType}-(\\d+)$`);
+  for (const n of existing) {
+    const m = pattern.exec(n.id);
+    if (m && m[1]) {
+      const n2 = parseInt(m[1], 10);
+      if (Number.isFinite(n2) && n2 > max) max = n2;
+    }
+  }
+  return `${safeType}-${max + 1}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -105,6 +123,9 @@ interface WorkflowCanvasProps {
   onNodesChange?: (nodes: RFNode[]) => void;
   /** Called on every render with the current edges so the parent can track state. */
   onEdgesChange?: (edges: RFEdge[]) => void;
+  /** Live draft-run state — each node's className reflects
+   *  running / completed / failed so designers see progress in-canvas. */
+  runState?: DesignerExecutionState;
 }
 
 export function WorkflowCanvas({
@@ -112,9 +133,42 @@ export function WorkflowCanvas({
   initialEdges,
   onNodesChange,
   onEdgesChange,
+  runState,
 }: WorkflowCanvasProps) {
   const [nodes, setNodes, handleNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, handleEdgesChange] = useEdgesState(initialEdges);
+
+  // Apply run-state decorations to node.className whenever runState changes.
+  useEffect(() => {
+    if (!runState) {
+      setNodes((nds) =>
+        nds.map((n) =>
+          n.className?.startsWith("composer-node-")
+            ? { ...n, className: undefined }
+            : n
+        )
+      );
+      return;
+    }
+    const { byNodeId, currentNodeId } = runState;
+    setNodes((nds) =>
+      nds.map((n) => {
+        const isCurrent = currentNodeId === n.id;
+        const r = byNodeId[n.id];
+        const next = isCurrent
+          ? "composer-node-running"
+          : r?.status === "failed"
+            ? "composer-node-failed"
+            : r?.status === "completed"
+              ? "composer-node-completed"
+              : r?.status === "running"
+                ? "composer-node-running"
+                : undefined;
+        if (n.className === next) return n;
+        return { ...n, className: next };
+      })
+    );
+  }, [runState, setNodes]);
 
   // onConnect — ReactFlow calls this when the user drags a connection
   // between two handles.  addEdge appends a new RFEdge with a unique id.
@@ -272,11 +326,21 @@ export function WorkflowCanvas({
     const x = projected.x;
     const y = projected.y;
 
-    const id = nextNodeId();
+    // Resolve the target node type FIRST so the ID generator can use it
+    // as the prefix (agent-1, http-2, mcp-1, …) instead of an opaque
+    // `dropped-<timestamp>-<n>` string.
+    const targetType =
+      dragData.kind === "node"
+        ? dragData.nodeType
+        : dragData.kind === "builtin"
+          ? "agent"
+          : dragData.kind === "mcp"
+            ? "mcp"
+            : "node";
+    const id = nextNodeId(targetType, nodes);
     let newNode: RFNode | null = null;
 
     if (dragData.kind === "node") {
-      // Generic node drop — create a node of the specified type.
       newNode = {
         id,
         type: dragData.nodeType,
@@ -284,7 +348,6 @@ export function WorkflowCanvas({
         data: { label: dragData.label },
       };
     } else if (dragData.kind === "builtin") {
-      // Built-in tool → create an agent node pre-configured with the tool.
       newNode = {
         id,
         type: "agent",
@@ -292,7 +355,6 @@ export function WorkflowCanvas({
         data: { label: `Agent (${dragData.label})`, tools: [dragData.id] },
       };
     } else if (dragData.kind === "mcp") {
-      // Shared MCP → create a dedicated mcp node.
       newNode = {
         id,
         type: "mcp",
@@ -373,6 +435,7 @@ export function WorkflowCanvas({
       {selectedNode && (
         <PropertyPanel
           node={selectedNode}
+          allNodes={nodes}
           onChange={handlePanelChange}
           onClose={() => setSelectedNodeId(null)}
         />

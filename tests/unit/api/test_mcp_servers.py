@@ -149,8 +149,17 @@ def test_post_test_connection_success(
     import src.api.mcp_servers as mcp_servers_api
 
     class _FakeProvider:
-        def __init__(self, server: Any) -> None:
-            pass
+        def __init__(
+            self,
+            server: Any,
+            *,
+            db: Any | None = None,
+            user_id: str | None = None,
+        ) -> None:
+            # Accept the db+user_id kwargs the endpoint now passes so
+            # OAuth servers can resolve their token.  Static-auth tests
+            # ignore both.
+            del server, db, user_id
 
         async def health_check(self) -> Any:
             from src.tools.base import HealthStatus

@@ -485,13 +485,19 @@ def test_admin_can_put_other_users_workflow(monkeypatch: pytest.MonkeyPatch) -> 
     assert resp.json()["name"] == "Updated"
 
 
-def test_admin_cannot_delete_other_users_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Admin bypass does NOT apply to DELETE per spec §5.1."""
+def test_admin_can_delete_any_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Admins can delete any workflow (admin panel requirement, Phase 10)."""
+    from src.security.auth import get_current_role
+
     existing = _wf_row(id="w1", userId="someone-else")
-    client, _ = _client_delete(monkeypatch, existing)
-    # No admin bypass — DELETE stays strict owner-only
-    resp = client.delete("/workflows/w1")
-    assert resp.status_code == 403
+    client, db = _client_delete(monkeypatch, existing)
+    client.app.dependency_overrides[get_current_role] = lambda: ("admin-user", "admin")  # type: ignore[attr-defined]
+    try:
+        resp = client.delete("/workflows/w1")
+    finally:
+        client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
+    assert resp.status_code == 204
+    db.workflow.delete.assert_awaited_once()
 
 
 def _client_patch_owner(

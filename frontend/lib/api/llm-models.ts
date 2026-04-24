@@ -19,6 +19,33 @@ export async function listEnabledLlmModels(provider?: string) {
   return apiFetch<LlmModelSummary[]>(`/llm-models${qs}`);
 }
 
+export interface AvailableModel {
+  modelId: string;
+  label: string | null;
+  source: "live" | "db";
+}
+export interface AvailableModelsResponse {
+  provider: string;
+  models: AvailableModel[];
+}
+
+/**
+ * Ask the backend to fetch the current model list from the provider's API
+ * directly (with fallback to the admin LlmModel table on failure).  Used
+ * by the Admin → LLM models → Add-model dialog so the dropdown reflects
+ * whatever the provider actually supports — no admin seeding required.
+ *
+ * Pass `refresh: true` to bypass the backend's 5-minute cache, e.g. to
+ * pick up a just-released model without waiting for the TTL.
+ */
+export async function listAvailableModels(provider: string, refresh = false) {
+  const params = new URLSearchParams({ provider });
+  if (refresh) params.set("refresh", "1");
+  return apiFetch<AvailableModelsResponse>(
+    `/llm-models/available?${params.toString()}`
+  );
+}
+
 /** Admin: list ALL models (including disabled). */
 export async function adminListLlmModels() {
   return apiFetch<LlmModelSummary[]>(`/admin/llm-models`);

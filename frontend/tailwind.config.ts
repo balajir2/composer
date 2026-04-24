@@ -9,10 +9,10 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        // Inter is loaded via next/font in app/layout.tsx and injected as
-        // --font-inter CSS variable on <body>.  The system-ui / sans-serif
-        // fallback chain covers environments where the font isn't available.
-        sans: ["var(--font-inter)", "system-ui", "sans-serif"],
+        // Plus Jakarta Sans is loaded via next/font in app/layout.tsx and
+        // injected as --font-sans on <body>.  Matches Bounteous brand
+        // typography.  System fallback covers env without the font.
+        sans: ["var(--font-sans)", "system-ui", "sans-serif"],
       },
       borderRadius: {
         // Honour the --radius token so later re-theming only touches globals.css.

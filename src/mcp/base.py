@@ -108,17 +108,40 @@ class McpToolProvider(ToolProvider):
     async def build_tool(self, tool_name: str, context: BuildContext) -> BaseTool:
         """Build a LangChain BaseTool for the named MCP tool.
 
-        Does NOT call tools/list to avoid an extra round-trip. The tool
-        resolver (Task 6) is responsible for verifying tool existence before
-        calling build_tool. An open-schema model is used so any arguments pass.
+        Fetches tools/list once and uses the real inputSchema + description
+        so the LLM knows which args the tool requires — critical for MCPs
+        like firecrawl that reject calls missing required params.  Falls
+        back to an open schema only when the server doesn't advertise the
+        requested tool.
         """
-        # Use an open schema — the agent will pass whatever the LLM produces.
+        del context  # BuildContext isn't needed for static-schema tools.
+        defs = await self.tools()
+        for td in defs:
+            if td.name == tool_name:
+                return self.build_tool_from_def(td)
+        # Not found in tools/list — keep old open-schema fallback so the
+        # executor can still attempt the call (the server will reject with
+        # a clear error we surface downstream).
         args_schema = create_model(f"{tool_name}_Args", __config__=ConfigDict(extra="allow"))
         return _McpBoundTool(
             client=self._client,
             tool_name=tool_name,
             description=f"MCP tool: {tool_name}",
             args_schema=args_schema,
+        )
+
+    def build_tool_from_def(self, td: ToolDefinition) -> BaseTool:
+        """Build a bound tool from an already-fetched ToolDefinition.
+
+        Preferred entry point when the caller already has the tool list
+        (e.g. resolver iterating over `tools()`) — avoids a second
+        tools/list round-trip.
+        """
+        return _McpBoundTool(
+            client=self._client,
+            tool_name=td.name,
+            description=td.description or f"MCP tool: {td.name}",
+            args_schema=td.args_schema,
         )
 
     async def health_check(self) -> HealthStatus:
@@ -203,8 +226,14 @@ def _json_schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseMode
     """Convert a JSON Schema dict into a Pydantic model for LangChain tool binding.
 
     Minimal implementation: top-level type=object, properties map to fields.
-    Nested objects / oneOf / arrays with complex items degrade to dict[str, Any].
+    Each field carries its `description` from the JSON Schema so LangChain
+    exposes it to the LLM — without that, the model often can't guess
+    what a param like `prompt` or `query` is supposed to contain and
+    either skips the call or passes garbage.  Nested objects / oneOf /
+    arrays with complex items degrade to dict[str, Any].
     """
+    from pydantic import Field as _Field
+
     if schema.get("type") != "object":
         # Catch-all: single-field model that accepts anything
         return create_model(
@@ -216,8 +245,16 @@ def _json_schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseMode
     fields: dict[str, Any] = {}
     for prop_name, prop_schema in props.items():
         py_type = _json_type_to_python(prop_schema)
-        default = ... if prop_name in required else None
-        fields[prop_name] = (py_type, default)
+        description = prop_schema.get("description") if isinstance(prop_schema, dict) else None
+        # Pydantic's Field() becomes the default in the tuple.  Use `...`
+        # as its positional default for required fields, None for optional,
+        # and attach description so LangChain → LLM passes it through.
+        field_default: Any = ... if prop_name in required else None
+        if description:
+            field_def = _Field(default=field_default, description=str(description))
+            fields[prop_name] = (py_type, field_def)
+        else:
+            fields[prop_name] = (py_type, field_default)
     if not fields:
         # No properties defined — accept any kwargs
         return create_model(f"{name}_Args", __config__=ConfigDict(extra="allow"))

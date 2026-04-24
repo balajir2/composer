@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Image from "next/image";
 import Link from "next/link";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -39,8 +40,17 @@ export default function LoginPage() {
 
   return (
     <Card className="w-full max-w-md shadow-lg">
-      <CardHeader>
+      <CardHeader className="items-center text-center">
+        <Image
+          src="/bounteous-logo.png"
+          alt="Bounteous"
+          width={56}
+          height={56}
+          priority
+          className="mb-3"
+        />
         <CardTitle className="text-2xl">Sign in to Composer</CardTitle>
+        <p className="text-xs text-muted-foreground">by Bounteous</p>
       </CardHeader>
       <CardContent className="space-y-6">
         {azureEnabled && (

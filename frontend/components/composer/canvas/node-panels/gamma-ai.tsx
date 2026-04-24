@@ -1,14 +1,13 @@
 "use client";
 
 import { Label } from "@/components/ui/label";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+
+const EXPORT_OPTIONS = [
+  { value: "pptx", label: "PowerPoint (.pptx)" },
+  { value: "pdf", label: "PDF" },
+];
 
 export default function GammaAiPanel({
   data,
@@ -20,8 +19,9 @@ export default function GammaAiPanel({
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        <Label>Prompt</Label>
+        <Label htmlFor="gamma-prompt">Prompt</Label>
         <Textarea
+          id="gamma-prompt"
           value={(data.prompt as string) ?? ""}
           onChange={(e) => onChange({ prompt: e.target.value })}
           rows={4}
@@ -30,19 +30,13 @@ export default function GammaAiPanel({
       </div>
 
       <div className="space-y-2">
-        <Label>Export as</Label>
-        <Select
+        <Label htmlFor="gamma-export">Export as</Label>
+        <NativeSelect
+          id="gamma-export"
           value={(data.exportAs as string) ?? "pptx"}
           onValueChange={(v) => onChange({ exportAs: v })}
-        >
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="pptx">PowerPoint (.pptx)</SelectItem>
-            <SelectItem value="pdf">PDF</SelectItem>
-          </SelectContent>
-        </Select>
+          options={EXPORT_OPTIONS}
+        />
       </div>
     </div>
   );

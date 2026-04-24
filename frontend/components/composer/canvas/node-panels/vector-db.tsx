@@ -2,13 +2,15 @@
 
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { NativeSelect } from "@/components/ui/native-select";
+
+const PROVIDER_OPTIONS = [
+  { value: "pinecone", label: "Pinecone" },
+  { value: "qdrant", label: "Qdrant" },
+  { value: "chroma", label: "Chroma" },
+  { value: "weaviate", label: "Weaviate" },
+  { value: "milvus", label: "Milvus" },
+];
 
 export default function VectorDbPanel({
   data,
@@ -20,27 +22,20 @@ export default function VectorDbPanel({
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        <Label>Provider</Label>
-        <Select
+        <Label htmlFor="vdb-provider">Provider</Label>
+        <NativeSelect
+          id="vdb-provider"
           value={(data.provider as string) ?? ""}
           onValueChange={(v) => onChange({ provider: v })}
-        >
-          <SelectTrigger>
-            <SelectValue placeholder="Select provider" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="pinecone">Pinecone</SelectItem>
-            <SelectItem value="qdrant">Qdrant</SelectItem>
-            <SelectItem value="chroma">Chroma</SelectItem>
-            <SelectItem value="weaviate">Weaviate</SelectItem>
-            <SelectItem value="milvus">Milvus</SelectItem>
-          </SelectContent>
-        </Select>
+          options={PROVIDER_OPTIONS}
+          placeholder="Select provider"
+        />
       </div>
 
       <div className="space-y-2">
-        <Label>Index / collection name</Label>
+        <Label htmlFor="vdb-index">Index / collection name</Label>
         <Input
+          id="vdb-index"
           value={(data.indexName as string) ?? ""}
           onChange={(e) => onChange({ indexName: e.target.value })}
           placeholder="my-index"
@@ -48,8 +43,9 @@ export default function VectorDbPanel({
       </div>
 
       <div className="space-y-2">
-        <Label>Query</Label>
+        <Label htmlFor="vdb-query">Query</Label>
         <Input
+          id="vdb-query"
           value={(data.query as string) ?? ""}
           onChange={(e) => onChange({ query: e.target.value })}
           placeholder="{{state.search_query}}"
@@ -57,8 +53,9 @@ export default function VectorDbPanel({
       </div>
 
       <div className="space-y-2">
-        <Label>Top K</Label>
+        <Label htmlFor="vdb-topk">Top K</Label>
         <Input
+          id="vdb-topk"
           type="number"
           min={1}
           max={100}

@@ -331,8 +331,9 @@ async def update_workflow(
 async def delete_workflow(
     workflow_id: str,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    user_id: str = Depends(get_current_user_id),
+    _role: tuple[str, str] = Depends(get_current_role),
 ) -> None:  # pyright: ignore[reportUnusedFunction]
+    user_id, role = _role
     existing = await db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": workflow_id}
     )
@@ -341,7 +342,7 @@ async def delete_workflow(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow {workflow_id!r} not found.",
         )
-    if existing.userId != user_id:
+    if role != "admin" and existing.userId != user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Forbidden: not workflow owner.",

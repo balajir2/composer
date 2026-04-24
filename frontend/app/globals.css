@@ -9,77 +9,121 @@
 }
 
 @layer base {
+  /* ────────────────────────────────────────────────────────────────────
+   * Bounteous brand tokens — mirrors
+   * D:/GitHub/Bounteous AI Efficiency/public/shared/styles.css.
+   * These are the raw brand values; the semantic tokens below map them
+   * into shadcn's theme slots so every component picks up the brand.
+   * ──────────────────────────────────────────────────────────────── */
+  :root {
+    --brand-deep: #2e1869;
+    --brand-purple: #35297f;
+    --brand-magenta: #872a95;
+    --brand-pink: #b61ca7;
+    --brand-pink-alpha: rgba(182, 28, 167, 0.2);
+    --brand-cyan: #8ee7ff;
+
+    --grad-nav: linear-gradient(90deg, #2e1869, #35297f);
+    --grad-sidebar: linear-gradient(180deg, #2e1869, #35297f);
+    --grad-hero: linear-gradient(150deg, #2e1869 0%, #35297f 50%, #872a95 100%);
+    --grad-cta: linear-gradient(135deg, #35297f, #872a95);
+  }
+
   .theme {
     --font-heading: var(--font-sans);
     --font-sans: var(--font-sans);
   }
+
   :root {
-    --background: oklch(1 0 0);
-    --foreground: oklch(0.145 0 0);
-    --card: oklch(1 0 0);
-    --card-foreground: oklch(0.145 0 0);
-    --popover: oklch(1 0 0);
-    --popover-foreground: oklch(0.145 0 0);
-    --primary: oklch(0.205 0 0);
-    --primary-foreground: oklch(0.985 0 0);
-    --secondary: oklch(0.97 0 0);
-    --secondary-foreground: oklch(0.205 0 0);
-    --muted: oklch(0.97 0 0);
-    --muted-foreground: oklch(0.556 0 0);
-    --accent: oklch(0.97 0 0);
-    --accent-foreground: oklch(0.205 0 0);
+    /* Surfaces */
+    --background: #f3f3f5;
+    --foreground: #3f3e46;
+    --card: #ffffff;
+    --card-foreground: #3f3e46;
+    --popover: #ffffff;
+    --popover-foreground: #3f3e46;
+
+    /* Primary — Bounteous deep purple */
+    --primary: #2e1869;
+    --primary-foreground: #ffffff;
+
+    /* Secondary — soft neutral */
+    --secondary: #f3f3f5;
+    --secondary-foreground: #2e1869;
+
+    /* Muted */
+    --muted: #ebeaef;
+    --muted-foreground: #9ca3bf;
+
+    /* Accent — slightly lighter purple */
+    --accent: #efeaf3;
+    --accent-foreground: #35297f;
+
+    /* Status */
     --destructive: oklch(0.577 0.245 27.325);
-    --border: oklch(0.922 0 0);
-    --input: oklch(0.922 0 0);
-    --ring: oklch(0.708 0 0);
+
+    /* Borders / inputs / focus */
+    --border: #d7d6de;
+    --input: #d7d6de;
+    --ring: #872a95;
+
+    /* Chart neutrals (unchanged from base-nova defaults — no brand chart
+       palette defined yet) */
     --chart-1: oklch(0.87 0 0);
     --chart-2: oklch(0.556 0 0);
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
-    --radius: 0.625rem;
-    --sidebar: oklch(0.985 0 0);
-    --sidebar-foreground: oklch(0.145 0 0);
-    --sidebar-primary: oklch(0.205 0 0);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.97 0 0);
-    --sidebar-accent-foreground: oklch(0.205 0 0);
-    --sidebar-border: oklch(0.922 0 0);
-    --sidebar-ring: oklch(0.708 0 0);
+
+    --radius: 0.5rem;
+
+    /* Sidebar — purple gradient surface.  `--sidebar` is a solid fallback
+       for components that can't accept a gradient; the AppShell aside
+       applies `background: var(--grad-sidebar)` directly. */
+    --sidebar: #2e1869;
+    --sidebar-foreground: rgba(255, 255, 255, 0.78);
+    --sidebar-primary: #b61ca7;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: rgba(255, 255, 255, 0.08);
+    --sidebar-accent-foreground: #ffffff;
+    --sidebar-border: rgba(255, 255, 255, 0.1);
+    --sidebar-ring: #b61ca7;
   }
+
   .dark {
-    --background: oklch(0.145 0 0);
-    --foreground: oklch(0.985 0 0);
-    --card: oklch(0.205 0 0);
-    --card-foreground: oklch(0.985 0 0);
-    --popover: oklch(0.205 0 0);
-    --popover-foreground: oklch(0.985 0 0);
-    --primary: oklch(0.922 0 0);
-    --primary-foreground: oklch(0.205 0 0);
-    --secondary: oklch(0.269 0 0);
-    --secondary-foreground: oklch(0.985 0 0);
-    --muted: oklch(0.269 0 0);
-    --muted-foreground: oklch(0.708 0 0);
-    --accent: oklch(0.269 0 0);
-    --accent-foreground: oklch(0.985 0 0);
+    --background: #1a1129;
+    --foreground: #f3f3f5;
+    --card: #251a3a;
+    --card-foreground: #f3f3f5;
+    --popover: #251a3a;
+    --popover-foreground: #f3f3f5;
+    --primary: #b61ca7;
+    --primary-foreground: #ffffff;
+    --secondary: #35297f;
+    --secondary-foreground: #f3f3f5;
+    --muted: #2e1869;
+    --muted-foreground: #9ca3bf;
+    --accent: #35297f;
+    --accent-foreground: #f3f3f5;
     --destructive: oklch(0.704 0.191 22.216);
-    --border: oklch(1 0 0 / 10%);
-    --input: oklch(1 0 0 / 15%);
-    --ring: oklch(0.556 0 0);
+    --border: rgba(255, 255, 255, 0.1);
+    --input: rgba(255, 255, 255, 0.15);
+    --ring: #b61ca7;
     --chart-1: oklch(0.87 0 0);
     --chart-2: oklch(0.556 0 0);
     --chart-3: oklch(0.439 0 0);
     --chart-4: oklch(0.371 0 0);
     --chart-5: oklch(0.269 0 0);
-    --sidebar: oklch(0.205 0 0);
-    --sidebar-foreground: oklch(0.985 0 0);
-    --sidebar-primary: oklch(0.488 0.243 264.376);
-    --sidebar-primary-foreground: oklch(0.985 0 0);
-    --sidebar-accent: oklch(0.269 0 0);
-    --sidebar-accent-foreground: oklch(0.985 0 0);
-    --sidebar-border: oklch(1 0 0 / 10%);
-    --sidebar-ring: oklch(0.556 0 0);
+    --sidebar: #2e1869;
+    --sidebar-foreground: rgba(255, 255, 255, 0.78);
+    --sidebar-primary: #b61ca7;
+    --sidebar-primary-foreground: #ffffff;
+    --sidebar-accent: rgba(255, 255, 255, 0.08);
+    --sidebar-accent-foreground: #ffffff;
+    --sidebar-border: rgba(255, 255, 255, 0.1);
+    --sidebar-ring: #b61ca7;
   }
+
   * {
     @apply border-border;
   }
@@ -92,8 +136,66 @@
   html {
     @apply font-sans;
   }
+  h1,
+  h2,
+  h3,
+  h4 {
+    /* Tighter heading tracking matches the Bounteous brand's display feel. */
+    color: var(--brand-deep);
+    letter-spacing: -0.01em;
+  }
   /* Accessible focus ring on any focusable element */
   :focus-visible {
     @apply outline-none ring-2 ring-ring ring-offset-2 ring-offset-background;
   }
+}
+
+/* ---------------------------------------------------------------------------
+ * Canvas node run-state decorations (draft run in designer).
+ * React Flow applies `.composer-node-*` to the outer node wrapper; these
+ * rules give designers live visual feedback without having to inspect the
+ * execution panel.
+ * ------------------------------------------------------------------------- */
+
+@keyframes composer-node-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(182, 28, 167, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(182, 28, 167, 0);
+  }
+}
+
+.composer-node-running {
+  animation: composer-node-pulse 1.2s ease-in-out infinite;
+  border-radius: 0.375rem;
+}
+.composer-node-running > div:first-child {
+  border-color: var(--brand-pink);
+}
+
+.composer-node-completed > div:first-child {
+  border-color: rgb(16, 185, 129);
+  background-color: rgba(16, 185, 129, 0.08);
+}
+
+.composer-node-failed > div:first-child {
+  border-color: rgb(239, 68, 68);
+  background-color: rgba(239, 68, 68, 0.08);
+}
+
+/* ---------------------------------------------------------------------------
+ * Bounteous utilities — available to any component that wants the branded
+ * gradient surfaces without re-declaring them.
+ * ------------------------------------------------------------------------- */
+
+.bg-brand-gradient {
+  background: var(--grad-sidebar);
+}
+.bg-brand-hero {
+  background: var(--grad-hero);
+}
+.bg-brand-cta {
+  background: var(--grad-cta);
 }

@@ -8,7 +8,12 @@ export async function listMcpServers(): Promise<McpServerRead[]> {
   return apiFetch<McpServerRead[]>(`/mcp-servers`);
 }
 
-export async function createMcpServer(body: McpServerCreate): Promise<McpServerRead> {
+// Accept oauthConfig as an extra field — the generated schema lags the
+// backend until we regen openapi types, and hand-typing the union is fine
+// here since the backend validates strictly.
+export async function createMcpServer(
+  body: McpServerCreate & { oauthConfig?: OauthConfigInput }
+): Promise<McpServerRead> {
   return apiFetch<McpServerRead>(`/mcp-servers`, { method: "POST", body: JSON.stringify(body) });
 }
 
@@ -30,10 +35,28 @@ export async function setMcpShared(serverId: string, isShared: boolean): Promise
 export async function oauthAuthorize(
   serverId: string,
   body: { redirectUri: string }
-): Promise<{ authorizationUrl: string }> {
-  return apiFetch<{ authorizationUrl: string }>(`/mcp-servers/${serverId}/oauth/authorize`, {
+): Promise<{ authorizeUrl: string }> {
+  return apiFetch<{ authorizeUrl: string }>(`/mcp-servers/${serverId}/oauth/authorize`, {
     method: "POST",
     body: JSON.stringify(body),
+  });
+}
+
+export type OauthConfigInput = {
+  authorizeUrl: string;
+  tokenUrl: string;
+  clientId: string;
+  clientSecret?: string | null;
+  scopes: string[];
+};
+
+export async function updateMcpOauthConfig(
+  serverId: string,
+  oauthConfig: OauthConfigInput
+): Promise<McpServerRead> {
+  return apiFetch<McpServerRead>(`/mcp-servers/${serverId}/oauth-config`, {
+    method: "PATCH",
+    body: JSON.stringify({ oauthConfig }),
   });
 }
 

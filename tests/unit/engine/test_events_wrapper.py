@@ -21,10 +21,16 @@ class _RaisingExecutor:
         raise RuntimeError("boom")
 
 
+class _FakeNodeData:
+    label = "label"
+    node_name = None
+
+
 class _FakeNode:
     def __init__(self, node_id: str = "n", node_type: str = "http") -> None:
         self.id = node_id
         self.type = node_type
+        self.data = _FakeNodeData()
 
 
 async def test_wrapper_emits_start_and_complete_on_success() -> None:
@@ -56,7 +62,13 @@ async def test_wrapper_emits_start_and_complete_on_success() -> None:
     types = [e.type for e in events]
     assert types == ["node_started", "node_completed"]
     for e in events:
-        assert e.payload == {"nodeId": "n1", "nodeName": "http"}
+        assert e.payload["nodeId"] == "n1"
+        assert e.payload["nodeType"] == "http"
+    # node_completed carries the executor's output so the UI can display it.
+    completed = next(e for e in events if e.type == "node_completed")
+    # _FakeExecutor doesn't write node_results, so _extract_output falls back
+    # to variables.lastOutput — unset here → None.
+    assert "output" in completed.payload
 
 
 async def test_wrapper_emits_start_but_not_complete_on_exception() -> None:
@@ -85,8 +97,13 @@ async def test_wrapper_emits_start_but_not_complete_on_exception() -> None:
             break
         events.append(ev)
 
+    # The wrapper now emits node_failed on exception so the UI can surface
+    # the actual error without the user having to dig through backend logs.
     types = [e.type for e in events]
-    assert types == ["node_started"]
+    assert types == ["node_started", "node_failed"]
+    failed = events[1]
+    assert failed.payload["nodeId"] == "n1"
+    assert "boom" in failed.payload["error"]
 
 
 async def test_wrapper_noop_when_context_unset() -> None:

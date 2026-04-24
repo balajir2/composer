@@ -13,6 +13,8 @@ type NodeStatus = {
   error?: string;
 };
 
+const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
+
 export function ExecutionProgress({
   executionId,
   initialStatus,
@@ -26,6 +28,15 @@ export function ExecutionProgress({
   const token = (session as unknown as { accessToken?: string } | null)?.accessToken;
   const [status, setStatus] = useState<string>(initialStatus);
   const [nodes, setNodes] = useState<NodeStatus[]>([]);
+
+  // If the parent's polling delivers a terminal status (because WS events
+  // were missed — e.g. subscribe landed after the backend already finished),
+  // sync the local badge so users don't see a stale "running" state forever.
+  useEffect(() => {
+    if (TERMINAL_STATES.has(initialStatus)) {
+      setStatus(initialStatus);
+    }
+  }, [initialStatus]);
 
   useEffect(() => {
     if (!token) return;
@@ -62,6 +73,8 @@ export function ExecutionProgress({
     return unsub;
   }, [executionId, token, onTerminal]);
 
+  const isTerminal = TERMINAL_STATES.has(status);
+
   return (
     <div className="space-y-4">
       <div>
@@ -81,9 +94,14 @@ export function ExecutionProgress({
             <Badge variant={n.status === "failed" ? "destructive" : "secondary"}>{n.status}</Badge>
           </div>
         ))}
-        {nodes.length === 0 && (
+        {nodes.length === 0 && !isTerminal && (
           <div className="rounded-md border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
             Waiting for node events…
+          </div>
+        )}
+        {nodes.length === 0 && isTerminal && status !== "completed" && (
+          <div className="rounded-md border border-dashed px-3 py-6 text-center text-xs text-muted-foreground">
+            Execution ended before any node events were delivered. See details below.
           </div>
         )}
       </div>

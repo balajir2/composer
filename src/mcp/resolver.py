@@ -58,9 +58,52 @@ async def resolve_mcp_tools_for_node(
             )
 
         provider = McpToolProvider(server, db=db, user_id=context.user_id)
-        tool_defs = await provider.tools()
-        for td in tool_defs:
-            out.append(await provider.build_tool(td.name, context))
+        # Build from cached defs so each tool is bound with its real
+        # inputSchema — the LLM needs this to pass required args like
+        # firecrawl_agent's `prompt`.
+        for td in await provider.tools():
+            out.append(provider.build_tool_from_def(td))
+    return out
+
+
+async def resolve_mcp_tools_by_names(
+    mcp_server_id: str,
+    tool_names: list[str],
+    user_id: str | None,
+    db: Any,
+) -> list[BaseTool]:
+    """Return BaseTool instances for the named tools on a single MCP server.
+
+    Used by the `mcp` node's agent mode: the designer picks a server and a
+    subset of its tools via the Designer panel's multi-select.  An empty
+    `tool_names` list returns ALL of the server's tools so designers can
+    start by just saying "use this MCP server" and iterate on the prompt.
+
+    One tools/list round-trip fetches every definition; each tool is then
+    bound with its real inputSchema so the LLM knows what args to pass.
+    """
+    server = await db.mcpserver.find_unique(where={"id": mcp_server_id})
+    if server is None:
+        raise McpServerNotFound(f"MCP server {mcp_server_id!r} not found")
+    if not _user_can_use(user_id, server):
+        raise McpPermissionError(f"User {user_id!r} cannot use MCP server {mcp_server_id!r}")
+
+    provider = McpToolProvider(server, db=db, user_id=user_id)
+    all_defs = await provider.tools()
+
+    if not tool_names:
+        return [provider.build_tool_from_def(td) for td in all_defs]
+
+    by_name = {td.name: td for td in all_defs}
+    out: list[BaseTool] = []
+    for name in tool_names:
+        td = by_name.get(name)
+        if td is None:
+            # Selected tool isn't advertised by the server — skip rather
+            # than abort so a stale config doesn't take down the whole
+            # node, and log for the designer to notice.
+            continue
+        out.append(provider.build_tool_from_def(td))
     return out
 
 
@@ -70,7 +113,8 @@ async def resolve_single_mcp_tool(
     user_id: str | None,
     db: Any,
 ) -> tuple[McpToolProvider, BaseTool]:
-    """For the `mcp` node executor: fetch server, build ONE tool by name."""
+    """For the `mcp` node deterministic-mode executor: fetch server, build
+    ONE tool by name with its real schema."""
     server = await db.mcpserver.find_unique(where={"id": mcp_server_id})
     if server is None:
         raise McpServerNotFound(f"MCP server {mcp_server_id!r} not found")
@@ -78,7 +122,6 @@ async def resolve_single_mcp_tool(
         raise McpPermissionError(f"User {user_id!r} cannot use MCP server {mcp_server_id!r}")
 
     provider = McpToolProvider(server, db=db, user_id=user_id)
-    # Minimal BuildContext — the mcp node executor doesn't need `node` for static-auth.
     tool = await provider.build_tool(
         tool_name,
         BuildContext(
@@ -93,6 +136,7 @@ async def resolve_single_mcp_tool(
 __all__ = [
     "McpPermissionError",
     "McpServerNotFound",
+    "resolve_mcp_tools_by_names",
     "resolve_mcp_tools_for_node",
     "resolve_single_mcp_tool",
 ]

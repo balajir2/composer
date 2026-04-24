@@ -1,5 +1,6 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { signOut, useSession } from "next-auth/react";
 import { Button } from "@/components/ui/button";
@@ -17,46 +18,96 @@ export function AppShell({
 
   return (
     <div className="flex min-h-screen">
-      <aside className="bg-muted/20 w-64 border-r p-4">
-        <Link href="/" className="block pb-6 text-lg font-semibold">
-          Composer
+      {/* Bounteous-branded sidebar: vertical deep-purple gradient, white
+          text, pink active indicator.  Mirrors the brand system from
+          Bounteous AI Efficiency (public/shared/styles.css). */}
+      <aside className="flex w-64 flex-col bg-brand-gradient">
+        <Link
+          href="/"
+          className="flex items-center gap-3 border-b border-white/10 px-5 pb-5 pt-6"
+        >
+          <span className="block size-8 overflow-hidden rounded-md bg-white/10 p-1">
+            <Image
+              src="/bounteous-logo.png"
+              alt="Bounteous"
+              width={32}
+              height={32}
+              priority
+              className="size-full object-contain"
+            />
+          </span>
+          <span>
+            <span className="block text-[0.8rem] font-extrabold tracking-[1.5px] text-white">
+              COMPOSER
+            </span>
+            <span className="mt-0.5 block text-[0.6rem] text-white/45">
+              by Bounteous
+            </span>
+          </span>
         </Link>
-        <RoleNav role={role} />
-        <div className="pt-6">
-          {userRole === "admin" && role !== "admin" && (
-            <Link
-              href="/admin"
-              className="block pb-2 text-xs text-muted-foreground hover:underline"
-            >
-              Admin console →
-            </Link>
-          )}
-          {role !== "designer" && (
-            <Link
-              href="/designer"
-              className="block pb-2 text-xs text-muted-foreground hover:underline"
-            >
-              Designer →
-            </Link>
-          )}
-          {role !== "runs" && (
-            <Link href="/runs" className="block pb-2 text-xs text-muted-foreground hover:underline">
-              Run workflows →
-            </Link>
-          )}
+
+        <div className="flex-1 overflow-y-auto px-2 py-4">
+          <RoleNav role={role} />
+
+          <div className="my-3 h-px bg-white/10" />
+
+          <div className="space-y-1 px-3">
+            {userRole === "admin" && role !== "admin" && (
+              <Link
+                href="/admin"
+                className="block text-[0.7rem] font-medium text-white/55 hover:text-white"
+              >
+                Admin console →
+              </Link>
+            )}
+            {role !== "designer" && (
+              <Link
+                href="/designer"
+                className="block text-[0.7rem] font-medium text-white/55 hover:text-white"
+              >
+                Designer →
+              </Link>
+            )}
+            {role !== "runs" && (
+              <Link
+                href="/runs"
+                className="block text-[0.7rem] font-medium text-white/55 hover:text-white"
+              >
+                Run workflows →
+              </Link>
+            )}
+          </div>
+        </div>
+
+        <div className="border-t border-white/10 px-5 py-4 text-xs">
+          <div className="truncate font-semibold text-white/65">
+            {session?.user?.email}
+          </div>
+          <button
+            type="button"
+            onClick={() => signOut({ callbackUrl: "/login" })}
+            className="mt-1 text-[0.7rem] text-white/40 hover:text-white/90"
+          >
+            Sign out
+          </button>
         </div>
       </aside>
-      <div className="flex-1">
+
+      <div className="flex flex-1 flex-col">
         <header className="flex items-center justify-between border-b bg-background px-6 py-3">
-          <h1 className="text-sm font-medium capitalize">{role}</h1>
+          <h1 className="text-sm font-semibold capitalize">{role}</h1>
           <div className="flex items-center gap-3 text-sm">
             <span className="text-muted-foreground">{session?.user?.email}</span>
-            <Button variant="outline" size="sm" onClick={() => signOut({ callbackUrl: "/login" })}>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => signOut({ callbackUrl: "/login" })}
+            >
               Sign out
             </Button>
           </div>
         </header>
-        <main className="p-6">{children}</main>
+        <main className="flex-1 p-6">{children}</main>
       </div>
     </div>
   );

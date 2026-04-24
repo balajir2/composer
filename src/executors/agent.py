@@ -29,7 +29,8 @@ from src.variable_substitution import substitute
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL = "anthropic/claude-haiku-4-5-20251001"
-MAX_ITERATIONS = 10  # matches OAB
+DEFAULT_MAX_ITERATIONS = 10  # matches OAB
+ABSOLUTE_MAX_ITERATIONS = 100  # hard clamp on user-configured values
 
 
 class MaxIterationsExceededError(RuntimeError):
@@ -101,12 +102,17 @@ class AgentExecutor:
         tools: list[BaseTool],
     ) -> str:
         """Drive the LLM + tools until a turn produces text with no tool_calls.
-        Caps at MAX_ITERATIONS iterations. Returns the final assistant text."""
+        Caps at the node's configured max_iterations (default 10, hard
+        clamp 100).  Returns the final assistant text."""
         bound_model = chat_model.bind_tools(tools) if tools else chat_model
         current: list[BaseMessage] = list(messages)
         tools_by_name = {t.name: t for t in tools}
+        cap = min(
+            self.node.data.max_iterations or DEFAULT_MAX_ITERATIONS,
+            ABSOLUTE_MAX_ITERATIONS,
+        )
 
-        for _ in range(MAX_ITERATIONS + 1):
+        for _ in range(cap + 1):
             response = await bound_model.ainvoke(current)
             tool_calls = getattr(response, "tool_calls", [])
 
@@ -121,8 +127,9 @@ class AgentExecutor:
             current = [*current, response, *tool_results]
 
         raise MaxIterationsExceededError(
-            f"Agent {self.node.id!r} hit MAX_ITERATIONS={MAX_ITERATIONS} "
-            f"without producing a final text response."
+            f"Agent {self.node.id!r} hit max_iterations={cap} without producing a "
+            "final text response. Bump the 'Max iterations' field on the node or "
+            "refine the prompt so the LLM converges faster."
         )
 
     async def _run_tool(

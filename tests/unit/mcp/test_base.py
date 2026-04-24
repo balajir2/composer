@@ -92,12 +92,36 @@ async def test_build_tool_returns_invocable(
     monkeypatch: pytest.MonkeyPatch,
     httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
 ) -> None:
+    # build_tool now fetches tools/list so it can bind the real input
+    # schema to the LangChain tool (fixes firecrawl rejecting calls that
+    # omit required params like `prompt`).  Mock tools/list first.
     httpx_mock.add_response(
         url="https://mcp.example.com/rpc",
         method="POST",
         json={
             "jsonrpc": "2.0",
             "id": 1,
+            "result": {
+                "tools": [
+                    {
+                        "name": "echo",
+                        "description": "Echoes its input",
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"q": {"type": "string"}},
+                        },
+                    }
+                ]
+            },
+        },
+    )
+    # Then the actual tools/call that the tool invocation triggers.
+    httpx_mock.add_response(
+        url="https://mcp.example.com/rpc",
+        method="POST",
+        json={
+            "jsonrpc": "2.0",
+            "id": 2,
             "result": {"content": [{"type": "text", "text": "echoed: hello"}]},
         },
     )

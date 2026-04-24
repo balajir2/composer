@@ -1,13 +1,13 @@
 "use client";
 
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { NativeSelect } from "@/components/ui/native-select";
+
+const RENDER_OPTIONS = [
+  { value: "text", label: "Text" },
+  { value: "markdown", label: "Markdown" },
+  { value: "json", label: "JSON" },
+];
 
 export default function EndPanel({
   data,
@@ -19,20 +19,14 @@ export default function EndPanel({
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        <Label>Output render hint</Label>
-        <Select
+        <Label htmlFor="end-render-hint">Output render hint</Label>
+        <NativeSelect
+          id="end-render-hint"
           value={(data.outputRenderHint as string) ?? "text"}
           onValueChange={(v) => onChange({ outputRenderHint: v })}
-        >
-          <SelectTrigger>
-            <SelectValue placeholder="Select format" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="text">Text</SelectItem>
-            <SelectItem value="markdown">Markdown</SelectItem>
-            <SelectItem value="json">JSON</SelectItem>
-          </SelectContent>
-        </Select>
+          options={RENDER_OPTIONS}
+          placeholder="Select format"
+        />
       </div>
     </div>
   );

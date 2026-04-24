@@ -2,14 +2,16 @@
 
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
+import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+
+const METHOD_OPTIONS = [
+  { value: "GET", label: "GET" },
+  { value: "POST", label: "POST" },
+  { value: "PUT", label: "PUT" },
+  { value: "PATCH", label: "PATCH" },
+  { value: "DELETE", label: "DELETE" },
+];
 
 export default function HttpPanel({
   data,
@@ -21,27 +23,19 @@ export default function HttpPanel({
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        <Label>Method</Label>
-        <Select
+        <Label htmlFor="http-method">Method</Label>
+        <NativeSelect
+          id="http-method"
           value={(data.method as string) ?? "GET"}
           onValueChange={(v) => onChange({ method: v })}
-        >
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="GET">GET</SelectItem>
-            <SelectItem value="POST">POST</SelectItem>
-            <SelectItem value="PUT">PUT</SelectItem>
-            <SelectItem value="PATCH">PATCH</SelectItem>
-            <SelectItem value="DELETE">DELETE</SelectItem>
-          </SelectContent>
-        </Select>
+          options={METHOD_OPTIONS}
+        />
       </div>
 
       <div className="space-y-2">
-        <Label>URL</Label>
+        <Label htmlFor="http-url">URL</Label>
         <Input
+          id="http-url"
           value={(data.url as string) ?? ""}
           onChange={(e) => onChange({ url: e.target.value })}
           placeholder="https://api.example.com/endpoint"
@@ -49,8 +43,9 @@ export default function HttpPanel({
       </div>
 
       <div className="space-y-2">
-        <Label>Headers (JSON)</Label>
+        <Label htmlFor="http-headers">Headers (JSON)</Label>
         <Textarea
+          id="http-headers"
           value={(data.headers as string) ?? ""}
           onChange={(e) => onChange({ headers: e.target.value })}
           rows={3}
@@ -60,8 +55,9 @@ export default function HttpPanel({
       </div>
 
       <div className="space-y-2">
-        <Label>Body (JSON)</Label>
+        <Label htmlFor="http-body">Body (JSON)</Label>
         <Textarea
+          id="http-body"
           value={(data.body as string) ?? ""}
           onChange={(e) => onChange({ body: e.target.value })}
           rows={4}

@@ -147,7 +147,11 @@ class LangGraphExecutor:
             where={"id": execution_id},
             data={
                 "status": "completed",
-                "output": Json(final_vars.get("finalOutput")),
+                # `finalOutput` is an explicit override if a node sets it;
+                # otherwise surface whatever the last node produced so the
+                # execution panel never shows an empty "Final output" on a
+                # successful run.
+                "output": Json(final_vars.get("finalOutput") or final_vars.get("lastOutput")),
                 "variables": Json(final_vars),
                 "nodeResults": Json(final_state.get("node_results") or {}),
                 "completedAt": datetime.now(UTC),

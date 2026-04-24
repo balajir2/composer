@@ -132,12 +132,17 @@ def test_callback_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(api_mod, "exchange_code_for_tokens", _fake_exchange)
 
-    resp = client.get("/oauth/callback?code=c1&state=abc")
-    assert resp.status_code == 200
-    assert resp.json() == {"ok": True, "serverId": "srv1"}
+    # Callback now redirects the browser back to the admin MCP page with a
+    # status param so the UI can toast instead of dumping raw JSON.
+    resp = client.get("/oauth/callback?code=c1&state=abc", follow_redirects=False)
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert "/admin/mcp-servers" in location
+    assert "oauth=success" in location
+    assert "serverId=srv1" in location
 
 
-def test_callback_unknown_state_400(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_callback_unknown_state_redirects_error(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_enc_key(monkeypatch)
     client, db = _client_with_mock_db()
     db.mcpoauthstate.find_unique = AsyncMock(return_value=None)
@@ -151,8 +156,11 @@ def test_callback_unknown_state_400(monkeypatch: pytest.MonkeyPatch) -> None:
 
     monkeypatch.setattr(api_mod, "exchange_code_for_tokens", _fake_exchange)
 
-    resp = client.get("/oauth/callback?code=c&state=missing")
-    assert resp.status_code == 400
+    resp = client.get("/oauth/callback?code=c&state=missing", follow_redirects=False)
+    assert resp.status_code == 303
+    location = resp.headers["location"]
+    assert "oauth=error" in location
+    assert "detail=" in location
 
 
 def test_disconnect_owner_allowed() -> None:

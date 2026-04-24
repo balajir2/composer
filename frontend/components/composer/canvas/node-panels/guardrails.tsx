@@ -1,13 +1,19 @@
 "use client";
 
 import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { NativeSelect } from "@/components/ui/native-select";
+
+const CLASSIFIER_OPTIONS = [
+  { value: "pii", label: "PII" },
+  { value: "moderation", label: "Moderation" },
+  { value: "jailbreak", label: "Jailbreak" },
+  { value: "hallucination", label: "Hallucination" },
+];
+
+const ON_FAIL_OPTIONS = [
+  { value: "fail", label: "Fail execution" },
+  { value: "continue", label: "Continue" },
+];
 
 export default function GuardrailsPanel({
   data,
@@ -19,37 +25,24 @@ export default function GuardrailsPanel({
   return (
     <div className="space-y-4">
       <div className="space-y-2">
-        <Label>Classifier type</Label>
-        <Select
+        <Label htmlFor="guard-classifier">Classifier type</Label>
+        <NativeSelect
+          id="guard-classifier"
           value={(data.classifierType as string) ?? ""}
           onValueChange={(v) => onChange({ classifierType: v })}
-        >
-          <SelectTrigger>
-            <SelectValue placeholder="Select classifier" />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="pii">PII</SelectItem>
-            <SelectItem value="moderation">Moderation</SelectItem>
-            <SelectItem value="jailbreak">Jailbreak</SelectItem>
-            <SelectItem value="hallucination">Hallucination</SelectItem>
-          </SelectContent>
-        </Select>
+          options={CLASSIFIER_OPTIONS}
+          placeholder="Select classifier"
+        />
       </div>
 
       <div className="space-y-2">
-        <Label>On failure</Label>
-        <Select
+        <Label htmlFor="guard-onfail">On failure</Label>
+        <NativeSelect
+          id="guard-onfail"
           value={(data.onFail as string) ?? "fail"}
           onValueChange={(v) => onChange({ onFail: v })}
-        >
-          <SelectTrigger>
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="fail">Fail execution</SelectItem>
-            <SelectItem value="continue">Continue</SelectItem>
-          </SelectContent>
-        </Select>
+          options={ON_FAIL_OPTIONS}
+        />
       </div>
     </div>
   );

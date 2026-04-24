@@ -8,8 +8,26 @@ export class ComposerApiError extends Error {
     public detail: unknown,
     message?: string
   ) {
-    super(message ?? `Composer API ${status}`);
+    super(message ?? extractDetail(status, detail));
   }
+}
+
+function extractDetail(status: number, detail: unknown): string {
+  // FastAPI returns {detail: string} for HTTPException, or
+  // {detail: [{loc, msg, type}, ...]} for 422 validation errors.
+  // Surface the server's message verbatim so users see WHY the call failed.
+  if (detail && typeof detail === "object" && "detail" in detail) {
+    const d = (detail as { detail: unknown }).detail;
+    if (typeof d === "string") return `${status}: ${d}`;
+    if (Array.isArray(d)) {
+      const first = d[0] as { loc?: unknown[]; msg?: string } | undefined;
+      if (first?.msg) {
+        const loc = Array.isArray(first.loc) ? first.loc.join(".") : "";
+        return `${status}: ${loc ? `${loc}: ` : ""}${first.msg}`;
+      }
+    }
+  }
+  return `Composer API ${status}`;
 }
 
 type Session = {

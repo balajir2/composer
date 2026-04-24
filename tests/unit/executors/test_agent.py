@@ -203,7 +203,7 @@ async def test_agent_respects_max_iterations(
     state = initial_state("loop")
     from src.executors.agent import MaxIterationsExceededError
 
-    with pytest.raises(MaxIterationsExceededError, match="MAX_ITERATIONS=10"):
+    with pytest.raises(MaxIterationsExceededError, match="max_iterations=10"):
         await AgentExecutor(node).arun(state)
 
 

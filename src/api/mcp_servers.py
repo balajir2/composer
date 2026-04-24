@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
@@ -36,6 +37,18 @@ from src.storage.db import get_db
 router = APIRouter(tags=["mcp-servers"])
 
 
+class OauthConfig(BaseModel):
+    """OAuth 2.1 config for authType='oauth' MCP servers."""
+
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
+
+    authorize_url: str = Field(alias="authorizeUrl")
+    token_url: str = Field(alias="tokenUrl")
+    client_id: str = Field(alias="clientId")
+    client_secret: str | None = Field(default=None, alias="clientSecret")
+    scopes: list[str] = Field(default_factory=list)
+
+
 class McpServerCreate(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -48,6 +61,7 @@ class McpServerCreate(BaseModel):
     header_name: str | None = Field(default=None, alias="headerName")
     is_shared: bool = Field(default=False, alias="isShared")
     headers: dict[str, str] | None = None
+    oauth_config: OauthConfig | None = Field(default=None, alias="oauthConfig")
 
 
 class McpServerRead(BaseModel):
@@ -61,6 +75,8 @@ class McpServerRead(BaseModel):
     category: str | None = None
     auth_type: str = Field(alias="authType")
     has_access_token: bool = Field(default=False, alias="hasAccessToken")
+    has_oauth_config: bool = Field(default=False, alias="hasOauthConfig")
+    has_oauth_token: bool = Field(default=False, alias="hasOauthToken")
     header_name: str | None = Field(default=None, alias="headerName")
     tools: Any = None
     connection_status: str = Field(alias="connectionStatus")
@@ -77,6 +93,14 @@ class McpServerRead(BaseModel):
 class TestConnectionResponse(BaseModel):
     ok: bool
     message: str
+
+
+class OAuthConfigRequest(BaseModel):
+    """Wrapper so the admin can PATCH oauthConfig after creation."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    oauth_config: OauthConfig = Field(alias="oauthConfig")
 
 
 class OAuthAuthorizeRequest(BaseModel):
@@ -97,7 +121,7 @@ class OAuthCallbackResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
-def _to_read(row: Any) -> McpServerRead:
+def _to_read(row: Any, *, has_oauth_token: bool = False) -> McpServerRead:
     """Redact encrypted fields before returning to client."""
     return McpServerRead.model_validate(
         {
@@ -109,6 +133,8 @@ def _to_read(row: Any) -> McpServerRead:
             "category": row.category,
             "authType": row.authType,
             "hasAccessToken": bool(row.encryptedAccessToken),
+            "hasOauthConfig": bool(getattr(row, "oauthConfig", None)),
+            "hasOauthToken": has_oauth_token,
             "headerName": row.headerName,
             "tools": row.tools,
             "connectionStatus": row.connectionStatus,
@@ -170,6 +196,8 @@ async def create_mcp_server(
     # Prisma rejects `None` for Json? columns; only include when set.
     if payload.headers is not None:
         create_data["headers"] = Json(payload.headers)
+    if payload.oauth_config is not None:
+        create_data["oauthConfig"] = Json(payload.oauth_config.model_dump(by_alias=True))
 
     row = await db.mcpserver.create(data=create_data)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
     return _to_read(row)
@@ -206,7 +234,10 @@ async def test_mcp_connection(
             detail=f"MCP server {server_id!r} not found.",
         )
 
-    provider = McpToolProvider(server)
+    # OAuth servers require db+user_id so the provider can fetch the caller's
+    # access token from McpOAuthToken on each outbound request.  Static-auth
+    # servers accept the extras harmlessly.
+    provider = McpToolProvider(server, db=db, user_id=user_id)
     health = await provider.health_check()
 
     now = datetime.now(UTC)
@@ -289,6 +320,40 @@ async def delete_mcp_server(
     await db.mcpserver.delete(where={"id": server_id})  # pyright: ignore[reportAttributeAccessIssue]
 
 
+@router.patch(
+    "/mcp-servers/{server_id}/oauth-config",
+    response_model=McpServerRead,
+)
+async def update_oauth_config(
+    server_id: str,
+    payload: OAuthConfigRequest,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    user_id: str = Depends(get_current_user_id),
+) -> McpServerRead:  # pyright: ignore[reportUnusedFunction]
+    existing = await db.mcpserver.find_unique(where={"id": server_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if existing is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"MCP server {server_id!r} not found.",
+        )
+    # Only the owner can edit OAuth config (client_id / client_secret are secrets).
+    if existing.userId != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the owner may edit OAuth config.",
+        )
+    if existing.authType != "oauth":
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"MCP server authType must be 'oauth' (got {existing.authType!r}).",
+        )
+    updated = await db.mcpserver.update(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": server_id},
+        data={"oauthConfig": Json(payload.oauth_config.model_dump(by_alias=True))},
+    )
+    return _to_read(updated)
+
+
 @router.post(
     "/mcp-servers/{server_id}/oauth/authorize",
     response_model=OAuthAuthorizeResponse,
@@ -342,32 +407,59 @@ async def oauth_disconnect(
 oauth_router = APIRouter(tags=["oauth"])
 
 
-@oauth_router.get("/oauth/callback", response_model=OAuthCallbackResponse)
+_FRONTEND_ORIGIN_DEFAULT = "http://localhost:3000"
+
+
+def _admin_mcp_url(server_id: str, status_param: str, detail: str = "") -> str:
+    """Build the redirect URL for the admin MCP page after OAuth callback."""
+    settings = get_settings()
+    origin = (
+        settings.iep_ui_origin
+        if settings.deployment_mode == "embedded" and settings.iep_ui_origin
+        else _FRONTEND_ORIGIN_DEFAULT
+    )
+    from urllib.parse import urlencode
+
+    params: dict[str, str] = {"serverId": server_id, "oauth": status_param}
+    if detail:
+        params["detail"] = detail[:200]
+    return f"{origin}/admin/mcp-servers?{urlencode(params)}"
+
+
+@oauth_router.get("/oauth/callback")
 async def oauth_callback(
     code: str,
     state: str,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-) -> OAuthCallbackResponse:
-    # Look up state row to find which server this callback is for
+) -> RedirectResponse:
+    """Exchange the authorization code for tokens, then redirect the browser
+    back to the admin MCP servers page with a status query param so the UI
+    can surface a toast instead of leaving the user on a raw-JSON page."""
     state_row = await db.mcpoauthstate.find_unique(where={"state": state})  # pyright: ignore[reportAttributeAccessIssue]
     if state_row is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="OAuth state not found (CSRF or replay).",
+        return RedirectResponse(
+            url=_admin_mcp_url("", "error", "OAuth state not found (CSRF or replay)."),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
     server = await db.mcpserver.find_unique(where={"id": state_row.mcpServerId})  # pyright: ignore[reportAttributeAccessIssue]
     if server is None:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"OAuth state references unknown server {state_row.mcpServerId!r}.",
+        return RedirectResponse(
+            url=_admin_mcp_url(
+                state_row.mcpServerId, "error", "Server not found for this OAuth state."
+            ),
+            status_code=status.HTTP_303_SEE_OTHER,
         )
     try:
         await exchange_code_for_tokens(server, code=code, state=state, db=db)
-    except InvalidStateError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
-    except OAuthError as exc:
-        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
-    return OAuthCallbackResponse.model_validate({"ok": True, "serverId": server.id})
+    except (InvalidStateError, OAuthError) as exc:
+        return RedirectResponse(
+            url=_admin_mcp_url(server.id, "error", str(exc)),
+            status_code=status.HTTP_303_SEE_OTHER,
+        )
+    return RedirectResponse(
+        url=_admin_mcp_url(server.id, "success"),
+        status_code=status.HTTP_303_SEE_OTHER,
+    )
 
 
 class McpSharedRequest(BaseModel):

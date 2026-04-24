@@ -11,7 +11,7 @@ OAB reference: lib/workflow/types.ts.
 
 from typing import Annotated, Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class Position(BaseModel):
@@ -36,17 +36,32 @@ class BaseNodeData(BaseModel):
 
 
 class StartInputVariable(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
+    # extra="allow" lets the canvas store arbitrary future fields (e.g. a UI
+    # label) without making migrations hard.  description is optional so
+    # workflows declaring only name/type/required still validate.
+    model_config = ConfigDict(populate_by_name=True, extra="allow")
 
     name: str
-    type: str
-    required: bool
-    description: str
+    type: str = "text"
+    required: bool = False
+    description: str = ""
     default_value: Any | None = Field(default=None, alias="defaultValue")
 
 
 class StartNodeData(BaseNodeData):
+    # Canonical field: inputVariables.  Prior canvas builds saved under
+    # `inputs` — read that as a fallback via a pre-validator so existing
+    # saved workflows continue to resolve declared variables.
     input_variables: list[StartInputVariable] = Field(default_factory=list, alias="inputVariables")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _coerce_legacy_inputs(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "inputVariables" not in data and "inputs" in data:
+            legacy = data.get("inputs")
+            if isinstance(legacy, list):
+                data = {**data, "inputVariables": legacy}
+        return data
 
 
 class StartNode(BaseModel):
@@ -105,6 +120,10 @@ class AgentNodeData(BaseNodeData):
     mcp_tools: list[dict[str, Any]] = Field(default_factory=list, alias="mcpTools")
     mcp_server_ids: list[str] = Field(default_factory=list, alias="mcpServerIds")
     selected_tools: list[str] = Field(default_factory=list, alias="selectedTools")
+    # Cap on the tool-call → LLM-response loop.  Default stays 10 (OAB
+    # parity); long research flows that call search + scrape repeatedly
+    # can bump this per-node.
+    max_iterations: int | None = Field(default=None, alias="maxIterations")
 
 
 class AgentNode(BaseModel):
@@ -119,6 +138,18 @@ class AgentNode(BaseModel):
 
 class McpNodeData(BaseNodeData):
     mcp_server_id: str | None = Field(default=None, alias="mcpServerId")
+    # Agent mode (preferred): LLM drives the selected tools from the server
+    # using the natural-language `instructions`.  Multiple tools can be
+    # selected; the model picks which one(s) to call.
+    selected_tool_names: list[str] = Field(default_factory=list, alias="selectedToolNames")
+    instructions: str | None = None
+    model: str | None = None  # "provider/modelId" string; defaults when unset
+    # Cap on the tool-call → LLM-response loop in agent mode.  Default
+    # stays 10; async-tool flows (e.g. firecrawl_agent + status polling)
+    # often need 20+.
+    max_iterations: int | None = Field(default=None, alias="maxIterations")
+    # Legacy deterministic mode (still supported for back-compat):
+    #   exactly one `toolName` is called with the resolved `arguments` dict.
     tool_name: str | None = Field(default=None, alias="toolName")
     arguments: dict[str, Any] = Field(default_factory=dict)
 

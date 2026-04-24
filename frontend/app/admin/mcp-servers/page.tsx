@@ -1,5 +1,7 @@
 "use client";
 
+import { useEffect } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 
@@ -19,13 +21,35 @@ import { EmptyState } from "@/components/composer/empty-state";
 import { CreateMcpDialog } from "@/components/composer/create-mcp-dialog";
 import { McpSharedToggle } from "@/components/composer/mcp-shared-toggle";
 import { McpTestButton } from "@/components/composer/mcp-test-button";
+import { McpAuthorizeButton } from "@/components/composer/mcp-authorize-button";
 
 export default function AdminMcpServersPage() {
   const qc = useQueryClient();
+  const router = useRouter();
+  const search = useSearchParams();
+
   const { data, isLoading, isError } = useQuery({
     queryKey: ["admin-mcp-servers"],
     queryFn: () => listMcpServers(),
   });
+
+  // Handle the ?oauth=success|error&detail=... query the backend sets on
+  // /oauth/callback → /admin/mcp-servers redirect.
+  useEffect(() => {
+    const oauth = search?.get("oauth");
+    if (!oauth) return;
+    const detail = search.get("detail");
+    if (oauth === "success") {
+      toast.success("OAuth connected. You can now Test the server.");
+      void qc.invalidateQueries({ queryKey: ["admin-mcp-servers"] });
+    } else {
+      toast.error(`OAuth failed${detail ? `: ${detail}` : "."}`, {
+        duration: 8000,
+      });
+    }
+    // Scrub the query string so a refresh doesn't re-toast.
+    router.replace("/admin/mcp-servers");
+  }, [search, router, qc]);
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteMcpServer(id),
@@ -42,7 +66,8 @@ export default function AdminMcpServersPage() {
         <div>
           <h2 className="text-2xl font-semibold">MCP servers</h2>
           <p className="text-sm text-muted-foreground">
-            Model Context Protocol servers that expose tools to agents. Click{" "}
+            Model Context Protocol servers that expose tools to agents. For
+            OAuth servers, click <strong>Authorize</strong> to sign in, then{" "}
             <strong>Test</strong> to verify the connection and refresh the tool
             list. Mark as &ldquo;shared&rdquo; to make them visible in every
             designer&apos;s Tools palette.
@@ -76,7 +101,7 @@ export default function AdminMcpServersPage() {
               <TableHead>Status</TableHead>
               <TableHead>Last tested</TableHead>
               <TableHead className="w-28">Shared</TableHead>
-              <TableHead className="w-48">Actions</TableHead>
+              <TableHead className="w-72">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -91,6 +116,11 @@ export default function AdminMcpServersPage() {
                   : status === "error"
                     ? "destructive"
                     : "outline";
+              const isOauth = server.authType === "oauth";
+              const serverAny = server as unknown as {
+                hasOauthConfig?: boolean;
+                hasOauthToken?: boolean;
+              };
               return (
                 <TableRow key={server.id}>
                   <TableCell className="font-medium">{server.name}</TableCell>
@@ -128,7 +158,15 @@ export default function AdminMcpServersPage() {
                       isShared={server.isShared}
                     />
                   </TableCell>
-                  <TableCell className="flex items-center gap-2">
+                  <TableCell className="flex flex-wrap items-center gap-2">
+                    {isOauth && (
+                      <McpAuthorizeButton
+                        serverId={server.id}
+                        serverName={server.name}
+                        hasOauthConfig={Boolean(serverAny.hasOauthConfig)}
+                        hasOauthToken={Boolean(serverAny.hasOauthToken)}
+                      />
+                    )}
                     <McpTestButton
                       serverId={server.id}
                       serverName={server.name}

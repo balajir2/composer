@@ -24,8 +24,12 @@ const ADMIN_NAV: NavItem[] = [
 export function RoleNav({ role }: { role: "designer" | "runs" | "admin" }) {
   const pathname = usePathname();
   const items = role === "designer" ? DESIGNER_NAV : role === "admin" ? ADMIN_NAV : RUNS_NAV;
+  // Styling matches the Bounteous design system sidebar — white-on-purple,
+  // pink right-border + pink-alpha background for the active item.  The
+  // AppShell wraps this in a gradient aside so these colors sit on top of
+  // the brand gradient.
   return (
-    <nav className="flex flex-col gap-1">
+    <nav className="flex flex-col">
       {items.map((it) => {
         const active = pathname === it.href || pathname.startsWith(it.href + "/");
         return (
@@ -33,10 +37,10 @@ export function RoleNav({ role }: { role: "designer" | "runs" | "admin" }) {
             key={it.href}
             href={it.href}
             className={
-              "rounded-md px-3 py-2 text-sm transition-colors " +
+              "flex items-center border-r-2 px-4 py-2 text-[0.82rem] font-medium transition-colors " +
               (active
-                ? "bg-primary text-primary-foreground"
-                : "text-muted-foreground hover:bg-muted hover:text-foreground")
+                ? "border-[var(--brand-pink)] bg-[var(--brand-pink-alpha)] font-bold text-white"
+                : "border-transparent text-white/65 hover:bg-white/8 hover:text-white")
             }
           >
             {it.label}

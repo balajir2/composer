@@ -16,13 +16,13 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Textarea } from "@/components/ui/textarea";
-import { createMcpServer } from "@/lib/api/mcp-servers";
+import { createMcpServer, type OauthConfigInput } from "@/lib/api/mcp-servers";
 
 const AUTH_TYPES = [
   { value: "none", label: "None (public)" },
   { value: "api-key", label: "API key (custom header)" },
   { value: "bearer", label: "Bearer token" },
-  { value: "oauth", label: "OAuth (configure after)" },
+  { value: "oauth", label: "OAuth 2.1 (PKCE)" },
 ];
 
 export function CreateMcpDialog() {
@@ -35,11 +35,46 @@ export function CreateMcpDialog() {
   const [headerName, setHeaderName] = useState("");
   const [isShared, setIsShared] = useState(false);
 
+  // OAuth fields
+  const [authorizeUrl, setAuthorizeUrl] = useState("");
+  const [tokenUrl, setTokenUrl] = useState("");
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [scopesRaw, setScopesRaw] = useState("");
+
   const qc = useQueryClient();
 
+  function reset() {
+    setName("");
+    setUrl("");
+    setDescription("");
+    setAuthType("none");
+    setAccessToken("");
+    setHeaderName("");
+    setIsShared(false);
+    setAuthorizeUrl("");
+    setTokenUrl("");
+    setClientId("");
+    setClientSecret("");
+    setScopesRaw("");
+  }
+
   const mutation = useMutation({
-    mutationFn: () =>
-      createMcpServer({
+    mutationFn: () => {
+      const oauthConfig: OauthConfigInput | undefined =
+        authType === "oauth"
+          ? {
+              authorizeUrl,
+              tokenUrl,
+              clientId,
+              clientSecret: clientSecret || null,
+              scopes: scopesRaw
+                .split(/[\s,]+/)
+                .map((s) => s.trim())
+                .filter(Boolean),
+            }
+          : undefined;
+      return createMcpServer({
         name,
         url,
         description: description || null,
@@ -49,29 +84,36 @@ export function CreateMcpDialog() {
         headerName: headerName || null,
         isShared,
         headers: null,
-      }),
-    onSuccess: () => {
+        ...(oauthConfig ? { oauthConfig } : {}),
+      });
+    },
+    onSuccess: (server) => {
       qc.invalidateQueries({ queryKey: ["admin-mcp-servers"] });
       setOpen(false);
-      setName("");
-      setUrl("");
-      setDescription("");
-      setAuthType("none");
-      setAccessToken("");
-      setHeaderName("");
-      setIsShared(false);
-      toast.success("MCP server added.");
+      reset();
+      if (authType === "oauth") {
+        toast.success(
+          `${server.name} added. Click "Authorize" on its row to complete the OAuth handshake.`,
+          { duration: 8000 }
+        );
+      } else {
+        toast.success("MCP server added.");
+      }
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Failed."),
   });
 
   const needsToken = authType === "api-key" || authType === "bearer";
   const needsHeaderName = authType === "api-key";
+  const isOauth = authType === "oauth";
+  const oauthComplete =
+    !isOauth ||
+    (authorizeUrl.trim() !== "" && tokenUrl.trim() !== "" && clientId.trim() !== "");
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
       <Button onClick={() => setOpen(true)}>Add MCP server</Button>
-      <DialogContent className="max-w-lg">
+      <DialogContent className="max-h-[90vh] max-w-lg overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Add an MCP server</DialogTitle>
         </DialogHeader>
@@ -150,11 +192,74 @@ export function CreateMcpDialog() {
               />
             </div>
           )}
-          {authType === "oauth" && (
-            <p className="text-xs text-muted-foreground">
-              Create the server first, then complete the OAuth handshake from the
-              server&apos;s row (after save).
-            </p>
+          {isOauth && (
+            <div className="space-y-3 rounded-md border bg-muted/30 p-3">
+              <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                OAuth 2.1 config
+              </p>
+              <p className="text-xs text-muted-foreground">
+                Provided by the MCP server&apos;s vendor. You can also edit
+                these later from the server&apos;s row.
+              </p>
+              <div className="space-y-2">
+                <Label htmlFor="new-mcp-authorize-url">Authorize URL</Label>
+                <Input
+                  id="new-mcp-authorize-url"
+                  required={isOauth}
+                  type="url"
+                  value={authorizeUrl}
+                  onChange={(e) => setAuthorizeUrl(e.target.value)}
+                  placeholder="https://provider.example.com/oauth/authorize"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="new-mcp-token-url">Token URL</Label>
+                <Input
+                  id="new-mcp-token-url"
+                  required={isOauth}
+                  type="url"
+                  value={tokenUrl}
+                  onChange={(e) => setTokenUrl(e.target.value)}
+                  placeholder="https://provider.example.com/oauth/token"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="new-mcp-client-id">Client ID</Label>
+                <Input
+                  id="new-mcp-client-id"
+                  required={isOauth}
+                  value={clientId}
+                  onChange={(e) => setClientId(e.target.value)}
+                  placeholder="abc123…"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="new-mcp-client-secret">
+                  Client secret (optional for public clients)
+                </Label>
+                <Input
+                  id="new-mcp-client-secret"
+                  type="password"
+                  autoComplete="off"
+                  value={clientSecret}
+                  onChange={(e) => setClientSecret(e.target.value)}
+                  placeholder="paste secret…"
+                />
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="new-mcp-scopes">Scopes</Label>
+                <Input
+                  id="new-mcp-scopes"
+                  value={scopesRaw}
+                  onChange={(e) => setScopesRaw(e.target.value)}
+                  placeholder="read_all write_spot (space or comma separated)"
+                />
+              </div>
+              <p className="text-xs text-muted-foreground">
+                After saving, click <strong>Authorize</strong> on the server row
+                to sign in and capture an access token.
+              </p>
+            </div>
           )}
           <div className="flex items-center gap-2">
             <input
@@ -177,7 +282,10 @@ export function CreateMcpDialog() {
             >
               Cancel
             </Button>
-            <Button type="submit" disabled={mutation.isPending || !name || !url}>
+            <Button
+              type="submit"
+              disabled={mutation.isPending || !name || !url || !oauthComplete}
+            >
               {mutation.isPending ? "Adding…" : "Add"}
             </Button>
           </DialogFooter>
