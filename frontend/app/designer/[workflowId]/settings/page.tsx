@@ -36,6 +36,7 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
   const [category, setCategory] = useState("");
   const [tagsInput, setTagsInput] = useState("");
   const [isPublic, setIsPublic] = useState(false);
+  const [isTemplate, setIsTemplate] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
 
   // Seed form fields when workflow data loads.
@@ -46,6 +47,7 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
       setCategory(workflow.category ?? "");
       setTagsInput((workflow.tags ?? []).join(", "));
       setIsPublic(workflow.isPublic);
+      setIsTemplate(workflow.isTemplate);
     }
   }, [workflow]);
 
@@ -67,7 +69,7 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
         nodes: workflow.nodes as Parameters<typeof updateWorkflow>[1]["nodes"],
         edges: workflow.edges as Parameters<typeof updateWorkflow>[1]["edges"],
         version: workflow.version ?? null,
-        isTemplate: workflow.isTemplate,
+        isTemplate,
         isPublic,
         isProduction: workflow.isProduction ?? false,
         externalSlug: workflow.externalSlug ?? null,
@@ -75,6 +77,9 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ["workflow", workflowId] });
+      // Templates list pulled by /designer/templates is keyed separately,
+      // so make sure flipping the toggle takes effect there too.
+      void queryClient.invalidateQueries({ queryKey: ["designer-templates"] });
       toast.success("Settings saved.");
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Failed to save settings."),
@@ -215,6 +220,30 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
             onClick={() => setIsPublic((prev) => !prev)}
           >
             {isPublic ? "Public" : "Private"}
+          </Button>
+        </div>
+
+        {/* isTemplate toggle — surfaces this workflow on the Templates
+            gallery page where any designer can clone it as a starting
+            point.  Independent of the Public toggle: a workflow can be
+            a private template (visible to admins only) or a public
+            non-template (read-only reference).  Most templates ship as
+            both isPublic + isTemplate. */}
+        <div className="flex items-center justify-between rounded-lg border px-4 py-3">
+          <div>
+            <p className="text-sm font-medium">Mark as template</p>
+            <p className="text-xs text-muted-foreground">
+              Show this workflow on the Templates page so other designers
+              can clone it as a reference implementation.
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant={isTemplate ? "default" : "outline"}
+            size="sm"
+            onClick={() => setIsTemplate((prev) => !prev)}
+          >
+            {isTemplate ? "Template" : "Not a template"}
           </Button>
         </div>
 

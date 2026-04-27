@@ -1,14 +1,16 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
 import { listWorkflows } from "@/lib/api/workflows";
 import { DesignerWorkflowCard } from "@/components/composer/designer-workflow-card";
 import { NewWorkflowDialog } from "@/components/composer/new-workflow-dialog";
 import { EmptyState } from "@/components/composer/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Button } from "@/components/ui/button";
-import { Plus } from "lucide-react";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { BookOpen, Plus } from "lucide-react";
+import { cn } from "@/lib/utils";
 
 export default function DesignerHome() {
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -22,10 +24,19 @@ export default function DesignerHome() {
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
         <h2 className="text-2xl font-semibold">My workflows</h2>
-        <Button onClick={() => setDialogOpen(true)}>
-          <Plus className="mr-1" />
-          New workflow
-        </Button>
+        <div className="flex items-center gap-2">
+          <Link
+            href="/designer/templates"
+            className={cn(buttonVariants({ variant: "outline" }))}
+          >
+            <BookOpen className="mr-1" />
+            Templates
+          </Link>
+          <Button onClick={() => setDialogOpen(true)}>
+            <Plus className="mr-1" />
+            New workflow
+          </Button>
+        </div>
       </div>
 
       {isLoading ? (

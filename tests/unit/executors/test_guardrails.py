@@ -73,6 +73,11 @@ async def test_single_check_no_violation(monkeypatch: pytest.MonkeyPatch) -> Non
     delta = await GuardrailsExecutor(_node(piiEnabled=True)).arun(state)
     assert delta["variables"]["_guardrails_result"]["passed"] is True
     assert delta["variables"]["_guardrails_result"]["checks_run"] == ["pii"]
+    # Pass-through guarantee: when checks pass, the executor must NOT
+    # touch lastOutput — the upstream node's content flows through to
+    # whatever comes next.  Without this, every guardrail in a chain
+    # would clobber the actual content with its summary message.
+    assert "lastOutput" not in delta["variables"]
     assert delta["variables"]["_guardrails_result"]["violations"] == []
 
 
@@ -87,7 +92,11 @@ async def test_single_check_violation_warn(monkeypatch: pytest.MonkeyPatch) -> N
     result = delta["variables"]["_guardrails_result"]
     assert result["passed"] is False
     assert result["violations"] == ["PII detected"]
-    assert "PII" in delta["variables"]["lastOutput"]
+    # Pass-through: lastOutput must NOT be overwritten — the upstream
+    # node's content keeps flowing.  Branching on violations is via
+    # `{{<node>.violations}}` (auto-aliased by events_wrapper) or
+    # `{{_guardrails_result.violations}}`.
+    assert "lastOutput" not in delta["variables"]
 
 
 async def test_violation_block_raises(monkeypatch: pytest.MonkeyPatch) -> None:

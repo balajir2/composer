@@ -6,6 +6,42 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 10 — Polish: templates + canvas branching + eval ergonomics (2026-04-28)
+
+#### Added
+- **Template workflows** seeded via `scripts/seed_templates.py`. Nine reference workflows (`isTemplate=true` + `isPublic=true` + `userId=null` so they appear on every user's gallery and clone into private working copies on use):
+  - **01 Simple Agent** — Start → Agent → End (port of OAB #01).
+  - **02 Web Research Agent** — Tavily-tooled agent (port of OAB #02; switched from inline MCP config to Composer's built-in `tavily.tavily_search`).
+  - **03 Scrape and Summarise** — Firecrawl + chained agents (port of OAB #03; dropped Arcade Google-Doc step since Arcade requires per-user OAuth).
+  - **04 Guardrails + Branching** — net-new; demonstrates guardrails pass-through + `{{<node>.passed}}` Mustache branching.
+  - **05 Multi-Company Stock Analysis** — three Yahoo Finance HTTP fetches + comparative agent.
+  - **06 Yahoo Finance Stock Report** — HTTP → Extract (JSON schema) → narrative agent.
+  - **07 Amazon Product Research** — Firecrawl scrape → Extract → recommendation agent.
+  - **08 Human-in-the-Loop Approval** — agent draft → user-approval gate → branched approve/reject paths.
+  - **09 Zillow Property Finder** — Firecrawl + Extract + data-transform `filter` + recommendation.
+  Seed script is idempotent (upsert by `externalSlug`); re-run after edits.
+- **Templates gallery** at `/designer/templates` — lists every `isTemplate=true` workflow with category / difficulty / estimated-time badges. **"Use template"** button calls `instantiateTemplate(id)` which clones to the user's list (`isTemplate=false`, `isPublic=false`) and routes straight into the canvas. **"Preview the canvas (read-only)"** opens the original template untouched.
+- **"Mark as template"** toggle on the workflow Settings page (independent of `isPublic`); flipping it invalidates the templates gallery cache so changes appear immediately.
+- **"Templates" link** in the Designer home header next to "New workflow".
+- **Branching node UI** — `if-else`, `while`, `user-approval` now render with **two labelled source handles** (`true`/`false`, `body`/`exit`, `approved`/`rejected`) coloured green/red/blue. The connection's `sourceHandle` flows through `fromReactFlow` as the `branch` field that backend validation requires. `toReactFlow` seeds `sourceHandle` from `branch` for back-compat with manually-edited JSON.
+
+#### Fixed
+- **`{{...}}` Mustache references in eval expressions.** simpleeval parses `{...}` as a set literal and rejects it. Designers reach for `{{check_guard.passed}}` because that's the syntax everywhere else in the canvas; the new `_expand_mustache_to_subscript` rewrites `{{a.b.c}}` → `a["b"]["c"]` before parse, and top-level variables are spread into the eval scope so `check_guard["passed"]` works directly. Both syntaxes accepted in if-else, while, transform, and data-transform conditions.
+- **Guardrails pass-through.** Executor no longer overwrites `lastOutput` with its summary message — the upstream node's content keeps flowing. Verdict is exposed via `{{<node-alias>.passed}}` / `{{<node-alias>.violations}}` / `{{<node-alias>.message}}` for branching.
+- **Guardrails panel rebuild.** Old panel saved keys (`classifierType`, `onFail`) the executor never read, so all four checks defaulted to disabled — every existing guardrails node was a no-op. New panel exposes the four `*Enabled` toggles, the `actionOnViolation` dropdown, an optional model override, and a doc block that **shows the live alias for THIS node** (e.g. `{{check_guard.passed}}` literally) with click-to-copy code chips so the placeholder-syntax copy-paste trap is closed.
+- **`if-else` 422 on connect.** Root cause: the canvas had a single anonymous source handle on every node, so dragging an edge from an if-else left `sourceHandle = undefined` and `branch = null`, failing backend validation. Fixed by `BranchingNode` (above).
+
+#### Notes
+- **No true while-loop demo template** in this batch. Counter-based loops with accumulators need either a node-output-to-named-state primitive or a JS-style mutable transform; today's `set-state` (substitute-only) + `transform` (evaluate-to-`lastOutput`) split makes a 3-iteration loop ~10 nodes. To be discussed.
+- **Templates default to Anthropic Haiku 4.5** — cheap and fast for demos. Designers swap models per node after cloning.
+- **Templates with external dependencies** (Firecrawl, Tavily) document the required env vars in their description. Yahoo Finance uses the public `query1.finance.yahoo.com` chart endpoint — no key required.
+
+#### Verified
+- 655/655 unit tests green (Phase-10-polish baseline 648 + 7 new eval/Mustache tests).
+- Pyright 0 errors, ruff + format clean, frontend tsc clean.
+- End-to-end: published-workflow external invoke (`POST /api/run/my-test-workflow`) returns clean string output.
+- Seed script: 9 templates created, idempotent re-run upserts cleanly.
+
 ### Phase 10 — Polish (2026-04-27)
 
 #### Added

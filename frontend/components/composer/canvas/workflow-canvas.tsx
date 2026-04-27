@@ -131,6 +131,78 @@ function InnerNode({ id, data, type }: NodeProps<NodeData>) {
   );
 }
 
+/**
+ * Branching node for conditional source types — `if-else`, `while`,
+ * `user-approval`.  Two labelled source handles instead of one anonymous
+ * handle, so each outgoing edge carries a `sourceHandle` we can save as
+ * the backend's required `branch` field.  Without this, the canvas
+ * would let users draw edges that fail server-side validation with
+ * "leaves if-else node but has no branch label".
+ */
+type BranchSpec = { id: string; label: string; color: string };
+
+const BRANCH_SPECS: Record<string, BranchSpec[]> = {
+  // Backend's _branch_mapping in src/engine/graph_builder.py demands
+  // these exact strings.  Don't rename without updating both sides.
+  "if-else": [
+    { id: "true", label: "true", color: "rgb(16,185,129)" },
+    { id: "false", label: "false", color: "rgb(244,63,94)" },
+  ],
+  while: [
+    { id: "body", label: "body", color: "rgb(59,130,246)" },
+    { id: "exit", label: "exit", color: "rgb(244,63,94)" },
+  ],
+  "user-approval": [
+    { id: "approved", label: "approved", color: "rgb(16,185,129)" },
+    { id: "rejected", label: "rejected", color: "rgb(244,63,94)" },
+  ],
+};
+
+function BranchingNode({ id, data, type }: NodeProps<NodeData>) {
+  const branches = BRANCH_SPECS[type ?? ""] ?? [];
+  return (
+    <>
+      <Handle type="target" position={Position.Left} style={HANDLE_STYLE} />
+      <NodeChip type={type ?? "node"} id={id} data={data} />
+      {branches.map((b, idx) => {
+        // Distribute handles vertically along the right edge — for two
+        // branches that's 33% and 67%, leaving room for the label tag.
+        const topPercent = ((idx + 1) * 100) / (branches.length + 1);
+        return (
+          <div
+            key={b.id}
+            style={{ position: "absolute", right: -4, top: `${topPercent}%` }}
+          >
+            <Handle
+              id={b.id}
+              type="source"
+              position={Position.Right}
+              style={{
+                ...HANDLE_STYLE,
+                background: b.color,
+                position: "relative",
+                top: 0,
+                right: 0,
+              }}
+            />
+            <span
+              className="pointer-events-none absolute select-none rounded-sm bg-white/95 px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-foreground shadow-sm"
+              style={{
+                left: 18,
+                top: -2,
+                color: b.color,
+                border: `1px solid ${b.color}`,
+              }}
+            >
+              {b.label}
+            </span>
+          </div>
+        );
+      })}
+    </>
+  );
+}
+
 export const COMPOSER_NODE_TYPES: NodeTypes = {
   start: StartNode,
   end: EndNode,
@@ -141,9 +213,9 @@ export const COMPOSER_NODE_TYPES: NodeTypes = {
   transform: InnerNode,
   "data-transform": InnerNode,
   extract: InnerNode,
-  "if-else": InnerNode,
-  while: InnerNode,
-  "user-approval": InnerNode,
+  "if-else": BranchingNode,
+  while: BranchingNode,
+  "user-approval": BranchingNode,
   "join-chunks": InnerNode,
   note: InnerNode,
   guardrails: InnerNode,
@@ -238,16 +310,34 @@ export function WorkflowCanvas({
 
   // onConnect — ReactFlow calls this when the user drags a connection
   // between two handles.  addEdge appends a new RFEdge with a unique id.
+  // When the source is a branching node (if-else / while / user-approval)
+  // the sourceHandle carries the branch label; we mirror it onto the
+  // edge's `label` so the canvas reads naturally and `fromReactFlow`
+  // can serialize `branch` for the backend without extra plumbing.
   const handleConnect = useCallback(
     (params: Connection) => {
+      const sourceNode = nodes.find((n) => n.id === params.source);
+      const isBranching =
+        sourceNode &&
+        (sourceNode.type === "if-else" ||
+          sourceNode.type === "while" ||
+          sourceNode.type === "user-approval");
+      const branchLabel =
+        isBranching && typeof params.sourceHandle === "string"
+          ? params.sourceHandle
+          : undefined;
       setEdges((prev) =>
         addEdge(
-          { ...params, id: `edge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}` },
+          {
+            ...params,
+            id: `edge-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+            label: branchLabel,
+          },
           prev
         )
       );
     },
-    [setEdges]
+    [nodes, setEdges]
   );
 
   // Selected node id — drives the right-panel.

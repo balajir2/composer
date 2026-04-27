@@ -181,11 +181,17 @@ class GuardrailsExecutor:
             "violations": violations,
             "message": message,
         }
+        # IMPORTANT: don't overwrite `lastOutput`.  Guardrails sits as a
+        # transparent filter — the upstream node's content should keep
+        # flowing to whatever's downstream, regardless of pass/warn
+        # outcome.  Branching on the guardrail's verdict is via
+        # `{{<node_id>.passed}}` / `{{<node_id>.violations}}`, which the
+        # events_wrapper auto-aliases from `node_results[node.id].output`.
+        # `_guardrails_result` is kept under a fixed name for prompts
+        # that prefer a stable global handle over the node-id alias.
+        variables_delta: dict[str, Any] = {"_guardrails_result": result}
         return {
-            "variables": {
-                "_guardrails_result": result,
-                "lastOutput": message,
-            },
+            "variables": variables_delta,
             "current_node_id": self.node.id,
             "node_results": {
                 self.node.id: {
