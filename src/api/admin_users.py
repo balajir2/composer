@@ -66,7 +66,8 @@ async def update_user_role(
     if user is None:
         raise HTTPException(404, f"user {user_id!r} not found")
     updated = await db.user.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": user_id}, data={"role": payload.role}
+        where={"id": user_id},
+        data={"role": payload.role},  # pyright: ignore[reportArgumentType]
     )
     return _summary_from_row(updated)
 

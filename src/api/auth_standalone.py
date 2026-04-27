@@ -140,8 +140,14 @@ async def login(
         config=per_minute_config(get_settings().rate_limit_login_per_minute),
     )
     user = await db.user.find_unique(where={"email": str(payload.email)})  # pyright: ignore[reportAttributeAccessIssue]
-    # Uniform 401: don't distinguish unknown-email from wrong-password
-    if user is None or not verify_password(payload.password, user.passwordHash):
+    # Uniform 401: don't distinguish unknown-email from wrong-password.
+    # SSO-only accounts have a null passwordHash and must reject password
+    # logins with the same generic message as bad creds.
+    if (
+        user is None
+        or user.passwordHash is None
+        or not verify_password(payload.password, user.passwordHash)
+    ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid email or password"
         )

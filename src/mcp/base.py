@@ -218,7 +218,14 @@ class _McpBoundTool(BaseTool):
     async def _arun(self, **kwargs: Any) -> str:
         client: MCPClient = object.__getattribute__(self, "_client")  # pyright: ignore[reportAttributeAccessIssue]
         tool_name: str = object.__getattribute__(self, "_tool_name")  # pyright: ignore[reportAttributeAccessIssue]
-        result = await client.tools_call(tool_name, kwargs)
+        # Strip keys whose value is None.  Pydantic auto-fills optional
+        # fields with `None` after validation, but many MCP servers
+        # (firecrawl, highspot) reject null on optional params with
+        # "expected string, received null".  The LLM didn't set these,
+        # so omitting them matches its intent and the server's expected
+        # request shape.
+        cleaned = {k: v for k, v in kwargs.items() if v is not None}
+        result = await client.tools_call(tool_name, cleaned)
         return _render_content_blocks(result.get("content", []))
 
 
@@ -234,10 +241,18 @@ def _json_schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseMode
     """
     from pydantic import Field as _Field
 
+    # `protected_namespaces=()` silences Pydantic v2's warning when an MCP
+    # tool declares a field that collides with a BaseModel attribute —
+    # firecrawl_extract / firecrawl_agent both have a `schema` field that
+    # shadows BaseModel.schema().  The warning was spamming the uvicorn
+    # log on every tools/list fetch.
+    args_config = ConfigDict(protected_namespaces=())
+
     if schema.get("type") != "object":
         # Catch-all: single-field model that accepts anything
         return create_model(
             f"{name}_Args",
+            __config__=args_config,
             value=(Any, ...),  # pyright: ignore[reportArgumentType]
         )
     props = schema.get("properties", {})
@@ -257,8 +272,13 @@ def _json_schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseMode
             fields[prop_name] = (py_type, field_default)
     if not fields:
         # No properties defined — accept any kwargs
-        return create_model(f"{name}_Args", __config__=ConfigDict(extra="allow"))
-    return create_model(f"{name}_Args", **fields)  # pyright: ignore[reportArgumentType]
+        return create_model(
+            f"{name}_Args",
+            __config__=ConfigDict(extra="allow", protected_namespaces=()),
+        )
+    return create_model(  # pyright: ignore[reportArgumentType]
+        f"{name}_Args", __config__=args_config, **fields
+    )
 
 
 def _json_type_to_python(prop_schema: dict[str, Any]) -> Any:

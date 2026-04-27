@@ -181,6 +181,67 @@ _PROVIDERS: dict[str, _ProviderSpec] = {
 }
 
 
+_PROBE_CONCURRENCY = 6
+
+
+async def _probe_invocable(provider: str, models: list[LiveModel], key: str) -> list[LiveModel]:
+    """Filter out models the configured key can't actually invoke.
+
+    Provider `/models` endpoints return the catalog — every model the
+    surface knows about — not the subset the calling key is entitled
+    to call:
+
+    - **Google**: still lists `gemini-2.0-flash` after retiring it for
+      new keys; `generateContent` 404s with "no longer available to
+      new users".
+    - **OpenAI**: tier-gates GPT-4 family on some keys and keeps
+      deprecated aliases in the listing for weeks after they stop
+      accepting traffic.
+    - **Anthropic / Groq**: same general pattern; safer to probe than
+      to assume their `/models` is honest.
+
+    We mirror the workflow's actual call shape (delegated to
+    `run_model_verify`) and keep only `ok` results.  Auth failures
+    and network errors are conservatively kept — a broken key would
+    fail every probe the same way and hide the whole catalog, which
+    is worse than showing a model that might 401 later.
+
+    Concurrency is capped so we don't burst rate limits on providers
+    with restrictive RPM (Anthropic and Groq especially).  The
+    upstream 5-minute cache amortises the per-call cost.
+    """
+    from src.api.admin_llm_models_verify import run_model_verify
+
+    semaphore = asyncio.Semaphore(_PROBE_CONCURRENCY)
+
+    async def _probe(model: LiveModel) -> LiveModel | None:
+        async with semaphore:
+            result = await run_model_verify(provider, model.model_id, key)
+        if result.status == "ok":
+            return model
+        if result.status == "unavailable":
+            logger.info(
+                "%s probe rejected %s: %s",
+                provider,
+                model.model_id,
+                result.message,
+            )
+            return None
+        # auth_error / error — key or network problem, not a model
+        # problem.  Keep the model rather than mass-hide the catalog.
+        logger.warning(
+            "%s probe inconclusive for %s (%s) — keeping model: %s",
+            provider,
+            model.model_id,
+            result.status,
+            result.message,
+        )
+        return model
+
+    results = await asyncio.gather(*[_probe(m) for m in models])
+    return [m for m in results if m is not None]
+
+
 async def _fetch_live(provider: str) -> list[LiveModel]:
     """Call the provider's /models endpoint and return a normalized list.
 
@@ -207,6 +268,14 @@ async def _fetch_live(provider: str) -> list[LiveModel]:
         )
     data: dict[str, Any] = resp.json()
     models: list[LiveModel] = spec.parser(data)
+
+    # Catalog ≠ invocable: probe each model with the provider's actual
+    # call shape so the dropdown only shows what the key can use.  We
+    # apply the probe to every supported provider because the gap (in
+    # different forms) exists on all of them.
+    if models:
+        models = await _probe_invocable(provider, models, key)
+
     # Stable, alphabetical so the dropdown isn't a moving target.
     models.sort(key=lambda m: m.model_id.lower())
     return models

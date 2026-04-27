@@ -8,7 +8,7 @@ from langchain_core.messages import AIMessage
 
 from src.engine.state import initial_state
 from src.engine.workflow import AgentNode
-from src.executors.agent import AgentExecutor
+from src.executors.agent import AgentExecutor, unwrap_message_content
 
 
 def _agent_node(
@@ -239,3 +239,40 @@ async def test_agent_runs_for_each_provider(
     delta = await AgentExecutor(node).arun(initial_state("test"))
     assert delta["variables"]["lastOutput"] == expected
     assert captured["model"] == model
+
+
+def test_unwrap_message_content_plain_string() -> None:
+    assert unwrap_message_content("hello") == "hello"
+
+
+def test_unwrap_message_content_text_block_array() -> None:
+    """Anthropic-style content blocks unwrap to clean text."""
+    blocks = [
+        {"type": "text", "text": "First sentence.", "extras": {"signature": "abc"}},
+        {"type": "text", "text": "Second sentence."},
+    ]
+    assert unwrap_message_content(blocks) == "First sentence.\nSecond sentence."
+
+
+def test_unwrap_message_content_skips_non_text_blocks() -> None:
+    """Thinking/tool_use blocks are dropped — only text survives."""
+    blocks = [
+        {"type": "thinking", "thinking": "internal monologue"},
+        {"type": "text", "text": "answer"},
+        {"type": "tool_use", "name": "search", "input": {}},
+    ]
+    assert unwrap_message_content(blocks) == "answer"
+
+
+def test_unwrap_message_content_empty_list_yields_empty_string() -> None:
+    assert unwrap_message_content([]) == ""
+
+
+def test_unwrap_message_content_handles_string_items() -> None:
+    """Some providers return plain strings interleaved with dicts."""
+    blocks = ["hello", {"type": "text", "text": "world"}]
+    assert unwrap_message_content(blocks) == "hello\nworld"
+
+
+def test_unwrap_message_content_none_returns_empty() -> None:
+    assert unwrap_message_content(None) == ""

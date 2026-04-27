@@ -60,7 +60,9 @@ async def upsert_setting(
         row = await db.deploymentsetting.update(  # pyright: ignore[reportAttributeAccessIssue]
             where={"key": key}, data={"value": payload.value}
         )
-    return SettingItem(key=row.key, value=row.value)
+    # update() returns Optional but `existing` was just confirmed non-None,
+    # so the row exists.  Pyright can't track that across the await.
+    return SettingItem(key=row.key, value=row.value)  # pyright: ignore[reportOptionalMemberAccess]
 
 
 __all__ = ["router"]

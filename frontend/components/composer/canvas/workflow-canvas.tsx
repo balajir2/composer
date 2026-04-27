@@ -23,44 +23,110 @@ import { ToolsPalette } from "./tools-palette";
 import { PropertyPanel } from "./property-panel";
 import type { PaletteDragData } from "./tools-palette";
 import type { DesignerExecutionState } from "./designer-execution-panel";
+import { visualFor } from "./node-visuals";
 
 // ---------------------------------------------------------------------------
-// Node variants — all render the same visual box but with different handles.
-// Start: source-only.  End: target-only.  All others: both.
+// Node variants — n8n-inspired chips with an icon tile, name, and type
+// subtitle.  Start: source-only.  End: target-only.  All others: both.
 // ---------------------------------------------------------------------------
 
-function NodeBox({ label }: { label?: string }) {
+const HANDLE_STYLE: React.CSSProperties = {
+  width: 12,
+  height: 12,
+  border: "2px solid white",
+  background: "var(--brand-purple)",
+  boxShadow: "0 1px 3px rgba(46, 24, 105, 0.25)",
+};
+
+type NodeData = {
+  label?: string;
+  nodeName?: string;
+  /** Used by built-in tool drops; surfaced as a small badge on agent
+   *  chips so designers can see at a glance which tool the node is
+   *  pre-configured for. */
+  tools?: string[] | string;
+};
+
+type NodeChipProps = {
+  type: string;
+  /** React Flow's auto-generated id (agent-1, http-2, …) — shown as a
+   *  monospace caption when no user-provided Name is set, mirroring
+   *  what {{agent_1}} resolves to in prompts. */
+  id: string;
+  data: NodeData;
+};
+
+function NodeChip({ type, id, data }: NodeChipProps) {
+  const visual = visualFor(type);
+  const Icon = visual.icon;
+  // Display priority: user-given Name > generic data.label > visual default.
+  const displayName =
+    (typeof data.nodeName === "string" && data.nodeName) ||
+    (typeof data.label === "string" && data.label) ||
+    visual.label;
+  // Subtitle: the type label as long as the user has set a custom Name —
+  // otherwise it'd duplicate the title.
+  const showSubtitle = displayName !== visual.label;
+
   return (
-    <div className="min-w-[160px] rounded-md border bg-card px-3 py-2 shadow-sm">
-      <div className="text-sm font-medium">{label ?? "Node"}</div>
+    <div
+      className="composer-chip group relative flex min-w-[180px] items-center gap-3 rounded-xl border bg-card px-3 py-2.5 shadow-sm transition-all hover:-translate-y-0.5 hover:shadow-md"
+      data-node-type={type}
+    >
+      <span
+        className={`flex size-9 shrink-0 items-center justify-center rounded-lg ${visual.iconWrapClass}`}
+      >
+        <Icon className="size-5" />
+      </span>
+      <div className="min-w-0 flex-1">
+        <div className={`truncate text-sm font-semibold leading-tight ${visual.accent}`}>
+          {displayName}
+        </div>
+        {showSubtitle && (
+          <div className="truncate text-[10px] uppercase tracking-wide text-muted-foreground">
+            {visual.label}
+          </div>
+        )}
+        <div className="mt-0.5 truncate font-mono text-[9px] text-muted-foreground/70">
+          {id}
+        </div>
+      </div>
     </div>
   );
 }
 
-function StartNode({ data }: NodeProps<{ label?: string }>) {
+function StartNode({ id, data, type }: NodeProps<NodeData>) {
   return (
     <>
-      <NodeBox label={data.label ?? "Start"} />
-      <Handle type="source" position={Position.Right} />
+      <NodeChip type={type ?? "start"} id={id} data={data} />
+      <Handle
+        type="source"
+        position={Position.Right}
+        style={{ ...HANDLE_STYLE, background: "rgb(16,185,129)" }}
+      />
     </>
   );
 }
 
-function EndNode({ data }: NodeProps<{ label?: string }>) {
+function EndNode({ id, data, type }: NodeProps<NodeData>) {
   return (
     <>
-      <Handle type="target" position={Position.Left} />
-      <NodeBox label={data.label ?? "End"} />
+      <Handle
+        type="target"
+        position={Position.Left}
+        style={{ ...HANDLE_STYLE, background: "rgb(244,63,94)" }}
+      />
+      <NodeChip type={type ?? "end"} id={id} data={data} />
     </>
   );
 }
 
-function InnerNode({ data }: NodeProps<{ label?: string }>) {
+function InnerNode({ id, data, type }: NodeProps<NodeData>) {
   return (
     <>
-      <Handle type="target" position={Position.Left} />
-      <NodeBox label={data.label} />
-      <Handle type="source" position={Position.Right} />
+      <Handle type="target" position={Position.Left} style={HANDLE_STYLE} />
+      <NodeChip type={type ?? "node"} id={id} data={data} />
+      <Handle type="source" position={Position.Right} style={HANDLE_STYLE} />
     </>
   );
 }
@@ -409,8 +475,8 @@ export function WorkflowCanvas({
           fitView
           className="h-full w-full"
         >
-          <Background />
-          <Controls />
+          <Background gap={18} size={1.2} color="#d7d6de" />
+          <Controls className="!shadow-md" />
         </ReactFlow>
 
         {/* Right-click context menu */}

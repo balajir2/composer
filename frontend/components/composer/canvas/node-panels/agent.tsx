@@ -125,6 +125,29 @@ export default function AgentPanel({
       ? `${provider}/${storedModel}`
       : "";
 
+  // Stored model isn't in the enabled-models list anymore — usually because
+  // an admin disabled it (e.g. Verify auto-disabled gemini-2.0-flash after
+  // Google retired it for new keys).  Without this surfacing, the native
+  // <select> silently shows its first option, which lies to the designer:
+  // the canvas displays "Gemini 2.5 Flash" but the saved model on the node
+  // is still the dead one, and the next run 404s.  Inject a synthetic
+  // option labelled "(unavailable)" so the dropdown shows the truth, plus
+  // a warning underneath telling the designer to pick a replacement.
+  const storedNotInList =
+    !modelsLoading &&
+    Boolean(normalizedModel) &&
+    modelOptions.length > 0 &&
+    !modelOptions.some((o) => o.value === normalizedModel);
+  const effectiveOptions = storedNotInList
+    ? [
+        {
+          value: normalizedModel,
+          label: `${normalizedModel.split("/").pop()} (unavailable — pick a replacement)`,
+        },
+        ...modelOptions,
+      ]
+    : modelOptions;
+
   // The backend reads `data.instructions` only.  Fall back to the legacy
   // `systemPrompt` / `prompt` keys so workflows saved by older builds still
   // surface their content in the single field; the next Save rewrites them
@@ -213,13 +236,22 @@ export default function AgentPanel({
               Admin → LLM models.
             </p>
           ) : (
-            <NativeSelect
-              id="agent-model"
-              value={normalizedModel}
-              onValueChange={(v) => onChange({ model: v })}
-              options={modelOptions}
-              placeholder="Select model"
-            />
+            <>
+              <NativeSelect
+                id="agent-model"
+                value={normalizedModel}
+                onValueChange={(v) => onChange({ model: v })}
+                options={effectiveOptions}
+                placeholder="Select model"
+              />
+              {storedNotInList && (
+                <p className="text-xs text-destructive">
+                  This model is no longer available — an admin has disabled
+                  it (e.g. the provider retired it). Pick a replacement
+                  before saving, or the next run will fail.
+                </p>
+              )}
+            </>
           )
         ) : (
           <p className="text-xs text-muted-foreground">Select a provider first.</p>

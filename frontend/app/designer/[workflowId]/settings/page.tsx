@@ -6,7 +6,7 @@ import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { getWorkflow, updateWorkflow } from "@/lib/api/workflows";
 import { PublishDialog } from "@/components/composer/publish-dialog";
-import { Badge } from "@/components/ui/badge";
+import { PublishedEndpoint } from "@/components/composer/published-endpoint";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -227,23 +227,22 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
       <div className="space-y-3 border-t pt-6">
         <h2 className="text-base font-medium">Publish state</h2>
         {workflow.isProduction ? (
-          <div className="flex items-center justify-between rounded-lg border px-4 py-3">
-            <div className="flex items-center gap-3">
-              <Badge variant="default">Published</Badge>
-              {workflow.externalSlug && (
-                <span className="font-mono text-xs text-muted-foreground">
-                  /api/run/{workflow.externalSlug}
-                </span>
-              )}
+          <div className="space-y-3">
+            <PublishedEndpoint
+              isProduction={Boolean(workflow.isProduction)}
+              externalSlug={workflow.externalSlug}
+              variant="block"
+            />
+            <div className="flex justify-end">
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => unpublishMutation.mutate()}
+                disabled={unpublishMutation.isPending}
+              >
+                {unpublishMutation.isPending ? "Unpublishing…" : "Unpublish"}
+              </Button>
             </div>
-            <Button
-              variant="destructive"
-              size="sm"
-              onClick={() => unpublishMutation.mutate()}
-              disabled={unpublishMutation.isPending}
-            >
-              {unpublishMutation.isPending ? "Unpublishing…" : "Unpublish"}
-            </Button>
           </div>
         ) : (
           <div className="flex items-center justify-between rounded-lg border px-4 py-3">

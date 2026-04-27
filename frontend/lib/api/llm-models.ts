@@ -6,6 +6,13 @@ export interface LlmModelSummary {
   modelId: string;
   label: string | null;
   enabled: boolean;
+  // Per-model verification stamp.  `null` until admin clicks Verify.
+  // "ok" → live probe succeeded; "unavailable" → provider returned 404
+  // or model-not-found.  Auth/network errors don't update these fields
+  // (they're a key problem, not a model problem).
+  verificationStatus: "ok" | "unavailable" | string | null;
+  verificationMessage: string | null;
+  verifiedAt: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -78,4 +85,23 @@ export async function adminUpdateLlmModel(
 /** Admin: delete permanently. */
 export async function adminDeleteLlmModel(id: string) {
   return apiFetch<void>(`/admin/llm-models/${id}`, { method: "DELETE" });
+}
+
+export interface LlmModelVerifyResponse {
+  status: "ok" | "unavailable" | "auth_error" | "error";
+  http_status: number | null;
+  message: string;
+  verified_at: string;
+  // True when status was "unavailable" and we flipped enabled=false on
+  // the row.  UI surfaces this so admins know they don't need a second
+  // click to take the model out of circulation.
+  auto_disabled: boolean;
+  model: LlmModelSummary;
+}
+
+/** Admin: probe the live provider with this model_id and stamp the row. */
+export async function adminVerifyLlmModel(id: string) {
+  return apiFetch<LlmModelVerifyResponse>(`/admin/llm-models/${id}/verify`, {
+    method: "POST",
+  });
 }

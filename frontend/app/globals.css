@@ -169,20 +169,42 @@
 
 .composer-node-running {
   animation: composer-node-pulse 1.2s ease-in-out infinite;
-  border-radius: 0.375rem;
+  border-radius: 0.75rem;
 }
-.composer-node-running > div:first-child {
+.composer-node-running .composer-chip {
   border-color: var(--brand-pink);
 }
 
-.composer-node-completed > div:first-child {
+.composer-node-completed .composer-chip {
   border-color: rgb(16, 185, 129);
   background-color: rgba(16, 185, 129, 0.08);
 }
 
-.composer-node-failed > div:first-child {
+.composer-node-failed .composer-chip {
   border-color: rgb(239, 68, 68);
   background-color: rgba(239, 68, 68, 0.08);
+}
+
+/* React Flow defaults are too thin against our coloured chips — bump
+ * edge stroke + add a soft drop shadow so connections read clearly on
+ * the Bounteous-tinted background. */
+.react-flow__edge-path {
+  stroke: var(--brand-purple);
+  stroke-width: 2;
+}
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke: var(--brand-magenta);
+  stroke-width: 2.5;
+}
+.react-flow__connectionline path {
+  stroke: var(--brand-magenta);
+  stroke-width: 2;
+}
+/* Selected node ring — n8n-style highlight on click. */
+.react-flow__node.selected .composer-chip {
+  outline: 2px solid var(--brand-magenta);
+  outline-offset: 2px;
 }
 
 /* ---------------------------------------------------------------------------

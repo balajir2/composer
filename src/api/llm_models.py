@@ -29,6 +29,13 @@ class LlmModelSummary(BaseModel):
     model_id: str = Field(..., alias="modelId")
     label: str | None
     enabled: bool
+    # Per-model verification stamp (Phase 10 admin polish).  Live /models
+    # listings include models the account can't actually invoke; admin
+    # clicks Verify to probe with a 1-token call (or countTokens for
+    # Google) and we record the outcome here.
+    verification_status: str | None = Field(default=None, alias="verificationStatus")
+    verification_message: str | None = Field(default=None, alias="verificationMessage")
+    verified_at: datetime | None = Field(default=None, alias="verifiedAt")
     created_at: datetime = Field(..., alias="createdAt")
     updated_at: datetime = Field(..., alias="updatedAt")
 
@@ -45,7 +52,7 @@ async def list_enabled_models(
     if provider is not None:
         where["provider"] = provider
     rows = await db.llmmodel.find_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where=where,
+        where=where,  # pyright: ignore[reportArgumentType]
         order=[{"provider": "asc"}, {"modelId": "asc"}],
     )
     return [LlmModelSummary.model_validate(r) for r in rows]

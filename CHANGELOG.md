@@ -6,6 +6,32 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 10 — Polish (2026-04-27)
+
+#### Added
+- **Per-model Verify** in Admin → LLM models. New `LlmModel.verificationStatus` / `verificationMessage` / `verifiedAt` columns + `POST /admin/llm-models/{id}/verify`. Probe mirrors the workflow's actual call (Anthropic `/v1/messages`, OpenAI/Groq `chat/completions`, Google `generateContent`) so the row stamps `ok` / `unavailable` correctly. `unavailable` auto-flips `enabled=false` so the model leaves the Designer dropdown.
+- **Probe-on-fetch in `/llm-models/available`** — applies to every provider, not just Google. Uses the same `run_model_verify` dispatch as the per-row Verify button so the dropdown only lists models the key can actually invoke. Cached for 5 min via the existing TTL.
+- **Runtime pre-flight in agent executor** — refuses fast with `ModelUnavailableError` if the configured model is stamped `unavailable`, instead of letting the request reach the provider and 404 inside a tenacity retry stack.
+- **Published-endpoint indicator** on the designer canvas top bar + settings page (`PublishedEndpoint` component, `inline` and `block` variants). Shows the green badge, the `/api/run/{slug}` path, and a one-click clipboard copy of the full origin-prefixed URL.
+- **Workflow import / export** (JSON + Markdown round-trip via fenced ```json``` block) on the New-Workflow dialog and the per-workflow card menu.
+- **Canvas n8n-style chips** — `node-visuals.ts` maps every node type to icon + accent + label; `workflow-canvas.tsx` rebuilt around `NodeChip`; tools palette uses the same icons; brand-purple edges with magenta hover/selected.
+- **Per-execution result download** as Markdown / PDF (browser print) via `ExecutionResult` component; trace collapsed by default.
+- **Hierarchical sidebar** — top-level groups with sub-items per role audience.
+
+#### Fixed
+- **Agent panel ghost-selection.** When the stored model wasn't in the enabled list (e.g. admin disabled it), the native `<select>` silently showed its first option, so workflows saved a stale `model` value while the UI looked correct. Panel now injects an `(unavailable — pick a replacement)` synthetic option + red warning so designers see the real saved value.
+- **Agent output content-block leak.** `AIMessage.content` returned a list of text blocks (Anthropic extended thinking / vision) which was previously stringified via `str()`, leaking `[{'type': 'text', 'text': ..., 'extras': {...}}]` into the workflow output. New `unwrap_message_content()` extracts only `text` blocks; both `_agentic_loop` and JSON-format `_format_output` use it.
+- **Vector-DB panel** — was missing the **endpoint** (host URL) and **API key** fields entirely, and saved keys (`indexName`, `query`) that the executor never read. Rebuilt to match every field in `VectorDbNodeData` using the canonical `vectorDb*` aliases (endpoint, apiKey, collection, namespace, queryPrompt, topK, scoreThreshold, dimension, embeddingProvider, embeddingModel, outputVariable, textField, metadataFilter, includeMetadata, includeVector). Existing nodes need re-saving.
+- **Gamma-AI panel** — added `format`, `textMode`, `numCards`, `textAmount`, `imageSource`, `language`; `exportAs` dropdown now includes the `web` option the schema accepts.
+- **MCP tool calls with optional fields** — strip `None` values before passing to `tools_call` so providers like Firecrawl don't reject "expected string, received null" on optional params.
+- **Pydantic `schema` field warnings** in dynamically-built MCP arg models (`protected_namespaces=()`).
+- **Pre-existing pyright errors** (19) cleaned up in `admin_deployment_settings.py`, `admin_llm_keys.py`, `admin_users.py`, `auth_standalone.py` (added `passwordHash is None` check for SSO-only accounts), `executions.py`, `mcp_servers.py`, `workflows.py` (six call sites), `migration/writer.py`, `storage/checkpointer.py`.
+
+#### Verified
+- 648/648 unit tests green (Phase 10 baseline 642 + 6 new `unwrap_message_content` tests).
+- Pyright 0 errors, ruff + format clean, frontend tsc clean.
+- End-to-end: published-workflow external invoke (`POST /api/run/my-test-workflow`) returns clean string output.
+
 ### Phase 10 — Composer frontend + enterprise UX (2026-04-23)
 
 #### Added

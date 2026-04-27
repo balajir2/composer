@@ -71,7 +71,7 @@ async def upsert_mcp_oauth_token(db: Prisma, data: dict[str, Any]) -> bool:  # p
     existing = await db.mcpoauthtoken.find_unique(where={"id": data["id"]})  # pyright: ignore[reportAttributeAccessIssue]
     if existing is not None:
         return False
-    await db.mcpoauthtoken.create(data=data)  # pyright: ignore[reportAttributeAccessIssue]
+    await db.mcpoauthtoken.create(data=data)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
     return True
 
 

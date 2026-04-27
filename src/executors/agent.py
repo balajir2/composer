@@ -37,6 +37,79 @@ class MaxIterationsExceededError(RuntimeError):
     """Raised when the agentic loop hits MAX_ITERATIONS without converging."""
 
 
+def unwrap_message_content(content: Any) -> str:
+    """Flatten LangChain `BaseMessage.content` into a clean string.
+
+    Anthropic and other providers return content blocks
+    (`[{type: "text", text: ...}, {type: "thinking", ...}, ...]`) when
+    extended thinking, signed-tool-use, or vision is in play.  The
+    pre-fix code stringified the whole list, leaking
+    ``[{'type': 'text', 'text': '...', 'extras': {...}}]`` into the
+    workflow output and forcing every external caller to parse a
+    Python repr.
+
+    Walk the list, keep only `text`-type blocks, join their text
+    (preserving order), and return.  Non-text blocks (thinking,
+    tool_use, image) are dropped because callers asked for the
+    assistant's textual answer; the metadata isn't part of that.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for block in content:
+            if isinstance(block, str):
+                parts.append(block)
+            elif isinstance(block, dict) and block.get("type") == "text":
+                # Both LangChain (`type` field) and OpenAI vision
+                # (`type: "text"`) wrap text the same way.
+                text_value = block.get("text", "")
+                if isinstance(text_value, str):
+                    parts.append(text_value)
+        return "\n".join(p for p in parts if p)
+    # Anything else (None, dict, etc.) — fall back to str() so we
+    # never propagate a non-string to a downstream node that's
+    # expecting text.
+    return str(content) if content is not None else ""
+
+
+class ModelUnavailableError(RuntimeError):
+    """Raised when an agent's configured model has been marked unavailable.
+
+    Admin clicks Verify in the LLM models console; if the provider 404s
+    (or returns model_not_found), the row is stamped `unavailable` and
+    `enabled=False`.  Workflows that already reference the model by name
+    still try to use it on next run — this guard fails fast with a clear
+    message instead of letting the request reach Google/OpenAI and time
+    out with an opaque stack trace.
+    """
+
+
+async def _ensure_model_available(model_string: str) -> None:
+    """Look up `provider/model_id` in the LlmModel catalog.  If it's
+    been verified as unavailable, raise immediately so the failure
+    surfaces in the run trace as 'pick a different model' rather than
+    a 404 from Google buried in a tenacity stack."""
+    if "/" not in model_string:
+        return
+    provider, _, model_name = model_string.partition("/")
+    db = get_current_db()
+    if db is None:
+        return
+    row = await db.llmmodel.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"provider_modelId": {"provider": provider, "modelId": model_name}}
+    )
+    if row is None:
+        return
+    if row.verificationStatus == "unavailable":
+        raise ModelUnavailableError(
+            f"Model {model_string!r} is marked unavailable: "
+            f"{row.verificationMessage or 'see Admin → LLM models for details'}. "
+            "Update the workflow's agent node to use a different model, or "
+            "re-verify the row in Admin → LLM models if the provider has restored access."
+        )
+
+
 @register_executor("agent")
 class AgentExecutor:
     def __init__(self, node: AgentNode) -> None:
@@ -48,8 +121,15 @@ class AgentExecutor:
 
         messages = self._build_messages(instructions, state)
 
+        model_string = self.node.data.model or DEFAULT_MODEL
+        # Pre-flight: refuse fast if the model has been verified as
+        # unavailable (e.g. Google retired gemini-2.0-flash for new
+        # keys).  Without this, the request reaches the provider and
+        # surfaces as a 404 buried in tenacity retries.
+        await _ensure_model_available(model_string)
+
         chat_model = _providers.build_chat_model(
-            self.node.data.model or DEFAULT_MODEL,
+            model_string,
             langsmith_config=get_current_langsmith(),
         )
 
@@ -117,8 +197,15 @@ class AgentExecutor:
             tool_calls = getattr(response, "tool_calls", [])
 
             if not tool_calls:
-                content = response.content if hasattr(response, "content") else str(response)
-                return content if isinstance(content, str) else str(content)
+                # Extract clean text — handles both plain strings and
+                # provider content-block arrays (Anthropic extended
+                # thinking, vision, etc.).  Without this the workflow
+                # output would contain the Python repr of a list of
+                # dicts, which downstream nodes and external callers
+                # would have to parse.
+                if hasattr(response, "content"):
+                    return unwrap_message_content(response.content)
+                return str(response)
 
             # Execute all tool calls in parallel, append results as ToolMessages.
             tool_results = await asyncio.gather(
@@ -178,15 +265,15 @@ class AgentExecutor:
             )
             # structured_invoke may return a raw AIMessage when the provider's
             # with_structured_output chain yields one instead of a dict/str.
-            # Unwrap and json.loads so callers always get a dict.
+            # Flatten content blocks first (Anthropic extended thinking can
+            # land here too), then attempt json.loads so callers always get
+            # a dict / clean string.
             if isinstance(result, AIMessage):
-                content = result.content
-                if isinstance(content, str):
-                    try:
-                        return json.loads(content)
-                    except (json.JSONDecodeError, ValueError):
-                        return content
-                return content
+                text = unwrap_message_content(result.content)
+                try:
+                    return json.loads(text)
+                except (json.JSONDecodeError, ValueError):
+                    return text
             return result
         return final_text
 

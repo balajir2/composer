@@ -136,9 +136,9 @@ async def list_executions(
     if status_filter is not None:
         where["status"] = status_filter
 
-    total = await db.workflowexecution.count(where=where)  # pyright: ignore[reportAttributeAccessIssue]
+    total = await db.workflowexecution.count(where=where)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
     rows = await db.workflowexecution.find_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where=where,
+        where=where,  # pyright: ignore[reportArgumentType]
         take=limit,
         skip=offset,
         order={"startedAt": "desc"},
@@ -217,14 +217,15 @@ async def resume_execution(
         )
 
     # Audit trail
+    approval_data: dict[str, Any] = {
+        "executionId": execution_id,
+        "nodeId": pending_node_id,
+        "approverUserId": user_id,
+        "decision": payload.decision.value,
+        "note": payload.note,
+    }
     await db.approval.create(  # pyright: ignore[reportAttributeAccessIssue]
-        data={
-            "executionId": execution_id,
-            "nodeId": pending_node_id,
-            "approverUserId": user_id,
-            "decision": payload.decision.value,
-            "note": payload.note,
-        }
+        data=approval_data,  # pyright: ignore[reportArgumentType]
     )
 
     # Flip status to 'running' BEFORE scheduling the BackgroundTask, so polling

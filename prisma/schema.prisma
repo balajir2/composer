@@ -247,6 +247,13 @@ model LlmModel {
   modelId   String                @map("model_id")
   label     String?
   enabled   Boolean  @default(true)
+  // Verification: live API listings include models the account can't
+  // actually invoke (Google retires `gemini-2.0-flash` for new users
+  // while still listing it; OpenAI lists deprecated aliases).  Admin
+  // clicks Verify to issue a 1-token probe and we stamp the result.
+  verificationStatus  String?   @map("verification_status") // "ok" | "unavailable" | null when unverified
+  verificationMessage String?   @map("verification_message")
+  verifiedAt          DateTime? @map("verified_at")
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt      @map("updated_at")
 

@@ -92,8 +92,12 @@ async def upsert_llm_key(
             where={"provider": provider},
             data={"encryptedKey": encrypted, "keyPrefix": prefix},
         )
+    # update() returns Optional but `existing is None` was just checked,
+    # so the row exists.  Pyright can't carry that across the await.
     return LlmKeySummary(
-        provider=row.provider, key_prefix=row.keyPrefix, updated_at=str(row.updatedAt)
+        provider=row.provider,  # pyright: ignore[reportOptionalMemberAccess]
+        key_prefix=row.keyPrefix,  # pyright: ignore[reportOptionalMemberAccess]
+        updated_at=str(row.updatedAt),  # pyright: ignore[reportOptionalMemberAccess]
     )
 
 

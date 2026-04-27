@@ -258,7 +258,8 @@ async def test_mcp_connection(
             update_data["lastError"] = f"tools/list failed after initialize ok: {exc}"
 
     await db.mcpserver.update(  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
-        where={"id": server_id}, data=update_data
+        where={"id": server_id},
+        data=update_data,  # pyright: ignore[reportArgumentType]
     )
 
     return TestConnectionResponse(ok=health.ok, message=health.message)

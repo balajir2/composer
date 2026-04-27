@@ -3,11 +3,17 @@
 import { useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
-import { ArrowLeft, Settings } from "lucide-react";
-import { buttonVariants } from "@/components/ui/button";
+import { ArrowLeft, Download, FileText, Settings } from "lucide-react";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { getWorkflow, updateWorkflow } from "@/lib/api/workflows";
+import {
+  downloadString,
+  exportWorkflowAsJson,
+  exportWorkflowAsMarkdown,
+} from "@/lib/workflow-import-export";
 import { WorkflowCanvas } from "@/components/composer/canvas/workflow-canvas";
 import { SaveControls } from "@/components/composer/canvas/save-controls";
+import { PublishedEndpoint } from "@/components/composer/published-endpoint";
 import {
   DesignerExecutionPanel,
   type DesignerExecutionState,
@@ -127,8 +133,55 @@ export default function DesignerCanvasPage({ params }: PageProps) {
           </Link>
           <span className="text-muted-foreground">/</span>
           <span className="text-sm font-medium">{workflow.name}</span>
+          <PublishedEndpoint
+            isProduction={Boolean(workflow.isProduction)}
+            externalSlug={workflow.externalSlug}
+            variant="inline"
+          />
         </div>
         <div className="flex items-center gap-2">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const slug =
+                workflow.name
+                  .toLowerCase()
+                  .replace(/[^a-z0-9]+/g, "-")
+                  .replace(/^-+|-+$/g, "") || "workflow";
+              const ts = new Date().toISOString().slice(0, 10);
+              downloadString(
+                `${slug}-${ts}.json`,
+                "application/json",
+                exportWorkflowAsJson(workflow)
+              );
+            }}
+            title="Download this workflow as JSON"
+          >
+            <Download className="mr-1.5 h-3.5 w-3.5" />
+            JSON
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              const slug =
+                workflow.name
+                  .toLowerCase()
+                  .replace(/[^a-z0-9]+/g, "-")
+                  .replace(/^-+|-+$/g, "") || "workflow";
+              const ts = new Date().toISOString().slice(0, 10);
+              downloadString(
+                `${slug}-${ts}.md`,
+                "text/markdown;charset=utf-8",
+                exportWorkflowAsMarkdown(workflow)
+              );
+            }}
+            title="Download this workflow as Markdown (with embedded JSON for re-import)"
+          >
+            <FileText className="mr-1.5 h-3.5 w-3.5" />
+            Markdown
+          </Button>
           <Link
             href={`/designer/${workflowId}/settings`}
             className={buttonVariants({ variant: "outline", size: "sm" })}

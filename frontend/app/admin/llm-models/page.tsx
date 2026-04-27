@@ -31,6 +31,7 @@ import {
   adminDeleteLlmModel,
   adminListLlmModels,
   adminUpdateLlmModel,
+  adminVerifyLlmModel,
   listAvailableModels,
   type LlmModelSummary,
 } from "@/lib/api/llm-models";
@@ -63,6 +64,38 @@ export default function AdminLlmModelsPage() {
       toast.success("Model removed.");
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Failed."),
+  });
+
+  // Per-model verify probe.  We track which row is currently probing
+  // (rather than a global isPending) so the admin can fire multiple
+  // verifies in parallel without seeing every button stuck disabled.
+  const [verifyingId, setVerifyingId] = useState<string | null>(null);
+  const verify = useMutation({
+    mutationFn: (m: LlmModelSummary) => {
+      setVerifyingId(m.id);
+      return adminVerifyLlmModel(m.id);
+    },
+    onSuccess: (resp) => {
+      qc.invalidateQueries({ queryKey: ["admin-llm-models"] });
+      if (resp.status === "ok") {
+        toast.success(`${resp.model.modelId}: verified live.`);
+      } else if (resp.status === "unavailable") {
+        toast.error(
+          resp.auto_disabled
+            ? `${resp.model.modelId} is unavailable — disabled and removed from designer dropdowns.`
+            : `${resp.model.modelId}: not available for this key. ${resp.message}`
+        );
+      } else if (resp.status === "auth_error") {
+        toast.error(
+          `${resp.model.provider} key rejected — fix the key, then re-verify.`
+        );
+      } else {
+        toast.error(`Probe failed: ${resp.message}`);
+      }
+    },
+    onError: (err) =>
+      toast.error(err instanceof Error ? err.message : "Verify failed."),
+    onSettled: () => setVerifyingId(null),
   });
 
   return (
@@ -98,7 +131,8 @@ export default function AdminLlmModelsPage() {
               <TableHead>Model ID</TableHead>
               <TableHead>Label</TableHead>
               <TableHead>Status</TableHead>
-              <TableHead className="w-48 text-right"></TableHead>
+              <TableHead>Verification</TableHead>
+              <TableHead className="w-72 text-right"></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -112,7 +146,19 @@ export default function AdminLlmModelsPage() {
                     {m.enabled ? "enabled" : "disabled"}
                   </Badge>
                 </TableCell>
+                <TableCell>
+                  <VerificationCell model={m} />
+                </TableCell>
                 <TableCell className="flex items-center justify-end gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => verify.mutate(m)}
+                    disabled={verifyingId === m.id}
+                    title="Probe the provider with this exact model ID"
+                  >
+                    {verifyingId === m.id ? "Verifying…" : "Verify"}
+                  </Button>
                   <Button
                     variant="outline"
                     size="sm"
@@ -135,6 +181,59 @@ export default function AdminLlmModelsPage() {
           </TableBody>
         </Table>
       )}
+    </div>
+  );
+}
+
+function relativeTime(iso: string): string {
+  const then = new Date(iso).getTime();
+  const now = Date.now();
+  const diffSec = Math.round((now - then) / 1000);
+  if (diffSec < 60) return "just now";
+  if (diffSec < 3600) return `${Math.round(diffSec / 60)}m ago`;
+  if (diffSec < 86_400) return `${Math.round(diffSec / 3600)}h ago`;
+  const days = Math.round(diffSec / 86_400);
+  if (days < 30) return `${days}d ago`;
+  return new Date(iso).toLocaleDateString();
+}
+
+function VerificationCell({ model }: { model: LlmModelSummary }) {
+  if (!model.verificationStatus || !model.verifiedAt) {
+    return (
+      <Badge
+        variant="outline"
+        className="border-dashed text-xs text-muted-foreground"
+        title="Click Verify to probe the provider with this model ID"
+      >
+        not verified
+      </Badge>
+    );
+  }
+  if (model.verificationStatus === "ok") {
+    return (
+      <div className="flex flex-col gap-0.5">
+        <Badge
+          variant="default"
+          className="w-fit border-emerald-200 bg-emerald-100 text-emerald-800 hover:bg-emerald-100"
+        >
+          verified
+        </Badge>
+        <span className="text-xs text-muted-foreground">
+          {relativeTime(model.verifiedAt)}
+        </span>
+      </div>
+    );
+  }
+  // Unavailable / unknown status — surface the error so the admin
+  // can see why and decide to disable or remove.
+  return (
+    <div className="flex flex-col gap-0.5">
+      <Badge variant="destructive" className="w-fit" title={model.verificationMessage ?? ""}>
+        unavailable
+      </Badge>
+      <span className="text-xs text-muted-foreground">
+        {relativeTime(model.verifiedAt)}
+      </span>
     </div>
   );
 }

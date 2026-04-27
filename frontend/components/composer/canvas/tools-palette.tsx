@@ -5,6 +5,7 @@ import { useQuery } from "@tanstack/react-query";
 import { Search, Wrench, Server } from "lucide-react";
 import { Input } from "@/components/ui/input";
 import { getCatalog, type CatalogTool } from "@/lib/api/catalog";
+import { visualFor } from "./node-visuals";
 
 // ---------------------------------------------------------------------------
 // Drag data written to dataTransfer on each palette item.
@@ -112,13 +113,24 @@ export function ToolsPalette() {
             Nodes
           </p>
           <div className="flex flex-col gap-1">
-            {filteredNodes.map((n) => (
-              <PaletteItem
-                key={n.nodeType}
-                dragData={{ kind: "node", nodeType: n.nodeType, label: n.label }}
-                label={n.label}
-              />
-            ))}
+            {filteredNodes.map((n) => {
+              const visual = visualFor(n.nodeType);
+              const Icon = visual.icon;
+              return (
+                <PaletteItem
+                  key={n.nodeType}
+                  dragData={{ kind: "node", nodeType: n.nodeType, label: n.label }}
+                  label={n.label}
+                  icon={
+                    <span
+                      className={`flex size-5 shrink-0 items-center justify-center rounded ${visual.iconWrapClass}`}
+                    >
+                      <Icon className="size-3" />
+                    </span>
+                  }
+                />
+              );
+            })}
           </div>
         </section>
       )}

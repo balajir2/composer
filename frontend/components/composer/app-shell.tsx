@@ -46,37 +46,8 @@ export function AppShell({
           </span>
         </Link>
 
-        <div className="flex-1 overflow-y-auto px-2 py-4">
-          <RoleNav role={role} />
-
-          <div className="my-3 h-px bg-white/10" />
-
-          <div className="space-y-1 px-3">
-            {userRole === "admin" && role !== "admin" && (
-              <Link
-                href="/admin"
-                className="block text-[0.7rem] font-medium text-white/55 hover:text-white"
-              >
-                Admin console →
-              </Link>
-            )}
-            {role !== "designer" && (
-              <Link
-                href="/designer"
-                className="block text-[0.7rem] font-medium text-white/55 hover:text-white"
-              >
-                Designer →
-              </Link>
-            )}
-            {role !== "runs" && (
-              <Link
-                href="/runs"
-                className="block text-[0.7rem] font-medium text-white/55 hover:text-white"
-              >
-                Run workflows →
-              </Link>
-            )}
-          </div>
+        <div className="flex-1 overflow-y-auto py-4">
+          <RoleNav userRole={userRole} />
         </div>
 
         <div className="border-t border-white/10 px-5 py-4 text-xs">

@@ -74,7 +74,8 @@ def _to_raw_bytes(value: Any) -> bytes:
     ``isinstance`` check keeps it honest.
     """
     if isinstance(value, Base64):
-        return cast("bytes", value.decode())
+        # Base64.decode() already returns bytes; no cast needed.
+        return value.decode()
     return cast("bytes", value)
 
 

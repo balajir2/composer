@@ -165,9 +165,9 @@ async def search_workflows(
     else:
         authz: dict[str, Any] = {"OR": [{"isPublic": True}, {"userId": user_id}]}
         where = {"AND": [authz, text_match]}
-    total = await db.workflow.count(where=where)  # pyright: ignore[reportAttributeAccessIssue]
+    total = await db.workflow.count(where=where)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
     rows = await db.workflow.find_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where=where,
+        where=where,  # pyright: ignore[reportArgumentType]
         take=limit,
         order={"updatedAt": "desc"},
     )
@@ -210,9 +210,9 @@ async def list_workflows(
     else:
         where = authz_where
 
-    total = await db.workflow.count(where=where)  # pyright: ignore[reportAttributeAccessIssue]
+    total = await db.workflow.count(where=where)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
     rows = await db.workflow.find_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where=where,
+        where=where,  # pyright: ignore[reportArgumentType]
         take=limit,
         skip=offset,
         order={"updatedAt": "desc"},
@@ -317,7 +317,7 @@ async def update_workflow(
     try:
         updated = await db.workflow.update(  # pyright: ignore[reportAttributeAccessIssue]
             where={"id": workflow_id},
-            data=update_data,
+            data=update_data,  # pyright: ignore[reportArgumentType]
         )
     except UniqueViolationError as exc:
         raise HTTPException(
@@ -406,7 +406,8 @@ async def admin_update_workflow_flags(
 
     try:
         updated = await db.workflow.update(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"id": workflow_id}, data=data
+            where={"id": workflow_id},
+            data=data,  # pyright: ignore[reportArgumentType]
         )
     except UniqueViolationError as exc:
         raise HTTPException(

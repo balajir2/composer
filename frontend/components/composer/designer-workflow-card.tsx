@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { MoreHorizontal, Copy, Trash2 } from "lucide-react";
+import { MoreHorizontal, Copy, Download, FileText, Trash2 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button, buttonVariants } from "@/components/ui/button";
@@ -25,6 +25,11 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { getWorkflow, createWorkflow, deleteWorkflow } from "@/lib/api/workflows";
+import {
+  downloadString,
+  exportWorkflowAsJson,
+  exportWorkflowAsMarkdown,
+} from "@/lib/workflow-import-export";
 import { toast } from "sonner";
 
 type Workflow = {
@@ -68,6 +73,45 @@ export function DesignerWorkflowCard({ wf }: { wf: Workflow }) {
       toast.error(err instanceof Error ? err.message : "Failed to duplicate workflow."),
   });
 
+  // Slugify the workflow name for download filenames so files are
+  // findable on disk and don't collide.
+  const filenameSlug =
+    wf.name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "") || "workflow";
+
+  const downloadJsonMutation = useMutation({
+    mutationFn: async () => {
+      // Fetch the full workflow (the card prop only carries display
+      // fields).  Using getWorkflow keeps export consistent with the
+      // server's canonical shape.
+      const full = await getWorkflow(wf.id);
+      const ts = new Date().toISOString().slice(0, 10);
+      downloadString(
+        `${filenameSlug}-${ts}.json`,
+        "application/json",
+        exportWorkflowAsJson(full)
+      );
+    },
+    onError: (err) =>
+      toast.error(err instanceof Error ? err.message : "Download failed."),
+  });
+
+  const downloadMarkdownMutation = useMutation({
+    mutationFn: async () => {
+      const full = await getWorkflow(wf.id);
+      const ts = new Date().toISOString().slice(0, 10);
+      downloadString(
+        `${filenameSlug}-${ts}.md`,
+        "text/markdown;charset=utf-8",
+        exportWorkflowAsMarkdown(full)
+      );
+    },
+    onError: (err) =>
+      toast.error(err instanceof Error ? err.message : "Download failed."),
+  });
+
   const deleteMutation = useMutation({
     mutationFn: () => deleteWorkflow(wf.id),
     onSuccess: () => {
@@ -98,6 +142,21 @@ export function DesignerWorkflowCard({ wf }: { wf: Workflow }) {
                 >
                   <Copy className="mr-2" />
                   Duplicate
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={() => downloadJsonMutation.mutate()}
+                  disabled={downloadJsonMutation.isPending}
+                >
+                  <Download className="mr-2" />
+                  Download JSON
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => downloadMarkdownMutation.mutate()}
+                  disabled={downloadMarkdownMutation.isPending}
+                >
+                  <FileText className="mr-2" />
+                  Download Markdown
                 </DropdownMenuItem>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem variant="destructive" onClick={() => setDeleteOpen(true)}>
