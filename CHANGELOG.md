@@ -172,7 +172,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Phase 10 — Composer frontend + enterprise UX (2026-04-23)
 
 #### Added
-- [Phase 10 design spec](docs/superpowers/specs/2026-04-22-phase-10-composer-frontend-design.md) + ADR-0023.
+- [Phase 10 design spec](docs/archive/phase-history/specs/2026-04-22-phase-10-composer-frontend-design.md) + ADR-0023.
 - **10a — Backend extensions.**
   - `Workflow.isProduction` + `Workflow.externalSlug` (globally unique); `User.passwordHash` nullable for SSO-provisioned users.
   - New `ApiKey` Prisma model (per-user, bcrypt-hashed, soft-delete via `revokedAt`); `POST/GET/DELETE /api-keys`.
@@ -207,7 +207,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Phase 9 — Cutover readiness (2026-04-22)
 
 #### Added
-- [Phase 9 design spec](docs/superpowers/specs/2026-04-22-phase-9-cutover-readiness-design.md) + ADR-0022.
+- [Phase 9 design spec](docs/archive/phase-history/specs/2026-04-22-phase-9-cutover-readiness-design.md) + ADR-0022.
 - **9b — Convex→Postgres migration.** `composer migrate --export-dir=<path>` script. New `original_owner_email` column on `Workflow`/`WorkflowExecution`/`McpServer`. `McpServer.user_id` made nullable for uniform "orphaned pending reconciliation" semantics. Email-based reconciliation CLI: `composer reconcile --email X`. Skips users/approvals/checkpoints/ephemeral tables per spec §4.2. In-flight OAB executions rewritten to status=failed with explanatory error. Json-typed fields wrapped by writer via `prisma.Json(...)`.
 - **9f — Admin capabilities.** New deps `get_current_role` (returns user_id+role) and `ensure_admin`. Admin bypass on GET `/workflows/{id}`/`/executions/{id}`/list/search/events (SSE; later removed in 9a) and on PUT `/workflows/{id}`. DELETE stays strict owner-only. New admin-only ownership endpoints: `PATCH /workflows/{id}/owner`, `PATCH /mcp-servers/{id}/owner` — accept `{user_id}` or `{email}`.
 - **9e — LLM keys in Postgres.** New `LlmApiKey` Prisma model (AES-256-GCM encrypted via existing `ENCRYPTION_KEY`). Admin CRUD: `GET/PUT/DELETE /admin/llm-keys[/{provider}]`. CLI: `composer keys {list|set|delete|sync}`. Vercel sync uploads decrypted values via Vercel API; `--prune` removes tracked env vars absent from Postgres. Runtime unchanged — workflow code still reads env vars at startup.
@@ -237,7 +237,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Phase 8 — Security + hardening (2026-04-22)
 
 #### Added
-- [Phase 8 design spec](docs/superpowers/specs/2026-04-21-phase-8-security-hardening-design.md) + ADR-0021.
+- [Phase 8 design spec](docs/archive/phase-history/specs/2026-04-21-phase-8-security-hardening-design.md) + ADR-0021.
 - **Authz hardening:**
   - `GET /workflows/{id}` returns 404 for non-owner private workflows (info-leak tight; not 403).
   - `GET /workflows` list and `GET /workflows/search` filter to `OR(isPublic=True, userId=caller)`.
@@ -266,7 +266,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Phase 7b — Workflow CRUD (2026-04-21)
 
 #### Added
-- [Phase 7b design spec](docs/superpowers/specs/2026-04-21-phase-7b-workflow-crud-design.md).
+- [Phase 7b design spec](docs/archive/phase-history/specs/2026-04-21-phase-7b-workflow-crud-design.md).
 - `GET /workflows` — paginated list with filters (`isTemplate`, `isPublic`, `category`, `mine`). Envelope: `{total, items, limit, offset}`. Ordered by `updatedAt DESC`. Limit capped at 100.
 - `GET /workflows/search?q=...` — name/description search via Prisma `contains` + case-insensitive. Empty `q` is 422.
 - `GET /workflows/{id}` — fetch one; 404 if unknown.
@@ -290,7 +290,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Phase 6e — Vector-DB (2026-04-21)
 
 #### Added
-- [Phase 6e design spec](docs/superpowers/specs/2026-04-21-phase-6e-vector-db-design.md) + ADR-0020.
+- [Phase 6e design spec](docs/archive/phase-history/specs/2026-04-21-phase-6e-vector-db-design.md) + ADR-0020.
 - `src/vectordb/` module — new top-level package.
   - `src/vectordb/embedding.py` — `embed_text_openai()` via the OpenAI embeddings API. `text-embedding-3-*` models accept `dimensions` param; older models omit it.
   - `src/vectordb/providers/` — one file per provider, each exporting `async def query(embedding, config) -> list[VectorDbResult]`. Shared `QueryConfig` + `VectorDbResult` frozen dataclasses in `base.py`.
@@ -322,7 +322,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Phase 6d — Arcade (2026-04-21)
 
 #### Added
-- [Phase 6d design spec](docs/superpowers/specs/2026-04-21-phase-6d-arcade-design.md) + ADR-0019.
+- [Phase 6d design spec](docs/archive/phase-history/specs/2026-04-21-phase-6d-arcade-design.md) + ADR-0019.
 - `src/executors/arcade.py` — `ArcadeExecutor` calls arcade.dev's tool-execution API via direct HTTP (no SDK). Two-step protocol: `POST /v1/tools/authorize` → `POST /v1/tools/execute`. If auth is pending, pauses via Phase 5a's `interrupt()` primitive; user completes OAuth externally and calls `POST /executions/{id}/resume` with `decision='approved'` (retry) or `'rejected'` (`ArcadeUserCanceledError`). Retry counter `_arcade_retries_<node_id>` caps resume attempts at `MAX_RETRIES=3` to prevent infinite loops on broken OAuth URLs.
 - `src/engine/workflow.py` — `ArcadeNodeData` tightened: `tool` (required, alias `arcadeTool`), `input` (default `{}`, alias `arcadeInput`), `user_id` (default `'workflow-builder'`, alias `arcadeUserId`).
 - `src/config.py` — `arcade_api_key` setting (env var `ARCADE_API_KEY`).
@@ -347,7 +347,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Phase 6c — Gamma-AI (2026-04-21)
 
 #### Added
-- [Phase 6c design spec](docs/superpowers/specs/2026-04-21-phase-6c-gamma-ai-design.md).
+- [Phase 6c design spec](docs/archive/phase-history/specs/2026-04-21-phase-6c-gamma-ai-design.md).
 - `src/executors/gamma_ai.py` — `GammaAiExecutor` calls the Gamma.app public API (`https://public-api.gamma.app/v1.0`) to generate a presentation/document/webpage. Two-step protocol: POST create → poll GET until `state=completed` or `failed`. OAB-compatible cadence: 60s initial wait, 10s interval, 4-min max. When `exportAs` in {pptx, pdf}, waits up to 60s more for the download URL. `lastOutput = downloadUrl || gammaUrl`. Module-level sleep constants (`INITIAL_WAIT_SECONDS`, `POLL_INTERVAL_SECONDS`, `MAX_POLL_SECONDS`, `EXPORT_WAIT_SECONDS`, `EXPORT_POLL_INTERVAL`) for test monkeypatching.
 - `src/engine/workflow.py` — `GammaAiNodeData` tightened with 8 explicit fields matching OAB `types.ts:77-85` (`prompt`, `format`, `textMode`, `numCards`, `textAmount`, `imageSource`, `language`, `exportAs`). Enum literals pinned (`presentation`/`document`/`social`, `generate`/`condense`/`preserve`, `brief`/`medium`/`detailed`, `pptx`/`pdf`/`web`).
 - `src/config.py` — `gamma_api_key` setting (env var `GAMMA_API_KEY`).
@@ -366,7 +366,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Phase 6b — Guardrails (2026-04-21)
 
 #### Added
-- [Phase 6b design spec](docs/superpowers/specs/2026-04-21-phase-6b-guardrails-design.md) + ADR-0018.
+- [Phase 6b design spec](docs/archive/phase-history/specs/2026-04-21-phase-6b-guardrails-design.md) + ADR-0018.
 - `src/executors/guardrails.py` — `GuardrailsExecutor` calls the Phase 2 LLM provider framework as a safety classifier. Four checks (PII, moderation, jailbreak, hallucination), any subset enabled per node. Concurrent via `asyncio.gather`. Prompts frozen in source (spec §5). Response parsing: `first_word.upper().startswith("YES")`; ambiguous non-YES treated as NO (anti-false-positive bias).
 - `src/engine/workflow.py` — `GuardrailsNodeData` tightened with explicit fields matching OAB `types.ts:86-106` (`piiEnabled`, `moderationEnabled`, `jailbreakEnabled`, `hallucinationEnabled`, `actionOnViolation`, `model`).
 - Output convention: `_guardrails_result = {passed, checks_run, violations, message}` (for `if-else` branching) + `lastOutput` = human-readable summary.
@@ -390,7 +390,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Phase 6a — Note + Join-Chunks (2026-04-21)
 
 #### Added
-- [Phase 6a design spec](docs/superpowers/specs/2026-04-21-phase-6a-note-join-chunks-design.md).
+- [Phase 6a design spec](docs/archive/phase-history/specs/2026-04-21-phase-6a-note-join-chunks-design.md).
 - `src/executors/join_chunks.py` — `JoinChunksExecutor` concatenates a list of chunks (strings, or dicts with `content`/`metadata`) with configurable separator/prefix/suffix; optionally appends `[metadata: {json}]` per chunk. Output to `lastOutput`. Errors: missing variable / non-list value → `JoinChunksNodeError`; empty list → empty string.
 - `src/engine/workflow.py` — `JoinChunksNodeData` tightened with explicit fields (replaces Phase 1 `config: dict[str, Any]` placeholder). Matches OAB `types.ts:132-137` aliases (`joinChunksVariable`, `joinChunksSeparator`, `joinChunksPrefix`, `joinChunksSuffix`, `joinChunksIncludeMetadata`).
 - Integration test against real Neon: `start → set-state(list) → join-chunks → end`, asserts final `lastOutput`.
@@ -408,7 +408,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Phase 5b — SSE streaming (2026-04-21)
 
 #### Added
-- [Phase 5b design spec](docs/superpowers/specs/2026-04-21-phase-5b-sse-streaming-design.md) + ADR-0017.
+- [Phase 5b design spec](docs/archive/phase-history/specs/2026-04-21-phase-5b-sse-streaming-design.md) + ADR-0017.
 - `src/engine/events.py` — `ExecutionEventBus` (in-process asyncio fanout, bounded per-subscriber queue with drop-oldest overflow) + `ExecutionEvent` frozen dataclass with typed `EventType` literal.
 - `src/engine/events_wrapper.py` — `wrap_executor_with_events` applied inside `graph_builder.build_graph`. Every executor emits `node-start` / `node-complete` automatically (no per-executor changes).
 - `src/engine/context.py` — new ContextVars `current_execution_id`, `current_event_bus`. Set by `LangGraphExecutor._prepare_compiled`; read by the node wrapper.
@@ -441,7 +441,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 ### Phase 5a — User-approval + interrupt/resume (2026-04-21)
 
 #### Added
-- [Phase 5a design spec](docs/superpowers/specs/2026-04-21-phase-5a-user-approval-design.md) + ADR-0016.
+- [Phase 5a design spec](docs/archive/phase-history/specs/2026-04-21-phase-5a-user-approval-design.md) + ADR-0016.
 - Prisma `Approval` table + `ApprovalDecision` enum (per-decision audit row; cascade-deletes with execution; indexed by `executionId` and `approverUserId`).
 - `src/executors/user_approval.py` — `UserApprovalExecutor` calls LangGraph's `interrupt({node_id, prompt})` (reads `data.approval_message` alias `approvalMessage` for the prompt template); records `_approval_<node_id>` in variables on resume; `UserApprovalNodeError` for invalid decisions.
 - `src/engine/graph_builder.py` — extends Phase 4b's conditional-edges pass with `user-approval` routing (branches `{approved, rejected}`); `_route_user_approval` reads `_approval_<node_id>` from variables.
@@ -474,7 +474,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 Brought forward from Phase 7 because user-approval (Phase 5) needs authenticated user context. Phase 5 (user-approval + SSE) is re-sequenced to run next.
 
 #### Added
-- [Phase 7a design spec](docs/superpowers/specs/2026-04-21-phase-7a-deployment-mode-design.md) + ADR-0014 + ADR-0015.
+- [Phase 7a design spec](docs/archive/phase-history/specs/2026-04-21-phase-7a-deployment-mode-design.md) + ADR-0014 + ADR-0015.
 - Prisma `User` table + `UserRole` enum. Populated only in standalone deployments; embedded deployments leave it empty (userId strings come from IEP-signed JWT `sub` claims).
 - `src/config.py` — `deployment_mode`, `iep_jwt_issuer`, `iep_jwks_url`, `iep_shared_secret`, `iep_ui_origin`, `bcrypt_rounds`.
 - `src/security/auth.py` — `AuthError` + `get_current_user_id` FastAPI dependency with mode-aware dispatch (HS256 w/ Composer's `JWT_SECRET` in standalone vs HS256 w/ `IEP_SHARED_SECRET` in embedded) + dev-mode fallback (ADR-0015).
@@ -511,7 +511,7 @@ Brought forward from Phase 7 because user-approval (Phase 5) needs authenticated
 **Phase 4 is now complete overall.** Combined with Phase 4a, Composer can express any OAB workflow topology except user-approval (Phase 5).
 
 #### Added
-- [Phase 4b design spec](docs/superpowers/specs/2026-04-21-phase-4b-control-flow-design.md) + ADR-0013.
+- [Phase 4b design spec](docs/archive/phase-history/specs/2026-04-21-phase-4b-control-flow-design.md) + ADR-0013.
 - `WorkflowEdge.branch: str | None` field for conditional-edge labels (ADR-0013).
 - `src/executors/if_else.py` — `IfElseExecutor` records the evaluated branch decision; actual routing done by the builder's closure.
 - `src/executors/while_loop.py` — iteration-bounded loop with `max_iterations` cap (default 100); raises `WhileMaxIterationsError` on overflow. Per-loop iteration counter lives in `state.variables._while_iterations`.
@@ -540,7 +540,7 @@ Brought forward from Phase 7 because user-approval (Phase 5) needs authenticated
 ### Phase 4a — Linear Executors (http, set-state, transform, data-transform, extract) (2026-04-21)
 
 #### Added
-- [Phase 4a design spec](docs/superpowers/specs/2026-04-21-phase-4a-linear-executors-design.md) + ADR-0012.
+- [Phase 4a design spec](docs/archive/phase-history/specs/2026-04-21-phase-4a-linear-executors-design.md) + ADR-0012.
 - `src/variable_substitution.py substitute_in_value` — recursive `{{...}}` over dict/list/str (keys untouched, non-str passthrough).
 - `src/executors/_eval.py` — `simpleeval` wrapper, the single eval primitive (ADR-0012). Scope: `variables`, `lastOutput`, `node_results`, per-call `extra_names`. No builtins, no imports, no dunder access.
 - `src/executors/http.py` — HTTP request node (JSON/text response, dot-path extraction, template substitution on URL/headers/body, 60s timeout, non-2xx → `HttpNodeError`).
@@ -567,7 +567,7 @@ Brought forward from Phase 7 because user-approval (Phase 5) needs authenticated
 ### Phase 3b — MCP OAuth + the six hard-won fixes (2026-04-21)
 
 #### Added
-- [Phase 3b design spec](docs/superpowers/specs/2026-04-20-phase-3b-mcp-oauth-design.md) + ADR-0011.
+- [Phase 3b design spec](docs/archive/phase-history/specs/2026-04-20-phase-3b-mcp-oauth-design.md) + ADR-0011.
 - Prisma `McpOAuthToken` + `McpOAuthState` tables (additive migration; `McpServer` unchanged).
 - `src/mcp/oauth.py` — PKCE + state + resource derivation, `build_authorize_url`, `exchange_code_for_tokens`, `refresh_token`, `get_valid_access_token` (with service-account fallback for shared servers).
 - `src/mcp/client.py` gains an optional async `auth_header_factory` hook — OAuth tokens refresh-on-use.
@@ -597,7 +597,7 @@ Brought forward from Phase 7 because user-approval (Phase 5) needs authenticated
 ### Phase 3a — MCP Infrastructure (Static Auth) (2026-04-20)
 
 #### Added
-- [Phase 3a design spec](docs/superpowers/specs/2026-04-20-phase-3a-mcp-infrastructure-design.md) + ADR-0010.
+- [Phase 3a design spec](docs/archive/phase-history/specs/2026-04-20-phase-3a-mcp-infrastructure-design.md) + ADR-0010.
 - Prisma `McpServer` table (full OAB-faithful schema — `oauthConfig` and `isShared` columns in place for Phase 3b).
 - `src/security/encryption.py` — AES-256-GCM helpers (shared primitive for 3a static tokens + 3b OAuth tokens).
 - `src/mcp/client.py` — HTTP JSON-RPC + SSE MCP client (per-instance rpc-id counter).
@@ -626,7 +626,7 @@ Brought forward from Phase 7 because user-approval (Phase 5) needs authenticated
 ### Phase 2 — Agent Executor + Tool Provider Framework (2026-04-20)
 
 #### Added
-- [Phase 2 design spec](docs/superpowers/specs/2026-04-20-phase-2-agent-executor-design.md) + ADR-0006, ADR-0007, ADR-0008, ADR-0009.
+- [Phase 2 design spec](docs/archive/phase-history/specs/2026-04-20-phase-2-agent-executor-design.md) + ADR-0006, ADR-0007, ADR-0008, ADR-0009.
 - `src/variable_substitution.py` — OAB-parity `{{...}}` template engine with prototype-pollution guard.
 - `src/llm/providers.py` — `build_chat_model` dispatch for Anthropic/OpenAI/Google/Groq via LangChain.
 - `src/llm/structured_output.py` — shared `structured_invoke` primitive (Agent now, Extract in Phase 4).
@@ -654,8 +654,8 @@ Brought forward from Phase 7 because user-approval (Phase 5) needs authenticated
 ### Phase 1 — Execution engine core (2026-04-20)
 
 #### Added
-- [Phase 1 design spec](docs/superpowers/specs/2026-04-20-phase-1-execution-engine-design.md) — architecture for the execution engine, Prisma schema additions, Pydantic models for all 18 node types, checkpointer design, API surface, test plan, phase-exit checklist.
-- [Decisions log](docs/design/decisions.md) established with ADR-0001 through ADR-0005:
+- [Phase 1 design spec](docs/archive/phase-history/specs/2026-04-20-phase-1-execution-engine-design.md) — architecture for the execution engine, Prisma schema additions, Pydantic models for all 18 node types, checkpointer design, API surface, test plan, phase-exit checklist.
+- [Decisions log](docs/decisions.md) established with ADR-0001 through ADR-0005:
   - ADR-0001: LangGraph checkpointer — Prisma owns schema, thin custom saver.
   - ADR-0002: Workflow JSON schema — full OAB fidelity (all 18 node types modeled in Phase 1).
   - ADR-0003: Documentation runs in lockstep with development (four-document system + enforcement).
@@ -677,10 +677,10 @@ Brought forward from Phase 7 because user-approval (Phase 5) needs authenticated
 - Regression test harness (`tests/regression/`) with one OAB-ported start→end smoke test.
 
 #### Changed
-- README points at `docs/design/` and `docs/superpowers/specs/` for design/spec/ADR docs.
+- README points at `docs/design/` and `docs/archive/phase-history/specs/` for design/spec/ADR docs.
 - README stack table: corrected the real-time row to SSE (Phase 5) → WebSocket (Phase 9), matching the phased plan.
 - `.env.example`: Neon-only `DATABASE_URL` format; added `TEST_DATABASE_URL` for integration tests.
-- **Deliberate deviation from OAB behavior:** For a workflow with only `start → end` and no intermediate node, Composer's `finalOutput` equals the parsed input. OAB's `finalOutput` for the same shape defaults to `""` (because OAB's Start doesn't write `variables.lastOutput`). Rationale in [Phase 1 spec §7.1](docs/superpowers/specs/2026-04-20-phase-1-execution-engine-design.md#71-srcexecutorsstartpy). The ported regression test (`tests/regression/test_oab_start_end.py`) asserts the Composer behavior; OAB-equivalent assertions would need adaptation when more OAB tests are ported in Phase 7.
+- **Deliberate deviation from OAB behavior:** For a workflow with only `start → end` and no intermediate node, Composer's `finalOutput` equals the parsed input. OAB's `finalOutput` for the same shape defaults to `""` (because OAB's Start doesn't write `variables.lastOutput`). Rationale in [Phase 1 spec §7.1](docs/archive/phase-history/specs/2026-04-20-phase-1-execution-engine-design.md#71-srcexecutorsstartpy). The ported regression test (`tests/regression/test_oab_start_end.py`) asserts the Composer behavior; OAB-equivalent assertions would need adaptation when more OAB tests are ported in Phase 7.
 
 #### Fixed
 - `POST /workflows` and `POST /executions` were passing raw Python dicts/lists into Prisma `Json` columns. Prisma rejected them at runtime with `DataError: nodes should be of type Json`. All Json-column writes now wrap values with `prisma.Json(...)`. Caught by running integration tests against the real Neon Postgres dev branch rather than mocks.

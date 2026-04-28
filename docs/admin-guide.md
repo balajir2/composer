@@ -24,14 +24,18 @@ Becoming admin is **not** self-serve — there's no UI to promote yourself. Run 
 
 Path: `/admin`. The sidebar exposes five sections.
 
-### Users (`/admin/users`)
+### Users
+
+Path: `/admin/users`.
 
 Lists every registered user. Click a row to:
 
 - Toggle role between `admin` and `member`. The change is immediate; the user sees their next page load reflect new permissions.
 - Deactivate (soft-delete) a user. Sets `isActive=false`; the user can no longer sign in but their workflows + executions stay in place. To restore, flip the flag again.
 
-### LLM models (`/admin/llm-models`)
+### LLM models
+
+Path: `/admin/llm-models`.
 
 Curates the model catalog designers see in the agent node's Model dropdown.
 
@@ -50,7 +54,9 @@ The auto-disable on `unavailable` is what closes the gap where (e.g.) Google ret
 
 **Disable / Delete** are also per-row actions. Disable hides the model from designers; Delete removes the row.
 
-### LLM keys (`/admin/llm-keys`)
+### LLM keys
+
+Path: `/admin/llm-keys`.
 
 Where the actual API keys live (encrypted, source of truth).
 
@@ -60,13 +66,17 @@ Where the actual API keys live (encrypted, source of truth).
 
 **Sync to runtime**: the FastAPI app reads keys from Postgres on startup, but if you want them in the runtime's env vars too (some hosts, some integrations), the `composer keys sync --target vercel` CLI pushes the current Postgres values to Vercel env vars. See [`operations/llm-keys.md`](operations/llm-keys.md).
 
-### MCP servers (`/admin/mcp-servers`)
+### MCP servers
+
+Path: `/admin/mcp-servers`.
 
 Lists every MCP server registered in the system (across all users). The admin's main job here is the **`isShared` toggle** — when on, the MCP server is discoverable + usable by every designer. When off (default), only the user who registered it can use it.
 
 The shared-token fallback (per ADR-0008): when User B uses a shared MCP server but doesn't have their own OAuth token, the server falls back to the original registrant's token. This is what makes "Bounteous-blessed Highspot MCP server" practical — admin registers + authorises once, every designer benefits.
 
-### Deployment settings (`/admin/deployment-settings`)
+### Deployment settings
+
+Path: `/admin/deployment-settings`.
 
 Per-deployment toggles stored as plain strings in `deployment_settings`. Currently used for:
 
@@ -75,7 +85,9 @@ Per-deployment toggles stored as plain strings in `deployment_settings`. Current
 
 Each row is a key + value text box; the meaning is documented inline. Adding a new setting is a backend change (see `src/api/admin_deployment_settings.py`).
 
-### Workflows (`/admin/workflows`)
+### Workflows
+
+Path: `/admin/workflows`.
 
 Global feed of every workflow on the system. Useful for:
 

@@ -38,7 +38,9 @@ Everything you need to build workflows on the canvas. If this is your first time
 
 **Save vs Run Draft**: Save persists the canvas state to the workflow row. Run Draft executes the *current canvas state* (which may differ from saved) — useful for iteration. After Run Draft, the canvas decorates each node live: pulsing purple → green (completed) / red (failed). Click any completed node in the result panel to see its input and output.
 
-**Conditional routing**: when you connect from an `if-else`/`while`/`user-approval` node, the edge label is auto-set from the source handle (`true`/`false`, `body`/`exit`, `approved`/`rejected`). Both edges are required for the workflow to validate — a half-wired conditional won't save (the backend rejects with "leaves … node but has no branch label").
+### Conditional routing
+
+When you connect from an `if-else`/`while`/`user-approval` node, the edge label is auto-set from the source handle (`true`/`false`, `body`/`exit`, `approved`/`rejected`). Both edges are required for the workflow to validate — a half-wired conditional won't save (the backend rejects with "leaves … node but has no branch label").
 
 ## Variables and references
 

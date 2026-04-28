@@ -72,10 +72,10 @@ Entries are numbered sequentially and never renumbered. Superseding decisions ge
 
 | Doc | Path | Cadence |
 |---|---|---|
-| Master design | [`docs/design/2026-04-20-composer-python-port-design.md`](./2026-04-20-composer-python-port-design.md) | Amended when a decision invalidates a section |
-| Phase design specs | `docs/superpowers/specs/YYYY-MM-DD-phase-N-<topic>-design.md` | Written before a phase begins; re-committed mid-phase if scope shifts |
-| Decisions log (ADRs) | `docs/design/decisions.md` (this file) | Append-only; new entry ships in the commit that implements it |
-| Changelog | [`CHANGELOG.md`](../../CHANGELOG.md) | Updated in the same commit as the change |
+| Master design | [`docs/archive/design-history/2026-04-20-composer-python-port-design.md`](archive/design-history/2026-04-20-composer-python-port-design.md) | Amended when a decision invalidates a section (now archived — superseded by the shipping codebase) |
+| Phase design specs | [`docs/archive/phase-history/specs/`](archive/phase-history/specs/) | Written before a phase begins; archived once the phase shipped |
+| Decisions log (ADRs) | `docs/decisions.md` (this file) | Append-only; new entry ships in the commit that implements it |
+| Changelog | [`CHANGELOG.md`](../CHANGELOG.md) | Updated in the same commit as the change |
 
 **Enforcement rules.**
 1. **Doc-with-code:** a commit that changes behavior must include the matching doc update. PRs without matching spec/decision/changelog updates are rejected.
@@ -88,7 +88,7 @@ Entries are numbered sequentially and never renumbered. Superseding decisions ge
 - Future maintainers (Balaji in 6 months, IE reviewers, new engineers) can recover intent without reading the full git history.
 - Spec drift is structurally prevented — not policed by memory.
 
-**Implemented by.** This file (new); [CHANGELOG.md](../../CHANGELOG.md); [CLAUDE.md](../../CLAUDE.md) references.
+**Implemented by.** This file (new); [CHANGELOG.md](../CHANGELOG.md); [CLAUDE.md](../CLAUDE.md) references.
 
 **Related.** All future ADRs.
 
@@ -329,7 +329,7 @@ Two ways to integrate MCP:
 
 **Implemented by.** Phase 3b (commits `b80f88f`..`a66479d` on `main`, 2026-04-21).
 
-**Related.** ADR-0010 (MCP resolver-side instantiation), ADR-0009 (tool provider framework), [Phase 3b spec](../superpowers/specs/2026-04-20-phase-3b-mcp-oauth-design.md).
+**Related.** ADR-0010 (MCP resolver-side instantiation), ADR-0009 (tool provider framework), [Phase 3b spec](archive/phase-history/specs/2026-04-20-phase-3b-mcp-oauth-design.md).
 
 ---
 
@@ -356,7 +356,7 @@ Scope exposes: `variables`, `lastOutput`, `node_results`, and a per-call `extra_
 
 **Implemented by.** Phase 4a (commits `10e88ef`..`42fcf92` on `main`, 2026-04-21).
 
-**Related.** ADR-0002 (workflow schema), [Phase 4a spec](../superpowers/specs/2026-04-21-phase-4a-linear-executors-design.md), CLAUDE.md §Conventions ("NEVER `eval()`; use `simpleeval`").
+**Related.** ADR-0002 (workflow schema), [Phase 4a spec](archive/phase-history/specs/2026-04-21-phase-4a-linear-executors-design.md), CLAUDE.md §Conventions ("NEVER `eval()`; use `simpleeval`").
 
 ---
 
@@ -381,7 +381,7 @@ Scope exposes: `variables`, `lastOutput`, `node_results`, and a per-call `extra_
 
 **Implemented by.** Phase 4b (commits `62d7196`..`8cbf839` on `main`, 2026-04-21).
 
-**Related.** ADR-0002 (workflow schema), ADR-0012 (simpleeval is the only eval primitive), [Phase 4b spec](../superpowers/specs/2026-04-21-phase-4b-control-flow-design.md).
+**Related.** ADR-0002 (workflow schema), ADR-0012 (simpleeval is the only eval primitive), [Phase 4b spec](archive/phase-history/specs/2026-04-21-phase-4b-control-flow-design.md).
 
 ---
 
@@ -408,7 +408,7 @@ Scope exposes: `variables`, `lastOutput`, `node_results`, and a per-call `extra_
 
 **Implemented by.** Phase 7a (commits `06642f0`..`7de8352` on `main`, 2026-04-21).
 
-**Related.** ADR-0004, ADR-0005, ADR-0015, [Phase 7a spec](../superpowers/specs/2026-04-21-phase-7a-deployment-mode-design.md).
+**Related.** ADR-0004, ADR-0005, ADR-0015, [Phase 7a spec](archive/phase-history/specs/2026-04-21-phase-7a-deployment-mode-design.md).
 
 ---
 
@@ -464,7 +464,7 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 
 **Implemented by.** Phase 5a (commits `74fe159`…`b07d8de`, 2026-04-21).
 
-**Related.** ADR-0001 (PrismaCheckpointSaver), ADR-0013 (WorkflowEdge.branch — user-approval is a conditional source), ADR-0015 (dev-mode auth; any authenticated user can resume in 5a), [Phase 5a spec](../superpowers/specs/2026-04-21-phase-5a-user-approval-design.md).
+**Related.** ADR-0001 (PrismaCheckpointSaver), ADR-0013 (WorkflowEdge.branch — user-approval is a conditional source), ADR-0015 (dev-mode auth; any authenticated user can resume in 5a), [Phase 5a spec](archive/phase-history/specs/2026-04-21-phase-5a-user-approval-design.md).
 
 ---
 
@@ -492,7 +492,7 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 
 **Implemented by.** Phase 5b (commits `40ef435`…`a6a4a98`, 2026-04-21).
 
-**Related.** ADR-0001 (PrismaCheckpointSaver — same single-process assumption), ADR-0016 (Phase 5a emits `approval-pending` / `approval-resumed`), [Phase 5b spec](../superpowers/specs/2026-04-21-phase-5b-sse-streaming-design.md).
+**Related.** ADR-0001 (PrismaCheckpointSaver — same single-process assumption), ADR-0016 (Phase 5a emits `approval-pending` / `approval-resumed`), [Phase 5b spec](archive/phase-history/specs/2026-04-21-phase-5b-sse-streaming-design.md).
 
 ---
 
@@ -522,7 +522,7 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 
 **Implemented by.** Phase 6b (commits `c4904ed`…`9121111`, 2026-04-21).
 
-**Related.** ADR-0006 (LLM provider framework — Phase 2), ADR-0012 (simpleeval for if-else conditions — how downstream branches on `_guardrails_result.passed`), [Phase 6b spec](../superpowers/specs/2026-04-21-phase-6b-guardrails-design.md).
+**Related.** ADR-0006 (LLM provider framework — Phase 2), ADR-0012 (simpleeval for if-else conditions — how downstream branches on `_guardrails_result.passed`), [Phase 6b spec](archive/phase-history/specs/2026-04-21-phase-6b-guardrails-design.md).
 
 ---
 
@@ -548,7 +548,7 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 
 **Implemented by.** Phase 6d (commits `f847147`…`0f262c7`, 2026-04-21).
 
-**Related.** ADR-0016 (user-approval + interrupt/resume — the primitive being reused), ADR-0017 (SSE streaming — the `approval-pending` event type extended here), [Phase 6d spec](../superpowers/specs/2026-04-21-phase-6d-arcade-design.md).
+**Related.** ADR-0016 (user-approval + interrupt/resume — the primitive being reused), ADR-0017 (SSE streaming — the `approval-pending` event type extended here), [Phase 6d spec](archive/phase-history/specs/2026-04-21-phase-6d-arcade-design.md).
 
 ---
 
@@ -578,7 +578,7 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 
 **Implemented by.** Phase 6e (commits `e2068d2`…`84cd4a5`, 2026-04-21).
 
-**Related.** ADR-0006 (LLM provider framework — analogous pattern), [Phase 6e spec](../superpowers/specs/2026-04-21-phase-6e-vector-db-design.md).
+**Related.** ADR-0006 (LLM provider framework — analogous pattern), [Phase 6e spec](archive/phase-history/specs/2026-04-21-phase-6e-vector-db-design.md).
 
 ---
 
@@ -611,7 +611,7 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 
 **Implemented by.** Phase 8 (commits `222749e`…`20c4309` on `main`, 2026-04-22).
 
-**Related.** ADR-0014 (deployment mode — shapes the auth model this builds on), ADR-0015 (dev-mode fallback), ADR-0016 (user-approval), [Phase 8 spec](../superpowers/specs/2026-04-21-phase-8-security-hardening-design.md).
+**Related.** ADR-0014 (deployment mode — shapes the auth model this builds on), ADR-0015 (dev-mode fallback), ADR-0016 (user-approval), [Phase 8 spec](archive/phase-history/specs/2026-04-21-phase-8-security-hardening-design.md).
 
 ---
 
@@ -642,7 +642,7 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 
 **Implemented by.** Phase 9 (commits `fc059e1`…`5b9bf5f` on `main`, 2026-04-22).
 
-**Related.** ADR-0014 (deployment mode), ADR-0015 (dev-mode auth fallback), ADR-0021 (Phase 8 security policy — Phase 9 admin bypass amends this), [Phase 9 spec](../superpowers/specs/2026-04-22-phase-9-cutover-readiness-design.md).
+**Related.** ADR-0014 (deployment mode), ADR-0015 (dev-mode auth fallback), ADR-0021 (Phase 8 security policy — Phase 9 admin bypass amends this), [Phase 9 spec](archive/phase-history/specs/2026-04-22-phase-9-cutover-readiness-design.md).
 
 ---
 
@@ -680,4 +680,4 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 
 **Implemented by.** Phase 10 (commits `a6cd130`…`4f3a4d0` on `main`, 2026-04-23).
 
-**Related.** ADR-0022 (Phase 9 cutover — email identity extended here), ADR-0021 (Phase 8 security — admin-bypass policy reused), ADR-0014 (deployment modes), [Phase 10 spec](../superpowers/specs/2026-04-22-phase-10-composer-frontend-design.md).
+**Related.** ADR-0022 (Phase 9 cutover — email identity extended here), ADR-0021 (Phase 8 security — admin-bypass policy reused), ADR-0014 (deployment modes), [Phase 10 spec](archive/phase-history/specs/2026-04-22-phase-10-composer-frontend-design.md).

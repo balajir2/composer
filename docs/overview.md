@@ -15,7 +15,7 @@ Phases 0–10 complete. The platform is operational: backend, frontend canvas, a
 - **External-invoke APIs** — publish a workflow as a `POST /api/run/{slug}` endpoint with per-user API keys
 - **Human-in-the-loop flows** — agent drafts content, reviewer approves or rejects, branched routing on the verdict
 
-The 17 reference templates under [Designer → Templates](#) are the recommended starting point; each is annotated with what platform capability it demonstrates.
+The 17 reference templates under **Designer → Templates** are the recommended starting point; each is annotated with what platform capability it demonstrates. See [`designer-guide.md#templates`](designer-guide.md#templates) for a walk-through.
 
 ## What's in the box
 

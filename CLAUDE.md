@@ -36,7 +36,7 @@ Python rebuild of [Open Agent Builder](https://github.com/balajir2/open-agent-bu
 
 ## Authoritative design — read this first
 
-**[`docs/design/2026-04-20-composer-python-port-design.md`](docs/design/2026-04-20-composer-python-port-design.md)** is the active design. Before any non-trivial work, skim it. Every decision below is documented there with rationale.
+**[`docs/archive/design-history/2026-04-20-composer-python-port-design.md`](docs/archive/design-history/2026-04-20-composer-python-port-design.md)** is the active design. Before any non-trivial work, skim it. Every decision below is documented there with rationale.
 
 Supporting docs in `docs/design/` provide historical context and product/strategic framing. The 2026-04-20 doc supersedes earlier 2026-04-15 ones where they conflict.
 
@@ -304,7 +304,7 @@ Record of issues hit during scaffolding — watch for these:
 ## 6. Quick "getting started" for a new Claude agent session
 
 1. Read this file (done if you're here)
-2. Read `docs/design/2026-04-20-composer-python-port-design.md` — the active design spec
+2. Read `docs/archive/design-history/2026-04-20-composer-python-port-design.md` — the active design spec
 3. Run `git log --oneline -10` to see recent commits
 4. Check current phase status (§Current phase status above)
 5. Start on the next phase's deliverables
@@ -317,4 +317,4 @@ That's it. Everything you need is here or linked from here.
 
 - **Composer repo:** `https://github.com/balajir2/composer` (private)
 - **OAB repo (frozen reference):** `D:/GitHub/open-agent-builder` → `https://github.com/balajir2/open-agent-builder`
-- **Original OAB design discussion lives in:** `open-agent-builder/docs/superpowers/specs/` (mirrored here in `composer/docs/design/`)
+- **Original OAB design discussion lives in:** `open-agent-builder/docs/archive/phase-history/specs/` (mirrored here in `composer/docs/design/`)
