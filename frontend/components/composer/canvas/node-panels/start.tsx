@@ -9,20 +9,26 @@ import { Plus, Trash2 } from "lucide-react";
 // Mirrors backend StartInputVariable (src/engine/workflow.py).
 // type values are what the End-User input form + runtime renderer understand:
 // "text" → plain string, "number" → numeric, "boolean" → checkbox,
-// "json" → Textarea (accepts any JSON-serializable value).
+// "json" → Textarea (accepts any JSON-serializable value),
+// "document" → file picker; uploads to /uploads/extract-text and the
+//              extracted plain text is what flows downstream as a
+//              regular string variable.
 type InputField = {
   name: string;
-  type: "text" | "number" | "boolean" | "json";
+  type: "text" | "number" | "boolean" | "json" | "document";
   required: boolean;
   description?: string;
   defaultValue?: unknown;
 };
+
+const ALLOWED_TYPES = ["text", "number", "boolean", "json", "document"] as const;
 
 const TYPE_OPTIONS = [
   { value: "text", label: "text" },
   { value: "number", label: "number" },
   { value: "boolean", label: "boolean" },
   { value: "json", label: "json (object / array)" },
+  { value: "document", label: "document (PDF / DOCX / MD / TXT upload)" },
 ];
 
 function readVariables(data: Record<string, unknown>): InputField[] {
@@ -33,9 +39,11 @@ function readVariables(data: Record<string, unknown>): InputField[] {
   if (Array.isArray(legacy)) {
     return (legacy as Array<Record<string, unknown>>).map((f) => ({
       name: String(f.name ?? ""),
-      type: (["text", "number", "boolean", "json"].includes(String(f.type))
-        ? (f.type as InputField["type"])
-        : "text"),
+      type: (
+        ALLOWED_TYPES.includes(String(f.type) as (typeof ALLOWED_TYPES)[number])
+          ? (f.type as InputField["type"])
+          : "text"
+      ),
       required: Boolean(f.required),
       description: typeof f.description === "string" ? f.description : undefined,
       defaultValue: f.defaultValue,
@@ -127,25 +135,42 @@ export default function StartPanel({
                 className="h-7 text-xs"
               />
             </div>
-            <div className="space-y-1">
-              <Label className="text-xs">Default value (optional)</Label>
-              <Input
-                value={
-                  field.defaultValue === undefined || field.defaultValue === null
-                    ? ""
-                    : String(field.defaultValue)
-                }
-                onChange={(e) =>
-                  updateField(i, {
-                    defaultValue: e.target.value === "" ? undefined : e.target.value,
-                  })
-                }
-                placeholder={
-                  field.type === "json" ? '{"key": "value"}' : "leave blank for none"
-                }
-                className="h-7 text-xs"
-              />
-            </div>
+            {field.type === "document" ? (
+              // No default value for documents — files are always
+              // uploaded fresh per run.  Show a one-line note instead
+              // so the panel structure stays predictable.
+              <p className="text-xs text-muted-foreground">
+                End-users get a file picker (PDF / DOCX / MD / TXT, max
+                10MB). Extracted text flows downstream as a regular
+                string variable — reference as{" "}
+                <code className="font-mono">
+                  &#123;&#123;{field.name || "name"}&#125;&#125;
+                </code>
+                .
+              </p>
+            ) : (
+              <div className="space-y-1">
+                <Label className="text-xs">Default value (optional)</Label>
+                <Input
+                  value={
+                    field.defaultValue === undefined || field.defaultValue === null
+                      ? ""
+                      : String(field.defaultValue)
+                  }
+                  onChange={(e) =>
+                    updateField(i, {
+                      defaultValue: e.target.value === "" ? undefined : e.target.value,
+                    })
+                  }
+                  placeholder={
+                    field.type === "json"
+                      ? '{"key": "value"}'
+                      : "leave blank for none"
+                  }
+                  className="h-7 text-xs"
+                />
+              </div>
+            )}
             <div className="flex items-center gap-2">
               <input
                 type="checkbox"
