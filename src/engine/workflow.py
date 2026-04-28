@@ -350,6 +350,21 @@ class VectorDbNodeData(BaseNodeData):
     join_separator: str = Field(default="----", alias="vectorDbJoinSeparator")
     join_prefix: str = Field(default="", alias="vectorDbJoinPrefix")
     join_suffix: str = Field(default="", alias="vectorDbJoinSuffix")
+    # ─── Insert/upsert mode (Phase 6e+ insert) ──────────────────────
+    # `query` (default) keeps the pre-existing retrieval path unchanged;
+    # `upsert` switches the executor into ingest mode where it embeds
+    # the supplied documents and writes them to the configured collection.
+    operation: str = Field(default="query", alias="vectorDbOperation")
+    # `documents` is a simpleeval expression evaluated against state to
+    # yield either:
+    #   - a list of dicts: [{id?, text, metadata?}, ...]  (pre-chunked)
+    #   - a single string                                 (auto-chunked
+    #     by the executor using chunk_size / chunk_overlap below)
+    # When the expression yields nothing or unset, upsert is rejected
+    # with a clear error.
+    documents: str | None = Field(default=None, alias="vectorDbDocuments")
+    chunk_size: int = Field(default=1000, alias="vectorDbChunkSize")
+    chunk_overlap: int = Field(default=100, alias="vectorDbChunkOverlap")
 
 
 class VectorDbNode(BaseModel):

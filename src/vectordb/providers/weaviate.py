@@ -17,6 +17,9 @@ import httpx
 
 from src.vectordb.providers.base import (
     QueryConfig,
+    UpsertConfig,
+    UpsertDocument,
+    UpsertResult,
     VectorDbProviderError,
     VectorDbResult,
 )
@@ -90,4 +93,77 @@ async def query(
     return results
 
 
-__all__ = ["query"]
+async def upsert(
+    documents: list[UpsertDocument],
+    config: UpsertConfig,
+) -> UpsertResult:
+    """Weaviate POST /v1/batch/objects.
+
+    Body: `{objects: [{class, vector, properties: {<text_field>: ...}}, ...]}`.
+    Class names are PascalCase per Weaviate convention; we normalise.
+    Object IDs must be UUIDs — when the caller doesn't supply one we
+    derive a stable UUIDv5 from the chunk text so re-upserts overwrite.
+    """
+    import hashlib
+    import uuid
+
+    if not documents:
+        return UpsertResult(inserted_count=0, ids=[])
+
+    _NS = uuid.UUID("00000000-0000-0000-0000-00636f6d706f73")  # stable namespace
+    class_name = _format_class_name(config.collection)
+
+    objects: list[dict[str, Any]] = []
+    out_ids: list[str] = []
+    for doc in documents:
+        if doc.id:
+            obj_id = doc.id
+        elif doc.text:
+            obj_id = str(uuid.uuid5(_NS, hashlib.sha1(doc.text.encode()).hexdigest()))
+        else:
+            obj_id = str(uuid.uuid4())
+        out_ids.append(obj_id)
+
+        properties: dict[str, Any] = dict(doc.metadata)
+        properties[config.text_field] = doc.text
+        objects.append(
+            {
+                "class": class_name,
+                "id": obj_id,
+                "vector": doc.embedding,
+                "properties": properties,
+            }
+        )
+
+    base = config.endpoint.rstrip("/")
+    url = f"{base}/v1/batch/objects"
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if config.api_key:
+        headers["Authorization"] = f"Bearer {config.api_key}"
+
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+        try:
+            resp = await client.post(url, headers=headers, json={"objects": objects})
+        except httpx.HTTPError as exc:
+            raise VectorDbProviderError(f"Weaviate upsert request failed: {exc}") from exc
+    if resp.status_code >= 400:
+        raise VectorDbProviderError(f"Weaviate upsert error {resp.status_code}: {resp.text}")
+
+    # Weaviate's batch endpoint returns a per-object result with
+    # individual success/failure status — count only successes.
+    payload = resp.json()
+    if isinstance(payload, list):
+        # When all succeed Weaviate returns the list directly; if any
+        # fail each item carries a `result.errors` key.
+        successful = sum(
+            1
+            for item in payload
+            if isinstance(item, dict) and (item.get("result") or {}).get("errors") in (None, {})
+        )
+    else:
+        successful = len(out_ids)
+    return UpsertResult(inserted_count=successful, ids=out_ids[:successful])
+
+
+__all__ = ["query", "upsert"]

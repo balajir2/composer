@@ -1,4 +1,4 @@
-"""Provider framework for vector-db queries (Phase 6e).
+"""Provider framework for vector-db queries + upserts (Phase 6e + insert).
 
 See ADR-0020.
 """
@@ -55,8 +55,61 @@ class QueryConfig:
     text_field: str | None = None
 
 
+@dataclass(frozen=True)
+class UpsertDocument:
+    """One chunk to be inserted into the vector store.
+
+    id: optional stable identifier; if None the provider generates one
+        (typically a hash of the text + metadata).  Pass an id when you
+        want re-runs to overwrite the previous version of the same chunk
+        instead of duplicating.
+    text: the chunk text the embedding was computed from.  Stored under
+        the configured `text_field` so the query path can return it.
+    embedding: pre-computed embedding vector (the executor handles
+        embedding upstream — the provider just stores).
+    metadata: arbitrary JSON metadata; queryable via filters on most
+        providers.  The text field is merged in before storage.
+    """
+
+    text: str
+    embedding: list[float]
+    id: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class UpsertConfig:
+    """Runtime config for vector-db upsert operations.
+
+    Mirror of QueryConfig but trimmed to what insert needs — top_k,
+    metadata_filter, include_* flags don't apply.
+    """
+
+    endpoint: str
+    api_key: str | None
+    collection: str
+    namespace: str | None = None
+    text_field: str = "text"
+
+
+@dataclass(frozen=True)
+class UpsertResult:
+    """Outcome of an upsert call — what landed in the store and how
+    callers should report success in the workflow output."""
+
+    inserted_count: int
+    ids: list[str]
+
+
 class VectorDbProviderError(RuntimeError):
     """Raised when a provider's HTTP call fails."""
 
 
-__all__ = ["QueryConfig", "VectorDbProviderError", "VectorDbResult"]
+__all__ = [
+    "QueryConfig",
+    "UpsertConfig",
+    "UpsertDocument",
+    "UpsertResult",
+    "VectorDbProviderError",
+    "VectorDbResult",
+]

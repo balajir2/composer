@@ -16,6 +16,9 @@ import httpx
 
 from src.vectordb.providers.base import (
     QueryConfig,
+    UpsertConfig,
+    UpsertDocument,
+    UpsertResult,
     VectorDbProviderError,
     VectorDbResult,
 )
@@ -69,4 +72,73 @@ async def query(
     return results
 
 
-__all__ = ["query"]
+async def upsert(
+    documents: list[UpsertDocument],
+    config: UpsertConfig,
+) -> UpsertResult:
+    """Pinecone POST {endpoint}/vectors/upsert.
+
+    Body shape: `{vectors: [{id, values, metadata}, ...], namespace?}`.
+    The chunk text is merged into the metadata under the configured
+    `text_field` so the query path can return it via the same key.
+    Pinecone needs an `id` for every vector; we hash the text when
+    the caller didn't supply one so re-runs of the same content
+    overwrite cleanly instead of duplicating.
+    """
+    import hashlib
+    import uuid
+
+    if not documents:
+        return UpsertResult(inserted_count=0, ids=[])
+
+    vectors: list[dict[str, Any]] = []
+    out_ids: list[str] = []
+    for doc in documents:
+        if doc.id:
+            doc_id = doc.id
+        elif doc.text:
+            # Stable hash so the same chunk re-upserted gets the same
+            # id — Pinecone overwrites by id, so this turns repeat
+            # ingestions into idempotent updates.
+            doc_id = hashlib.sha1(doc.text.encode("utf-8")).hexdigest()[:32]
+        else:
+            doc_id = uuid.uuid4().hex
+        out_ids.append(doc_id)
+
+        merged_metadata: dict[str, Any] = dict(doc.metadata)
+        merged_metadata[config.text_field] = doc.text
+        vectors.append(
+            {
+                "id": doc_id,
+                "values": doc.embedding,
+                "metadata": merged_metadata,
+            }
+        )
+
+    body: dict[str, Any] = {"vectors": vectors}
+    if config.namespace:
+        body["namespace"] = config.namespace
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if config.api_key:
+        headers["Api-Key"] = config.api_key
+
+    url = config.endpoint.rstrip("/") + "/vectors/upsert"
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+        try:
+            resp = await client.post(url, headers=headers, json=body)
+        except httpx.HTTPError as exc:
+            raise VectorDbProviderError(f"Pinecone upsert request failed: {exc}") from exc
+    if resp.status_code >= 400:
+        raise VectorDbProviderError(f"Pinecone upsert error {resp.status_code}: {resp.text}")
+
+    payload = resp.json()
+    # Pinecone returns {"upsertedCount": N}; we trust our own count too
+    # since we know exactly which vectors we sent.  upsertedCount can
+    # exceed our document count when filter-driven deletes happened
+    # (won't on a plain upsert, but we use len(out_ids) to be safe).
+    inserted = int(payload.get("upsertedCount") or len(out_ids))
+    return UpsertResult(inserted_count=inserted, ids=out_ids)
+
+
+__all__ = ["query", "upsert"]

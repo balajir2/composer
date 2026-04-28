@@ -1,7 +1,13 @@
-"""vector-db node executor (Phase 6e).
+"""vector-db node executor (Phase 6e + insert mode).
 
 Dispatches to one of 5 providers (Pinecone, Qdrant, Chroma, Weaviate,
-Milvus) after embedding the query prompt via OpenAI.
+Milvus).  Two modes:
+
+  - `query` (default): embed the query_prompt, retrieve top_k matches.
+  - `upsert`: embed each chunk and insert into the configured collection.
+    Documents come from a simpleeval expression — either a list of
+    `{id?, text, metadata?}` dicts (pre-chunked) or a single string
+    (auto-chunked using chunk_size + chunk_overlap).
 
 See Phase 6e spec §7, ADR-0020.
 """
@@ -14,11 +20,18 @@ from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from src.config import get_settings
+from src.executors._eval import EvalError, evaluate
 from src.executors.base import register_executor
 from src.variable_substitution import substitute
 from src.vectordb.embedding import embed_text_openai
 from src.vectordb.providers import chroma, milvus, pinecone, qdrant, weaviate
-from src.vectordb.providers.base import QueryConfig, VectorDbResult
+from src.vectordb.providers.base import (
+    QueryConfig,
+    UpsertConfig,
+    UpsertDocument,
+    UpsertResult,
+    VectorDbResult,
+)
 
 if TYPE_CHECKING:
     from src.engine.state import WorkflowStateDict
@@ -31,14 +44,23 @@ class VectorDbNodeError(RuntimeError):
     """Raised for config / embedding / provider failures."""
 
 
-_ProviderFn = Callable[[list[float], QueryConfig], Awaitable[list[VectorDbResult]]]
+_QueryFn = Callable[[list[float], QueryConfig], Awaitable[list[VectorDbResult]]]
+_UpsertFn = Callable[[list[UpsertDocument], UpsertConfig], Awaitable[UpsertResult]]
 
-_PROVIDERS: dict[str, _ProviderFn] = {
+_QUERY_PROVIDERS: dict[str, _QueryFn] = {
     "pinecone": pinecone.query,
     "qdrant": qdrant.query,
     "chroma": chroma.query,
     "weaviate": weaviate.query,
     "milvus": milvus.query,
+}
+
+_UPSERT_PROVIDERS: dict[str, _UpsertFn] = {
+    "pinecone": pinecone.upsert,
+    "qdrant": qdrant.upsert,
+    "chroma": chroma.upsert,
+    "weaviate": weaviate.upsert,
+    "milvus": milvus.upsert,
 }
 
 
@@ -48,6 +70,17 @@ class VectorDbExecutor:
         self.node = node
 
     async def arun(self, state: WorkflowStateDict) -> dict[str, Any]:
+        operation = (self.node.data.operation or "query").lower()
+        if operation == "upsert":
+            return await self._run_upsert(state)
+        if operation == "query":
+            return await self._run_query(state)
+        raise VectorDbNodeError(
+            f"vector-db node {self.node.id!r}: operation {operation!r} not "
+            "supported (need 'query' or 'upsert')."
+        )
+
+    async def _run_query(self, state: WorkflowStateDict) -> dict[str, Any]:
         data = self.node.data
         provider_name = data.provider
 
@@ -77,7 +110,7 @@ class VectorDbExecutor:
 
         embedding = await self._embed(prompt)
 
-        provider_fn = _PROVIDERS.get(provider_name)
+        provider_fn = _QUERY_PROVIDERS.get(provider_name)
         if provider_fn is None:
             raise VectorDbNodeError(
                 f"vector-db node {self.node.id!r}: unknown provider {provider_name!r}"
@@ -180,6 +213,186 @@ class VectorDbExecutor:
             suffix = suffix_template.replace("{{index}}", str(i))
             parts.append(f"{prefix}{result.text}{suffix}")
         return separator.join(parts)
+
+    # ─── Upsert path ──────────────────────────────────────────────
+
+    async def _run_upsert(self, state: WorkflowStateDict) -> dict[str, Any]:
+        data = self.node.data
+        provider_name = data.provider
+
+        endpoint = substitute(data.endpoint, state)
+        api_key = substitute(data.api_key, state) if data.api_key else ""
+        collection = substitute(data.collection, state)
+        namespace = substitute(data.namespace, state) if data.namespace else None
+
+        if not endpoint:
+            raise VectorDbNodeError(
+                f"vector-db node {self.node.id!r}: endpoint is required for upsert"
+            )
+        if not data.documents:
+            raise VectorDbNodeError(
+                f"vector-db node {self.node.id!r}: documents expression is required "
+                "for upsert (a simpleeval expression that yields a list of "
+                "{id?, text, metadata?} dicts, or a single string for auto-chunking)"
+            )
+
+        # Resolve the documents expression against state.  Designers
+        # typically reference an upstream node's output here — e.g.
+        # `lastOutput` for a scrape that produced raw text, or
+        # `chunks` for a transform that already split it.
+        try:
+            raw_docs = evaluate(data.documents, state)
+        except EvalError as exc:
+            raise VectorDbNodeError(
+                f"vector-db node {self.node.id!r}: documents expression failed: {exc}"
+            ) from exc
+
+        chunks = self._coerce_to_chunks(raw_docs, data.chunk_size, data.chunk_overlap)
+        if not chunks:
+            raise VectorDbNodeError(
+                f"vector-db node {self.node.id!r}: documents expression produced no "
+                "chunks — check the upstream output isn't empty."
+            )
+
+        # Embed each chunk.  Sequential rather than concurrent because
+        # the embedding API rate-limits aggressively and chunks tend
+        # to be small batches (10s, not 1000s).  If this becomes a
+        # bottleneck, swap for asyncio.gather with a Semaphore.
+        documents: list[UpsertDocument] = []
+        for chunk in chunks:
+            embedding = await self._embed(chunk["text"])
+            documents.append(
+                UpsertDocument(
+                    id=chunk.get("id"),
+                    text=chunk["text"],
+                    embedding=embedding,
+                    metadata=chunk.get("metadata") or {},
+                )
+            )
+
+        upsert_fn = _UPSERT_PROVIDERS.get(provider_name)
+        if upsert_fn is None:
+            raise VectorDbNodeError(
+                f"vector-db node {self.node.id!r}: unknown provider {provider_name!r}"
+            )
+        config = UpsertConfig(
+            endpoint=endpoint,
+            api_key=api_key or None,
+            collection=collection,
+            namespace=namespace,
+            text_field=data.text_field or "text",
+        )
+        result = await upsert_fn(documents, config)
+
+        output: dict[str, Any] = {
+            "operation": "upsert",
+            "provider": provider_name,
+            "collection": collection,
+            "inserted_count": result.inserted_count,
+            "ids": list(result.ids),
+            "dimension": len(documents[0].embedding) if documents else 0,
+        }
+        output_var = data.output_variable
+        return {
+            "variables": {
+                output_var: output,
+                "lastOutput": output,
+            },
+            "current_node_id": self.node.id,
+            "node_results": {
+                self.node.id: {
+                    "node_id": self.node.id,
+                    "status": "completed",
+                    "input": {
+                        "operation": "upsert",
+                        "provider": provider_name,
+                        "collection": collection,
+                        "chunk_count": len(documents),
+                    },
+                    "output": output,
+                }
+            },
+        }
+
+    def _coerce_to_chunks(
+        self,
+        raw: Any,
+        chunk_size: int,
+        chunk_overlap: int,
+    ) -> list[dict[str, Any]]:
+        """Normalise the documents expression's value into a list of
+        chunk dicts: `[{id?, text, metadata?}, ...]`.
+
+        Three accepted shapes:
+
+        * **list of dicts** with at least a `text` field — used as-is
+          after type-checking.
+        * **list of strings** — each string becomes a chunk dict.
+        * **single string** — split into overlapping windows of
+          `chunk_size` characters, stepping by `chunk_size - overlap`.
+          Naive char-window chunking; designers wanting token-aware or
+          semantic chunking pre-process upstream and pass a list.
+        """
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            return self._chunk_string(raw, chunk_size, chunk_overlap)
+        if isinstance(raw, list):
+            chunks: list[dict[str, Any]] = []
+            for item in raw:
+                if isinstance(item, str):
+                    if item.strip():
+                        chunks.append({"text": item})
+                elif isinstance(item, dict):
+                    text = item.get("text") or item.get("content") or ""
+                    if not isinstance(text, str) or not text.strip():
+                        continue
+                    chunk: dict[str, Any] = {"text": text}
+                    if "id" in item and isinstance(item["id"], str):
+                        chunk["id"] = item["id"]
+                    if "metadata" in item and isinstance(item["metadata"], dict):
+                        chunk["metadata"] = dict(item["metadata"])
+                    chunks.append(chunk)
+                else:
+                    raise VectorDbNodeError(
+                        f"vector-db node {self.node.id!r}: documents list contained "
+                        f"unexpected item type {type(item).__name__}; expected str or "
+                        "dict with `text` field."
+                    )
+            return chunks
+        raise VectorDbNodeError(
+            f"vector-db node {self.node.id!r}: documents expression yielded "
+            f"{type(raw).__name__}; expected str, list[str], or list[dict]."
+        )
+
+    @staticmethod
+    def _chunk_string(text: str, chunk_size: int, overlap: int) -> list[dict[str, Any]]:
+        """Char-window chunking with overlap.  Cheap and deterministic.
+
+        Why char-window not token-window: tokenisers vary by model
+        (cl100k vs o200k vs Sentencepiece vs whatever Gemini uses), so
+        char count is the only universal unit.  For most prose 1
+        char ≈ 0.25 tokens, so default chunk_size=1000 is ~250 tokens
+        — well below any embedding model's 8K context.
+        """
+        if chunk_size <= 0:
+            raise VectorDbNodeError(f"chunk_size must be > 0; got {chunk_size}")
+        if overlap < 0 or overlap >= chunk_size:
+            raise VectorDbNodeError(
+                f"chunk_overlap must satisfy 0 <= overlap < chunk_size; "
+                f"got overlap={overlap}, chunk_size={chunk_size}"
+            )
+        if not text.strip():
+            return []
+        step = chunk_size - overlap
+        chunks: list[dict[str, Any]] = []
+        position = 0
+        while position < len(text):
+            window = text[position : position + chunk_size]
+            if window.strip():
+                chunks.append({"text": window})
+            position += step
+        return chunks
 
 
 __all__ = ["VectorDbExecutor", "VectorDbNodeError"]

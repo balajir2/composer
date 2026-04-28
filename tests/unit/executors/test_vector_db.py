@@ -53,7 +53,7 @@ def _stub_provider(
     *,
     captured: dict[str, Any] | None = None,
 ) -> None:
-    """Replace _PROVIDERS with a dict mapping to a stub for the active provider."""
+    """Replace _QUERY_PROVIDERS with a dict mapping to a stub for the active provider."""
     import src.executors.vector_db as vdb_mod
 
     async def _stub(embedding: list[float], config: QueryConfig) -> list[VectorDbResult]:
@@ -71,7 +71,7 @@ def _stub_provider(
         "weaviate": _stub,
         "milvus": _stub,
     }
-    monkeypatch.setattr(vdb_mod, "_PROVIDERS", stub_map)
+    monkeypatch.setattr(vdb_mod, "_QUERY_PROVIDERS", stub_map)
     monkeypatch.setattr(vdb_mod, "embed_text_openai", _fake_embed)
 
 
@@ -248,3 +248,138 @@ async def test_dispatch_covers_all_providers(
     node = _node(vectorDbProvider=provider)
     delta = await VectorDbExecutor(node).arun(initial_state())
     assert delta["variables"]["vectorDbResults"]["provider"] == provider
+
+
+# ─── Upsert mode (Phase 6e+ insert) ──────────────────────────────────
+
+
+def _stub_upsert_provider(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    captured: dict[str, Any] | None = None,
+    inserted_count: int = 0,
+) -> None:
+    """Replace _UPSERT_PROVIDERS so dispatch hits a recording stub."""
+    import src.executors.vector_db as vdb_mod
+    from src.vectordb.providers.base import (
+        UpsertConfig,
+        UpsertDocument,
+        UpsertResult,
+    )
+
+    async def _stub(
+        documents: list[UpsertDocument],
+        config: UpsertConfig,
+    ) -> UpsertResult:
+        if captured is not None:
+            captured["documents"] = list(documents)
+            captured["config"] = config
+        ids = [d.id or f"auto-{i}" for i, d in enumerate(documents)]
+        count = inserted_count if inserted_count else len(documents)
+        return UpsertResult(inserted_count=count, ids=ids)
+
+    stub_map = dict.fromkeys(("pinecone", "qdrant", "chroma", "weaviate", "milvus"), _stub)
+    monkeypatch.setattr(vdb_mod, "_UPSERT_PROVIDERS", stub_map)
+    monkeypatch.setattr(vdb_mod, "embed_text_openai", _fake_embed)
+
+
+async def test_upsert_with_pre_chunked_list(monkeypatch: pytest.MonkeyPatch) -> None:
+    """When `documents` evaluates to a list of dicts, each becomes a
+    chunk verbatim — the executor doesn't auto-chunk."""
+    captured: dict[str, Any] = {}
+    _stub_upsert_provider(monkeypatch, captured=captured)
+
+    node = _node(
+        vectorDbOperation="upsert",
+        vectorDbDocuments="chunks",
+    )
+    state = initial_state()
+    state["variables"]["chunks"] = [
+        {"text": "alpha"},
+        {"text": "beta", "metadata": {"source": "test"}},
+        {"id": "user-supplied", "text": "gamma"},
+    ]
+    delta = await VectorDbExecutor(node).arun(state)
+
+    docs: list[Any] = captured["documents"]
+    assert [d.text for d in docs] == ["alpha", "beta", "gamma"]
+    assert docs[1].metadata == {"source": "test"}
+    assert docs[2].id == "user-supplied"
+    assert delta["variables"]["lastOutput"]["operation"] == "upsert"
+    assert delta["variables"]["lastOutput"]["inserted_count"] == 3
+
+
+async def test_upsert_auto_chunks_raw_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A single string flows through char-window chunking with overlap."""
+    captured: dict[str, Any] = {}
+    _stub_upsert_provider(monkeypatch, captured=captured)
+
+    raw = "x" * 2500  # forces multiple chunks at default 1000/100
+    node = _node(
+        vectorDbOperation="upsert",
+        vectorDbDocuments="lastOutput",
+        vectorDbChunkSize=1000,
+        vectorDbChunkOverlap=100,
+    )
+    state = initial_state()
+    state["variables"]["lastOutput"] = raw
+    delta = await VectorDbExecutor(node).arun(state)
+
+    docs: list[Any] = captured["documents"]
+    # 2500 chars with step 900 (size - overlap) → windows at 0, 900, 1800
+    assert len(docs) == 3
+    assert docs[0].text.startswith("x") and len(docs[0].text) == 1000
+    assert delta["variables"]["lastOutput"]["inserted_count"] == 3
+
+
+async def test_upsert_missing_documents_expression_rejected(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Misconfigured node — clear error rather than running with no
+    documents."""
+    _stub_upsert_provider(monkeypatch)
+    node = _node(vectorDbOperation="upsert")  # no vectorDbDocuments
+    with pytest.raises(VectorDbNodeError, match="documents expression is required"):
+        await VectorDbExecutor(node).arun(initial_state())
+
+
+async def test_upsert_empty_collection_yields_clear_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """When the documents expression resolves to an empty list (no
+    chunks to insert) the executor refuses with a clear message —
+    silently succeeding with 0 chunks would mask upstream bugs."""
+    _stub_upsert_provider(monkeypatch)
+    node = _node(
+        vectorDbOperation="upsert",
+        vectorDbDocuments="chunks",
+    )
+    state = initial_state()
+    state["variables"]["chunks"] = []
+    with pytest.raises(VectorDbNodeError, match="produced no"):
+        await VectorDbExecutor(node).arun(state)
+
+
+async def test_upsert_unknown_operation_rejected() -> None:
+    node = _node(vectorDbOperation="delete")  # not implemented
+    with pytest.raises(VectorDbNodeError, match="not supported"):
+        await VectorDbExecutor(node).arun(initial_state())
+
+
+async def test_upsert_dispatches_to_correct_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Verify each of the 5 providers gets dispatched to its upsert fn."""
+    for provider in ("pinecone", "qdrant", "chroma", "weaviate", "milvus"):
+        captured: dict[str, Any] = {}
+        _stub_upsert_provider(monkeypatch, captured=captured)
+        node = _node(
+            vectorDbProvider=provider,
+            vectorDbOperation="upsert",
+            vectorDbDocuments="chunks",
+        )
+        state = initial_state()
+        state["variables"]["chunks"] = [{"text": "hi"}]
+        delta = await VectorDbExecutor(node).arun(state)
+        assert delta["variables"]["lastOutput"]["provider"] == provider
+        assert delta["variables"]["lastOutput"]["operation"] == "upsert"

@@ -1432,6 +1432,169 @@ def _rag_with_vector_db() -> dict[str, Any]:
     }
 
 
+# ─── Template 12 — Document ingestion (vector DB upsert) ─────────────────
+
+
+def _document_ingestion() -> dict[str, Any]:
+    """Companion to template 11 (RAG retrieval): ingest documents
+    into a vector DB.  Two paths into the same vector-db node:
+
+    * **From a URL**: Firecrawl scrapes the page → vector-db chunks
+      and upserts.
+    * **Pasting raw text**: skip the scrape and just upsert.
+
+    Either way the vector-db node in `upsert` mode handles the
+    embedding + chunking + insert in a single step.  The same
+    collection can then be queried by template 11.
+    """
+    return {
+        "name": "Example 12: Document Ingestion (Vector DB Upsert)",
+        "description": (
+            "Scrape a URL with Firecrawl (or skip the scrape and pass "
+            "raw text), then upsert into a vector DB collection. "
+            "Pairs with Example 11 (RAG retrieval) — ingest with this "
+            "template, query with that one. After cloning, configure the "
+            "Vector DB node with your provider, endpoint, API key, and "
+            "collection. Requires OPENAI_API_KEY for embeddings; "
+            "FIRECRAWL_API_KEY only if you use the URL input."
+        ),
+        "category": "examples",
+        "tags": ["example", "advanced", "vector-db", "ingestion", "embeddings", "rag"],
+        "difficulty": "advanced",
+        "estimatedTime": "5-10 minutes (after configuring the vector DB)",
+        "externalSlug": "template-12-document-ingestion",
+        "nodes": [
+            _start_node(
+                label="Start",
+                inputs=[
+                    {
+                        "name": "url",
+                        "type": "string",
+                        "required": False,
+                        "description": (
+                            "URL to scrape. Leave blank to skip scraping "
+                            "and use the raw_text field instead."
+                        ),
+                        "defaultValue": "https://www.anthropic.com/news",
+                    },
+                    {
+                        "name": "raw_text",
+                        "type": "string",
+                        "required": False,
+                        "description": (
+                            "Paste content here as an alternative to URL "
+                            "scraping. Used only when url is blank."
+                        ),
+                        "defaultValue": "",
+                    },
+                    {
+                        "name": "source_label",
+                        "type": "string",
+                        "required": False,
+                        "description": (
+                            "Tag stored in chunk metadata for filtering "
+                            "later. e.g. 'anthropic-news', 'q1-2026-report'."
+                        ),
+                        "defaultValue": "demo-source",
+                    },
+                ],
+            ),
+            # Scrape the URL via Firecrawl.  Skipped at runtime when
+            # raw_text is supplied — the agent's prompt branches on
+            # whether url is non-empty.  (A cleaner pattern would be an
+            # if-else node, but for a beginner-readable template the
+            # single agent makes the flow easier to follow.)
+            {
+                "id": "agent-scrape",
+                "type": "agent",
+                "position": {"x": 300, "y": 200},
+                "data": {
+                    "label": "Fetch Content",
+                    "nodeName": "Fetch Content",
+                    "instructions": (
+                        "If `{{url}}` is non-empty, call firecrawl_scrape "
+                        "on it and return the markdown verbatim.\n\n"
+                        "If `{{url}}` is empty, return `{{raw_text}}` "
+                        "verbatim with no preamble — the next node will "
+                        "ingest whatever you return.\n\n"
+                        "URL: {{url}}\n"
+                        "Raw text fallback: {{raw_text}}"
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": ["firecrawl.firecrawl_scrape"],
+                    "mcpServerIds": [],
+                },
+            },
+            # Vector-db in UPSERT mode.  Documents expression is
+            # `lastOutput` — the agent above produced a string, which
+            # the executor auto-chunks using chunk_size + chunk_overlap.
+            # For pre-chunked input the designer can swap this for a
+            # list-of-dicts expression like `chunks` (see template 11
+            # for the query-side counterpart that produces such a list).
+            {
+                "id": "vector-db-1",
+                "type": "vector-db",
+                "position": {"x": 600, "y": 200},
+                "data": {
+                    "label": "Ingest to Vector DB",
+                    "nodeName": "Ingest to Vector DB",
+                    "vectorDbOperation": "upsert",
+                    # Provider + connection — designer fills these in.
+                    "vectorDbProvider": "pinecone",
+                    "vectorDbEndpoint": "",
+                    "vectorDbApiKey": "",
+                    "vectorDbCollection": "",
+                    # Documents — auto-chunk the agent's text output.
+                    "vectorDbDocuments": "lastOutput",
+                    "vectorDbChunkSize": 1000,
+                    "vectorDbChunkOverlap": 100,
+                    # Embedding — same defaults as template 11 so the
+                    # ingest + query templates are dimension-compatible
+                    # out of the box.
+                    "vectorDbEmbeddingProvider": "openai",
+                    "vectorDbEmbeddingModel": "text-embedding-3-small",
+                    "vectorDbDimension": 1536,
+                    "vectorDbOutputVariable": "ingestResult",
+                },
+            },
+            # Final summary — surface the count + ids so the user knows
+            # what landed.
+            {
+                "id": "agent-report",
+                "type": "agent",
+                "position": {"x": 900, "y": 200},
+                "data": {
+                    "label": "Ingestion Summary",
+                    "nodeName": "Ingestion Summary",
+                    "instructions": (
+                        "Summarise the ingestion outcome for the user.\n\n"
+                        "Result: {{ingestResult}}\n\n"
+                        "Tag the report with the source label "
+                        "({{source_label}}) and tell them how many chunks "
+                        "landed in the {{ingestResult.collection}} "
+                        "collection on {{ingestResult.provider}}. If any "
+                        "ids look auto-generated (long hex strings), "
+                        "mention that re-running the workflow will "
+                        "overwrite those same chunks idempotently."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            _end_node(pos_x=1180, pos_y=200),
+        ],
+        "edges": [
+            {"id": "e1", "source": "start-1", "target": "agent-scrape"},
+            {"id": "e2", "source": "agent-scrape", "target": "vector-db-1"},
+            {"id": "e3", "source": "vector-db-1", "target": "agent-report"},
+            {"id": "e4", "source": "agent-report", "target": "end-1"},
+        ],
+    }
+
+
 _TEMPLATES: list[dict[str, Any]] = [
     _simple_agent(),
     _web_research_agent(),
@@ -1444,6 +1607,7 @@ _TEMPLATES: list[dict[str, Any]] = [
     _zillow_property_finder(),
     _while_loop_demo(),
     _rag_with_vector_db(),
+    _document_ingestion(),
 ]
 
 

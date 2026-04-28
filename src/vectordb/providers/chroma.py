@@ -16,6 +16,9 @@ import httpx
 
 from src.vectordb.providers.base import (
     QueryConfig,
+    UpsertConfig,
+    UpsertDocument,
+    UpsertResult,
     VectorDbProviderError,
     VectorDbResult,
 )
@@ -83,4 +86,66 @@ async def query(
     return results
 
 
-__all__ = ["query"]
+async def upsert(
+    documents: list[UpsertDocument],
+    config: UpsertConfig,
+) -> UpsertResult:
+    """Chroma POST /api/v1/collections/{collection}/upsert.
+
+    Body: `{ids, embeddings, metadatas, documents}` — column-major
+    arrays.  `documents` (the chunk text) is a top-level Chroma
+    concept: it gets stored alongside metadata and is what the query
+    path returns under `documents`.  We hash text into a stable id so
+    re-upserts are idempotent.
+    """
+    import hashlib
+    import uuid
+
+    if not documents:
+        return UpsertResult(inserted_count=0, ids=[])
+
+    ids: list[str] = []
+    embeddings: list[list[float]] = []
+    metadatas: list[dict[str, Any]] = []
+    docs: list[str] = []
+    for doc in documents:
+        if doc.id:
+            doc_id = doc.id
+        elif doc.text:
+            doc_id = hashlib.sha1(doc.text.encode("utf-8")).hexdigest()[:32]
+        else:
+            doc_id = uuid.uuid4().hex
+        ids.append(doc_id)
+        embeddings.append(doc.embedding)
+        # Chroma rejects empty metadata dicts on some versions; pass
+        # `{"_text": ""}` as a sentinel so every chunk has at least
+        # one metadata field even when the caller didn't supply any.
+        md = dict(doc.metadata) if doc.metadata else {"_source": "composer"}
+        metadatas.append(md)
+        docs.append(doc.text)
+
+    base = config.endpoint.rstrip("/")
+    url = f"{base}/api/v1/collections/{config.collection}/upsert"
+
+    headers: dict[str, str] = {"Content-Type": "application/json"}
+    if config.api_key:
+        headers["Authorization"] = f"Bearer {config.api_key}"
+
+    body: dict[str, Any] = {
+        "ids": ids,
+        "embeddings": embeddings,
+        "metadatas": metadatas,
+        "documents": docs,
+    }
+    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+        try:
+            resp = await client.post(url, headers=headers, json=body)
+        except httpx.HTTPError as exc:
+            raise VectorDbProviderError(f"Chroma upsert request failed: {exc}") from exc
+    if resp.status_code >= 400:
+        raise VectorDbProviderError(f"Chroma upsert error {resp.status_code}: {resp.text}")
+
+    return UpsertResult(inserted_count=len(ids), ids=ids)
+
+
+__all__ = ["query", "upsert"]

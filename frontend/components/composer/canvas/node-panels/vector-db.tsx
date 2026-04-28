@@ -27,6 +27,11 @@ const PROVIDER_OPTIONS = [
   { value: "milvus", label: "Milvus" },
 ];
 
+const OPERATION_OPTIONS = [
+  { value: "query", label: "Query — retrieve top-k similar chunks" },
+  { value: "upsert", label: "Upsert — embed and insert chunks" },
+];
+
 const EMBEDDING_PROVIDER_OPTIONS = [{ value: "openai", label: "OpenAI" }];
 
 // Per-provider hint for the endpoint field — paste-friendly examples
@@ -46,8 +51,12 @@ export default function VectorDbPanel({
   data: Record<string, unknown>;
   onChange: (patch: Record<string, unknown>) => void;
 }) {
+  const operation = (data.vectorDbOperation as string) ?? "query";
   const provider = (data.vectorDbProvider as string) ?? "pinecone";
   const endpoint = (data.vectorDbEndpoint as string) ?? "";
+  const documents = (data.vectorDbDocuments as string) ?? "";
+  const chunkSize = (data.vectorDbChunkSize as number) ?? 1000;
+  const chunkOverlap = (data.vectorDbChunkOverlap as number) ?? 100;
   const apiKey = (data.vectorDbApiKey as string) ?? "";
   const collection = (data.vectorDbCollection as string) ?? "";
   const namespace = (data.vectorDbNamespace as string) ?? "";
@@ -70,6 +79,21 @@ export default function VectorDbPanel({
 
   return (
     <div className="space-y-4">
+      <div className="space-y-2">
+        <Label htmlFor="vdb-operation">Operation</Label>
+        <NativeSelect
+          id="vdb-operation"
+          value={operation}
+          onValueChange={(v) => onChange({ vectorDbOperation: v })}
+          options={OPERATION_OPTIONS}
+        />
+        <p className="text-xs text-muted-foreground">
+          <strong>Query</strong>: embed the prompt and retrieve top-k
+          matches. <strong>Upsert</strong>: embed each chunk in the
+          documents expression and insert into the collection.
+        </p>
+      </div>
+
       {/* Connection */}
       <div className="space-y-2">
         <Label htmlFor="vdb-provider">Provider</Label>
@@ -139,51 +163,123 @@ export default function VectorDbPanel({
         </div>
       )}
 
-      {/* Query */}
-      <div className="space-y-2">
-        <Label htmlFor="vdb-query">Query prompt</Label>
-        <Textarea
-          id="vdb-query"
-          value={queryPrompt}
-          onChange={(e) => onChange({ vectorDbQueryPrompt: e.target.value })}
-          placeholder="What to search for. Reference upstream variables: {{question}}"
-          rows={3}
-        />
-        <p className="text-xs text-muted-foreground">
-          Embedded with the configured embedding model, then matched
-          against vectors in the collection.
-        </p>
-      </div>
+      {/* Query mode — retrieval */}
+      {operation === "query" && (
+        <>
+          <div className="space-y-2">
+            <Label htmlFor="vdb-query">Query prompt</Label>
+            <Textarea
+              id="vdb-query"
+              value={queryPrompt}
+              onChange={(e) => onChange({ vectorDbQueryPrompt: e.target.value })}
+              placeholder="What to search for. Reference upstream variables: {{question}}"
+              rows={3}
+            />
+            <p className="text-xs text-muted-foreground">
+              Embedded with the configured embedding model, then matched
+              against vectors in the collection.
+            </p>
+          </div>
 
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-2">
-          <Label htmlFor="vdb-topk">Top K</Label>
-          <Input
-            id="vdb-topk"
-            type="number"
-            min={1}
-            max={100}
-            value={topK}
-            onChange={(e) =>
-              onChange({ vectorDbTopK: parseInt(e.target.value, 10) || 5 })
-            }
-          />
-        </div>
-        <div className="space-y-2">
-          <Label htmlFor="vdb-score">Min score (0–1)</Label>
-          <Input
-            id="vdb-score"
-            type="number"
-            min={0}
-            max={1}
-            step={0.05}
-            value={scoreThreshold}
-            onChange={(e) =>
-              onChange({ vectorDbScoreThreshold: parseFloat(e.target.value) || 0 })
-            }
-          />
-        </div>
-      </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label htmlFor="vdb-topk">Top K</Label>
+              <Input
+                id="vdb-topk"
+                type="number"
+                min={1}
+                max={100}
+                value={topK}
+                onChange={(e) =>
+                  onChange({ vectorDbTopK: parseInt(e.target.value, 10) || 5 })
+                }
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="vdb-score">Min score (0–1)</Label>
+              <Input
+                id="vdb-score"
+                type="number"
+                min={0}
+                max={1}
+                step={0.05}
+                value={scoreThreshold}
+                onChange={(e) =>
+                  onChange({
+                    vectorDbScoreThreshold: parseFloat(e.target.value) || 0,
+                  })
+                }
+              />
+            </div>
+          </div>
+        </>
+      )}
+
+      {/* Upsert mode — ingestion */}
+      {operation === "upsert" && (
+        <>
+          <div className="space-y-2">
+            <Label htmlFor="vdb-documents">Documents expression</Label>
+            <Textarea
+              id="vdb-documents"
+              value={documents}
+              onChange={(e) =>
+                onChange({ vectorDbDocuments: e.target.value || undefined })
+              }
+              placeholder="lastOutput  ←  raw text from upstream node (auto-chunked)
+chunks  ←  pre-chunked list [{text, metadata?}, ...]
+{{my_var}}  ←  Mustache resolves before eval"
+              rows={3}
+              className="font-mono text-xs"
+            />
+            <p className="text-xs text-muted-foreground">
+              A simpleeval expression. Three accepted shapes: a single
+              string (auto-chunked using the values below), a list of
+              strings, or a list of <code className="font-mono">{"{id?, text, metadata?}"}</code>{" "}
+              dicts (pre-chunked — recommended for production where you
+              want stable ids).
+            </p>
+          </div>
+
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-2">
+              <Label htmlFor="vdb-chunk-size">Chunk size (chars)</Label>
+              <Input
+                id="vdb-chunk-size"
+                type="number"
+                min={100}
+                max={20000}
+                value={chunkSize}
+                onChange={(e) =>
+                  onChange({
+                    vectorDbChunkSize: parseInt(e.target.value, 10) || 1000,
+                  })
+                }
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="vdb-chunk-overlap">Chunk overlap</Label>
+              <Input
+                id="vdb-chunk-overlap"
+                type="number"
+                min={0}
+                max={chunkSize - 1}
+                value={chunkOverlap}
+                onChange={(e) =>
+                  onChange({
+                    vectorDbChunkOverlap: parseInt(e.target.value, 10) || 0,
+                  })
+                }
+              />
+            </div>
+          </div>
+          <p className="-mt-2 text-xs text-muted-foreground">
+            Char-window chunking only kicks in when the expression
+            yields a single string. Pre-chunked lists are stored
+            verbatim — chunk size is ignored.
+          </p>
+        </>
+      )}
 
       {/* Embeddings */}
       <div className="grid grid-cols-2 gap-3">

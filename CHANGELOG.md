@@ -6,6 +6,33 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 10 — Polish: vector-db upsert + ingestion template (2026-04-28)
+
+#### Added
+- **vector-db node now supports `upsert` mode** alongside `query`. Schema gains `vectorDbOperation`, `vectorDbDocuments`, `vectorDbChunkSize`, `vectorDbChunkOverlap`. The `documents` field is a simpleeval expression that resolves to either:
+  - a list of `{id?, text, metadata?}` dicts (pre-chunked, recommended for production where stable ids matter), OR
+  - a list of strings (each becomes a chunk verbatim), OR
+  - a single string (auto-chunked using char-window with overlap).
+  The executor embeds each chunk via OpenAI then dispatches to the provider's upsert function.
+- **Upsert implementations for all 5 providers**:
+  - **Pinecone** — `POST /vectors/upsert`, body `{vectors: [{id, values, metadata}]}`. Stable sha1-derived ids so re-upserts of identical text overwrite cleanly.
+  - **Qdrant** — `PUT /collections/{c}/points?wait=true`, points keyed by UUIDv5 derived from chunk text.
+  - **Chroma** — `POST /api/v1/collections/{c}/upsert` with column-major arrays.
+  - **Weaviate** — `POST /v1/batch/objects` with PascalCase class normalisation, UUIDv5 ids.
+  - **Milvus** — `POST /v1/vector/insert` (Zilliz Cloud REST shape), 63-bit positive int ids hashed from chunk text.
+- **Vector-db panel exposes upsert mode** — operation dropdown at the top toggles between query-only and upsert-only fields. Query mode shows the original prompt + top-k + score threshold; upsert mode shows the documents expression + chunk-size + chunk-overlap.
+- **Template 12 — Document Ingestion (Vector DB Upsert).** Companion to template 11: scrape a URL with Firecrawl (or paste raw text), then upsert into a vector DB collection. The same collection can then be queried by template 11 — paired ingest + retrieve flows out of the box.
+
+#### Notes
+- Pre-chunked input wins on production runs because the designer controls chunk boundaries (which matter for retrieval quality). Auto-chunking is the "drop in any text and it works" default for prototyping.
+- Char-window chunking is naive on purpose — token-aware or semantic chunking belongs upstream in a transform/agent. Designers wanting LangChain-style splitters pre-process and pass a list.
+- The same `text_field` config that drives the query-side chunk extraction also names the metadata key under which upsert stores the chunk text. Keep them aligned across query + upsert nodes pointing at the same collection.
+
+#### Verified
+- 673/673 unit tests green (Phase-10-polish baseline 667 + 6 new tests covering pre-chunked list, raw-string auto-chunking, missing-documents validation, empty-collection rejection, unknown-operation rejection, dispatch across all 5 providers).
+- Pyright 0 errors, ruff + format + frontend tsc all clean.
+- Seed script: 11 templates updated, 1 created (Template 12).
+
 ### Phase 10 — Polish: My-workflows admin scope + RAG template (2026-04-28)
 
 #### Added
