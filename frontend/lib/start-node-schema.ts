@@ -3,7 +3,11 @@ import { z } from "zod";
 type StartField = {
   name: string;
   label: string;
-  type: "text" | "number" | "json" | "boolean";
+  // `document`: rendered as a file picker; on select we POST to
+  // /uploads/extract-text and stash the returned plain text as the
+  // input value.  From the engine's perspective this is a regular
+  // string variable — same path as a `text` input.
+  type: "text" | "number" | "json" | "boolean" | "document";
   required: boolean;
   default?: unknown;
 };
@@ -24,10 +28,13 @@ type RawVariable = {
 
 function normalizeField(raw: RawVariable): StartField {
   const rawType = String(raw.type ?? "text");
+  // `string` is OAB's name for plain text — accept it as an alias
+  // so workflows imported from OAB render correctly.
+  const aliased = rawType === "string" ? "text" : rawType;
   const type: StartField["type"] = (
-    ["text", "number", "boolean", "json"] as const
-  ).includes(rawType as StartField["type"])
-    ? (rawType as StartField["type"])
+    ["text", "number", "boolean", "json", "document"] as const
+  ).includes(aliased as StartField["type"])
+    ? (aliased as StartField["type"])
     : "text";
   const name = String(raw.name ?? "");
   // Prefer description (backend/canvas field); fall back to label (legacy).
@@ -88,6 +95,14 @@ export function startNodeSpec(wf: Workflow): { fields: StartField[]; schema: z.Z
       case "boolean":
         field = z.boolean();
         if (!f.required) field = field.optional();
+        break;
+      case "document":
+        // The form stores extracted text once the file is uploaded.
+        // For required fields the user must complete the upload; for
+        // optional fields they can skip it.
+        field = f.required
+          ? z.string().min(1, "please upload a document")
+          : z.string().optional();
         break;
       case "json":
       default: {

@@ -1450,42 +1450,33 @@ def _document_ingestion() -> dict[str, Any]:
     return {
         "name": "Example 12: Document Ingestion (Vector DB Upsert)",
         "description": (
-            "Scrape a URL with Firecrawl (or skip the scrape and pass "
-            "raw text), then upsert into a vector DB collection. "
-            "Pairs with Example 11 (RAG retrieval) — ingest with this "
-            "template, query with that one. After cloning, configure the "
-            "Vector DB node with your provider, endpoint, API key, and "
-            "collection. Requires OPENAI_API_KEY for embeddings; "
-            "FIRECRAWL_API_KEY only if you use the URL input."
+            "Upload a PDF, DOCX, Markdown, or plain-text file at run "
+            "time; Composer extracts the text, chunks it, embeds each "
+            "chunk via OpenAI, and inserts into your vector DB. Pairs "
+            "with Example 11 (RAG retrieval) — ingest with this "
+            "template, query with that one. After cloning, configure "
+            "the Vector DB node with your provider, endpoint, API key, "
+            "and collection. Requires OPENAI_API_KEY for embeddings."
         ),
         "category": "examples",
-        "tags": ["example", "advanced", "vector-db", "ingestion", "embeddings", "rag"],
+        "tags": ["example", "advanced", "vector-db", "ingestion", "embeddings", "rag", "documents"],
         "difficulty": "advanced",
-        "estimatedTime": "5-10 minutes (after configuring the vector DB)",
+        "estimatedTime": "3-5 minutes (after configuring the vector DB)",
         "externalSlug": "template-12-document-ingestion",
         "nodes": [
             _start_node(
                 label="Start",
                 inputs=[
                     {
-                        "name": "url",
-                        "type": "string",
-                        "required": False,
+                        "name": "document",
+                        "type": "document",
+                        "required": True,
                         "description": (
-                            "URL to scrape. Leave blank to skip scraping "
-                            "and use the raw_text field instead."
+                            "Upload a PDF, DOCX, Markdown, or plain-text "
+                            "file (max 10MB). The text is extracted "
+                            "server-side and passed to the next node as "
+                            "a regular string variable."
                         ),
-                        "defaultValue": "https://www.anthropic.com/news",
-                    },
-                    {
-                        "name": "raw_text",
-                        "type": "string",
-                        "required": False,
-                        "description": (
-                            "Paste content here as an alternative to URL "
-                            "scraping. Used only when url is blank."
-                        ),
-                        "defaultValue": "",
                     },
                     {
                         "name": "source_label",
@@ -1493,49 +1484,23 @@ def _document_ingestion() -> dict[str, Any]:
                         "required": False,
                         "description": (
                             "Tag stored in chunk metadata for filtering "
-                            "later. e.g. 'anthropic-news', 'q1-2026-report'."
+                            "later. e.g. 'q1-2026-report', 'company-policy'."
                         ),
-                        "defaultValue": "demo-source",
+                        "defaultValue": "uploaded-doc",
                     },
                 ],
             ),
-            # Scrape the URL via Firecrawl.  Skipped at runtime when
-            # raw_text is supplied — the agent's prompt branches on
-            # whether url is non-empty.  (A cleaner pattern would be an
-            # if-else node, but for a beginner-readable template the
-            # single agent makes the flow easier to follow.)
-            {
-                "id": "agent-scrape",
-                "type": "agent",
-                "position": {"x": 300, "y": 200},
-                "data": {
-                    "label": "Fetch Content",
-                    "nodeName": "Fetch Content",
-                    "instructions": (
-                        "If `{{url}}` is non-empty, call firecrawl_scrape "
-                        "on it and return the markdown verbatim.\n\n"
-                        "If `{{url}}` is empty, return `{{raw_text}}` "
-                        "verbatim with no preamble — the next node will "
-                        "ingest whatever you return.\n\n"
-                        "URL: {{url}}\n"
-                        "Raw text fallback: {{raw_text}}"
-                    ),
-                    "model": _DEFAULT_MODEL,
-                    "outputFormat": "Text",
-                    "selectedTools": ["firecrawl.firecrawl_scrape"],
-                    "mcpServerIds": [],
-                },
-            },
             # Vector-db in UPSERT mode.  Documents expression is
-            # `lastOutput` — the agent above produced a string, which
-            # the executor auto-chunks using chunk_size + chunk_overlap.
-            # For pre-chunked input the designer can swap this for a
-            # list-of-dicts expression like `chunks` (see template 11
-            # for the query-side counterpart that produces such a list).
+            # `document` — the extracted text from the upload widget,
+            # which the executor auto-chunks using chunk_size +
+            # chunk_overlap below.  No glue node needed: the upload
+            # endpoint hands the form a string, the form sends it as
+            # the `document` input variable, and the executor sees it
+            # as a regular string.
             {
                 "id": "vector-db-1",
                 "type": "vector-db",
-                "position": {"x": 600, "y": 200},
+                "position": {"x": 380, "y": 200},
                 "data": {
                     "label": "Ingest to Vector DB",
                     "nodeName": "Ingest to Vector DB",
@@ -1545,8 +1510,10 @@ def _document_ingestion() -> dict[str, Any]:
                     "vectorDbEndpoint": "",
                     "vectorDbApiKey": "",
                     "vectorDbCollection": "",
-                    # Documents — auto-chunk the agent's text output.
-                    "vectorDbDocuments": "lastOutput",
+                    # Documents — the extracted text from the document
+                    # input.  The executor sees a string and auto-chunks
+                    # via the chunk_size + chunk_overlap config below.
+                    "vectorDbDocuments": "document",
                     "vectorDbChunkSize": 1000,
                     "vectorDbChunkOverlap": 100,
                     # Embedding — same defaults as template 11 so the
@@ -1563,7 +1530,7 @@ def _document_ingestion() -> dict[str, Any]:
             {
                 "id": "agent-report",
                 "type": "agent",
-                "position": {"x": 900, "y": 200},
+                "position": {"x": 680, "y": 200},
                 "data": {
                     "label": "Ingestion Summary",
                     "nodeName": "Ingestion Summary",
@@ -1584,13 +1551,12 @@ def _document_ingestion() -> dict[str, Any]:
                     "mcpServerIds": [],
                 },
             },
-            _end_node(pos_x=1180, pos_y=200),
+            _end_node(pos_x=960, pos_y=200),
         ],
         "edges": [
-            {"id": "e1", "source": "start-1", "target": "agent-scrape"},
-            {"id": "e2", "source": "agent-scrape", "target": "vector-db-1"},
-            {"id": "e3", "source": "vector-db-1", "target": "agent-report"},
-            {"id": "e4", "source": "agent-report", "target": "end-1"},
+            {"id": "e1", "source": "start-1", "target": "vector-db-1"},
+            {"id": "e2", "source": "vector-db-1", "target": "agent-report"},
+            {"id": "e3", "source": "agent-report", "target": "end-1"},
         ],
     }
 

@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 10 — Polish: document upload + extraction (2026-04-28)
+
+#### Added
+- **`POST /uploads/extract-text` endpoint** — multipart upload of `.txt` / `.md` / `.markdown` / `.pdf` / `.docx`, returns extracted plain text. No persistence: file is read in-memory (10 MB cap), text is extracted in-flight, bytes are released. Per-user rate limit 20/min.
+  - Plain text: UTF-8 with BOM tolerance, latin-1 fallback for non-UTF-8 input.
+  - PDF: pypdf page-by-page extraction; pages with bad content streams are skipped rather than failing the upload.
+  - DOCX: python-docx paragraph + table extraction; headers/footers/inline images intentionally skipped.
+  - Routes on file extension (Chrome misreports content-type for some formats); content-type only a hint.
+- **`document` start input type** in workflows. Run-input form renders a file picker for these inputs; on select it uploads to `/uploads/extract-text` and stashes the returned text as the input value. Engine sees a regular string variable — no special handling, downstream nodes reference `{{policy_doc}}` exactly the way they reference any other text input.
+- **OAB compatibility shim**: start input variables saved as `type: "string"` (OAB's name for plain text) now alias to Composer's `text` type so workflows imported from OAB render correctly without re-saving every input declaration.
+
+#### Changed
+- **Template 12 (Document Ingestion)** updated to use the new `document` input type. Two-node pipeline now: Start (file picker) → Vector-DB upsert → Summary agent. Removes the previous Firecrawl-or-raw-text branching since uploaded files are the more useful path.
+
+#### Notes
+- Why no persistence: keeps Composer infrastructure-light (no S3, no Convex blobs). For workflows that need to keep the file around — re-running with the same input, audit, cross-execution reference — the designer can re-upload or wire up an HTTP node to fetch from their own storage.
+- Why server-side text extraction (vs. client-side pdf.js): a ~500KB pdf.js bundle on every workflow run page felt heavy when pypdf already sits server-side and gives cleaner extraction. The trade-off is that uploads round-trip; for large PDFs the form shows an "Extracting…" indicator.
+- The 10MB cap covers most policy docs / contracts / meeting transcripts. Larger inputs should chunk upstream — Template 12's ingestion path handles that naturally via vector-db's auto-chunking.
+
+#### Verified
+- 683/683 unit tests green (Phase-10-polish baseline 673 + 10 new uploads tests covering each format, BOM/latin-1 fallbacks, extension-priority dispatch, oversized rejection, empty-file rejection, and PDF dispatch via mock).
+- Pyright 0 errors, ruff + format + frontend tsc all clean.
+- Seed script: 11 templates updated, including Template 12 reworked to use the document input.
+
 ### Phase 10 — Polish: vector-db upsert + ingestion template (2026-04-28)
 
 #### Added
