@@ -170,6 +170,159 @@ async def get_execution(
     return ExecutionRead.model_validate(row)
 
 
+class BulkDeleteRequest(BaseModel):
+    """Body for `POST /executions/delete-bulk`.
+
+    Two modes — both filter to the caller's authz scope (members see
+    only their own executions; admins see all):
+
+    * `executionIds` — explicit list of ids (preferred — what the
+      history-page checkboxes produce).
+    * `allInScope: true` — wipe every execution the caller can see.
+      Admin-only safety valve for "clear all history on this
+      deployment"; rejected (403) for non-admins to keep an
+      accidental click from emptying a member's full history.
+    """
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    execution_ids: list[str] | None = Field(default=None, alias="executionIds")
+    all_in_scope: bool = Field(default=False, alias="allInScope")
+
+
+class BulkDeleteResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    deleted_count: int = Field(alias="deletedCount")
+    skipped_count: int = Field(default=0, alias="skippedCount")
+
+
+@router.post(
+    "/executions/delete-bulk",
+    response_model=BulkDeleteResponse,
+    status_code=status.HTTP_200_OK,
+)
+async def delete_executions_bulk(  # pyright: ignore[reportUnusedFunction]
+    payload: BulkDeleteRequest,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _role: tuple[str, str] = Depends(get_current_role),
+) -> BulkDeleteResponse:
+    """Delete multiple executions in one round-trip.
+
+    Same authz model as the single-row delete: members can only
+    delete their own; admins can delete any.  We resolve the target
+    set under that scope BEFORE deletion so the count returned is
+    honest (skipped = ids the caller asked for but didn't own).
+
+    `allInScope=true` is admin-only — see BulkDeleteRequest docstring.
+    """
+    user_id, role = _role
+
+    if payload.all_in_scope and role != "admin":
+        # Members can still call delete-bulk with their own id list,
+        # but the "wipe everything" mode is admin-only.  Members
+        # accidentally clicking "Delete all" elsewhere shouldn't
+        # nuke their own history.
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="allInScope=true is admin-only.",
+        )
+
+    where: dict[str, Any]
+    requested_ids = payload.execution_ids or []
+    if payload.all_in_scope:
+        # Admin wipe — every row.  No scope narrowing because
+        # admins see everything.
+        where = {}
+    elif requested_ids:
+        # Explicit-ids mode.  Intersect with the caller's authz
+        # scope so member callers can't pass admin-only ids and
+        # have them slip through.
+        where = {"id": {"in": requested_ids}}
+        if role != "admin":
+            where["userId"] = user_id
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Provide executionIds or set allInScope=true.",
+        )
+
+    # Find the matching rows so we can collect thread_ids for the
+    # checkpoint cleanup step.  Without this we'd leave orphan
+    # checkpoints behind.
+    rows = await db.workflowexecution.find_many(where=where)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
+    if not rows:
+        return BulkDeleteResponse(
+            deletedCount=0,
+            skippedCount=len(requested_ids),
+        )
+
+    thread_ids = [row.threadId for row in rows]
+    target_ids = [row.id for row in rows]
+
+    # Order matters: writes table is FK'd into the checkpoints table,
+    # so writes go first, then checkpoints, then the executions
+    # themselves (which cascade-delete approvals via Prisma).
+    await db.langgraphcheckpointwrite.delete_many(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"threadId": {"in": thread_ids}}
+    )
+    await db.langgraphcheckpoint.delete_many(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"threadId": {"in": thread_ids}}
+    )
+    await db.workflowexecution.delete_many(where={"id": {"in": target_ids}})  # pyright: ignore[reportAttributeAccessIssue]
+
+    skipped = max(0, len(requested_ids) - len(target_ids)) if requested_ids else 0
+    return BulkDeleteResponse(
+        deletedCount=len(target_ids),
+        skippedCount=skipped,
+    )
+
+
+@router.delete("/executions/{execution_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_execution(  # pyright: ignore[reportUnusedFunction]
+    execution_id: str,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _role: tuple[str, str] = Depends(get_current_role),
+) -> None:
+    """Delete an execution + its derived artefacts.
+
+    Authz: owner OR admin.  Admins can clean up any user's history;
+    members can only delete their own (matches the read-authz policy
+    everywhere else).  404 (not 403) on cross-tenant access so we
+    don't leak existence.
+
+    Cascade scope:
+      - `approvals` rows — via Prisma `onDelete: Cascade` on the FK.
+      - LangGraph checkpoints + checkpoint_writes — keyed by
+        `thread_id` (no FK to execution by design — checkpoints can
+        outlive the execution row in some scenarios).  We delete
+        them explicitly here because once the execution is gone the
+        checkpoints are unreachable garbage.
+      - `workflow_executions` row itself.
+    """
+    user_id, role = _role
+    row = await db.workflowexecution.find_unique(where={"id": execution_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execution {execution_id!r} not found.",
+        )
+    if role != "admin" and row.userId != user_id:
+        # Same 404 we use on read for non-owners — don't leak existence.
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execution {execution_id!r} not found.",
+        )
+
+    thread_id = row.threadId
+    # Order matters: writes table is FK'd into the checkpoint table,
+    # so writes go first, then checkpoints, then the execution itself.
+    # Approvals cascade through the execution FK.
+    await db.langgraphcheckpointwrite.delete_many(where={"threadId": thread_id})  # pyright: ignore[reportAttributeAccessIssue]
+    await db.langgraphcheckpoint.delete_many(where={"threadId": thread_id})  # pyright: ignore[reportAttributeAccessIssue]
+    await db.workflowexecution.delete(where={"id": execution_id})  # pyright: ignore[reportAttributeAccessIssue]
+
+
 @router.post("/executions/{execution_id}/resume", response_model=ExecutionRead)
 async def resume_execution(
     execution_id: str,

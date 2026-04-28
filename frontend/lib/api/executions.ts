@@ -35,3 +35,34 @@ export async function resumeExecution(
     body: JSON.stringify(body),
   });
 }
+
+/**
+ * Delete an execution + its derived artefacts (approvals,
+ * LangGraph checkpoints).  Authz: owner OR admin.  Members deleting
+ * other users' executions get a 404 (existence is hidden).
+ */
+export async function deleteExecution(id: string): Promise<void> {
+  return apiFetch<void>(`/executions/${id}`, { method: "DELETE" });
+}
+
+export interface BulkDeleteResponse {
+  deletedCount: number;
+  skippedCount: number;
+}
+
+/**
+ * Bulk-delete executions in one round-trip.  Pass either
+ * `executionIds` (preferred — what the history-page checkboxes
+ * produce) or `allInScope: true` (admin-only "wipe all" mode).
+ * Members passing ids they don't own get those silently skipped;
+ * `skippedCount` in the response tells you how many didn't apply.
+ */
+export async function bulkDeleteExecutions(body: {
+  executionIds?: string[];
+  allInScope?: boolean;
+}): Promise<BulkDeleteResponse> {
+  return apiFetch<BulkDeleteResponse>(`/executions/delete-bulk`, {
+    method: "POST",
+    body: JSON.stringify(body),
+  });
+}
