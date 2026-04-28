@@ -129,3 +129,91 @@ async def test_node_result_shape() -> None:
     assert result["input"]["variable"] == "chunks"
     assert result["input"]["chunk_count"] == 2
     assert result["output"] == "a\n\nb"
+
+
+# Vector-DB compatibility: vector-db results carry chunks under `text`,
+# not `content`.  Without the fallback, designers had to insert an
+# extra data-transform between vector-db and join-chunks to rename
+# the field — making the RAG pattern needlessly verbose.
+
+
+async def test_dict_chunks_with_text_key() -> None:
+    """vector-db result shape: each chunk has `text`, not `content`."""
+    from src.engine.state import initial_state
+    from src.engine.workflow import JoinChunksNode
+    from src.executors.join_chunks import JoinChunksExecutor
+
+    node = JoinChunksNode.model_validate(
+        {
+            "id": "j",
+            "type": "join-chunks",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "J",
+                "joinChunksVariable": "chunks",
+                "joinChunksSeparator": " | ",
+            },
+        }
+    )
+    state = initial_state()
+    state["variables"]["chunks"] = [
+        {"id": "doc1", "score": 0.9, "text": "alpha"},
+        {"id": "doc2", "score": 0.8, "text": "beta"},
+    ]
+    delta = await JoinChunksExecutor(node).arun(state)
+    assert delta["variables"]["lastOutput"] == "alpha | beta"
+
+
+async def test_dict_chunks_with_page_content_key() -> None:
+    """LangChain Document shape: `page_content` is the canonical text field."""
+    from src.engine.state import initial_state
+    from src.engine.workflow import JoinChunksNode
+    from src.executors.join_chunks import JoinChunksExecutor
+
+    node = JoinChunksNode.model_validate(
+        {
+            "id": "j",
+            "type": "join-chunks",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "J",
+                "joinChunksVariable": "chunks",
+                "joinChunksSeparator": "\n",
+            },
+        }
+    )
+    state = initial_state()
+    state["variables"]["chunks"] = [
+        {"page_content": "first", "metadata": {"source": "a.txt"}},
+        {"page_content": "second", "metadata": {"source": "b.txt"}},
+    ]
+    delta = await JoinChunksExecutor(node).arun(state)
+    assert delta["variables"]["lastOutput"] == "first\nsecond"
+
+
+async def test_content_key_takes_priority_over_text() -> None:
+    """If both `content` and `text` are present, `content` wins —
+    `content` is the more explicit name and matches the legacy
+    behaviour."""
+    from src.engine.state import initial_state
+    from src.engine.workflow import JoinChunksNode
+    from src.executors.join_chunks import JoinChunksExecutor
+
+    node = JoinChunksNode.model_validate(
+        {
+            "id": "j",
+            "type": "join-chunks",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "J",
+                "joinChunksVariable": "chunks",
+                "joinChunksSeparator": ",",
+            },
+        }
+    )
+    state = initial_state()
+    state["variables"]["chunks"] = [
+        {"content": "explicit", "text": "fallback"},
+    ]
+    delta = await JoinChunksExecutor(node).arun(state)
+    assert delta["variables"]["lastOutput"] == "explicit"

@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 10 — Polish: My-workflows admin scope + RAG template (2026-04-28)
+
+#### Added
+- **Template 11 — RAG with Vector DB + Join Chunks.** Classic retrieval-augmented generation pipeline (Start → vector-db → transform extracts chunks → join-chunks stitches into context → agent answers). Demonstrates the vector-db + join-chunks pair and uses transform's `outputKey` to extract `vectorDbResults["results"]` into a flat `chunks` list in one node.
+
+#### Fixed
+- **`/designer` (My workflows) showed every workflow on the system for admins**, including userId=null templates. The list endpoint short-circuited the authz filter when `role == "admin"`, ignoring `mine=true`. Fixed: `mine=true` is an explicit "scope to me" request and now applies regardless of role; the admin-sees-all behaviour only kicks in when `mine` is unset (preserving the global feed for `/admin/workflows`-style use).
+- **join-chunks reads `text` and `page_content` as fallbacks for `content`.** Vector-db results emit each chunk under `text`, LangChain Documents use `page_content`. Without the fallback, designers had to insert a data-transform between vector-db and join-chunks just to rename the field — but simpleeval's no-dict-literal policy made even that reshape impractical to write in a transform expression. Now vector-db results flow into join-chunks directly.
+
+#### Verified
+- 667/667 unit tests green (Phase-10-polish baseline 662 + 2 regression tests for the admin/`mine` interaction + 3 for the join-chunks `text`/`page_content` fallback).
+- ruff + format + pyright + frontend tsc all clean.
+- Seed script: 10 templates updated, 1 created (Template 11).
+
 ### Phase 10 — Polish: transform `outputKey` + while-loop template (2026-04-28)
 
 #### Added

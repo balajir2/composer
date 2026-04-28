@@ -6,7 +6,8 @@ configurable separator/prefix/suffix, optionally appending metadata.
 Chunk shapes supported:
   - str: used as-is
   - dict with 'content' key: use the content string
-  - dict without 'content': JSON-serialize the whole dict (compact)
+  - dict with 'text' key (e.g. vector-db results): use the text string
+  - dict without either: JSON-serialize the whole dict (compact)
   - other: str(chunk)
 
 Output lands on lastOutput (consistent with http/transform/extract).
@@ -85,9 +86,16 @@ class JoinChunksExecutor:
         if isinstance(chunk, str):
             return chunk
         if isinstance(chunk, dict):
-            content = chunk.get("content")
-            if isinstance(content, str):
-                return content
+            # Prefer `content`, fall back to `text` (the field vector-db
+            # results emit) so a vector-db node's output can flow into
+            # join-chunks without an intermediate reshape step.  Both
+            # names are common in chunk representations across the
+            # ecosystem (LangChain Documents use `page_content`,
+            # OpenAI/Cohere embeddings use `text`).
+            for key in ("content", "text", "page_content"):
+                value = chunk.get(key)
+                if isinstance(value, str):
+                    return value
             return json.dumps(chunk)
         return str(chunk)
 

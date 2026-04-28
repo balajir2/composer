@@ -1273,6 +1273,165 @@ def _while_loop_demo() -> dict[str, Any]:
     }
 
 
+# ─── Template 11 — RAG with Vector DB + Join Chunks ──────────────────────
+
+
+def _rag_with_vector_db() -> dict[str, Any]:
+    """Classic Retrieval-Augmented Generation pipeline.
+
+    Vector DB returns a results object with `text`-bearing chunks; a
+    transform extracts the array under a named variable so join-chunks
+    can stitch the chunk texts into a single context block; the agent
+    answers using the chunks as grounding.
+
+    The vector-db node ships with all-empty endpoint / API key /
+    collection because those are per-deployment.  Designers clone the
+    template and fill those fields in on the canvas — the agent will
+    fail fast with the unconfigured-endpoint error until they do.
+
+    Why three nodes between vector-db and the agent (transform +
+    join-chunks instead of just one): vector-db's built-in
+    `joinResults` flag could collapse this to a single configuration
+    flip, but using join-chunks explicitly demonstrates how to feed
+    *any* list of chunks (from extraction, parsing, or another source)
+    into the LLM context.  Designers reuse this pattern far more
+    often than they reuse vector-db's bundled join.
+    """
+    return {
+        "name": "Example 11: RAG — Vector DB + Join Chunks",
+        "description": (
+            "Retrieval-augmented Q&A: vector DB returns the top-k relevant "
+            "chunks for a question, join-chunks stitches them into a "
+            "context block, and an agent answers using the chunks as "
+            "grounding. After cloning, open the Vector DB node and set "
+            "the provider, endpoint, API key, and collection for your "
+            "instance (Pinecone / Qdrant / Chroma / Weaviate / Milvus). "
+            "Embedding key (OPENAI_API_KEY) must be set in the deployment."
+        ),
+        "category": "examples",
+        "tags": ["example", "advanced", "vector-db", "join-chunks", "rag", "embeddings"],
+        "difficulty": "advanced",
+        "estimatedTime": "5-7 minutes (after configuring the vector DB)",
+        "externalSlug": "template-11-rag-vector-db",
+        "nodes": [
+            _start_node(
+                label="Start",
+                inputs=[
+                    {
+                        "name": "question",
+                        "type": "string",
+                        "required": True,
+                        "description": "What do you want to know?",
+                        "defaultValue": "What are the key principles of agentic AI design?",
+                    },
+                ],
+            ),
+            {
+                "id": "vector-db-1",
+                "type": "vector-db",
+                "position": {"x": 280, "y": 250},
+                "data": {
+                    "label": "Retrieve Chunks",
+                    "nodeName": "Retrieve Chunks",
+                    # Provider + connection — designer fills these in
+                    # after cloning.  Pinecone is the most-used option
+                    # so it's the default selection; the panel on the
+                    # canvas lets them switch.
+                    "vectorDbProvider": "pinecone",
+                    "vectorDbEndpoint": "",
+                    "vectorDbApiKey": "",
+                    "vectorDbCollection": "",
+                    # Query — the question flows through Mustache.  The
+                    # vector-db executor calls `substitute(query_prompt,
+                    # state)` so {{question}} resolves before embedding.
+                    "vectorDbQueryPrompt": "{{question}}",
+                    "vectorDbTopK": 5,
+                    "vectorDbScoreThreshold": 0,
+                    # Embedding — OpenAI's text-embedding-3-small is the
+                    # cheapest reasonable default.  Dimension matches.
+                    "vectorDbEmbeddingProvider": "openai",
+                    "vectorDbEmbeddingModel": "text-embedding-3-small",
+                    "vectorDbDimension": 1536,
+                    "vectorDbIncludeMetadata": True,
+                    "vectorDbIncludeVector": False,
+                    "vectorDbOutputVariable": "vectorDbResults",
+                },
+            },
+            # Vector-db's output is `{query, results: [...], total, ...}`.
+            # join-chunks expects a flat list of chunks at a named
+            # variable, so we extract `results` here and persist it as
+            # `chunks` via the transform's outputKey.  This is the
+            # canonical "compute and name" pattern that outputKey
+            # collapses from two nodes (transform → set-state) into one.
+            {
+                "id": "extract-chunks",
+                "type": "transform",
+                "position": {"x": 540, "y": 250},
+                "data": {
+                    "label": "Extract Chunks",
+                    "nodeName": "Extract Chunks",
+                    "transformScript": 'vectorDbResults["results"]',
+                    "outputKey": "chunks",
+                },
+            },
+            {
+                "id": "join-1",
+                "type": "join-chunks",
+                "position": {"x": 800, "y": 250},
+                "data": {
+                    "label": "Stitch Context",
+                    "nodeName": "Stitch Context",
+                    "joinChunksVariable": "chunks",
+                    # Clear visual separator so the LLM can tell where
+                    # one chunk ends and the next begins.  Without
+                    # this, retrieved snippets blur together and the
+                    # answer can hallucinate cross-chunk connections.
+                    "joinChunksSeparator": "\n\n---\n\n",
+                    "joinChunksPrefix": "",
+                    "joinChunksSuffix": "",
+                    # Metadata appended in [metadata: {...}] gives the
+                    # agent a way to cite sources without us having to
+                    # prompt-engineer the citation format.
+                    "joinChunksIncludeMetadata": True,
+                },
+            },
+            {
+                "id": "agent-1",
+                "type": "agent",
+                "position": {"x": 1080, "y": 250},
+                "data": {
+                    "label": "RAG Answer",
+                    "nodeName": "RAG Answer",
+                    "instructions": (
+                        "You are a knowledgeable assistant. Answer the "
+                        "user's question using ONLY the context chunks "
+                        "below — if the answer isn't in the chunks, say "
+                        "you don't have enough information rather than "
+                        "guessing.\n\n"
+                        "Question:\n{{question}}\n\n"
+                        "Context chunks (separated by `---`):\n"
+                        "{{lastOutput}}\n\n"
+                        "Answer (cite sources from the [metadata: ...] "
+                        "lines when present):"
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            _end_node(pos_x=1340, pos_y=250),
+        ],
+        "edges": [
+            {"id": "e1", "source": "start-1", "target": "vector-db-1"},
+            {"id": "e2", "source": "vector-db-1", "target": "extract-chunks"},
+            {"id": "e3", "source": "extract-chunks", "target": "join-1"},
+            {"id": "e4", "source": "join-1", "target": "agent-1"},
+            {"id": "e5", "source": "agent-1", "target": "end-1"},
+        ],
+    }
+
+
 _TEMPLATES: list[dict[str, Any]] = [
     _simple_agent(),
     _web_research_agent(),
@@ -1284,6 +1443,7 @@ _TEMPLATES: list[dict[str, Any]] = [
     _human_approval(),
     _zillow_property_finder(),
     _while_loop_demo(),
+    _rag_with_vector_db(),
 ]
 
 

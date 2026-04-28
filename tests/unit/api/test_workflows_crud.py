@@ -110,6 +110,56 @@ def test_list_workflows_mine_filters_by_user(monkeypatch: pytest.MonkeyPatch) ->
     assert db.workflow.find_many.await_args.kwargs["where"].get("userId") == "dev"
 
 
+def test_list_workflows_mine_overrides_admin_global_view(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: admins asking for mine=true must NOT get the global
+    feed.  The /designer (My workflows) page sets mine=true, and an
+    admin viewing it was seeing every workflow on the system —
+    including userId=null templates — because the listing skipped the
+    authz filter for admins.  mine=true is an explicit "scope to me"
+    request and must apply regardless of role."""
+    from src.security.auth import get_current_role
+
+    client, db = _client(monkeypatch, [_wf_row(userId="dev")], total=1)
+    # Use FastAPI's dependency override (same pattern as the existing
+    # admin-bypass tests below).  The MagicMock db isn't a real Prisma
+    # instance, so the auth module's isinstance check forces 'member'
+    # otherwise.
+    client.app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")  # type: ignore[attr-defined]
+    try:
+        resp = client.get("/workflows?mine=true")
+    finally:
+        client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
+    assert resp.status_code == 200
+    where = db.workflow.find_many.await_args.kwargs["where"]
+    # Top-level userId filter — no OR-with-isPublic, no None / unfiltered.
+    assert where is not None, "admin + mine=true must apply a filter"
+    assert where.get("userId") == "dev"
+    # And critically: NOT the global "see all" (where=None) that the bug produced.
+
+
+def test_list_workflows_admin_without_mine_sees_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Counterpart to the above: admin without mine=true keeps the
+    original "see all workflows" behaviour (the global feed is what
+    /admin/workflows uses).  Make sure my fix didn't accidentally
+    break that path."""
+    from src.security.auth import get_current_role
+
+    client, db = _client(monkeypatch, [], total=0)
+    client.app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")  # type: ignore[attr-defined]
+    try:
+        resp = client.get("/workflows")
+    finally:
+        client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
+    assert resp.status_code == 200
+    where = db.workflow.find_many.await_args.kwargs["where"]
+    # No filter when admin asks for the global view — everything shows.
+    assert where is None
+
+
 def test_list_workflows_limit_over_100_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _ = _client(monkeypatch, [], total=0)
     resp = client.get("/workflows?limit=150")

@@ -187,12 +187,19 @@ async def list_workflows(
     mine: bool | None = Query(default=None),
 ) -> WorkflowListResponse:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
-    # Admins see all workflows; non-admins scoped by authz.
-    authz_where: dict[str, Any] | None = None
-    if role != "admin":
-        authz_where = (
-            {"userId": user_id} if mine else {"OR": [{"isPublic": True}, {"userId": user_id}]}
-        )
+    # Authz / scope:
+    #   mine=true (any role) → strictly "workflows I own".  Admins
+    #     asking for their own workflows shouldn't get the global feed.
+    #   admin without mine → see all workflows (the original
+    #     admin-sees-everything behaviour).
+    #   non-admin without mine → public + own (discovery feed).
+    authz_where: dict[str, Any] | None
+    if mine:
+        authz_where = {"userId": user_id}
+    elif role == "admin":
+        authz_where = None
+    else:
+        authz_where = {"OR": [{"isPublic": True}, {"userId": user_id}]}
 
     filter_conditions: list[dict[str, Any]] = []
     if is_template is not None:
