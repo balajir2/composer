@@ -1,21 +1,66 @@
 # Composer
 
-Python rebuild of [Open Agent Builder](https://github.com/balajir2/open-agent-builder) on an IE-compatible stack: FastAPI + Prisma Python + Postgres + LangGraph Python.
+> Visual workflow platform for building agentic AI applications.
+> Designers wire nodes on a canvas — agents, HTTP, vector DB, branching, human approval — and the runtime executes them as LangGraph state machines with full observability and resumability.
 
-**Status:** Phase 0 complete — Phase 1 in progress.
-**Design:** see [`docs/design/2026-04-20-composer-python-port-design.md`](docs/design/2026-04-20-composer-python-port-design.md). Phase specs under [`docs/superpowers/specs/`](docs/superpowers/specs/). Engineering decisions at [`docs/design/decisions.md`](docs/design/decisions.md).
+[![Phase](https://img.shields.io/badge/phase-10%20complete-success)](docs/overview.md#status)
+[![Tests](https://img.shields.io/badge/tests-683%20passing-success)](#testing)
+[![Stack](https://img.shields.io/badge/stack-FastAPI%20%7C%20Prisma%20%7C%20LangGraph%20%7C%20Next.js%2014-blueviolet)](docs/architecture.md)
+[![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 ---
 
-## Why Composer exists
+## Why Composer
 
-Open Agent Builder (OAB) is a visual, low-code workflow platform built in TypeScript with Next.js and Convex. Composer rebuilds OAB's backend on Python/FastAPI/Postgres to match the Intelligent Engineering (IE) platform's stack, so that when Composer-in-IE becomes a real proposal, the code is ready.
+Composer is a Python rebuild of [Open Agent Builder](https://github.com/balajir2/open-agent-builder) on Bounteous's Intelligent Engineering (IE) compatible stack: **FastAPI + Prisma Python + Postgres + LangGraph Python**. The full why-and-how is in [`docs/overview.md`](docs/overview.md).
 
-**Governing rules:**
-1. OAB continues as-is (frozen, read-only reference)
-2. Composer is a fresh rebuild, not a line-by-line port
-3. Completion is when OAB's regression suite passes against Composer
-4. Internal structure is free to be cleaner than OAB's
+Three governing rules:
+
+1. OAB is frozen — read-only behavioural reference.
+2. Composer is built fresh, not ported line-by-line.
+3. Completion is OAB's regression suite passing against Composer.
+
+Phases 0–10 are complete. The platform is operational end-to-end.
+
+---
+
+## What you can build
+
+- **RAG pipelines** — upload PDF/DOCX/MD → chunk → embed → upsert → retrieve + grounded answer
+- **Research agents** — Tavily search + Firecrawl scrape + structured extraction
+- **Workflow automation** — classify support tickets → if-else route → specialist replies
+- **Document processing** — transcript → JSON action items → drafted follow-up email
+- **Human-in-the-loop flows** — agent draft → reviewer gate → branched approve/reject paths
+- **External-invoke APIs** — publish a workflow as `POST /api/run/{slug}` with per-user API keys
+
+17 reference templates ship out of the box — see [`docs/designer-guide.md#templates`](docs/designer-guide.md#templates).
+
+---
+
+## Quick start
+
+```bash
+# 1. Clone + install
+git clone https://github.com/balajir2/composer.git
+cd composer
+uv sync --all-extras
+cd frontend && npm install && cd ..
+
+# 2. Configure
+cp .env.example .env
+# Edit .env: DATABASE_URL, JWT_SECRET, ENCRYPTION_KEY, ANTHROPIC_API_KEY
+
+# 3. Database + templates
+uv run prisma generate
+uv run prisma migrate deploy
+uv run python -m scripts.seed_templates
+
+# 4. Run
+uv run uvicorn src.main:app --reload --port 8000   # backend
+cd frontend && npm run dev                          # frontend (in another terminal)
+```
+
+Open http://localhost:3000 and click into the Templates gallery to start building. Full walkthrough: [`docs/getting-started.md`](docs/getting-started.md).
 
 ---
 
@@ -23,79 +68,51 @@ Open Agent Builder (OAB) is a visual, low-code workflow platform built in TypeSc
 
 | Layer | Choice |
 |---|---|
-| Language | Python 3.11+ |
-| Web framework | FastAPI |
-| ORM | Prisma Python |
-| Database | Postgres 15+ (Neon for dev) |
+| Backend | Python 3.11/3.12, FastAPI, Prisma Python, Postgres 15+ (Neon-compatible) |
 | Orchestration | LangGraph Python + LangChain |
-| Auth | JWT (HS256) |
-| Real-time | SSE (Phase 5) → WebSocket (Phase 9, matching IE's `DES-007`) |
-| Tests | pytest |
-| Package manager | [uv](https://docs.astral.sh/uv/) |
-| Lint + format | ruff |
-| Type check | pyright (strict) |
+| LLM providers | Anthropic Claude · OpenAI · Google Gemini · Groq |
+| Vector DBs | Pinecone · Qdrant · Chroma · Weaviate · Milvus (query + upsert) |
+| Tool providers | Tavily · Firecrawl · Serper · Browserless · Gamma · Arcade · MCP (static + OAuth) |
+| Frontend | Next.js 14 App Router, Tailwind, shadcn/ui (`base-nova`), React Flow |
+| Auth | NextAuth v5 (Azure AD / Credentials) · Composer JWT (HS256) · per-user API keys |
+| Real-time | WebSocket — node-by-node execution events |
+| Tests | pytest + pytest-asyncio (683 unit, 1 integration), Playwright (frontend e2e) |
+| Tooling | uv · ruff · pyright (strict) · Prisma migrations |
 
 ---
 
-## Getting started
+## Documentation
 
-### Prerequisites
+| If you want to... | Read |
+|---|---|
+| **Understand what Composer is and why** | [`docs/overview.md`](docs/overview.md) |
+| **Run it locally and build your first workflow** | [`docs/getting-started.md`](docs/getting-started.md) |
+| **Build workflows on the canvas** | [`docs/designer-guide.md`](docs/designer-guide.md) — all 18 node types, variables, templates, publishing |
+| **Operate Composer in production** | [`docs/operations.md`](docs/operations.md) + [`docs/operations/`](docs/operations/) runbooks |
+| **Manage users / keys / models / MCP servers** | [`docs/admin-guide.md`](docs/admin-guide.md) |
+| **Understand the internals** | [`docs/architecture.md`](docs/architecture.md) |
+| **Call the HTTP API** | [`docs/api-reference.md`](docs/api-reference.md) |
+| **Trace an engineering decision** | [`docs/decisions.md`](docs/decisions.md) — 23 ADRs |
+| **See what changed** | [`CHANGELOG.md`](CHANGELOG.md) |
 
-- Python 3.11 or 3.12
-- [uv](https://docs.astral.sh/uv/getting-started/installation/) (recommended) or pip
-- A [Neon](https://neon.tech) Postgres branch (the free tier is enough)
-
-### Setup
-
-```bash
-# 1. Clone
-git clone https://github.com/balajir2/composer.git
-cd composer
-
-# 2. Create virtual env and install deps
-uv sync --all-extras
-
-# 3. Copy env template
-cp .env.example .env
-# Edit .env: set DATABASE_URL to your Neon connection string
-
-# 4. Generate Prisma client
-uv run prisma generate
-
-# 5. Run migrations (once schema has tables — Phase 1 onward)
-# uv run prisma migrate deploy
-
-# 6. Run the dev server
-uv run uvicorn src.main:app --reload
-```
-
-Visit http://localhost:8000/health — should return `{"status":"ok"}`.
-Visit http://localhost:8000/docs — FastAPI auto-generated API docs.
+The `docs/archive/` folder holds the design-phase material (2026-04-15 brainstorming, IE critique, phase specs + plans). Pristine for traceability, but you don't need it to understand or use the platform today.
 
 ---
 
-## Development commands
+## Testing
 
 ```bash
-# Run the dev server
-uv run uvicorn src.main:app --reload
+# Everything CI runs
+uv run ruff check src tests && \
+uv run ruff format --check src tests && \
+uv run pyright src tests && \
+uv run pytest -m "not integration"
 
-# Lint + format
-uv run ruff check src tests
-uv run ruff format src tests
-
-# Type check
-uv run pyright src tests
-
-# Run tests
-uv run pytest
-
-# Generate Prisma client after schema changes
-uv run prisma generate
-
-# Create a new migration
-uv run prisma migrate dev --name <migration_name>
+# Frontend type-check
+cd frontend && ./node_modules/.bin/tsc --noEmit -p tsconfig.json
 ```
+
+683 unit tests, 1 integration test (real Neon, gated by `@pytest.mark.integration`). 11 Playwright tests across 5 specs (frontend e2e, gated by env).
 
 ---
 
@@ -103,26 +120,19 @@ uv run prisma migrate dev --name <migration_name>
 
 ```
 composer/
-├── src/
-│   ├── main.py              # FastAPI entrypoint
-│   ├── config.py            # Pydantic settings
-│   ├── api/                 # REST routes (Phase 1+)
-│   ├── engine/              # LangGraph executor (Phase 1)
-│   ├── executors/           # Node-type executors (Phase 1-6)
-│   ├── mcp/                 # MCP client + OAuth (Phase 3)
-│   ├── storage/             # Prisma models + checkpointer (Phase 1)
-│   ├── security/            # Encryption, expressions, SSRF (Phase 4+)
-│   └── integrations/        # Tools + LangSmith (Phase 2+)
-├── tests/                   # pytest
-├── prisma/
-│   └── schema.prisma        # Data model (grows phase by phase)
-├── .github/workflows/ci.yml # Lint + typecheck + pytest on PR
-├── pyproject.toml           # uv + dependencies + tool config
-└── README.md                # this file
+├── src/                    # FastAPI backend (api/, engine/, executors/, llm/, mcp/, vectordb/, …)
+├── frontend/               # Next.js 14 app (designer, runs, admin)
+├── prisma/schema.prisma    # Single source of truth for the data model
+├── tests/                  # pytest unit + integration
+├── scripts/                # Operational scripts (seed_templates.py, etc.)
+├── docs/                   # Documentation — see docs/README.md for the index
+└── .github/workflows/      # CI pipelines
 ```
+
+A deeper map is in [`docs/architecture.md#repository-layout`](docs/architecture.md#repository-layout).
 
 ---
 
 ## License
 
-MIT — see `LICENSE`.
+MIT — see [`LICENSE`](LICENSE).
