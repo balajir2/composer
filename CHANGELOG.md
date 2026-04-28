@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 10 — Polish: 5 more reference templates (2026-04-28)
+
+#### Added
+- **Template 13 — Meeting Transcript to Action Items.** Upload a transcript (PDF/DOCX/MD/TXT); first agent extracts action items as JSON (owner, task, due date, priority); second agent drafts a polished follow-up email referencing each item. Pairs with the new document-upload feature.
+- **Template 14 — Customer Support Triage.** Pure-LLM (no external deps) classify-and-branch reference: classifier agent emits `{urgent, category, summary}` JSON; if-else branches on `urgent`; specialist agents draft urgent or standard replies. Runs on any fresh instance.
+- **Template 15 — Gamma AI Presentation Generator.** Topic + audience in, Gamma-hosted slide URL out. Tavily-grounded research agent produces a slide outline; gamma-ai node renders the deck; final agent surfaces the URL. First template to exercise the gamma-ai node.
+- **Template 16 — Code Review Assistant.** Paste a diff; review agent flags issues with severity tags + structured JSON; guardrails (PII) screens the OUTPUT for accidental secret/credential leaks; if-else delivers either the formatted review or a redacted warning. Combines agent JSON mode + guardrails on downstream content + branched delivery.
+- **Template 17 — Lead Enrichment.** Company name in, CRM-shaped JSON profile out. Multi-source research (Tavily + Firecrawl) feeds into a structured-extraction agent producing a schema-validated record (industry, size, products, recent news, executives, competitors).
+
+#### Changed
+- Replaced unicode arrows (`→`) and em-dashes (`—`) in template names with ASCII equivalents — Windows cp1252 stdout couldn't encode them and broke the seed script's progress output. Names are now reliably round-trippable across platforms.
+
+#### Notes
+- All five templates use the existing node primitives + the recently shipped document-upload + transform `outputKey` features. No backend changes were needed to ship these.
+- Template 14 is the only one that runs on a brand-new Composer instance with zero external API keys — a reliable smoke test for the classify-and-branch pattern.
+
+#### Verified
+- 683/683 unit tests still green (templates are data-only — no executor changes).
+- Seed script: 12 templates updated, 4 created (templates 14-17). Template 13 already existed from a partial prior run; updated cleanly.
+- ruff + format clean.
+
 ### Phase 10 — Polish: document upload + extraction (2026-04-28)
 
 #### Added

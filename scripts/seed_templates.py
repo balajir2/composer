@@ -1298,7 +1298,7 @@ def _rag_with_vector_db() -> dict[str, Any]:
     often than they reuse vector-db's bundled join.
     """
     return {
-        "name": "Example 11: RAG — Vector DB + Join Chunks",
+        "name": "Example 11: RAG - Vector DB + Join Chunks",
         "description": (
             "Retrieval-augmented Q&A: vector DB returns the top-k relevant "
             "chunks for a question, join-chunks stitches them into a "
@@ -1561,6 +1561,830 @@ def _document_ingestion() -> dict[str, Any]:
     }
 
 
+# ─── Template 13 — Meeting transcript → action items ────────────────────
+
+
+def _meeting_transcript_action_items() -> dict[str, Any]:
+    """Upload a meeting transcript (Zoom/Teams export, raw notes), get
+    back a structured action-item list and a follow-up email draft.
+
+    Demonstrates the document upload primitive in a workflow people
+    actually run weekly + JSON-mode agents + downstream consumption
+    of structured fields via Mustache substitution."""
+    return {
+        "name": "Example 13: Meeting Transcript to Action Items",
+        "description": (
+            "Upload a meeting transcript (PDF / DOCX / MD / TXT). The first "
+            "agent extracts action items as structured JSON (owner, task, "
+            "due date, priority); the second agent drafts a polished "
+            "follow-up email referencing those items inline."
+        ),
+        "category": "examples",
+        "tags": ["example", "intermediate", "documents", "json-output", "productivity"],
+        "difficulty": "intermediate",
+        "estimatedTime": "3-5 minutes",
+        "externalSlug": "template-13-meeting-action-items",
+        "nodes": [
+            _start_node(
+                label="Start",
+                inputs=[
+                    {
+                        "name": "transcript",
+                        "type": "document",
+                        "required": True,
+                        "description": (
+                            "Upload the meeting transcript. PDF, DOCX, "
+                            "Markdown, or plain text — text gets extracted "
+                            "server-side."
+                        ),
+                    },
+                    {
+                        "name": "meeting_date",
+                        "type": "string",
+                        "required": False,
+                        "description": "Meeting date (informational, used in the email)",
+                        "defaultValue": "today",
+                    },
+                    {
+                        "name": "team_name",
+                        "type": "string",
+                        "required": False,
+                        "description": "Team or project name for the email subject",
+                        "defaultValue": "the team",
+                    },
+                ],
+            ),
+            {
+                "id": "extract-1",
+                "type": "agent",
+                "position": {"x": 320, "y": 200},
+                "data": {
+                    "label": "Extract Action Items",
+                    "nodeName": "Extract Action Items",
+                    "instructions": (
+                        "Read this meeting transcript and extract every "
+                        "concrete action item:\n\n"
+                        "{{transcript}}\n\n"
+                        "Return JSON with an `items` array. For each item "
+                        "include: owner (the person responsible — use 'TBD' "
+                        "if unclear), task (one-sentence description), "
+                        "due_date (ISO date if mentioned, else 'unspecified'), "
+                        "priority ('high' / 'medium' / 'low' — infer from "
+                        "tone and explicit deadlines). Skip discussion "
+                        "points that didn't result in a commitment."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "JSON",
+                    "jsonSchema": {
+                        "type": "object",
+                        "properties": {
+                            "items": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "owner": {"type": "string"},
+                                        "task": {"type": "string"},
+                                        "due_date": {"type": "string"},
+                                        "priority": {
+                                            "type": "string",
+                                            "enum": ["high", "medium", "low"],
+                                        },
+                                    },
+                                    "required": ["owner", "task", "priority"],
+                                },
+                            },
+                            "decisions": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                                "description": "Decisions reached without a specific owner/task",
+                            },
+                        },
+                        "required": ["items"],
+                    },
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            {
+                "id": "compose-1",
+                "type": "agent",
+                "position": {"x": 620, "y": 200},
+                "data": {
+                    "label": "Draft Follow-up Email",
+                    "nodeName": "Draft Follow-up Email",
+                    "instructions": (
+                        "Draft a follow-up email for {{team_name}} after "
+                        "the {{meeting_date}} meeting. Use the extracted "
+                        "action items below:\n\n"
+                        "{{lastOutput}}\n\n"
+                        "Structure:\n"
+                        "1. One-paragraph recap of the meeting tone\n"
+                        "2. Decisions made (bullets) if any\n"
+                        "3. Action items grouped by owner — for each, "
+                        "show task, due date, and priority\n"
+                        "4. Sign-off\n\n"
+                        "Markdown format. Don't add any preamble — the "
+                        "subject line is the first line, then a blank "
+                        "line, then the body."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            _end_node(pos_x=900),
+        ],
+        "edges": [
+            {"id": "e1", "source": "start-1", "target": "extract-1"},
+            {"id": "e2", "source": "extract-1", "target": "compose-1"},
+            {"id": "e3", "source": "compose-1", "target": "end-1"},
+        ],
+    }
+
+
+# ─── Template 14 — Customer Support Triage ──────────────────────────────
+
+
+def _customer_support_triage() -> dict[str, Any]:
+    """Classify-and-branch pattern on a support ticket.  Pure-LLM, no
+    external deps, runs on any fresh instance.
+
+    The if-else branches on whether the ticket needs urgent
+    escalation; binary classification keeps the template readable.
+    For more categories, designers chain additional if-else nodes
+    after the first router."""
+    return {
+        "name": "Example 14: Customer Support Triage",
+        "description": (
+            "Classify an incoming support ticket as urgent or standard, "
+            "then a specialist agent drafts the appropriate response. "
+            "Reference for the classify-and-branch pattern. No external "
+            "services — runs on any fresh instance."
+        ),
+        "category": "examples",
+        "tags": ["example", "intermediate", "classification", "branching", "support"],
+        "difficulty": "intermediate",
+        "estimatedTime": "2-3 minutes",
+        "externalSlug": "template-14-support-triage",
+        "nodes": [
+            _start_node(
+                label="Start",
+                inputs=[
+                    {
+                        "name": "ticket",
+                        "type": "string",
+                        "required": True,
+                        "description": "The customer's message verbatim",
+                        "defaultValue": (
+                            "I've been trying to log in for the past hour "
+                            "and keep getting a 500 error. This is "
+                            "blocking the entire team from working. We "
+                            "have a customer demo in 30 minutes."
+                        ),
+                    },
+                    {
+                        "name": "customer_name",
+                        "type": "string",
+                        "required": False,
+                        "description": "Customer's name for personalisation",
+                        "defaultValue": "there",
+                    },
+                ],
+            ),
+            {
+                "id": "classify-1",
+                "type": "agent",
+                "position": {"x": 320, "y": 220},
+                "data": {
+                    "label": "Triage Classifier",
+                    "nodeName": "Triage Classifier",
+                    "instructions": (
+                        "Classify this support ticket:\n\n"
+                        "{{ticket}}\n\n"
+                        "Decide whether it needs urgent escalation. "
+                        "Urgent means: production outage, blocking "
+                        "multiple users, security concern, or explicit "
+                        "time pressure (demo in 30 mins, board meeting, "
+                        "etc).  Everything else is standard.\n\n"
+                        "Also produce a one-sentence summary the "
+                        "downstream agent can use without re-reading "
+                        "the full ticket."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "JSON",
+                    "jsonSchema": {
+                        "type": "object",
+                        "properties": {
+                            "urgent": {"type": "boolean"},
+                            "category": {
+                                "type": "string",
+                                "enum": [
+                                    "outage",
+                                    "bug",
+                                    "billing",
+                                    "feature_request",
+                                    "how_to",
+                                    "other",
+                                ],
+                            },
+                            "summary": {"type": "string"},
+                        },
+                        "required": ["urgent", "category", "summary"],
+                    },
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            {
+                "id": "if-else-1",
+                "type": "if-else",
+                "position": {"x": 600, "y": 220},
+                "data": {
+                    "label": "Urgent?",
+                    "nodeName": "Urgent?",
+                    # `triage_classifier` is the events_wrapper alias
+                    # for the agent above (snake_case of nodeName);
+                    # Mustache rewrites to subscript form before eval.
+                    "condition": "{{triage_classifier.urgent}}",
+                },
+            },
+            {
+                "id": "agent-urgent",
+                "type": "agent",
+                "position": {"x": 880, "y": 100},
+                "data": {
+                    "label": "Urgent Specialist",
+                    "nodeName": "Urgent Specialist",
+                    "instructions": (
+                        "Draft an urgent-response message for "
+                        "{{customer_name}}.  Acknowledge the situation "
+                        "in the first line, escalate explicitly, and "
+                        "give a concrete next step the customer can "
+                        "take while support investigates.\n\n"
+                        "Ticket summary: {{triage_classifier.summary}}\n"
+                        "Category: {{triage_classifier.category}}\n\n"
+                        "Tone: empathetic but professional. Don't "
+                        "promise specific resolution times you can't "
+                        "verify. Keep it under 150 words."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            {
+                "id": "agent-standard",
+                "type": "agent",
+                "position": {"x": 880, "y": 340},
+                "data": {
+                    "label": "Standard Reply",
+                    "nodeName": "Standard Reply",
+                    "instructions": (
+                        "Draft a friendly response for {{customer_name}}.\n\n"
+                        "Ticket summary: {{triage_classifier.summary}}\n"
+                        "Category: {{triage_classifier.category}}\n\n"
+                        "Acknowledge their question, give the most "
+                        "useful answer or next step, and offer to "
+                        "follow up if the suggestion doesn't work. "
+                        "Keep it under 150 words."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            _end_node(pos_x=1160, pos_y=220),
+        ],
+        "edges": [
+            {"id": "e1", "source": "start-1", "target": "classify-1"},
+            {"id": "e2", "source": "classify-1", "target": "if-else-1"},
+            {
+                "id": "e3-true",
+                "source": "if-else-1",
+                "target": "agent-urgent",
+                "sourceHandle": "true",
+                "branch": "true",
+                "label": "true",
+            },
+            {
+                "id": "e3-false",
+                "source": "if-else-1",
+                "target": "agent-standard",
+                "sourceHandle": "false",
+                "branch": "false",
+                "label": "false",
+            },
+            {"id": "e4", "source": "agent-urgent", "target": "end-1"},
+            {"id": "e5", "source": "agent-standard", "target": "end-1"},
+        ],
+    }
+
+
+# ─── Template 15 — Gamma AI Presentation Generator ──────────────────────
+
+
+def _gamma_ai_presentation() -> dict[str, Any]:
+    """Topic in, slide deck out.  Demonstrates the gamma-ai node
+    (which had no template coverage before) chained with a research
+    agent that produces the source outline."""
+    return {
+        "name": "Example 15: Gamma AI Presentation Generator",
+        "description": (
+            "Type in a topic, get back a Gamma-hosted slide deck. The "
+            "research agent uses Tavily to ground the outline in current "
+            "info; the gamma-ai node renders slides from the outline. "
+            "Requires GAMMA_API_KEY (and TAVILY_API_KEY for the research "
+            "step)."
+        ),
+        "category": "examples",
+        "tags": ["example", "advanced", "gamma-ai", "presentations", "tavily"],
+        "difficulty": "advanced",
+        "estimatedTime": "3-5 minutes (Gamma generation can take 60-90s)",
+        "externalSlug": "template-15-gamma-ai-presentation",
+        "nodes": [
+            _start_node(
+                label="Start",
+                inputs=[
+                    {
+                        "name": "topic",
+                        "type": "string",
+                        "required": True,
+                        "description": "What's the deck about?",
+                        "defaultValue": "How agentic AI changes knowledge work in 2026",
+                    },
+                    {
+                        "name": "audience",
+                        "type": "string",
+                        "required": False,
+                        "description": "Who's the audience? Drives tone + depth.",
+                        "defaultValue": "executives at a mid-size tech company",
+                    },
+                    {
+                        "name": "num_slides",
+                        "type": "number",
+                        "required": False,
+                        "description": "Approximate slide count",
+                        "defaultValue": 8,
+                    },
+                ],
+            ),
+            {
+                "id": "research-1",
+                "type": "agent",
+                "position": {"x": 300, "y": 200},
+                "data": {
+                    "label": "Research + Outline",
+                    "nodeName": "Research + Outline",
+                    "instructions": (
+                        "Research this topic and produce a slide outline "
+                        "tailored for the audience.\n\n"
+                        "Topic: {{topic}}\n"
+                        "Audience: {{audience}}\n"
+                        "Target slide count: {{num_slides}}\n\n"
+                        "1. Use tavily_search to gather current "
+                        "information on the topic (focus on 2025-2026).\n"
+                        "2. Synthesise the findings into a slide "
+                        "outline. Each slide gets one line of title and "
+                        "2-4 supporting bullets.\n"
+                        "3. Return the outline as plain markdown — "
+                        "Gamma turns this into slides verbatim, so "
+                        "structure matters more than prose."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": ["tavily.tavily_search"],
+                    "mcpServerIds": [],
+                },
+            },
+            {
+                "id": "gamma-1",
+                "type": "gamma-ai",
+                "position": {"x": 600, "y": 200},
+                "data": {
+                    "label": "Generate Deck",
+                    "nodeName": "Generate Deck",
+                    # Gamma reads the prompt as the outline source.
+                    "prompt": "{{lastOutput}}",
+                    "format": "presentation",
+                    # Preserve the outline verbatim — the research
+                    # agent already structured it for slides.
+                    "textMode": "preserve",
+                    "numCards": 8,
+                    "textAmount": "medium",
+                    "imageSource": "aiGenerated",
+                    "exportAs": "web",
+                },
+            },
+            {
+                "id": "report-1",
+                "type": "agent",
+                "position": {"x": 900, "y": 200},
+                "data": {
+                    "label": "Summarise Output",
+                    "nodeName": "Summarise Output",
+                    "instructions": (
+                        "Format the Gamma generation result for the user.\n\n"
+                        "Result: {{lastOutput}}\n\n"
+                        "Surface the URL prominently if there is one. "
+                        "Mention the topic ({{topic}}) and audience "
+                        "({{audience}}) so the user has context when "
+                        "they share the deck. If the result includes "
+                        "an `error` or `status: failed`, explain what "
+                        "happened in plain language."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            _end_node(pos_x=1180),
+        ],
+        "edges": [
+            {"id": "e1", "source": "start-1", "target": "research-1"},
+            {"id": "e2", "source": "research-1", "target": "gamma-1"},
+            {"id": "e3", "source": "gamma-1", "target": "report-1"},
+            {"id": "e4", "source": "report-1", "target": "end-1"},
+        ],
+    }
+
+
+# ─── Template 16 — Code Review Assistant ────────────────────────────────
+
+
+def _code_review_assistant() -> dict[str, Any]:
+    """Paste a diff, get structured review with severity-tagged issues.
+    Guardrails layer screens the OUTPUT for accidental PII/secret leaks
+    (e.g. the diff contained an API key the review agent surfaced
+    verbatim) before delivery.
+
+    Demonstrates: agent JSON output with schema, guardrails on
+    downstream content (not upstream), branched delivery on the
+    guardrails verdict."""
+    return {
+        "name": "Example 16: Code Review Assistant",
+        "description": (
+            "Paste a diff (or upload a patch file). A review agent flags "
+            "bugs / security issues / style problems with severity tags "
+            "and structured JSON. A guardrails layer screens the output "
+            "for PII or credential leaks before delivery; if the review "
+            "would expose a secret, the workflow returns a redacted "
+            "warning instead."
+        ),
+        "category": "examples",
+        "tags": ["example", "advanced", "code-review", "guardrails", "json-output"],
+        "difficulty": "advanced",
+        "estimatedTime": "2-4 minutes",
+        "externalSlug": "template-16-code-review",
+        "nodes": [
+            _start_node(
+                label="Start",
+                inputs=[
+                    {
+                        "name": "diff",
+                        "type": "string",
+                        "required": True,
+                        "description": "Unified diff (paste from `git diff`)",
+                        "defaultValue": (
+                            "diff --git a/auth.py b/auth.py\n"
+                            "--- a/auth.py\n"
+                            "+++ b/auth.py\n"
+                            "@@ -10,7 +10,7 @@\n"
+                            " def verify_password(plain, hashed):\n"
+                            "-    return bcrypt.checkpw(plain.encode(), hashed.encode())\n"
+                            "+    return plain == hashed.decode()\n"
+                        ),
+                    },
+                    {
+                        "name": "language",
+                        "type": "string",
+                        "required": False,
+                        "description": "Programming language (helps the reviewer)",
+                        "defaultValue": "Python",
+                    },
+                ],
+            ),
+            {
+                "id": "review-1",
+                "type": "agent",
+                "position": {"x": 300, "y": 220},
+                "data": {
+                    "label": "Code Reviewer",
+                    "nodeName": "Code Reviewer",
+                    "instructions": (
+                        "Review this {{language}} diff for issues:\n\n"
+                        "{{diff}}\n\n"
+                        "Categorise each issue by severity:\n"
+                        "  - critical: security vulnerability, data loss, "
+                        "or correctness bug that ships obviously broken code\n"
+                        "  - high: significant bug or anti-pattern\n"
+                        "  - medium: style or maintainability concern\n"
+                        "  - low: nitpick / preference\n\n"
+                        "Return JSON.  Include line references (line "
+                        "numbers from the diff hunks) where applicable. "
+                        "Be specific in descriptions — quote the offending "
+                        "code snippet rather than describing it abstractly. "
+                        "If the diff looks clean, return an empty issues "
+                        "array with a brief summary noting that."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "JSON",
+                    "jsonSchema": {
+                        "type": "object",
+                        "properties": {
+                            "issues": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "severity": {
+                                            "type": "string",
+                                            "enum": ["critical", "high", "medium", "low"],
+                                        },
+                                        "line": {"type": "string"},
+                                        "snippet": {"type": "string"},
+                                        "description": {"type": "string"},
+                                        "suggestion": {"type": "string"},
+                                    },
+                                    "required": ["severity", "description"],
+                                },
+                            },
+                            "summary": {"type": "string"},
+                            "ship_recommendation": {
+                                "type": "string",
+                                "enum": ["approve", "request_changes", "block"],
+                            },
+                        },
+                        "required": ["issues", "summary", "ship_recommendation"],
+                    },
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            {
+                "id": "guardrails-1",
+                "type": "guardrails",
+                "position": {"x": 600, "y": 220},
+                "data": {
+                    "label": "PII / Secret Screen",
+                    "nodeName": "PII Screen",
+                    # PII catches credit cards, SSNs, emails surfaced
+                    # in code snippets the review verbatim quoted.
+                    "piiEnabled": True,
+                    "moderationEnabled": False,
+                    "jailbreakEnabled": False,
+                    "hallucinationEnabled": False,
+                    "actionOnViolation": "warn",
+                    "model": _DEFAULT_MODEL,
+                },
+            },
+            {
+                "id": "if-else-1",
+                "type": "if-else",
+                "position": {"x": 880, "y": 220},
+                "data": {
+                    "label": "Safe to deliver?",
+                    "nodeName": "Safe to deliver?",
+                    "condition": "{{pii_screen.passed}}",
+                },
+            },
+            {
+                "id": "deliver-1",
+                "type": "agent",
+                "position": {"x": 1160, "y": 100},
+                "data": {
+                    "label": "Format Review",
+                    "nodeName": "Format Review",
+                    "instructions": (
+                        "Format the review for the developer.\n\n"
+                        "Structured review: {{code_reviewer}}\n\n"
+                        "Output a clean markdown report:\n"
+                        "1. Ship recommendation in bold at the top\n"
+                        "2. Summary paragraph\n"
+                        "3. Issues grouped by severity (critical → low)\n"
+                        "4. For each issue: line reference, code snippet, "
+                        "the problem, and a concrete suggested fix"
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            {
+                "id": "redact-1",
+                "type": "agent",
+                "position": {"x": 1160, "y": 340},
+                "data": {
+                    "label": "Redacted Warning",
+                    "nodeName": "Redacted Warning",
+                    "instructions": (
+                        "The code review surfaced sensitive content "
+                        "(PII or possibly a credential) verbatim from "
+                        "the diff. Don't deliver the raw review.\n\n"
+                        "Violations: {{pii_screen.violations}}\n\n"
+                        "Tell the developer in 2-3 sentences that the "
+                        "diff appears to contain sensitive data, that "
+                        "the review has been withheld to avoid "
+                        "exfiltration, and recommend they redact the "
+                        "diff and re-run."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            _end_node(pos_x=1440, pos_y=220),
+        ],
+        "edges": [
+            {"id": "e1", "source": "start-1", "target": "review-1"},
+            {"id": "e2", "source": "review-1", "target": "guardrails-1"},
+            {"id": "e3", "source": "guardrails-1", "target": "if-else-1"},
+            {
+                "id": "e4-true",
+                "source": "if-else-1",
+                "target": "deliver-1",
+                "sourceHandle": "true",
+                "branch": "true",
+                "label": "safe",
+            },
+            {
+                "id": "e4-false",
+                "source": "if-else-1",
+                "target": "redact-1",
+                "sourceHandle": "false",
+                "branch": "false",
+                "label": "redacted",
+            },
+            {"id": "e5", "source": "deliver-1", "target": "end-1"},
+            {"id": "e6", "source": "redact-1", "target": "end-1"},
+        ],
+    }
+
+
+# ─── Template 17 — Lead Enrichment ──────────────────────────────────────
+
+
+def _lead_enrichment() -> dict[str, Any]:
+    """Sales/BD use case: company name in, structured profile out.
+
+    Multi-source research (Tavily for current news, Firecrawl for
+    the company's own website) flowing into a structured-extraction
+    agent.  Output is JSON shaped for direct CRM import."""
+    return {
+        "name": "Example 17: Lead Enrichment",
+        "description": (
+            "Company name in → structured profile out. The research "
+            "agent pulls signals from Tavily web search and the "
+            "company's own site (Firecrawl), then a second agent "
+            "shapes the findings into a JSON record ready for CRM "
+            "import. Requires TAVILY_API_KEY and FIRECRAWL_API_KEY."
+        ),
+        "category": "examples",
+        "tags": ["example", "advanced", "tavily", "firecrawl", "json-output", "sales"],
+        "difficulty": "advanced",
+        "estimatedTime": "3-5 minutes",
+        "externalSlug": "template-17-lead-enrichment",
+        "nodes": [
+            _start_node(
+                label="Start",
+                inputs=[
+                    {
+                        "name": "company_name",
+                        "type": "string",
+                        "required": True,
+                        "description": "Company to research",
+                        "defaultValue": "Anthropic",
+                    },
+                    {
+                        "name": "company_url",
+                        "type": "string",
+                        "required": False,
+                        "description": (
+                            "Company website. Leave blank to let the "
+                            "researcher infer it from search results."
+                        ),
+                        "defaultValue": "https://www.anthropic.com",
+                    },
+                ],
+            ),
+            {
+                "id": "research-1",
+                "type": "agent",
+                "position": {"x": 300, "y": 200},
+                "data": {
+                    "label": "Multi-source Researcher",
+                    "nodeName": "Multi-source Researcher",
+                    "instructions": (
+                        "Build a profile of {{company_name}}.\n\n"
+                        "1. Run tavily_search for "
+                        '"{{company_name}} company products" and '
+                        '"{{company_name}} recent news 2026" to gather '
+                        "general info and recent developments.\n"
+                        "2. If {{company_url}} is non-empty, also call "
+                        "firecrawl_scrape on it to capture the "
+                        "company's own positioning.\n"
+                        "3. Synthesise everything into a research dump "
+                        "covering: industry, headquarters, employee "
+                        "size estimate, key products / services, "
+                        "target customers, recent news (last 6 months), "
+                        "key executives, competitors. Return prose — "
+                        "the next step structures it into JSON."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [
+                        "tavily.tavily_search",
+                        "firecrawl.firecrawl_scrape",
+                    ],
+                    "mcpServerIds": [],
+                },
+            },
+            {
+                "id": "structure-1",
+                "type": "agent",
+                "position": {"x": 600, "y": 200},
+                "data": {
+                    "label": "Shape into CRM Record",
+                    "nodeName": "Shape into CRM Record",
+                    "instructions": (
+                        "Reshape this research into a structured CRM "
+                        "record:\n\n"
+                        "{{lastOutput}}\n\n"
+                        "Use 'unknown' for fields the research didn't "
+                        "establish — don't guess.  Lists with no "
+                        "evidence stay empty.  Conservative is better "
+                        "than confident-and-wrong here."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "JSON",
+                    "jsonSchema": {
+                        "type": "object",
+                        "properties": {
+                            "company_name": {"type": "string"},
+                            "industry": {"type": "string"},
+                            "headquarters": {"type": "string"},
+                            "size_estimate": {
+                                "type": "string",
+                                "description": "e.g. '50-200 employees', 'unknown'",
+                            },
+                            "products": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "target_market": {"type": "string"},
+                            "recent_news": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "headline": {"type": "string"},
+                                        "date": {"type": "string"},
+                                    },
+                                    "required": ["headline"],
+                                },
+                            },
+                            "key_executives": {
+                                "type": "array",
+                                "items": {
+                                    "type": "object",
+                                    "properties": {
+                                        "name": {"type": "string"},
+                                        "role": {"type": "string"},
+                                    },
+                                    "required": ["name"],
+                                },
+                            },
+                            "competitors": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                            "summary": {
+                                "type": "string",
+                                "description": "Two-sentence elevator pitch",
+                            },
+                        },
+                        "required": ["company_name", "summary"],
+                    },
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            _end_node(pos_x=900),
+        ],
+        "edges": [
+            {"id": "e1", "source": "start-1", "target": "research-1"},
+            {"id": "e2", "source": "research-1", "target": "structure-1"},
+            {"id": "e3", "source": "structure-1", "target": "end-1"},
+        ],
+    }
+
+
 _TEMPLATES: list[dict[str, Any]] = [
     _simple_agent(),
     _web_research_agent(),
@@ -1574,6 +2398,11 @@ _TEMPLATES: list[dict[str, Any]] = [
     _while_loop_demo(),
     _rag_with_vector_db(),
     _document_ingestion(),
+    _meeting_transcript_action_items(),
+    _customer_support_triage(),
+    _gamma_ai_presentation(),
+    _code_review_assistant(),
+    _lead_enrichment(),
 ]
 
 
