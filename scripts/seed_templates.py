@@ -1056,6 +1056,223 @@ def _zillow_property_finder() -> dict[str, Any]:
     }
 
 
+# ─── Template 10 — While-loop with accumulator (compute-and-name demo) ──
+
+
+def _while_loop_demo() -> dict[str, Any]:
+    """A real while-loop iterating over a list, accumulating results.
+
+    Demonstrates the `outputKey` field on the transform node — without
+    it, every "compute and persist" step needs a transform → set-state
+    pair, doubling the body's node count.  With it, the loop body fits
+    in 4 nodes: pick element, fetch, append to results, increment index.
+
+    The condition `index < len(tickers)` reads `index` directly from the
+    eval scope (top-level variable spread).  The accumulator
+    `results + [{...}]` produces a new list each iteration which the
+    transform writes back to `results` via outputKey, replacing the
+    old value via the merge_dict reducer.
+
+    Yahoo Finance's chart endpoint is the data source — public, no key
+    required, returns JSON the agent can summarise.
+    """
+    yahoo = (
+        "https://query1.finance.yahoo.com/v8/finance/chart/{{current_ticker}}?interval=1d&range=5d"
+    )
+    return {
+        "name": "Example 10: While-loop with Accumulator",
+        "description": (
+            "Iterates over a list of tickers with a real while-loop, "
+            "fetches each from Yahoo Finance, accumulates summaries into "
+            "a list, then renders a comparative report. Reference for "
+            "the loop + accumulator pattern using transform's outputKey."
+        ),
+        "category": "examples",
+        "tags": ["example", "advanced", "loop", "accumulator", "http"],
+        "difficulty": "advanced",
+        "estimatedTime": "5-7 minutes",
+        "externalSlug": "template-10-while-loop-accumulator",
+        "nodes": [
+            _start_node(
+                label="Start",
+                inputs=[
+                    {
+                        "name": "report_focus",
+                        "type": "string",
+                        "required": False,
+                        "description": "Angle to emphasise in the final report",
+                        "defaultValue": "5-day price momentum and which stock looks strongest",
+                    },
+                ],
+            ),
+            # Init the loop state — three named variables in three lines.
+            # Could be inlined into a single transform with outputKey
+            # writing a tuple/dict, but separate set-state nodes read
+            # more clearly for a template that's meant to be studied.
+            {
+                "id": "init-tickers",
+                "type": "set-state",
+                "position": {"x": 280, "y": 120},
+                "data": {
+                    "label": "Init: tickers",
+                    "nodeName": "Init: tickers",
+                    "stateKey": "tickers",
+                    "stateValue": ["AAPL", "MSFT", "GOOG"],
+                },
+            },
+            {
+                "id": "init-index",
+                "type": "set-state",
+                "position": {"x": 280, "y": 230},
+                "data": {
+                    "label": "Init: index",
+                    "nodeName": "Init: index",
+                    "stateKey": "index",
+                    "stateValue": 0,
+                },
+            },
+            {
+                "id": "init-results",
+                "type": "set-state",
+                "position": {"x": 280, "y": 340},
+                "data": {
+                    "label": "Init: results",
+                    "nodeName": "Init: results",
+                    "stateKey": "results",
+                    "stateValue": [],
+                },
+            },
+            {
+                "id": "loop-1",
+                "type": "while",
+                "position": {"x": 540, "y": 230},
+                "data": {
+                    "label": "While index < N",
+                    "nodeName": "While index < N",
+                    "condition": "index < len(tickers)",
+                    "maxIterations": 10,
+                },
+            },
+            # Body: pick the current ticker by index, fetch its chart,
+            # append summary to `results`, increment `index`, loop back.
+            # Four nodes for the body — set-state's increment-by-one
+            # role is now done inside transform via outputKey.
+            {
+                "id": "pick-ticker",
+                "type": "transform",
+                "position": {"x": 800, "y": 130},
+                "data": {
+                    "label": "Pick ticker",
+                    "nodeName": "Pick ticker",
+                    "transformScript": "tickers[index]",
+                    "outputKey": "current_ticker",
+                },
+            },
+            {
+                "id": "fetch-1",
+                "type": "http",
+                "position": {"x": 1020, "y": 130},
+                "data": {
+                    "label": "Fetch chart",
+                    "nodeName": "Fetch chart",
+                    "httpUrl": yahoo,
+                    "httpMethod": "GET",
+                    "httpHeaders": {"User-Agent": "composer-template/1.0"},
+                    "responsePath": "chart.result[0].meta",
+                },
+            },
+            {
+                "id": "accum-1",
+                "type": "transform",
+                "position": {"x": 1240, "y": 130},
+                "data": {
+                    "label": "Append result",
+                    "nodeName": "Append result",
+                    # Build a record for this ticker and append it to the
+                    # running list.  outputKey writes the new list back
+                    # to `results` so the next iteration's accumulator
+                    # sees the growing list.  Without outputKey this
+                    # would need a follow-up set-state node.
+                    "transformScript": (
+                        'results + [{"ticker": current_ticker, "meta": lastOutput}]'
+                    ),
+                    "outputKey": "results",
+                },
+            },
+            {
+                "id": "increment-1",
+                "type": "transform",
+                "position": {"x": 1240, "y": 250},
+                "data": {
+                    "label": "Increment index",
+                    "nodeName": "Increment index",
+                    "transformScript": "index + 1",
+                    "outputKey": "index",
+                },
+            },
+            # Exit: synthesise the final report from accumulated results.
+            {
+                "id": "agent-1",
+                "type": "agent",
+                "position": {"x": 800, "y": 400},
+                "data": {
+                    "label": "Comparative Report",
+                    "nodeName": "Comparative Report",
+                    "instructions": (
+                        "You have collected 5-day chart data for several "
+                        "tickers in this list:\n\n"
+                        "{{results}}\n\n"
+                        "Each entry has `ticker` and `meta` (with "
+                        "regularMarketPrice, previousClose, "
+                        "fiftyTwoWeekHigh/Low, etc).\n\n"
+                        "Produce a short comparative report focused on: "
+                        "{{report_focus}}\n\n"
+                        "Structure:\n"
+                        "1. Snapshot — current price + 5-day % change per ticker\n"
+                        "2. Momentum ranking — strongest to weakest\n"
+                        "3. One-line bottom line per ticker"
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            _end_node(pos_x=1100, pos_y=400),
+        ],
+        "edges": [
+            {"id": "e0a", "source": "start-1", "target": "init-tickers"},
+            {"id": "e0b", "source": "init-tickers", "target": "init-index"},
+            {"id": "e0c", "source": "init-index", "target": "init-results"},
+            {"id": "e1", "source": "init-results", "target": "loop-1"},
+            # Body branch: into the loop body chain
+            {
+                "id": "e2-body",
+                "source": "loop-1",
+                "target": "pick-ticker",
+                "sourceHandle": "body",
+                "branch": "body",
+                "label": "body",
+            },
+            {"id": "e3", "source": "pick-ticker", "target": "fetch-1"},
+            {"id": "e4", "source": "fetch-1", "target": "accum-1"},
+            {"id": "e5", "source": "accum-1", "target": "increment-1"},
+            # Loop back to the while node so it re-evaluates the condition
+            {"id": "e6", "source": "increment-1", "target": "loop-1"},
+            # Exit branch: when condition is false, synthesise the report
+            {
+                "id": "e7-exit",
+                "source": "loop-1",
+                "target": "agent-1",
+                "sourceHandle": "exit",
+                "branch": "exit",
+                "label": "exit",
+            },
+            {"id": "e8", "source": "agent-1", "target": "end-1"},
+        ],
+    }
+
+
 _TEMPLATES: list[dict[str, Any]] = [
     _simple_agent(),
     _web_research_agent(),
@@ -1066,6 +1283,7 @@ _TEMPLATES: list[dict[str, Any]] = [
     _amazon_product_research(),
     _human_approval(),
     _zillow_property_finder(),
+    _while_loop_demo(),
 ]
 
 

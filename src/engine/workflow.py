@@ -213,6 +213,13 @@ class UserApprovalNode(BaseModel):
 
 class TransformNodeData(BaseNodeData):
     transform_script: str | None = Field(default=None, alias="transformScript")
+    # Optional named state variable to write the result to, in addition
+    # to `lastOutput`.  Lets workflows compute and persist in one node
+    # — without it, "increment a counter" or "append to a list" each
+    # need a transform → set-state pair, which makes loops 2x as
+    # cluttered as they should be.  Reserved names blocked at execute
+    # time (variables / lastOutput / node_results / `_*` internals).
+    output_key: str | None = Field(default=None, alias="outputKey")
 
 
 class TransformNode(BaseModel):

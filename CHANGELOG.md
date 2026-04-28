@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Phase 10 — Polish: transform `outputKey` + while-loop template (2026-04-28)
+
+#### Added
+- **`outputKey` field on the transform node.** Optional named state variable to write the result to (in addition to `lastOutput`). Lets a single transform serve as both compute and persist, collapsing every "compute X and store as Y" pair from two nodes (transform → set-state) into one. Reserved names (`variables`, `lastOutput`, `node_results`, anything starting with `_`) and non-identifier strings are rejected at execute time with a clear error.
+- **Transform panel rebuilt.** Old panel saved `inputVariable` + `expression`, neither of which the executor reads (it reads `transformScript`) — every transform saved through it ran with no script. New panel exposes `transformScript` + `outputKey` with inline reserved-name validation, examples for both Mustache and direct simpleeval syntax, and a live preview of how downstream nodes reference the named output.
+- **Template 10 — While-loop with Accumulator.** A real iterating loop seeded as `template-10-while-loop-accumulator`: three set-state init nodes, while loop iterating `index < len(tickers)`, body picks `tickers[index]`, fetches Yahoo Finance, appends a record to `results` (one transform via `outputKey`), increments `index` (one transform via `outputKey`), loops back. Body fits in 4 nodes instead of the 8 it would have needed without `outputKey`. Reference for the loop + accumulator pattern that was previously impractical to template.
+
+#### Notes
+- Earlier session sketched three options for closing the loop ergonomics gap; we went with **(a)** — `outputKey` on transform — because it (1) puts the field where the designer's cursor already is when they need it, (2) generalises beyond loops to any pipeline where multiple transforms need named outputs without clobbering each other, (3) is consistent with how agent nodes already write to both `lastOutput` and a node-name alias, and (4) introduces zero new node types.
+
+#### Verified
+- 662/662 unit tests green (Phase-10-polish baseline 655 + 7 new transform/`outputKey` tests covering named-write, legacy-behaviour preservation, blank-string-treated-as-unset, reserved-name rejection, underscore-prefix rejection, identifier validation, end-to-end "write here, read in next transform").
+- Pyright 0 errors, ruff + format clean, frontend tsc clean.
+- Seed script: 9 templates updated, 1 created, idempotent re-run upserts cleanly.
+
 ### Phase 10 — Polish: templates + canvas branching + eval ergonomics (2026-04-28)
 
 #### Added
