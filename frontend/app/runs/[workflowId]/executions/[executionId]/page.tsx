@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, CheckCircle2, Clock, Loader2 } from "lucide-react";
 import { getExecution } from "@/lib/api/executions";
 import { ExecutionProgress } from "@/components/composer/execution-progress";
@@ -38,6 +38,7 @@ export default function ExecutionPage({
   params: { workflowId: string; executionId: string };
 }) {
   const { executionId } = params;
+  const queryClient = useQueryClient();
   const [finalStatus, setFinalStatus] = useState<string | null>(null);
   const [finalOutput, setFinalOutput] = useState<unknown>(null);
 
@@ -48,18 +49,54 @@ export default function ExecutionPage({
   } = useQuery({
     queryKey: ["execution", executionId],
     queryFn: () => getExecution(executionId),
-    refetchInterval: finalStatus && TERMINAL_STATES.has(finalStatus) ? false : 2000,
+    // Keep polling until BOTH status is terminal AND output is resolved.
+    // Stopping on status alone leaves a window where the WS terminal event
+    // pinned status="completed" but the persisted output hadn't been
+    // fetched yet — the row sat untouched until window-focus refetch
+    // (~minutes), showing the user "didn't set a final output" in the
+    // meantime even though the DB row is correct.
+    refetchInterval:
+      finalStatus &&
+      TERMINAL_STATES.has(finalStatus) &&
+      finalOutput !== null &&
+      finalOutput !== undefined
+        ? false
+        : 2000,
   });
 
   useEffect(() => {
     if (!execution) return;
+    // Pin the status the first time we see a terminal value from the polled
+    // row.  WS-delivered terminal status arrives via onTerminal below.
     if (TERMINAL_STATES.has(execution.status) && finalStatus === null) {
       setFinalStatus(execution.status);
-      if (execution.output !== null && execution.output !== undefined) {
-        setFinalOutput(execution.output);
-      }
     }
-  }, [execution, finalStatus]);
+    // Capture output as soon as the polled row has it — independently of
+    // whether the WS terminal event already pinned finalStatus.  The WS
+    // event only carries status, so without this branch a finalStatus that
+    // arrived via WS would gate the output-from-DB path forever.
+    if (
+      finalOutput === null &&
+      execution.output !== null &&
+      execution.output !== undefined
+    ) {
+      setFinalOutput(execution.output);
+    }
+  }, [execution, finalStatus, finalOutput]);
+
+  // When the WS terminal event arrives, force one immediate refetch so we
+  // pull the persisted output without waiting for the next 2s poll.  The
+  // backend's executor awaits the DB persist before emitting the terminal
+  // event, so by the time this fires the output is guaranteed to be in
+  // the row.
+  const handleTerminal = useCallback(
+    (s: string, out?: unknown) => {
+      setFinalStatus(s);
+      if (out !== undefined) setFinalOutput(out);
+      void queryClient.invalidateQueries({ queryKey: ["execution", executionId] });
+    },
+    [executionId, queryClient]
+  );
 
   if (isLoading) return <Skeleton className="h-64 w-full" />;
   if (isError || !execution) {
@@ -106,10 +143,7 @@ export default function ExecutionPage({
       <ExecutionProgress
         executionId={executionId}
         initialStatus={execution.status}
-        onTerminal={(s, out) => {
-          setFinalStatus(s);
-          if (out !== undefined) setFinalOutput(out);
-        }}
+        onTerminal={handleTerminal}
       />
 
       {status === "failed" && execution.error && (
