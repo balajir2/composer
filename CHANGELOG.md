@@ -6,6 +6,30 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Reliability — Execution-status truth + MCP base64 hygiene (2026-05-04)
+
+Closing the OAB-reported defect class documented in [docs/archive/incident-history/2026-04-30-execution-status-truth.md](docs/archive/incident-history/2026-04-30-execution-status-truth.md). Audit found Composer's primary persistence + completion-signal paths were already correct; the remaining gaps were the resilience layers around them.
+
+#### Added
+- **MCP base64 binary-blob sanitizer** ([src/mcp/sanitize.py](src/mcp/sanitize.py)). Strips Highspot's `Base64 Encoded Content` preamble (replaces with a metadata-only stub that names the item + tells the agent not to retry) and any generic >4KB fenced base64 run from MCP tool responses before they reach the agent's conversation history. Wired into `_render_content_blocks` so every text-channel response runs through it. Closes the second defect from the OAB incident write-up — a single Highspot xlsx fetch was burning ~20K tokens and OOMing the agent context after a few calls.
+- **Stuck-execution sweeper** ([src/maintenance/execution_sweeper.py](src/maintenance/execution_sweeper.py)). Background task scheduled in the FastAPI lifespan that flips `running` rows older than `execution_stuck_after_seconds` (default 15 min) to `failed` with an explanatory error. Survives worker SIGKILLs, serverless function-timeout terminations, and any future bug that skips the executor's persist path. Configurable interval (`execution_sweeper_interval_seconds`, default 5 min); set to 0 to disable in environments that prefer an external cron.
+- **Resilient detached-task wrapper** in `POST /api/run/{slug}` ([src/api/run.py](src/api/run.py) `_run_with_persistence`). The `asyncio.create_task(executor.run(...))` for async invocations now goes through a wrapper that catches uncaught crashes + cancellations, stamps `failed` on the row directly, and re-raises so the task carries the original exception. Belt-and-braces alongside the sweeper.
+- **Config knobs**: `execution_stuck_after_seconds`, `execution_sweeper_interval_seconds` in [src/config.py](src/config.py).
+
+#### Audited (no change required)
+- `LangGraphExecutor._mark_failed` is `await`ed inside the executor's `try/except` before the task returns — Bug 1 of the OAB write-up never applied.
+- The designer execution panel dispatches solely on `ev.type === "workflow_completed"` and cross-checks via a 2-second DB poll fallback — Bug 2 of the OAB write-up never applied.
+
+#### Notes
+- The truth doc is filed under `docs/archive/incident-history/` with a status header listing what landed in Composer for each recommendation.
+- The new `_run_with_persistence` wrapper mirrors the resilience pattern OAB shipped in commit `2888e4d`; the sweeper is OAB's deferred recommendation D.
+
+#### Verified
+- 711/711 unit tests green (692 baseline + 19 new: 7 sanitizer + 8 sweeper + 4 wrapper).
+- Pyright strict: 0 errors.
+- ruff lint + format: clean.
+- Frontend tsc: clean (no UI changes).
+
 ### Phase 10 — Polish: 5 more reference templates (2026-04-28)
 
 #### Added

@@ -14,6 +14,7 @@ from pydantic import BaseModel, ConfigDict, create_model
 
 from src.mcp.client import MCPClient
 from src.mcp.oauth import get_valid_access_token
+from src.mcp.sanitize import strip_binary_blobs
 from src.mcp.schema_adapter import normalize_input_schema, substitute_url_placeholders
 from src.security.encryption import decrypt
 from src.tools.base import (
@@ -300,12 +301,20 @@ def _json_type_to_python(prop_schema: dict[str, Any]) -> Any:
 
 
 def _render_content_blocks(content: list[dict[str, Any]]) -> str:
-    """Concatenate text content blocks; non-text blocks render as placeholders."""
+    """Concatenate text content blocks; non-text blocks render as placeholders.
+
+    Text content runs through `strip_binary_blobs` before joining — some MCP
+    servers (Highspot's `get_item_content`) embed base64-encoded binary
+    payloads in the *text* channel, which would otherwise burn tens of
+    thousands of tokens of useless bytes into the agent's conversation
+    history.  See src/mcp/sanitize.py for the rationale.
+    """
     out: list[str] = []
     for block in content:
         btype = block.get("type")
         if btype == "text":
-            out.append(str(block.get("text", "")))
+            raw_text = str(block.get("text", ""))
+            out.append(strip_binary_blobs(raw_text))
         elif btype in {"image", "audio", "resource"}:
             out.append(f"[{btype} content omitted]")
         else:

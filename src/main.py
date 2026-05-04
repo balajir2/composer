@@ -26,6 +26,7 @@ from src.api.run import router as run_router
 from src.api.uploads import router as uploads_router
 from src.api.workflows import router as workflows_router
 from src.config import get_settings
+from src.maintenance.execution_sweeper import start_sweeper, stop_sweeper
 from src.storage.db import prisma_lifespan
 
 logger = logging.getLogger(__name__)
@@ -38,8 +39,17 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logging.basicConfig(level=settings.log_level)
     logger.info("Starting Composer v%s in %s mode", __version__, settings.environment)
 
-    async with prisma_lifespan(app):
-        yield
+    async with prisma_lifespan(app) as db:
+        sweeper_task = start_sweeper(
+            app,
+            db,
+            interval_seconds=settings.execution_sweeper_interval_seconds,
+            stuck_after_seconds=settings.execution_stuck_after_seconds,
+        )
+        try:
+            yield
+        finally:
+            await stop_sweeper(sweeper_task)
 
     logger.info("Shutting down Composer")
 

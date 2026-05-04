@@ -115,6 +115,25 @@ class Settings(BaseSettings):
     rate_limit_mcp_test_per_minute: int = 10
     rate_limit_api_run_per_minute: int = 60
 
+    # ─── Stuck-execution sweeper ─────────────────
+    # Any WorkflowExecution row in 'running' for longer than this without a
+    # terminal status update is treated as crashed (worker died, runtime
+    # timed out, network blip during persist).  See
+    # docs/archive/incident-history/2026-04-30-execution-status-truth.md.
+    execution_stuck_after_seconds: int = Field(
+        default=900,
+        description=(
+            "Mark 'running' executions as failed once they've been running this "
+            "long without a terminal update. Default 15 min covers the longest "
+            "legitimate workflows; tighten if your runtime has a shorter "
+            "request budget (Vercel ~5min, Lambda ~15min)."
+        ),
+    )
+    execution_sweeper_interval_seconds: int = Field(
+        default=300,
+        description="How often the background sweeper runs. Set 0 to disable.",
+    )
+
     # ─── SSO (Phase 10a) ────────────────────────
     sso_enabled: bool = Field(default=False, description="Enable /auth/sso-exchange endpoint.")
     sso_azure_ad_tenant_id: str = Field(

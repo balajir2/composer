@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import asyncio
 import json as _json
+import logging
 import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -31,7 +33,68 @@ if TYPE_CHECKING:
     from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
     from src.engine.events import ExecutionEventBus
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["run"])
+
+
+async def _run_with_persistence(  # pyright: ignore[reportUnusedFunction]
+    executor: LangGraphExecutor, db: Any, execution_id: str
+) -> None:
+    """Wrap `executor.run()` so an uncaught crash still marks the row failed.
+
+    `LangGraphExecutor.run()` catches its own exceptions and persists 'failed'
+    inside its body — that's the happy-path safety net.  But if something goes
+    wrong *before* that try/except is reached (an import-time error, an
+    `await` cancelled by a worker shutdown, a bug in the executor's own
+    persistence call), the row stays 'running' indefinitely until the
+    background sweeper catches it.
+
+    This wrapper adds a second-line defence: a final try/except that reaches
+    directly for the `WorkflowExecution` table and stamps 'failed' before
+    re-raising.  Errors here are best-effort — we never want to mask the
+    original exception or block the executor's primary cleanup.
+    """
+    try:
+        await executor.run(execution_id)
+    except asyncio.CancelledError:
+        # Cancellation = worker shutdown.  Mark the row failed so it doesn't
+        # need to wait for the sweeper interval to be cleaned up.
+        try:
+            await db.workflowexecution.update(
+                where={"id": execution_id},
+                data={
+                    "status": "failed",
+                    "error": "Execution canceled by worker shutdown.",
+                    "completedAt": datetime.now(UTC),
+                },
+            )
+        except Exception:
+            logger.exception(
+                "run: failed to mark canceled execution %s as failed",
+                execution_id,
+            )
+        raise
+    except Exception as exc:
+        logger.exception("run: detached executor task crashed for %s", execution_id)
+        try:
+            await db.workflowexecution.update(
+                where={"id": execution_id},
+                data={
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "completedAt": datetime.now(UTC),
+                },
+            )
+        except Exception:
+            logger.exception(
+                "run: failed to mark crashed execution %s as failed",
+                execution_id,
+            )
+        # Re-raise so the asyncio task carries the original exception —
+        # consumed by the done_callback so it doesn't print to stderr,
+        # but observable to anyone who awaits or inspects the task.
+        raise
 
 
 class RunRequest(BaseModel):
@@ -117,8 +180,11 @@ async def run_external(
     base_url = str(request.base_url).rstrip("/")
     stream_url = base_url.replace("http", "ws", 1) + f"/executions/{execution.id}/ws"
 
-    # Fire-and-forget run task.  Store reference to avoid RUF006.
-    _task = asyncio.create_task(executor.run(execution.id))
+    # Fire-and-forget run task.  We wrap the executor call so that any
+    # uncaught crash (or task cancellation on worker shutdown) still
+    # persists 'failed' to the row — without that wrapper the row would
+    # linger as 'running' until the maintenance sweeper notices.
+    _task = asyncio.create_task(_run_with_persistence(executor, db, execution.id))
     # Suppress "task was destroyed but it is pending" on test teardown.
     _task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
