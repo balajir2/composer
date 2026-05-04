@@ -92,10 +92,22 @@ Open http://localhost:3000 and click into the Templates gallery to start buildin
 | **Manage users / keys / models / MCP servers** | [`docs/admin-guide.md`](docs/admin-guide.md) |
 | **Understand the internals** | [`docs/architecture.md`](docs/architecture.md) |
 | **Call the HTTP API** | [`docs/api-reference.md`](docs/api-reference.md) |
-| **Trace an engineering decision** | [`docs/decisions.md`](docs/decisions.md) — 23 ADRs |
+| **Trace an engineering decision** | [`docs/decisions.md`](docs/decisions.md) — full ADR record |
+| **Host Composer as a SaaS — security, privacy, compliance, SLA, pricing** | [`docs/saas/`](docs/saas/) |
 | **See what changed** | [`CHANGELOG.md`](CHANGELOG.md) |
 
-The `docs/archive/` folder holds the design-phase material (2026-04-15 brainstorming, IE critique, phase specs + plans). Pristine for traceability, but you don't need it to understand or use the platform today.
+### Hosting Composer as a SaaS
+
+The [`docs/saas/`](docs/saas/) folder is the customer-facing layer for anyone hosting Composer for paying customers:
+
+- [security](docs/saas/security.md), [privacy](docs/saas/privacy.md), [compliance](docs/saas/compliance.md), [multi-tenancy](docs/saas/multi-tenancy.md)
+- [SLA](docs/saas/sla.md), [support](docs/saas/support.md), [pricing](docs/saas/pricing.md), [roadmap](docs/saas/roadmap.md)
+- [customer onboarding journey](docs/saas/customer-onboarding.md)
+- [legal templates](docs/saas/legal/) — Terms of Service, Privacy Policy, AUP, DPA, Sub-processors (review with counsel)
+
+Operational runbooks that back these commitments live under [`docs/operations/`](docs/operations/) — including [production deployment](docs/operations/production-deployment.md), [incident response](docs/operations/incident-response.md), [disaster recovery](docs/operations/disaster-recovery.md), [observability](docs/operations/observability.md), and [scaling](docs/operations/scaling.md).
+
+The `docs/archive/` folder holds the design-phase material (2026-04-15 brainstorming, IE critique, phase specs + plans, incident postmortems). Pristine for traceability, but you don't need it to understand or use the platform today.
 
 ---
 

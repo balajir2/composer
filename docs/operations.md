@@ -1,10 +1,16 @@
 # Operations
 
+> **Maintained by:** Balaji Rajan (`balajirajan@gmail.com`)
+
 Index of operational procedures. Detailed runbooks live under [`operations/`](operations/) — link directly to the runbook you need.
 
-## First-time deployment
+## End-to-end deployment
 
-Run these in order:
+The single comprehensive checklist for going live, in order:
+
+- **[`operations/production-deployment.md`](operations/production-deployment.md)** — Phases 0 through 10, from "deciding the region" to "handing over to operations." Read this first if you're standing up a new deployment.
+
+The component-specific runbooks the deployment checklist depends on:
 
 1. **[`operations/postgres-setup.md`](operations/postgres-setup.md)** — Provision Neon, set `DATABASE_URL`, run `prisma migrate deploy`.
 2. **[`operations/llm-keys.md`](operations/llm-keys.md)** — Set LLM API keys in Postgres (the source of truth) and sync to your runtime env vars.
@@ -12,15 +18,20 @@ Run these in order:
 4. **[`operations/azure-sso.md`](operations/azure-sso.md)** *(optional, recommended for prod)* — Register Azure AD app, wire NextAuth, validate JWTs.
 5. **[`operations/monitoring.md`](operations/monitoring.md)** — Turn on LangSmith tracing and Vercel log drains, set alerts.
 
-A completed deployment passes all four smoke tests:
+A completed deployment passes all of these smoke tests:
 
 - `GET /health` returns 200 with `{"status": "ok", ...}`
 - A test user can register / sign in via SSO
 - Admin can save an LLM API key via Admin → LLM keys and a designer can run a workflow that uses it
 - An external invoke (`POST /api/run/{slug}` with `Bearer ck_...`) executes successfully
+- The execution_sweeper boot log line appears (`execution_sweeper: started ...`)
 
-## Day-to-day ops
+## Production operations
 
+- **[`operations/incident-response.md`](operations/incident-response.md)** — Detect → Acknowledge → Triage → Mitigate → Resolve → Postmortem. The runbook for "production is broken right now."
+- **[`operations/disaster-recovery.md`](operations/disaster-recovery.md)** — Backups, restore procedures by failure class, the DR drill cadence.
+- **[`operations/observability.md`](operations/observability.md)** — What to look at: logs, metrics, traces. The reference for "I see X, what does it mean?"
+- **[`operations/scaling.md`](operations/scaling.md)** — Capacity model, signals that scaling is needed, what to scale first.
 - **[`operations/admin-operations.md`](operations/admin-operations.md)** — Promote users to admin (SQL), run the OAB → Composer migration, reconcile users post-migration, reassign workflow / MCP server ownership.
 
 ## Where things live in production
