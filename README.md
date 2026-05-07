@@ -133,8 +133,11 @@ uv run prisma generate
 uv run prisma migrate deploy
 uv run python -m scripts.seed_templates
 
-# 4. Run
-uv run uvicorn src.main:app --reload --port 8000   # backend
+# 4. Run (Windows shortcut: opens both servers in fresh windows)
+.\scripts\dev.ps1                                   # backend on 8001, frontend on 3000
+
+# Or start them manually:
+uv run uvicorn src.main:app --reload --port 8001   # backend
 cd frontend && npm run dev                          # frontend (in another terminal)
 ```
 

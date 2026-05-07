@@ -88,31 +88,37 @@ $env:PATH = "$PWD\.venv\Scripts;$env:PATH"
 uv run prisma generate
 ```
 
-## 4. Run the backend
+## 4. Run both servers
 
-```bash
-uv run uvicorn src.main:app --reload --port 8000
+The fastest path on Windows is the dev launcher — it opens two PowerShell windows (backend + frontend), validates the backend port is free, and confirms `frontend\.env.local` points at it:
+
+```powershell
+.\scripts\dev.ps1                          # backend on 8001 (default), frontend on 3000
+.\scripts\dev.ps1 -BackendPort 9000        # use a different backend port
 ```
 
 Smoke test:
 
-- http://localhost:8000/health → `{"status": "ok", ...}`
-- http://localhost:8000/docs → FastAPI auto-generated API docs
+- http://localhost:8001/health → `{"status":"ok","service":"composer",...}`
+- http://localhost:8001/docs → FastAPI auto-generated API docs
+- http://localhost:3000 → Composer UI
 
-## 5. Run the frontend
-
-In a second terminal:
+If you'd rather start the servers manually (or you're not on Windows):
 
 ```bash
+# Terminal 1 — backend
+uv run uvicorn src.main:app --reload --port 8001
+
+# Terminal 2 — frontend
 cd frontend
 npm run dev
 ```
 
-Visit http://localhost:3000. In **dev mode** (no `ENVIRONMENT=production` env var) the backend allows an unauthenticated fallback user `dev` so you can start clicking around immediately.
+In **dev mode** (no `ENVIRONMENT=production` env var) the backend allows an unauthenticated fallback user `dev` so you can start clicking around immediately. For real auth setup (Azure SSO or username/password), see [admin-guide.md](admin-guide.md).
 
-For real auth setup (Azure SSO or username/password), see [admin-guide.md](admin-guide.md).
+> **Heads up: port collisions.** If `npm run dev` shows "Sign-in failed. Check your credentials." even with valid creds, the most likely cause is a different project squatting on the backend port. The launcher above checks for this; if you started uvicorn manually, verify with `curl http://localhost:8001/health` that it returns Composer's health response (`"service":"composer"`) and not some other app's. If a different app is on the port, switch backend + `frontend\.env.local` to a free port and restart `npm run dev` so the `NEXT_PUBLIC_*` env reload kicks in.
 
-## 6. Build your first workflow
+## 5. Build your first workflow
 
 A complete walkthrough using the simplest template:
 
@@ -135,7 +141,7 @@ That's the basic loop. From here:
 - **Add more inputs** — click the Start node, add a `tone` variable (type=text, default=`professional`). Reference it in the agent prompt as `{{tone}}`.
 - **Try a more complex template** — Templates 8 (human approval), 11 (RAG), 14 (support triage) demonstrate more advanced patterns.
 
-## 7. Publish a workflow as an API
+## 6. Publish a workflow as an API
 
 To call your workflow from outside Composer:
 
@@ -145,7 +151,7 @@ To call your workflow from outside Composer:
 4. Call the endpoint:
 
 ```bash
-curl -X POST "http://localhost:8000/api/run/my-workflow" \
+curl -X POST "http://localhost:8001/api/run/my-workflow" \
   -H "Authorization: Bearer ck_YOUR_KEY" \
   -H "Content-Type: application/json" \
   -d '{"input": {"question": "What's new in agentic AI?"}, "sync": true}'
