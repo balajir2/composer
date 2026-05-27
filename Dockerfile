@@ -3,69 +3,87 @@
 # Build:   docker build -t composer-backend .
 # Run:     docker run -e DATABASE_URL=... -e JWT_SECRET=... -p 8080:8080 composer-backend
 #
-# The image is single-stage because Composer's deps are all pure-Python /
-# pre-built wheels — there's no native compile step that would benefit
-# from a separate builder stage.  Layer ordering puts deps before source
-# so day-to-day source edits don't invalidate the dep cache.
+# Multi-stage build:
+#   builder  - Python 3.12 + Node.js + uv.  Installs deps, generates
+#              the Prisma client + downloads the query-engine binary.
+#   runtime  - Python 3.12 only.  Copies /app from builder (the venv,
+#              the source, and the Prisma cache).  No Node.js, no uv,
+#              no apt-cache.  Final image ~400 MB instead of ~1.3 GB.
+#
+# Node.js is needed by Prisma Python's `generate` (it shells out to the
+# upstream Prisma TS CLI to download the query engine).  The runtime
+# image needs the resulting engine BINARY but not the Node toolchain
+# that fetched it.
 
 # syntax=docker/dockerfile:1.7
 
-FROM python:3.12-slim
+# ─── builder ──────────────────────────────────────────────────────────
+FROM python:3.12-slim AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     PRISMA_HIDE_UPDATE_MESSAGE=1 \
     UV_LINK_MODE=copy \
-    UV_PROJECT_ENVIRONMENT=/app/.venv
+    UV_PROJECT_ENVIRONMENT=/app/.venv \
+    # Put the Prisma binary cache inside /app so the runtime copy picks
+    # it up.  Default ~/.cache/prisma-python wouldn't travel across
+    # stages.
+    PRISMA_BINARY_CACHE_DIR=/app/.prisma-cache
 
-# Prisma Python's `prisma generate` shells out to the upstream Prisma TS
-# CLI (it downloads a node env on first run), so the build needs node +
-# npm available.  At runtime the generated Python client doesn't need
-# node — just at build time.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         curl \
         ca-certificates \
         gnupg \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/* \
-    && node --version \
-    && npm --version
+    && rm -rf /var/lib/apt/lists/*
 
-# Install uv from the official image (~3 MB, no apt-get noise).
+# uv from the official image (~3 MB).
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 
 WORKDIR /app
 
-# Copy dependency manifests + the Prisma schema first.  This layer is
-# cached as long as pyproject.toml / uv.lock / prisma/schema.prisma stay
-# unchanged.  Source edits below don't trigger a fresh `uv sync`.
+# Dependency manifests + Prisma schema first so this layer caches
+# independently of source changes.
 COPY pyproject.toml uv.lock README.md ./
 COPY prisma/schema.prisma prisma/
 
-# Install runtime dependencies (no dev extras, no editable install of the
-# project itself yet).
 RUN uv sync --frozen --no-dev --no-install-project
 
-# Generate the Prisma client and download its query-engine binary into
-# the venv.  Doing this at build time avoids a multi-second penalty on
-# every cold start.
+# Download the Prisma query-engine binary + generate the Python client
+# at BUILD time so runtime cold starts don't pay the multi-second
+# download penalty.  The binary lands in $PRISMA_BINARY_CACHE_DIR.
 RUN uv run prisma generate
 
-# Now copy the application source.  This is the layer that changes most
-# often; everything above stays cached.
 COPY src/ ./src/
 
-# Install the project itself.  Fast because all deps are already cached.
+# Install the project itself (fast — deps are cached).
 RUN uv sync --frozen --no-dev
 
-# Cloud Run injects PORT; default to 8080 for local docker run.
-ENV PORT=8080
+# ─── runtime ──────────────────────────────────────────────────────────
+FROM python:3.12-slim AS runtime
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PRISMA_HIDE_UPDATE_MESSAGE=1 \
+    PRISMA_BINARY_CACHE_DIR=/app/.prisma-cache \
+    # Put the venv's bin/ first so `uvicorn` and friends resolve
+    # without needing `uv run`.
+    PATH=/app/.venv/bin:$PATH \
+    PORT=8080
+
+WORKDIR /app
+
+# Copy everything we need from the builder in a single layer.  This
+# brings the venv (with the generated Prisma client), the source, the
+# project manifest, and the Prisma engine cache — nothing else.  No
+# Node.js binary, no apt-cache, no uv, no nodeenv install.
+COPY --from=builder /app /app
+
 EXPOSE 8080
 
-# Use `uv run` so the venv-managed uvicorn + Prisma client are picked up.
-# --proxy-headers + --forwarded-allow-ips '*' makes FastAPI honour
-# X-Forwarded-* headers that Cloud Run's load balancer injects (so
-# request.url.scheme reports 'https' instead of 'http').
-CMD ["sh", "-c", "uv run uvicorn src.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips '*'"]
+# --proxy-headers + --forwarded-allow-ips '*' makes FastAPI honour the
+# X-Forwarded-* headers Cloud Run's load balancer injects (so
+# request.url.scheme is 'https' rather than 'http' behind the proxy).
+CMD ["sh", "-c", "uvicorn src.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips '*'"]
