@@ -1,12 +1,12 @@
 "use client";
 
 import { Suspense, useState } from "react";
-import Image from "next/image";
 import Link from "next/link";
 import { signIn } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ComposerLogo } from "@/components/composer/composer-logo";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
@@ -54,16 +54,8 @@ function LoginForm() {
   return (
     <Card className="w-full max-w-md shadow-lg">
       <CardHeader className="items-center text-center">
-        <Image
-          src="/bounteous-logo.png"
-          alt="Bounteous"
-          width={56}
-          height={56}
-          priority
-          className="mb-3"
-        />
+        <ComposerLogo size={48} className="mb-3 text-primary" />
         <CardTitle className="text-2xl">Sign in to Composer</CardTitle>
-        <p className="text-xs text-muted-foreground">by Bounteous</p>
       </CardHeader>
       <CardContent className="space-y-6">
         {azureEnabled && (

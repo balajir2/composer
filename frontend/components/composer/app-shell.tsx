@@ -1,9 +1,9 @@
 "use client";
 
-import Image from "next/image";
 import Link from "next/link";
 import { signOut, useSession } from "next-auth/react";
 import { Button } from "@/components/ui/button";
+import { ComposerLogo } from "./composer-logo";
 import { RoleNav } from "./role-nav";
 
 export function AppShell({
@@ -24,25 +24,11 @@ export function AppShell({
       <aside className="flex w-64 flex-col bg-brand-gradient">
         <Link
           href="/"
-          className="flex items-center gap-3 border-b border-white/10 px-5 pb-5 pt-6"
+          className="flex items-center gap-3 border-b border-white/10 px-5 pb-5 pt-6 text-white"
         >
-          <span className="block size-8 overflow-hidden rounded-md bg-white/10 p-1">
-            <Image
-              src="/bounteous-logo.png"
-              alt="Bounteous"
-              width={32}
-              height={32}
-              priority
-              className="size-full object-contain"
-            />
-          </span>
-          <span>
-            <span className="block text-[0.8rem] font-extrabold tracking-[1.5px] text-white">
-              COMPOSER
-            </span>
-            <span className="mt-0.5 block text-[0.6rem] text-white/45">
-              by Bounteous
-            </span>
+          <ComposerLogo size={28} />
+          <span className="text-[0.8rem] font-extrabold tracking-[1.5px]">
+            COMPOSER
           </span>
         </Link>
 
