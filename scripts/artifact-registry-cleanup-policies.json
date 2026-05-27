@@ -1,0 +1,33 @@
+[
+  {
+    "name": "keep-latest-10-per-package",
+    "action": { "type": "Keep" },
+    "mostRecentVersions": {
+      "keepCount": 10
+    }
+  },
+  {
+    "name": "keep-floating-tags",
+    "action": { "type": "Keep" },
+    "condition": {
+      "tagState": "TAGGED",
+      "tagPrefixes": ["latest"]
+    }
+  },
+  {
+    "name": "delete-untagged-after-7d",
+    "action": { "type": "Delete" },
+    "condition": {
+      "tagState": "UNTAGGED",
+      "olderThan": "7d"
+    }
+  },
+  {
+    "name": "delete-tagged-after-90d",
+    "action": { "type": "Delete" },
+    "condition": {
+      "tagState": "TAGGED",
+      "olderThan": "90d"
+    }
+  }
+]

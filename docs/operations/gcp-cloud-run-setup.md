@@ -316,6 +316,53 @@ gcloud run services update composer-backend --region=us-central1 `
 
 The default settings (1 vCPU / 1 GiB / concurrency 80 / max-instances 3) are tuned for single-tenant single-user-at-a-time. Bump as needed.
 
+### Verify scale-to-zero is still pinned
+
+`min-instances=0` is set by [`scripts/gcp-bootstrap.ps1`](../../scripts/gcp-bootstrap.ps1) and preserved by the GitHub Actions deploy step (`gcloud run deploy --image=...` only swaps the image, keeping every other setting). To confirm:
+
+```powershell
+gcloud run services describe composer-backend  --region=us-central1 --format='yaml(spec.template.metadata.annotations)' | Select-String "minScale|maxScale"
+gcloud run services describe composer-frontend --region=us-central1 --format='yaml(spec.template.metadata.annotations)' | Select-String "minScale|maxScale"
+```
+
+You should see only `maxScale: '3'`. The absence of `minScale` is intentional — Cloud Run defaults to zero, which is what we want for cost. Anyone running `gcloud run services update --min-instances=N` (or following Step 6) will add a `minScale` annotation, which is the signal to push back unless production warmup is wanted.
+
+### Image cleanup (Artifact Registry)
+
+A managed cleanup policy keeps the `composer` Artifact Registry repo bounded. It's checked in at [`scripts/artifact-registry-cleanup-policies.json`](../../scripts/artifact-registry-cleanup-policies.json) and runs daily on GCP's side — no CI step required.
+
+Current rules (Keep beats Delete, so anything matched by a Keep rule survives age-based deletion):
+
+| Rule | Action | Effect |
+|---|---|---|
+| `keep-latest-10-per-package` | Keep | Always retain the 10 most recent versions of `backend` and `frontend` |
+| `keep-floating-tags` | Keep | Always retain anything tagged `latest` |
+| `delete-untagged-after-7d` | Delete | Remove orphan layers (untagged digests from replaced builds) older than 7 days |
+| `delete-tagged-after-90d` | Delete | Long-term cleanup of tagged historical images older than 3 months |
+
+To update the policy, edit the JSON and re-apply:
+
+```powershell
+gcloud artifacts repositories set-cleanup-policies composer `
+  --location=us-central1 `
+  --policy=scripts/artifact-registry-cleanup-policies.json
+```
+
+To preview what *would* be deleted without actually removing anything:
+
+```powershell
+gcloud artifacts repositories update composer --location=us-central1 --cleanup-policy-dry-run
+# (re-apply policy; deletions land in Cloud Logging under "artifactregistry.googleapis.com")
+gcloud artifacts repositories update composer --location=us-central1 --no-cleanup-policy-dry-run  # flip dry-run off when satisfied
+```
+
+To list current images + storage:
+
+```powershell
+gcloud artifacts docker images list us-central1-docker.pkg.dev/composer-497608/composer --include-tags --sort-by=~UPDATE_TIME
+gcloud artifacts repositories describe composer --location=us-central1 --format='value(sizeBytes)'
+```
+
 ### Permissions
 
 | Who needs it | What to grant |
@@ -334,7 +381,7 @@ Approximate monthly cost for the recommended config at single-tenant evaluation 
 | Cloud Run backend (scale-to-zero, occasional traffic) | ~$0–3 |
 | Cloud Run frontend (scale-to-zero) | ~$0–1 |
 | Secret Manager (10 secrets) | ~$0.30 |
-| Artifact Registry (two images) | ~$0–0.10 |
+| Artifact Registry (bounded by cleanup policy — keep-10 + 90d) | ~$0.10–0.30 |
 | Cloud Logging + Monitoring | $0 (under free tier) |
 | Neon Postgres free tier | $0 |
 | **Total** | **~$0–5/month** |
