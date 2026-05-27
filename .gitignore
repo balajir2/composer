@@ -92,3 +92,7 @@ frontend/.env.local
 service-account*.json
 *.pem
 *.p12
+
+# Local design / UX preview output (logo iteration, mockup screenshots,
+# scratch HTML).  Useful while iterating; not source of truth.
+.preview/
