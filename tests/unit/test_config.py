@@ -47,3 +47,22 @@ def test_iep_settings_default_empty(monkeypatch: pytest.MonkeyPatch) -> None:
     assert settings.iep_jwks_url == ""
     assert settings.iep_shared_secret == ""
     assert settings.iep_ui_origin == ""
+
+
+def test_composer_frontend_origins_default_empty(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COMPOSER_FRONTEND_ORIGINS", raising=False)
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    assert get_settings().composer_frontend_origins == ""
+
+
+def test_composer_frontend_origins_reads_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(
+        "COMPOSER_FRONTEND_ORIGINS",
+        "https://a.example.com,https://b.example.com",
+    )
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    assert get_settings().composer_frontend_origins == "https://a.example.com,https://b.example.com"

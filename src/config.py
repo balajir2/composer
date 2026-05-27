@@ -95,6 +95,18 @@ class Settings(BaseSettings):
         default="", description="Exact origin allowed by CORS when embedded."
     )
 
+    # ─── Standalone-mode CORS (production) ───────────
+    composer_frontend_origins: str = Field(
+        default="",
+        description=(
+            "Comma-separated list of frontend origins allowed by CORS when "
+            "deployment_mode='standalone' and environment='production'. "
+            "Each entry must be an exact scheme+host+port match, e.g. "
+            "'https://composer.example.com,https://composer-frontend-xyz-uc.a.run.app'. "
+            "Empty in production rejects every cross-origin request."
+        ),
+    )
+
     # ─── Standalone password hashing ─────────────────
     bcrypt_rounds: int = Field(default=12, description="bcrypt cost factor.")
 

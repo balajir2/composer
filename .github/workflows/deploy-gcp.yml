@@ -186,3 +186,47 @@ jobs:
             --format='value(status.url)')
           echo "Frontend deployed: $URL"
           echo "FRONTEND_URL=$URL" >> $GITHUB_STEP_SUMMARY
+
+  update-backend-cors:
+    name: Update backend CORS allowlist
+    runs-on: ubuntu-latest
+    needs: deploy-frontend
+    if: ${{ github.event_name == 'push' || github.event.inputs.deploy_frontend == 'true' }}
+    permissions:
+      contents: read
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Resolve frontend origins
+        id: origins
+        run: |
+          # Always allow the *.run.app URL — even when a custom domain is
+          # used, the Run URL stays valid and admins occasionally hit it
+          # for smoke tests.  If COMPOSER_FRONTEND_URL is set as a repo
+          # variable, append that too.
+          RUN_URL=$(gcloud run services describe ${{ env.FRONTEND_SERVICE }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --format='value(status.url)')
+          ORIGINS="$RUN_URL"
+          if [ -n "${{ vars.COMPOSER_FRONTEND_URL }}" ] && [ "${{ vars.COMPOSER_FRONTEND_URL }}" != "$RUN_URL" ]; then
+            ORIGINS="$ORIGINS,${{ vars.COMPOSER_FRONTEND_URL }}"
+          fi
+          echo "origins=$ORIGINS" >> $GITHUB_OUTPUT
+          echo "Backend CORS allowlist: $ORIGINS"
+
+      - name: Update backend env
+        run: |
+          gcloud run services update ${{ env.BACKEND_SERVICE }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --update-env-vars="COMPOSER_FRONTEND_ORIGINS=${{ steps.origins.outputs.origins }}" \
+            --quiet

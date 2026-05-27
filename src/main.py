@@ -88,8 +88,22 @@ def create_app() -> FastAPI:
     # Mode-aware CORS (Phase 7a)
     if settings.deployment_mode == "embedded":
         allow_origins = [settings.iep_ui_origin] if settings.iep_ui_origin else []
+    elif settings.environment == "development":
+        allow_origins = ["*"]
     else:
-        allow_origins = ["*"] if settings.environment == "development" else []
+        # Standalone + production: explicit allowlist from env.  An empty
+        # list rejects every cross-origin request, which is the correct
+        # default but lethal in practice — warn so misconfiguration is
+        # visible at boot instead of as a CORS error in the browser.
+        allow_origins = [
+            o.strip() for o in settings.composer_frontend_origins.split(",") if o.strip()
+        ]
+        if not allow_origins:
+            logger.warning(
+                "cors: COMPOSER_FRONTEND_ORIGINS is empty in standalone+production — "
+                "every cross-origin request from a browser will be rejected. "
+                "Set the env var to a comma-separated list of frontend origins."
+            )
 
     app.add_middleware(
         CORSMiddleware,

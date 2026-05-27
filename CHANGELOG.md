@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fix — Standalone+production CORS allowlist (2026-05-27)
+
+The Phase 7a CORS branch only plumbed an allowed origin for embedded mode (`IEP_UI_ORIGIN`). Standalone + production fell through to `allow_origins=[]`, so the Cloud Run frontend's browser preflights to the Cloud Run backend were all rejected. The UI surfaced this as "Could not load MCP servers" (and the same blank-data state on every other admin page), because the React Query landed in `isError`.
+
+#### Added
+- **`COMPOSER_FRONTEND_ORIGINS` setting** in [src/config.py](src/config.py). Comma-separated list of exact origins (scheme+host+port) that the backend's CORS middleware should accept in standalone+production. Mirrors the embedded-mode `IEP_UI_ORIGIN` plumbing but supports multiple values so operators can list both the `*.run.app` URL and a custom domain.
+- **Startup warning** in [src/main.py](src/main.py) when standalone+production boots with the env var empty — the silent symptom this incident produced should be visible at deploy time, not as a CORS error in the browser.
+- **CORS unit tests** in [tests/unit/test_main.py](tests/unit/test_main.py) covering all four branches (standalone-dev `*`, standalone-prod allowlist, standalone-prod empty + warning, embedded uses `iep_ui_origin` and ignores the standalone var).
+
+#### Changed
+- [scripts/gcp-bootstrap.ps1](scripts/gcp-bootstrap.ps1) — new step 6 that runs after the frontend deploys, computes the allowlist (`*.run.app` URL + custom domain if set), and pushes it to the backend service via `gcloud run services update --update-env-vars`.
+- [.github/workflows/deploy-gcp.yml](.github/workflows/deploy-gcp.yml) — new `update-backend-cors` job that depends on `deploy-frontend` and applies the same update. Honors the existing `COMPOSER_FRONTEND_URL` repository variable when a custom domain is in play.
+
+#### Verified
+- 16/16 affected unit tests green (5 new in `test_main.py`, 2 new in `test_config.py`).
+- Ruff lint + format: clean.
+- Pyright strict: 0 new errors on changed files.
+
 ### Reliability — Execution-status truth + MCP base64 hygiene (2026-05-04)
 
 Closing the OAB-reported defect class documented in [docs/archive/incident-history/2026-04-30-execution-status-truth.md](docs/archive/incident-history/2026-04-30-execution-status-truth.md). Audit found Composer's primary persistence + completion-signal paths were already correct; the remaining gaps were the resilience layers around them.

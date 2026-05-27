@@ -254,7 +254,24 @@ if ($nextauthUrl) {
 
 $frontendRunUrl = gcloud run services describe $FrontendService --region=$Region --project=$ProjectId --format="value(status.url)"
 
-# ─── 6. summary ─────────────────────────────────────────────────────
+# ─── 6. update backend CORS allowlist ───────────────────────────────
+# The backend's CORS middleware only allows the origins listed in
+# COMPOSER_FRONTEND_ORIGINS in production-standalone mode.  We can only set
+# this once the frontend URL is known, so it's a post-deploy update step.
+Write-Step "6. Update backend CORS allowlist"
+$frontendOrigins = @($frontendRunUrl)
+if ($FrontendDomain) {
+    $customOrigin = "https://$FrontendDomain"
+    if ($frontendOrigins -notcontains $customOrigin) { $frontendOrigins += $customOrigin }
+}
+$originsCsv = ($frontendOrigins -join ",")
+Write-Host "Setting COMPOSER_FRONTEND_ORIGINS=$originsCsv on $BackendService"
+gcloud run services update $BackendService `
+    --region=$Region `
+    --project=$ProjectId `
+    --update-env-vars="COMPOSER_FRONTEND_ORIGINS=$originsCsv" | Out-Null
+
+# ─── 7. summary ─────────────────────────────────────────────────────
 Write-Step "Done"
 Write-Host "Backend  → $backendRunUrl" -ForegroundColor Green
 Write-Host "Frontend → $frontendRunUrl" -ForegroundColor Green
