@@ -6,6 +6,45 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fix — Admin-UI LLM keys now reach workflow runtime (2026-05-27)
+
+Phase 9e made Postgres the source-of-truth for provider keys and added a
+`composer keys sync --target vercel` deploy-time bridge — but Cloud Run
+deployments had no equivalent.  An admin who saved a key via the UI
+updated Postgres, but workflow execution still read `settings.<provider>_api_key`
+(env vars only) at runtime; the env was frozen at deploy time, so
+admin-UI edits never reached the workflow.  Symptom: workflows reported
+"Google API Key is missing" while the admin UI showed the key present.
+
+#### Added
+- **`src/security/key_sync.py`** — `sync_llm_keys_from_db(db)` runs once
+  during the FastAPI lifespan and decrypts every `llm_api_keys` row into
+  the cached `Settings` instance.  Env-set values win (preserves the
+  documented "DEV-ONLY override" semantic); DB fills in the blanks.
+  Covers all ten providers tracked by Phase 9e (anthropic, openai,
+  google, groq, langsmith, tavily, firecrawl, serper, browserless, gamma).
+- **6 unit tests** in [tests/unit/security/test_key_sync.py](tests/unit/security/test_key_sync.py):
+  empty-fields populate; env-set values preserved; unknown providers
+  skipped with warning; decrypt failures skipped without crashing
+  (the exact mode an ENCRYPTION_KEY rotation produces); DB query
+  failures non-fatal; empty table is a no-op.
+
+#### Changed
+- [src/main.py](src/main.py) lifespan now calls `sync_llm_keys_from_db(db)` after
+  Prisma connects, before the sweeper starts.  Boot-time cost is one
+  `SELECT * FROM llm_api_keys` + N AES-256-GCM decrypts; negligible.
+- [.env.example](.env.example) — documented the new lookup order and clarified that
+  blank LLM-key env vars now mean "use the DB", not "broken config".
+
+#### Notes
+- A Cloud Run revision restart (which a redeploy already does) is the
+  pickup signal for admin-UI key edits.  This is consistent with how
+  every other env-var-style setting works on Cloud Run.
+- An ENCRYPTION_KEY mismatch (e.g. after rotation without re-encryption)
+  surfaces as a per-row decrypt warning at startup — the right operator
+  signal — and the affected provider falls back to its env var (likely
+  blank, surfacing the existing "key missing" error at workflow time).
+
 ### CI — Docker layer caching on the GCP deploy workflow (2026-05-27)
 
 #### Changed

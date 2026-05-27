@@ -27,6 +27,7 @@ from src.api.uploads import router as uploads_router
 from src.api.workflows import router as workflows_router
 from src.config import get_settings
 from src.maintenance.execution_sweeper import start_sweeper, stop_sweeper
+from src.security.key_sync import sync_llm_keys_from_db
 from src.storage.db import prisma_lifespan
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("Starting Composer v%s in %s mode", __version__, settings.environment)
 
     async with prisma_lifespan(app) as db:
+        # Pull admin-UI-managed LLM keys into runtime Settings so workflow
+        # execution (src/llm/providers.py reads from settings.*_api_key)
+        # can see them.  Env-set values win; DB fills in the blanks.  A
+        # revision restart picks up edits made via the admin UI.
+        await sync_llm_keys_from_db(db)
+
         sweeper_task = start_sweeper(
             app,
             db,
