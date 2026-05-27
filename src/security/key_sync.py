@@ -34,7 +34,11 @@ logger = logging.getLogger(__name__)
 # provider → Settings field name.  Mirrors src/cli/keys.py:_PROVIDER_TO_ENV
 # but maps to the lowercased Settings attribute names instead of env var
 # names — pydantic_settings handles the env-var ↔ field mapping.
-_PROVIDER_TO_SETTINGS_FIELD: dict[str, str] = {
+#
+# Public so the admin PUT/DELETE handlers in src/api/admin_llm_keys.py can
+# update the in-process Settings on key save, eliminating the need for a
+# revision restart between "admin saves key" and "workflow uses key".
+PROVIDER_TO_SETTINGS_FIELD: dict[str, str] = {
     "anthropic": "anthropic_api_key",
     "openai": "openai_api_key",
     "google": "google_api_key",
@@ -66,7 +70,7 @@ async def sync_llm_keys_from_db(db: Prisma) -> dict[str, str]:  # pyright: ignor
         return populated
 
     for row in rows:
-        field = _PROVIDER_TO_SETTINGS_FIELD.get(row.provider)
+        field = PROVIDER_TO_SETTINGS_FIELD.get(row.provider)
         if field is None:
             logger.warning(
                 "llm-key sync: no Settings field mapping for provider %r; skipping",
@@ -103,4 +107,4 @@ async def sync_llm_keys_from_db(db: Prisma) -> dict[str, str]:  # pyright: ignor
     return populated
 
 
-__all__ = ["sync_llm_keys_from_db"]
+__all__ = ["PROVIDER_TO_SETTINGS_FIELD", "sync_llm_keys_from_db"]

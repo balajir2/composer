@@ -140,3 +140,46 @@ def test_delete_404_when_absent(monkeypatch: pytest.MonkeyPatch) -> None:
     db.llmapikey.find_unique = AsyncMock(return_value=None)
     resp = client.delete("/admin/llm-keys/openai")
     assert resp.status_code == 404
+
+
+# ── In-process Settings sync on PUT/DELETE ─────────────────────────
+#
+# Closes the "save in admin UI, but workflow still says key missing"
+# gap.  Without this, the boot-time sync in src/security/key_sync.py
+# only catches up on the next revision restart.
+
+
+def test_put_updates_in_process_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A successful PUT must immediately reflect on settings.<provider>_api_key."""
+    client, db = _client_admin(monkeypatch)
+    from src.config import get_settings
+
+    # Force the field empty so we can prove the PUT populates it.
+    get_settings().anthropic_api_key = ""
+
+    db.llmapikey.find_unique = AsyncMock(return_value=None)
+    db.llmapikey.create = AsyncMock(return_value=_llm_row("anthropic", key_prefix="sk-ant"))
+
+    resp = client.put("/admin/llm-keys/anthropic", json={"value": "sk-ant-real-key-xyz"})
+    assert resp.status_code == 200
+    assert get_settings().anthropic_api_key == "sk-ant-real-key-xyz"
+
+
+def test_delete_clears_in_process_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A successful DELETE must immediately clear settings.<provider>_api_key.
+
+    The next workflow attempt for that provider will then correctly report
+    "key missing" instead of using a stale value.
+    """
+    client, db = _client_admin(monkeypatch)
+    from src.config import get_settings
+
+    # Pre-populate the field as if the boot sync (or a prior PUT) had set it.
+    get_settings().openai_api_key = "sk-openai-stale"
+
+    db.llmapikey.find_unique = AsyncMock(return_value=_llm_row("openai"))
+    db.llmapikey.delete = AsyncMock()
+
+    resp = client.delete("/admin/llm-keys/openai")
+    assert resp.status_code == 204
+    assert get_settings().openai_api_key == ""

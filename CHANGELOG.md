@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Improvement — Admin LLM-key saves take effect without a restart (2026-05-27)
+
+The boot-time `key_sync` only ran during the FastAPI lifespan, so after an admin saved or deleted a key via the UI the new value didn't reach `settings.<provider>_api_key` until the next revision restart. Workflows on the same revision kept reporting "key missing" until ops forced a Cloud Run roll (the `_KEYS_REENTERED_AT` trick).
+
+#### Added
+- `PROVIDER_TO_SETTINGS_FIELD` is now exported from [src/security/key_sync.py](src/security/key_sync.py) so other modules can reuse the same provider→Settings-field mapping.
+- 2 new tests in [tests/unit/api/test_admin_llm_keys.py](tests/unit/api/test_admin_llm_keys.py): PUT updates `settings.anthropic_api_key`; DELETE clears `settings.openai_api_key`.
+
+#### Changed
+- [src/api/admin_llm_keys.py](src/api/admin_llm_keys.py) — `upsert_llm_key` (PUT) now writes the plaintext into the cached `Settings` instance after persisting to Postgres. `delete_llm_key` (DELETE) clears the same field. Effect: key changes are visible to subsequent workflow executions on the same Cloud Run instance immediately, no restart needed.
+
+#### Notes
+- Multi-instance Cloud Run deployments (`--max-instances >1`) still see stale values on instances that didn't handle the PUT, until those instances' next boot. The boot-time sync continues to catch them on restart. For Composer's typical 1-instance steady-state this is a non-issue; documented for completeness.
+- DELETE clears the in-memory field even if the same env var is set in .env / Secret Manager. On next boot the env-wins rule restores the env value — that's correct behaviour: deleting a DB row shouldn't permanently shadow operator-set env vars.
+
 ### Fix — Admin "Test connection" probes for Gamma and LangSmith (2026-05-27)
 
 #### Changed
