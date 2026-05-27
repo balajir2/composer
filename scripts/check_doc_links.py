@@ -66,6 +66,7 @@ ACTIVE_FILES = [
     "docs/operations/admin-operations.md",
     "docs/operations/azure-sso.md",
     "docs/operations/disaster-recovery.md",
+    "docs/operations/gcp-cloud-run-setup.md",
     "docs/operations/incident-response.md",
     "docs/operations/llm-keys.md",
     "docs/operations/monitoring.md",

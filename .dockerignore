@@ -1,0 +1,62 @@
+# Keep the Docker build context small + reproducible.
+# Anything not needed inside the backend image is excluded here.
+
+# Git / IDE
+.git/
+.gitignore
+.gitattributes
+.github/
+.vscode/
+.idea/
+*.swp
+
+# Local virtualenvs + Python cache
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+coverage.xml
+
+# Build artefacts
+build/
+dist/
+*.egg-info/
+
+# Frontend lives in its own image
+frontend/
+
+# Docs + non-runtime files
+docs/
+*.md
+!README.md
+CHANGELOG.md
+LICENSE
+
+# Local environment / secrets
+.env
+.env.local
+*.env
+
+# Tests run separately, not inside the runtime image
+tests/
+
+# Scripts are not part of the runtime image
+scripts/
+
+# Tooling configs (not needed at runtime)
+.pre-commit-config.yaml
+pyrightconfig.json
+ruff.toml
+
+# Prisma migration history (only the schema is needed at runtime —
+# the Dockerfile copies prisma/schema.prisma explicitly)
+prisma/migrations/
+
+# Claude Code workspace
+.claude/

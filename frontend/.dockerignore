@@ -1,0 +1,34 @@
+# Keep the frontend Docker build context small + reproducible.
+
+# Git / IDE
+.git/
+.gitignore
+.vscode/
+.idea/
+
+# Node module + Next.js build artefacts (built inside the image)
+node_modules/
+.next/
+out/
+
+# Local environment / secrets (Vercel-style files live here in dev)
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Test artefacts
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+e2e/
+
+# Linter / formatter caches
+.eslintcache
+.prettiercache
+
+# OS
+.DS_Store
+Thumbs.db

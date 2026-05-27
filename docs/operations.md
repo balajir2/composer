@@ -14,9 +14,10 @@ The component-specific runbooks the deployment checklist depends on:
 
 1. **[`operations/postgres-setup.md`](operations/postgres-setup.md)** — Provision Neon, set `DATABASE_URL`, run `prisma migrate deploy`.
 2. **[`operations/llm-keys.md`](operations/llm-keys.md)** — Set LLM API keys in Postgres (the source of truth) and sync to your runtime env vars.
-3. **[`operations/vercel-setup.md`](operations/vercel-setup.md)** — Connect the GitHub repo, paste env vars, deploy. (For non-Vercel hosts the env-var list is the same — only the deploy step differs.)
-4. **[`operations/azure-sso.md`](operations/azure-sso.md)** *(optional, recommended for prod)* — Register Azure AD app, wire NextAuth, validate JWTs.
-5. **[`operations/monitoring.md`](operations/monitoring.md)** — Turn on LangSmith tracing and Vercel log drains, set alerts.
+3. **[`operations/gcp-cloud-run-setup.md`](operations/gcp-cloud-run-setup.md)** — End-to-end Cloud Run deployment: Dockerfiles, secrets, bootstrap script, GitHub Actions CI/CD, custom-domain mapping. The recommended path.
+4. **[`operations/vercel-setup.md`](operations/vercel-setup.md)** — Alternate path: Vercel for the frontend + a separate long-lived backend host.
+5. **[`operations/azure-sso.md`](operations/azure-sso.md)** *(optional, recommended for prod)* — Register Azure AD app, wire NextAuth, validate JWTs.
+6. **[`operations/monitoring.md`](operations/monitoring.md)** — Turn on LangSmith tracing and Vercel log drains, set alerts.
 
 A completed deployment passes all of these smoke tests:
 

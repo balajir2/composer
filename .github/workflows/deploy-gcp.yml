@@ -1,0 +1,188 @@
+# Auto-deploy Composer to Google Cloud Run on every push to main.
+#
+# Setup (one-time): see docs/operations/gcp-cloud-run-setup.md §"GitHub
+# Actions CI/CD".  Summary:
+#   1. Create a JSON key for the composer-deployer service account.
+#   2. Add it as a GitHub Actions secret named `GCP_SA_KEY`.
+#   3. Add the public API URL as a repository variable named
+#      `COMPOSER_API_URL` (e.g. https://api.composer.example.com or
+#      https://composer-backend-<hash>-uc.a.run.app).
+#   4. (Optional) Add the public frontend URL as `COMPOSER_FRONTEND_URL`
+#      so NEXTAUTH_URL points at the right host.
+#
+# The workflow assumes the bootstrap script has already run (Secret
+# Manager populated, Cloud Run services exist).  Day-to-day pushes
+# only rebuild + redeploy the containers.
+
+name: Deploy to GCP Cloud Run
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - 'docs/**'
+      - '*.md'
+      - '.github/ISSUE_TEMPLATE/**'
+  workflow_dispatch:
+    inputs:
+      deploy_backend:
+        description: "Deploy backend"
+        type: boolean
+        default: true
+      deploy_frontend:
+        description: "Deploy frontend"
+        type: boolean
+        default: true
+
+env:
+  PROJECT_ID: composer-497608
+  REGION: us-central1
+  ARTIFACT_REPO: composer
+  BACKEND_SERVICE: composer-backend
+  FRONTEND_SERVICE: composer-frontend
+
+jobs:
+  deploy-backend:
+    name: Build + deploy backend
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || github.event.inputs.deploy_backend == 'true' }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Docker auth for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Build backend image
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/backend:${{ github.sha }}"
+          IMAGE_LATEST="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/backend:latest"
+          docker build -t "$IMAGE" -t "$IMAGE_LATEST" -f Dockerfile .
+          docker push "$IMAGE"
+          docker push "$IMAGE_LATEST"
+          echo "BACKEND_IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.BACKEND_SERVICE }} \
+            --image="$BACKEND_IMAGE" \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --platform=managed \
+            --quiet
+
+      - name: Print backend URL
+        run: |
+          URL=$(gcloud run services describe ${{ env.BACKEND_SERVICE }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --format='value(status.url)')
+          echo "Backend deployed: $URL"
+          echo "BACKEND_URL=$URL" >> $GITHUB_STEP_SUMMARY
+
+      - name: Smoke test /health
+        run: |
+          URL=$(gcloud run services describe ${{ env.BACKEND_SERVICE }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --format='value(status.url)')
+          # Health probe may need a moment for traffic to roll over.
+          for i in 1 2 3 4 5; do
+            if curl -fsS --max-time 30 "$URL/health" > /dev/null; then
+              echo "Health probe passed"
+              exit 0
+            fi
+            echo "Health probe attempt $i failed, retrying in 5s..."
+            sleep 5
+          done
+          echo "Health probe never passed" >&2
+          exit 1
+
+  deploy-frontend:
+    name: Build + deploy frontend
+    runs-on: ubuntu-latest
+    if: ${{ github.event_name == 'push' || github.event.inputs.deploy_frontend == 'true' }}
+    needs: deploy-backend   # frontend bakes the backend URL at build time
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Docker auth for Artifact Registry
+        run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
+
+      - name: Resolve backend URL for build-arg
+        id: api
+        run: |
+          # Prefer the COMPOSER_API_URL repository variable (custom domain).
+          # Fall back to the backend's *.run.app URL if not set.
+          if [ -n "${{ vars.COMPOSER_API_URL }}" ]; then
+            URL="${{ vars.COMPOSER_API_URL }}"
+          else
+            URL=$(gcloud run services describe ${{ env.BACKEND_SERVICE }} \
+              --region=${{ env.REGION }} \
+              --project=${{ env.PROJECT_ID }} \
+              --format='value(status.url)')
+          fi
+          echo "url=$URL" >> $GITHUB_OUTPUT
+          echo "Frontend will call API at: $URL"
+
+      - name: Build frontend image
+        run: |
+          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/frontend:${{ github.sha }}"
+          IMAGE_LATEST="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/frontend:latest"
+          docker build \
+            --build-arg NEXT_PUBLIC_COMPOSER_API_URL="${{ steps.api.outputs.url }}" \
+            -t "$IMAGE" -t "$IMAGE_LATEST" \
+            -f frontend/Dockerfile frontend
+          docker push "$IMAGE"
+          docker push "$IMAGE_LATEST"
+          echo "FRONTEND_IMAGE=$IMAGE" >> $GITHUB_ENV
+
+      - name: Deploy to Cloud Run
+        run: |
+          gcloud run deploy ${{ env.FRONTEND_SERVICE }} \
+            --image="$FRONTEND_IMAGE" \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --platform=managed \
+            --quiet
+
+      - name: Update NEXTAUTH_URL if configured
+        if: vars.COMPOSER_FRONTEND_URL != ''
+        run: |
+          gcloud run services update ${{ env.FRONTEND_SERVICE }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --update-env-vars="NEXTAUTH_URL=${{ vars.COMPOSER_FRONTEND_URL }}" \
+            --quiet
+
+      - name: Print frontend URL
+        run: |
+          URL=$(gcloud run services describe ${{ env.FRONTEND_SERVICE }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --format='value(status.url)')
+          echo "Frontend deployed: $URL"
+          echo "FRONTEND_URL=$URL" >> $GITHUB_STEP_SUMMARY
