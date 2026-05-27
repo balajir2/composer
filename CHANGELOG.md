@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### CI — Docker layer caching on the GCP deploy workflow (2026-05-27)
+
+#### Changed
+- [.github/workflows/deploy-gcp.yml](.github/workflows/deploy-gcp.yml) — backend and frontend image builds now use `docker/build-push-action@v6` with `setup-buildx-action@v3` and `type=gha` cache (scoped `backend` vs `frontend`, `mode=max` so intermediate layers are exported too — important because our backend Dockerfile is single-stage with several expensive layers: apt+Node 20 install, `uv sync --frozen`, `prisma generate`). First run after this change is still cold; subsequent pushes that don't touch dep manifests should rebuild in ~30–60s instead of ~3 min.
+
 ### Fix — Standalone+production CORS allowlist (2026-05-27)
 
 The Phase 7a CORS branch only plumbed an allowed origin for embedded mode (`IEP_UI_ORIGIN`). Standalone + production fell through to `allow_origins=[]`, so the Cloud Run frontend's browser preflights to the Cloud Run backend were all rejected. The UI surfaced this as "Could not load MCP servers" (and the same blank-data state on every other admin page), because the React Query landed in `isError`.

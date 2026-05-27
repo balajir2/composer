@@ -64,14 +64,28 @@ jobs:
       - name: Configure Docker auth for Artifact Registry
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
-      - name: Build backend image
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/backend:${{ github.sha }}
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/backend:latest
+          # GHA cache: scoped per image so backend + frontend don't clobber each
+          # other.  `mode=max` exports intermediate layers too — important
+          # because our Dockerfile is single-stage with several expensive
+          # layers (apt+node install, uv sync, prisma generate).
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Export backend image ref
         run: |
-          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/backend:${{ github.sha }}"
-          IMAGE_LATEST="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/backend:latest"
-          docker build -t "$IMAGE" -t "$IMAGE_LATEST" -f Dockerfile .
-          docker push "$IMAGE"
-          docker push "$IMAGE_LATEST"
-          echo "BACKEND_IMAGE=$IMAGE" >> $GITHUB_ENV
+          echo "BACKEND_IMAGE=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/backend:${{ github.sha }}" >> $GITHUB_ENV
 
       - name: Deploy to Cloud Run
         run: |
@@ -148,17 +162,29 @@ jobs:
           echo "url=$URL" >> $GITHUB_OUTPUT
           echo "Frontend will call API at: $URL"
 
-      - name: Build frontend image
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push frontend image
+        uses: docker/build-push-action@v6
+        with:
+          context: frontend
+          file: frontend/Dockerfile
+          push: true
+          build-args: |
+            NEXT_PUBLIC_COMPOSER_API_URL=${{ steps.api.outputs.url }}
+          tags: |
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/frontend:${{ github.sha }}
+            ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/frontend:latest
+          # If the backend URL changes, only the layers that consume the
+          # build-arg invalidate — earlier layers (npm install, etc.) stay
+          # cached.
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Export frontend image ref
         run: |
-          IMAGE="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/frontend:${{ github.sha }}"
-          IMAGE_LATEST="${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/frontend:latest"
-          docker build \
-            --build-arg NEXT_PUBLIC_COMPOSER_API_URL="${{ steps.api.outputs.url }}" \
-            -t "$IMAGE" -t "$IMAGE_LATEST" \
-            -f frontend/Dockerfile frontend
-          docker push "$IMAGE"
-          docker push "$IMAGE_LATEST"
-          echo "FRONTEND_IMAGE=$IMAGE" >> $GITHUB_ENV
+          echo "FRONTEND_IMAGE=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/frontend:${{ github.sha }}" >> $GITHUB_ENV
 
       - name: Deploy to Cloud Run
         run: |
