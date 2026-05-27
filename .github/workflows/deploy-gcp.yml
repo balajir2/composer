@@ -126,7 +126,13 @@ jobs:
   deploy-frontend:
     name: Build + deploy frontend
     runs-on: ubuntu-latest
-    if: ${{ github.event_name == 'push' || github.event.inputs.deploy_frontend == 'true' }}
+    # Run when this is a push, OR when manually dispatched with deploy_frontend=true.
+    # `always() &&` is needed so a skipped `deploy-backend` (dispatch with
+    # deploy_backend=false) doesn't cascade-skip this job through `needs:`.
+    if: |
+      always()
+      && (needs.deploy-backend.result == 'success' || needs.deploy-backend.result == 'skipped')
+      && (github.event_name == 'push' || github.event.inputs.deploy_frontend == 'true')
     needs: deploy-backend   # frontend bakes the backend URL at build time
     permissions:
       contents: read
@@ -217,7 +223,12 @@ jobs:
     name: Update backend CORS allowlist
     runs-on: ubuntu-latest
     needs: deploy-frontend
-    if: ${{ github.event_name == 'push' || github.event.inputs.deploy_frontend == 'true' }}
+    # Same pattern as deploy-frontend: don't let cascading skips kill this job
+    # when the user explicitly dispatched it.
+    if: |
+      always()
+      && needs.deploy-frontend.result == 'success'
+      && (github.event_name == 'push' || github.event.inputs.deploy_frontend == 'true')
     permissions:
       contents: read
     steps:
@@ -251,8 +262,11 @@ jobs:
 
       - name: Update backend env
         run: |
+          # `^@^` switches gcloud's --update-env-vars delimiter from `,` to `@`
+          # so commas inside the value (multiple origins) aren't parsed as
+          # separators between env-var pairs.
           gcloud run services update ${{ env.BACKEND_SERVICE }} \
             --region=${{ env.REGION }} \
             --project=${{ env.PROJECT_ID }} \
-            --update-env-vars="COMPOSER_FRONTEND_ORIGINS=${{ steps.origins.outputs.origins }}" \
+            --update-env-vars="^@^COMPOSER_FRONTEND_ORIGINS=${{ steps.origins.outputs.origins }}" \
             --quiet
