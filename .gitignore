@@ -78,3 +78,17 @@ frontend/out/
 frontend/next-env.d.ts
 frontend/.env
 frontend/.env.local
+
+# Claude Code per-project workspace.  Personal state (settings.local.json,
+# scheduled-task locks, transcripts) that should never travel with the repo.
+.claude/
+
+# Service-account keys + credentials.  Any *.json that's actually a
+# Google / AWS / Azure key, or anything labelled "credentials", must
+# never be committed.  Keys belong in Secret Manager / GitHub Secrets,
+# not in source.
+*-key*.json
+*credentials*.json
+service-account*.json
+*.pem
+*.p12
