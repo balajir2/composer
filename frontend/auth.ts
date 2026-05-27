@@ -51,6 +51,15 @@ async function refreshComposerTokens(token: ComposerJwt): Promise<ComposerJwt> {
 }
 
 export const authConfig: NextAuthConfig = {
+  // NextAuth v5 enforces an "untrusted host" check in production — by
+  // default it only trusts localhost.  Behind Cloud Run (or any reverse
+  // proxy), the Host header is the proxy-rewritten public hostname,
+  // which the library treats as untrusted and rejects with
+  // `UntrustedHost: Host must be trusted`.  Setting trustHost: true
+  // tells Auth.js to honour the host header the deployment platform
+  // sets.  Same effect as AUTH_TRUST_HOST=true; checked in here so a
+  // missing env var doesn't break a redeploy.
+  trustHost: true,
   providers: [
     ...(process.env.AZURE_AD_CLIENT_ID && process.env.AZURE_AD_TENANT_ID
       ? [
