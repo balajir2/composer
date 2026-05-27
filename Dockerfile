@@ -19,6 +19,20 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/app/.venv
 
+# Prisma Python's `prisma generate` shells out to the upstream Prisma TS
+# CLI (it downloads a node env on first run), so the build needs node +
+# npm available.  At runtime the generated Python client doesn't need
+# node — just at build time.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl \
+        ca-certificates \
+        gnupg \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y --no-install-recommends nodejs \
+    && rm -rf /var/lib/apt/lists/* \
+    && node --version \
+    && npm --version
+
 # Install uv from the official image (~3 MB, no apt-get noise).
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
 

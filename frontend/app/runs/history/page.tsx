@@ -275,7 +275,7 @@ export default function HistoryPage() {
                   This permanently removes the {intent.ids.length} selected
                   execution{intent.ids.length === 1 ? "" : "s"} along with
                   their approval history and LangGraph checkpoints. Any ids
-                  you don't own will be silently skipped.
+                  you don&apos;t own will be silently skipped.
                 </>
               )}
               {intent?.kind === "bulk-all" && (
