@@ -11,6 +11,7 @@ standalone-by-default.  Instead constructs a fresh app per test and
 uses httpx.AsyncClient over ASGITransport.
 """
 
+from collections.abc import Iterator
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from unittest.mock import MagicMock
@@ -20,6 +21,22 @@ from httpx import ASGITransport, AsyncClient
 from jose import jwt as jose_jwt  # pyright: ignore[reportMissingImports, reportMissingTypeStubs]
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.fixture(autouse=True)
+def _restore_settings_cache() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
+    """Embedded tests mutate COMPOSER_DEPLOYMENT_MODE and clear the
+    get_settings() lru_cache to rebuild Settings under the new env.
+    monkeypatch reverts the env on teardown, but the cache is not
+    automatically re-cleared — so subsequent integration tests would
+    inherit a cached embedded-mode Settings object and see /auth/register
+    return 404 (the auth_standalone router only mounts in standalone mode).
+    Clear the cache after every test in this module to restore isolation.
+    """
+    yield
+    from src.config import get_settings
+
+    get_settings.cache_clear()
 
 
 _IEP_SECRET = "iep-test-secret-long-enough-for-hs256"
