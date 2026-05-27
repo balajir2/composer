@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fix — Admin "Test connection" probes for Gamma and LangSmith (2026-05-27)
+
+#### Changed
+- [src/api/admin_llm_keys_test.py](src/api/admin_llm_keys_test.py) — `_test_gamma` was hitting `https://api.gamma.app/public/v1/generations?limit=1` (returns 404; that host+path doesn't exist). Repointed at the same base URL the executor uses (`https://public-api.gamma.app/v1.0`) and switched the probe to `GET /generations/composer-keytest-probe`. Gamma checks auth before the lookup, so a valid key returns 404 (treated as ok) and an invalid key returns 401. Verified live against the production Gamma API; no generation is created.
+- `_test_langsmith` was hitting `GET /api/v1/runs?limit=1` which is now POST-only (returns 405). Switched to `GET /api/v1/sessions?limit=1` — lists tracing projects, accepts `x-api-key`, returns 200/401/403. Verified live.
+
 ### Fix — Admin-UI LLM keys now reach workflow runtime (2026-05-27)
 
 Phase 9e made Postgres the source-of-truth for provider keys and added a

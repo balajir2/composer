@@ -102,8 +102,11 @@ async def _test_groq(key: str) -> KeyTestResult:
 
 
 async def _test_langsmith(key: str) -> KeyTestResult:
+    # /api/v1/runs is POST-only (GET returns 405).  /api/v1/sessions lists
+    # tracing projects and accepts GET with x-api-key auth — 200 on valid
+    # key, 401/403 on invalid.  Verified live 2026-05-27.
     resp = await _get(
-        "https://api.smith.langchain.com/api/v1/runs?limit=1",
+        "https://api.smith.langchain.com/api/v1/sessions?limit=1",
         headers={"x-api-key": key},
     )
     if resp.status_code in (200, 204):
@@ -177,12 +180,20 @@ async def _test_browserless(key: str) -> KeyTestResult:
 
 
 async def _test_gamma(key: str) -> KeyTestResult:
-    # Gamma has no cheap auth-only endpoint; this hits the generations list
-    # which returns 200 for valid keys and 401 for invalid.
+    # Gamma's public API has no list endpoint and no auth-only ping.  Probe
+    # GET /generations/<bogus-id> on the executor's base URL
+    # (public-api.gamma.app/v1.0) — auth is checked BEFORE the lookup, so:
+    #   - Valid key → 404 "not found" (auth passed, generation doesn't exist).
+    #   - Invalid key → 401/403.
+    # Verified live 2026-05-27.  Side-effect-free; no generation is created.
     resp = await _get(
-        "https://api.gamma.app/public/v1/generations?limit=1",
+        "https://public-api.gamma.app/v1.0/generations/composer-keytest-probe",
         headers={"X-API-KEY": key},
     )
+    if resp.status_code == 404:
+        return KeyTestResult(
+            ok=True, status=404, message="Gamma key valid (auth passed; probe id 404 expected)."
+        )
     if resp.status_code in (200, 204):
         return KeyTestResult(ok=True, status=resp.status_code, message="Gamma key valid.")
     return KeyTestResult(
