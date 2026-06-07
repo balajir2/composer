@@ -16,13 +16,13 @@ A single Composer deployment supports three audiences inside your organisation:
 | **End users** | Run published workflows, watch live execution, approve human-in-the-loop steps, manage personal API keys | `/runs/*` |
 | **Admins** | Manage users, LLM API keys, MCP servers, model catalog, deployment settings, global execution history | `/admin/*` |
 
-What you can build with it: RAG pipelines, multi-source research agents, classify-and-branch ticket triage, document-intake-to-action-items flows, presentation generation, code review assistants, lead-enrichment pipelines, human-in-the-loop approvals. Composer ships with 17 reference templates that double as the recommended starting point.
+What you can build with it: RAG pipelines, multi-source research agents, classify-and-branch ticket triage, document-intake-to-action-items flows, presentation generation, code review assistants, lead-enrichment pipelines, human-in-the-loop approvals. Composer ships with 18 reference templates that double as the recommended starting point.
 
 ## What you get when you sign up
 
 Whether you self-host or we host for you, the contract is the same. Each Composer environment includes:
 
-- **18 node types** (start, end, agent, mcp, http, set-state, transform, data-transform, extract, if-else, while, user-approval, join-chunks, note, guardrails, gamma-ai, arcade, vector-db)
+- **19 node types** (start, end, agent, mcp, http, set-state, transform, data-transform, extract, if-else, while, user-approval, join-chunks, note, guardrails, gamma-ai, email, arcade, vector-db)
 - **4 LLM providers** (Anthropic, OpenAI, Google, Groq) with per-model verification and auto-disable on retirement
 - **5 vector DB connectors** (Pinecone, Qdrant, Chroma, Weaviate, Milvus) with query + upsert
 - **6 built-in tool providers** (Tavily, Firecrawl, Serper, Browserless, Gamma, Arcade) plus full **MCP support** (static auth + OAuth flow, including Highspot-grade RFC 8707)
@@ -31,7 +31,7 @@ Whether you self-host or we host for you, the contract is the same. Each Compose
 - **Real-time WebSocket streaming** of node-by-node execution events
 - **LangSmith tracing** on every run
 - **Document upload** with text extraction (PDF / DOCX / Markdown / TXT) — no persistence, no S3 dependency
-- **17 reference templates** that demonstrate every capability, so designers don't start from a blank canvas
+- **18 reference templates** that demonstrate every capability, so designers don't start from a blank canvas
 
 ## The deployment shapes we support
 

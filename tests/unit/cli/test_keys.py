@@ -21,6 +21,7 @@ _EXPECTED_PROVIDERS = {
     "serper",
     "browserless",
     "gamma",
+    "resend",
 }
 
 _EXPECTED_ENV_VARS = {
@@ -34,11 +35,12 @@ _EXPECTED_ENV_VARS = {
     "SERPER_API_KEY",
     "BROWSERLESS_API_KEY",
     "GAMMA_API_KEY",
+    "RESEND_API_KEY",
 }
 
 
 def test_provider_to_env_mapping_complete() -> None:
-    """All 10 expected providers must be present in _PROVIDER_TO_ENV."""
+    """All expected providers must be present in _PROVIDER_TO_ENV."""
     assert set(_PROVIDER_TO_ENV.keys()) == _EXPECTED_PROVIDERS
 
 

@@ -21,7 +21,7 @@ Ops machine
           │
           ▼ Vercel redeploy
   Composer FastAPI app
-  reads env vars at startup via get_settings()
+  reads env vars + encrypted DB keys into get_settings()
 ```
 
 **Key points:**
@@ -29,8 +29,12 @@ Ops machine
 - Postgres is the single source of truth for all LLM keys.
 - Vercel env vars are a derived, synced copy. They are never edited directly in the Vercel UI during
   normal operations.
-- The running app does not query Postgres for keys at request time. It reads env vars loaded at
-  startup. A Vercel redeploy is required to pick up new values.
+- The running app does not query Postgres for keys on every provider call. At startup it syncs
+  encrypted DB keys into in-process settings; successful Admin UI updates also refresh those
+  in-process settings immediately for the current app instance.
+- Vercel env vars still matter for deployment parity and cold starts. After changing keys in
+  Postgres, run `composer keys sync --target vercel` and redeploy so new instances start with the
+  same values.
 - Keys are encrypted at rest using AES-256-GCM with `ENCRYPTION_KEY` (same mechanism as MCP OAuth
   tokens). Only the first 6 characters of the plaintext key (the `keyPrefix`) are stored
   unencrypted for display.
@@ -41,7 +45,7 @@ Ops machine
 
 ## 2. Supported providers
 
-Ten providers are recognized. The `composer keys` CLI and the `/admin/llm-keys/{provider}` endpoint
+Eleven providers are recognized. The `composer keys` CLI and the `/admin/llm-keys/{provider}` endpoint
 accept these exact lowercase strings:
 
 | Provider string | Env var synced to Vercel |
@@ -56,8 +60,24 @@ accept these exact lowercase strings:
 | `serper` | `SERPER_API_KEY` |
 | `browserless` | `BROWSERLESS_API_KEY` |
 | `gamma` | `GAMMA_API_KEY` |
+| `resend` | `RESEND_API_KEY` |
 
 Passing any other provider string returns HTTP 422 (API) or a CLI error.
+
+### Resend key and domain notes
+
+Composer only sends email through Resend; it does not need permission to manage Resend resources.
+Prefer a Resend **Sending access** key restricted to the verified sending domain. Full access works,
+but grants more permission than Composer requires.
+
+When the admin UI tests a sending-only Resend key, Resend blocks domain listing and returns a
+`restricted_api_key` response. Composer treats that as success and shows:
+`Resend sending-only key accepted; domain listing is restricted.`
+
+For delivery, the Email node's `From` address must use a domain verified in Resend and allowed by
+the key, such as `reports@example.com` when `example.com` is verified. `To` can be any permitted
+recipient under the Resend account's plan, but `From` cannot be `gmail.com` or another domain the
+account does not control.
 
 ---
 
@@ -268,7 +288,7 @@ limits or transient errors cause partial failures. Re-running the sync is safe; 
 
 ### App starts up with empty provider key
 
-`get_settings()` reads env vars at startup. If `ANTHROPIC_API_KEY` is empty in Vercel, the app
+`get_settings()` is populated from env vars and the encrypted DB key sync. If `ANTHROPIC_API_KEY` is empty in Vercel, the app
 starts without error but requests that invoke Claude fail. After adding/syncing the key, redeploy
 to inject the updated value.
 

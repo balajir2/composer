@@ -33,6 +33,7 @@ export const COMPOSER_NODE_PALETTE: { nodeType: string; label: string }[] = [
   { nodeType: "note", label: "Note" },
   { nodeType: "guardrails", label: "Guardrails" },
   { nodeType: "gamma-ai", label: "Gamma AI" },
+  { nodeType: "email", label: "Email" },
   { nodeType: "arcade", label: "Arcade" },
   { nodeType: "vector-db", label: "Vector DB" },
 ];

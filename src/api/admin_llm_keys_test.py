@@ -203,6 +203,32 @@ async def _test_gamma(key: str) -> KeyTestResult:
     )
 
 
+async def _test_resend(key: str) -> KeyTestResult:
+    # Side-effect-free auth check: Resend's official API exposes
+    # GET /domains to retrieve the authenticated account's domains.
+    # Full-access keys return 200 even when the domain list is empty.
+    # Sending-only keys are intentionally blocked from listing domains,
+    # but Resend returns a specific restricted_api_key response after
+    # authenticating the key, so we can still accept least-privilege keys.
+    resp = await _get(
+        "https://api.resend.com/domains",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    if resp.status_code == 200:
+        return KeyTestResult(ok=True, status=200, message="Resend key valid.")
+    if resp.status_code == 401 and "restricted_api_key" in resp.text:
+        return KeyTestResult(
+            ok=True,
+            status=401,
+            message="Resend sending-only key accepted; domain listing is restricted.",
+        )
+    return KeyTestResult(
+        ok=False,
+        status=resp.status_code,
+        message=f"Resend HTTP {resp.status_code}: {resp.text[:200]}",
+    )
+
+
 _TESTERS = {
     "anthropic": _test_anthropic,
     "openai": _test_openai,
@@ -214,6 +240,7 @@ _TESTERS = {
     "serper": _test_serper,
     "browserless": _test_browserless,
     "gamma": _test_gamma,
+    "resend": _test_resend,
 }
 
 

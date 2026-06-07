@@ -17,6 +17,7 @@ import {
   Combine,
   Database,
   FileSearch,
+  Mail,
   Gamepad2,
   GitBranch,
   Globe,
@@ -151,6 +152,12 @@ export const NODE_VISUALS: Record<string, NodeVisual> = {
     iconWrapClass: "bg-orange-100 text-orange-700",
     accent: "text-orange-700",
     label: "Gamma AI",
+  },
+  email: {
+    icon: Mail,
+    iconWrapClass: "bg-cyan-100 text-cyan-700",
+    accent: "text-cyan-700",
+    label: "Email",
   },
   arcade: {
     icon: Gamepad2,

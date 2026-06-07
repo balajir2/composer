@@ -41,6 +41,7 @@ const PROVIDERS = [
   { id: "serper", label: "Serper" },
   { id: "browserless", label: "Browserless" },
   { id: "gamma", label: "Gamma" },
+  { id: "resend", label: "Resend" },
 ] as const;
 
 function SetKeyDialog({

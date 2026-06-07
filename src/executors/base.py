@@ -47,6 +47,7 @@ _PHASE_FOR_TYPE: dict[str, int] = {
     "note": 6,
     "vector-db": 6,
     "gamma-ai": 6,
+    "email": 7,
     "arcade": 6,
     "join-chunks": 6,
 }

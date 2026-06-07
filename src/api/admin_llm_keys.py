@@ -28,6 +28,7 @@ _ALLOWED_PROVIDERS = {
     "serper",
     "browserless",
     "gamma",
+    "resend",
 }
 
 

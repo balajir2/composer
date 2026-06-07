@@ -4,7 +4,7 @@
 
 ## Status
 
-Phases 0–10 complete. The platform is operational: backend, frontend canvas, admin console, end-user runs page, external invoke API, document upload, and a library of 17 reference templates. See [/CHANGELOG.md](../CHANGELOG.md) for the running record.
+Phases 0–10 complete. The platform is operational: backend, frontend canvas, admin console, end-user runs page, external invoke API, document upload, and a library of 18 reference templates. See [/CHANGELOG.md](../CHANGELOG.md) for the running record.
 
 ## What you can build
 
@@ -15,13 +15,13 @@ Phases 0–10 complete. The platform is operational: backend, frontend canvas, a
 - **External-invoke APIs** — publish a workflow as a `POST /api/run/{slug}` endpoint with per-user API keys
 - **Human-in-the-loop flows** — agent drafts content, reviewer approves or rejects, branched routing on the verdict
 
-The 17 reference templates under **Designer → Templates** are the recommended starting point; each is annotated with what platform capability it demonstrates. See [`designer-guide.md#templates`](designer-guide.md#templates) for a walk-through.
+The 18 reference templates under **Designer → Templates** are the recommended starting point; each is annotated with what platform capability it demonstrates. See [`designer-guide.md#templates`](designer-guide.md#templates) for a walk-through.
 
 ## What's in the box
 
 | Layer | Composer ships with |
 |---|---|
-| **18 node types** | start, end, agent, mcp, http, set-state, transform, data-transform, extract, if-else, while, user-approval, join-chunks, note, guardrails, gamma-ai, arcade, vector-db |
+| **19 node types** | start, end, agent, mcp, http, set-state, transform, data-transform, extract, if-else, while, user-approval, join-chunks, note, guardrails, gamma-ai, email, arcade, vector-db |
 | **4 LLM providers** | Anthropic Claude, OpenAI, Google Gemini, Groq |
 | **5 vector DBs** | Pinecone, Qdrant, Chroma, Weaviate, Milvus (query + upsert) |
 | **6 built-in tool providers** | Tavily, Firecrawl, Serper, Browserless, Gamma, Arcade |

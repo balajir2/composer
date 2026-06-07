@@ -2385,6 +2385,137 @@ def _lead_enrichment() -> dict[str, Any]:
     }
 
 
+def _approved_email_distribution() -> dict[str, Any]:
+    """Draft a report, require human approval, then distribute by email.
+
+    This is the canonical side-effect pattern for the email node: the
+    LLM drafts, a reviewer approves, and the deterministic Email node
+    performs the send only on the approved branch.
+    """
+    return {
+        "name": "Example 18: Approved Email Distribution",
+        "description": (
+            "Draft a workflow result with an agent, require human approval, "
+            "then send it through Resend. Demonstrates the safe pattern for "
+            "side-effecting distribution nodes."
+        ),
+        "category": "examples",
+        "tags": ["example", "intermediate", "email", "resend", "approval"],
+        "difficulty": "intermediate",
+        "estimatedTime": "3-5 minutes",
+        "externalSlug": "template-18-approved-email-distribution",
+        "nodes": [
+            _start_node(
+                label="Start",
+                inputs=[
+                    {
+                        "name": "recipient_email",
+                        "type": "string",
+                        "required": True,
+                        "description": "Recipient who should receive the approved email",
+                        "defaultValue": "recipient@example.com",
+                    },
+                    {
+                        "name": "from_email",
+                        "type": "string",
+                        "required": True,
+                        "description": "Verified Resend sender address",
+                        "defaultValue": "Composer <reports@example.com>",
+                    },
+                    {
+                        "name": "topic",
+                        "type": "string",
+                        "required": True,
+                        "description": "Topic for the report",
+                        "defaultValue": "weekly product adoption highlights",
+                    },
+                    {
+                        "name": "source_notes",
+                        "type": "string",
+                        "required": False,
+                        "description": "Facts, notes, or metrics to include",
+                        "defaultValue": (
+                            "- Activation rose 12%\n"
+                            "- Trial-to-paid conversion improved in mid-market accounts\n"
+                            "- Two customers asked for richer audit exports"
+                        ),
+                    },
+                ],
+            ),
+            {
+                "id": "agent-1",
+                "type": "agent",
+                "position": {"x": 340, "y": 200},
+                "data": {
+                    "label": "Draft Report",
+                    "nodeName": "Report Writer",
+                    "instructions": (
+                        "Draft a concise email-ready report about {{topic}}.\n\n"
+                        "Source notes:\n{{source_notes}}\n\n"
+                        "Return polished HTML only. Include a short heading, "
+                        "a summary paragraph, and 3 bullet points."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            {
+                "id": "approval-1",
+                "type": "user-approval",
+                "position": {"x": 610, "y": 200},
+                "data": {
+                    "label": "Approve Send",
+                    "nodeName": "Approve Send",
+                    "approvalMessage": (
+                        "Review the drafted email body before it is sent to "
+                        "{{recipient_email}}."
+                    ),
+                },
+            },
+            {
+                "id": "email-1",
+                "type": "email",
+                "position": {"x": 890, "y": 100},
+                "data": {
+                    "label": "Send Email",
+                    "nodeName": "Send Email",
+                    "emailProvider": "resend",
+                    "emailFrom": "{{from_email}}",
+                    "emailTo": "{{recipient_email}}",
+                    "emailSubject": "Approved report: {{topic}}",
+                    "emailBodyType": "html",
+                    "emailBody": "{{report_writer}}",
+                    "emailIdempotencyKey": "approved-email-{{recipient_email}}-{{topic}}",
+                },
+            },
+            _end_node(pos_x=1180, pos_y=200),
+        ],
+        "edges": [
+            {"id": "e1", "source": "start-1", "target": "agent-1"},
+            {"id": "e2", "source": "agent-1", "target": "approval-1"},
+            {
+                "id": "e3-approved",
+                "source": "approval-1",
+                "target": "email-1",
+                "sourceHandle": "approved",
+                "branch": "approved",
+                "label": "approved",
+            },
+            {
+                "id": "e3-rejected",
+                "source": "approval-1",
+                "target": "end-1",
+                "sourceHandle": "rejected",
+                "branch": "rejected",
+                "label": "rejected",
+            },
+            {"id": "e4", "source": "email-1", "target": "end-1"},
+        ],
+    }
+
+
 _TEMPLATES: list[dict[str, Any]] = [
     _simple_agent(),
     _web_research_agent(),
@@ -2403,6 +2534,7 @@ _TEMPLATES: list[dict[str, Any]] = [
     _gamma_ai_presentation(),
     _code_review_assistant(),
     _lead_enrichment(),
+    _approved_email_distribution(),
 ]
 
 

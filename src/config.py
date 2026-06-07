@@ -72,6 +72,7 @@ class Settings(BaseSettings):
 
     # ─── Gamma-AI (Phase 6c) ─────────────────────
     gamma_api_key: str = Field(default="", description="Gamma.app public API key.")
+    resend_api_key: str = Field(default="", description="Resend API key for email delivery.")
 
     # ─── Arcade (Phase 6d) ────────────────────────
     arcade_api_key: str = Field(default="", description="Arcade.dev API key.")

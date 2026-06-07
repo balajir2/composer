@@ -36,6 +36,9 @@ from src.executors import (
 from src.executors import (
     data_transform as _data_transform_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
+from src.executors import (
+    email as _email_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+)
 from src.executors import end as _end_executor  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from src.executors import (
     extract as _extract_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]

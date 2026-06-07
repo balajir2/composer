@@ -21,6 +21,7 @@ import JoinChunksPanel from "./node-panels/join-chunks";
 import NotePanel from "./node-panels/note";
 import GuardrailsPanel from "./node-panels/guardrails";
 import GammaAiPanel from "./node-panels/gamma-ai";
+import EmailPanel from "./node-panels/email";
 import ArcadePanel from "./node-panels/arcade";
 import VectorDbPanel from "./node-panels/vector-db";
 
@@ -58,6 +59,7 @@ const PANEL_MAP: Record<string, PanelComponent> = {
   note: NotePanel,
   guardrails: GuardrailsPanel,
   "gamma-ai": GammaAiPanel,
+  email: EmailPanel,
   arcade: ArcadePanel,
   "vector-db": VectorDbPanel,
 };
@@ -79,6 +81,7 @@ const TYPE_LABELS: Record<string, string> = {
   note: "Note",
   guardrails: "Guardrails",
   "gamma-ai": "Gamma AI",
+  email: "Email",
   arcade: "Arcade",
   "vector-db": "Vector DB",
 };

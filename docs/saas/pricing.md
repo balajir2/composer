@@ -72,7 +72,7 @@ Worth being explicit about so there are no surprises:
 The codebase is open source and free to self-host. There's no licence fee, no telemetry, no time-bombed features. What you get for $0:
 
 - Every node type, every executor, every UI surface
-- All 17 reference templates
+- All 18 reference templates
 - All 4 LLM provider integrations
 - All 5 vector DB connectors
 - All 6 built-in tool providers

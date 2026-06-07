@@ -7,8 +7,8 @@ Everything you need to build workflows on the canvas. If this is your first time
 - [Concepts](#concepts) — Workflows, executions, runs, drafts
 - [The canvas](#the-canvas) — Editing nodes, drawing edges, the property panel
 - [Variables and references](#variables-and-references) — `{{name}}` substitution and the eval scope
-- [Node reference](#node-reference) — All 18 node types
-- [Templates](#templates) — The 17 reference workflows and what each demonstrates
+- [Node reference](#node-reference) — All 19 node types
+- [Templates](#templates) — The 18 reference workflows and what each demonstrates
 - [Publishing workflows](#publishing-workflows) — External invoke API
 - [Document uploads](#document-uploads) — PDF / DOCX / Markdown / TXT inputs
 - [Patterns and recipes](#patterns-and-recipes) — Common idioms
@@ -79,7 +79,7 @@ What's *not* available: `import`, `eval`, `exec`, list comprehensions, dict lite
 
 ## Node reference
 
-The eighteen node types, grouped by what they do.
+The nineteen node types, grouped by what they do.
 
 ### Flow control
 
@@ -283,6 +283,27 @@ Generate a slide deck via [Gamma](https://gamma.app)'s API.
 
 Polling: 60s initial, 10s poll, 4-min cap. Output includes the Gamma URL and (if `exportAs ∈ {pptx, pdf}`) the download URL.
 
+#### `email`
+
+Send a deterministic workflow email through Resend.
+
+| Field | Purpose |
+|---|---|
+| `emailProvider` | Provider. Currently `resend`. |
+| `emailFrom` | Sender address. Friendly format like `Reports <reports@example.com>` is accepted. |
+| `emailTo` / `emailCc` / `emailBcc` | Recipients. Comma, semicolon, and newline separated lists are accepted. |
+| `emailReplyTo` | Optional reply-to address. |
+| `emailSubject` | Subject line. Mustache substitution applies. |
+| `emailBodyType` | `html` or `text`. |
+| `emailBody` | Body content. Mustache substitution applies. |
+| `emailIdempotencyKey` | Optional Resend idempotency key to avoid duplicate sends on retries. |
+
+Output: `{provider, messageId, to, cc, bccCount, subject, status}`. Use a `user-approval` node before `email` for workflows where a human should review content before distribution.
+
+**Resend sender rules:** the `emailFrom` domain must be verified in the Resend account and allowed by the API key. For example, if Resend has verified `example.com`, use `Reports <reports@example.com>` as the sender. The recipient can be Gmail/Outlook/etc.; the sender cannot be `gmail.com` unless that domain is verified in your Resend account, which normal users cannot do.
+
+**Recommended key type:** use a Resend **Sending access** key restricted to the verified sending domain. In Admin → LLM keys, Composer may report "Resend sending-only key accepted; domain listing is restricted." That is a successful least-privilege check, not a delivery error. Full-access keys are only needed for broader Resend administration outside Composer.
+
 #### `arcade`
 
 Per-user OAuth-mediated tool calls (Google Docs, Slack, etc.) via [Arcade](https://arcade.dev).
@@ -297,7 +318,7 @@ If the user hasn't authorised Arcade for the requested scope, the executor pause
 
 ## Templates
 
-The 17 templates seeded by `scripts/seed_templates.py`. Open the gallery at [/designer/templates](http://localhost:3000/designer/templates).
+The 18 templates seeded by `scripts/seed_templates.py`. Open the gallery at [/designer/templates](http://localhost:3000/designer/templates).
 
 | # | Name | Demonstrates | External deps |
 |---|---|---|---|
@@ -318,6 +339,7 @@ The 17 templates seeded by `scripts/seed_templates.py`. Open the gallery at [/de
 | 15 | Gamma AI Presentation Generator | Tavily research → outline → gamma-ai slides | LLM + Tavily + Gamma |
 | 16 | Code Review Assistant | Agent JSON + guardrails on output + branched delivery | LLM only |
 | 17 | Lead Enrichment | Multi-source research + structured CRM JSON | LLM + Tavily + Firecrawl |
+| 18 | Approved Email Distribution | Agent drafts HTML → human approval → Resend email delivery | LLM + Resend |
 
 Templates are owned by `userId=null` so no one can edit them through the API — clicking "Use template" creates a private user-owned copy. Edit the seed script + re-run to update the gallery.
 

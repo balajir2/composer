@@ -63,7 +63,7 @@ By end of Day 2 you should be able to: sign in, see the empty Designer / Runs / 
 
 Identify a designer (someone who will build workflows) and walk them through:
 
-1. **Templates gallery** — `/designer/templates`. The 17 reference templates are the recommended starting point; each demonstrates a specific capability.
+1. **Templates gallery** — `/designer/templates`. The 18 reference templates are the recommended starting point; each demonstrates a specific capability.
 2. **Pick the first template** — for most teams, **"Example 1: Simple Agent"** is the right first run. It's a one-node workflow, takes 30 seconds to clone and run, validates the LLM key, and gives the designer a feel for the canvas + Run Draft panel.
 3. **Run it** — Save → Run Draft → enter a question → watch the live execution panel. The agent node turns purple while running, green when complete. Output appears in the panel.
 4. **Tweak it** — change the prompt, save, run again. Add an input variable on the Start node and reference it in the agent prompt. This is the core editing loop; designers should feel comfortable here before they touch anything more complex.

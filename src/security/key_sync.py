@@ -49,6 +49,7 @@ PROVIDER_TO_SETTINGS_FIELD: dict[str, str] = {
     "serper": "serper_api_key",
     "browserless": "browserless_api_key",
     "gamma": "gamma_api_key",
+    "resend": "resend_api_key",
 }
 
 

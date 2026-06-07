@@ -15,7 +15,7 @@ This is what we plan to ship over the next four quarters, what we've shipped rec
 | Branching node UI + branch label routing | 2026-04 | Two-handle UI for if-else / while / user-approval; `sourceHandle` → `branch` field on save |
 | Transform `outputKey` ergonomics | 2026-04 | Compute and persist a named variable in one node — closes the "loop counter is verbose" gap |
 | Vector DB upsert across all 5 providers | 2026-04 | Pinecone, Qdrant, Chroma, Weaviate, Milvus all do query + upsert; auto-chunking for string input |
-| 17 reference templates | 2026-04 | Up from 12; each annotated with the capability it demonstrates |
+| 18 reference templates | 2026-04 | Up from 12; each annotated with the capability it demonstrates |
 | Single + bulk delete on /runs/history | 2026-04-30 | Members delete their own; admin overrides (with the "admin can't delete other users' workflows" carve-out preserved) |
 | MCP base64-blob sanitiser | 2026-05-04 | Closes the OAB-reported defect class; Highspot xlsx fetches no longer OOM the agent context |
 | Stuck-execution sweeper | 2026-05-04 | Background coroutine flips abandoned `running` rows to `failed` with explanatory error |

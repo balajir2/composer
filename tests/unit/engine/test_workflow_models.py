@@ -198,6 +198,7 @@ ALL_NODE_TYPES = [
     "guardrails",
     "vector-db",
     "gamma-ai",
+    "email",
     "arcade",
     "join-chunks",
 ]
@@ -236,8 +237,8 @@ def test_every_node_type_parses_minimal_instance(node_type: str) -> None:
     assert wf.nodes[1].type == node_type
 
 
-def test_all_18_types_exhaustive() -> None:
-    assert len(ALL_NODE_TYPES) == 18
+def test_all_19_types_exhaustive() -> None:
+    assert len(ALL_NODE_TYPES) == 19
 
 
 def test_workflow_edge_branch_defaults_none() -> None:
@@ -454,6 +455,77 @@ def test_gamma_ai_node_full_round_trip() -> None:
     assert node.id == "ga1"
     assert node.type == "gamma-ai"
     assert node.data.prompt == "Hello"
+
+
+def test_email_node_data_parses_camelcase_aliases() -> None:
+    from src.engine.workflow import EmailNodeData
+
+    data = EmailNodeData.model_validate(
+        {
+            "label": "Email",
+            "emailProvider": "resend",
+            "emailFrom": "Reports <reports@example.com>",
+            "emailTo": "a@example.com, b@example.com",
+            "emailCc": "manager@example.com",
+            "emailBcc": "audit@example.com",
+            "emailReplyTo": "reply@example.com",
+            "emailSubject": "Report for {{customer}}",
+            "emailBody": "<p>{{lastOutput}}</p>",
+            "emailBodyType": "html",
+            "emailIdempotencyKey": "run-{{execution_id}}",
+        }
+    )
+    assert data.provider == "resend"
+    assert data.from_email == "Reports <reports@example.com>"
+    assert data.to == "a@example.com, b@example.com"
+    assert data.cc == "manager@example.com"
+    assert data.bcc == "audit@example.com"
+    assert data.reply_to == "reply@example.com"
+    assert data.subject == "Report for {{customer}}"
+    assert data.body == "<p>{{lastOutput}}</p>"
+    assert data.body_type == "html"
+    assert data.idempotency_key == "run-{{execution_id}}"
+
+
+def test_email_node_data_defaults() -> None:
+    from src.engine.workflow import EmailNodeData
+
+    data = EmailNodeData.model_validate({"label": "Email"})
+    assert data.provider == "resend"
+    assert data.from_email == ""
+    assert data.to == ""
+    assert data.cc is None
+    assert data.bcc is None
+    assert data.reply_to is None
+    assert data.subject == ""
+    assert data.body == ""
+    assert data.body_type == "html"
+    assert data.idempotency_key is None
+
+
+def test_email_node_data_invalid_body_type_raises() -> None:
+    from pydantic import ValidationError
+
+    from src.engine.workflow import EmailNodeData
+
+    with pytest.raises(ValidationError):
+        EmailNodeData.model_validate({"label": "Email", "emailBodyType": "markdown"})
+
+
+def test_email_node_full_round_trip() -> None:
+    from src.engine.workflow import EmailNode
+
+    node = EmailNode.model_validate(
+        {
+            "id": "email1",
+            "type": "email",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "Email", "emailSubject": "Hello"},
+        }
+    )
+    assert node.id == "email1"
+    assert node.type == "email"
+    assert node.data.subject == "Hello"
 
 
 def test_arcade_node_data_parses_camelcase_aliases() -> None:

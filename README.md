@@ -38,19 +38,19 @@ The whole loop is what most agentic-AI teams build from scratch: prompt + tool d
 | **Lead enrichment** | Company name in → multi-source research → schema-validated profile out (industry, size, products, recent news, executives, competitors) |
 | **Code review assistant** | Diff in → review agent flags issues with severity tags → guardrails screen the *output* for accidental secret leaks → branched delivery |
 
-**17 production-ready reference templates** ship out of the box covering each pattern above and more — see [`docs/designer-guide.md`](docs/designer-guide.md).
+**18 production-ready reference templates** ship out of the box covering each pattern above and more — see [`docs/designer-guide.md`](docs/designer-guide.md).
 
 ---
 
 ## Core capabilities
 
-### 18 node types
+### 19 node types
 
 | Category | Nodes |
 |---|---|
 | **Boundary** | `start` (workflow input), `end` (terminate), `note` (canvas annotation) |
 | **AI / LLM** | `agent` (multi-turn LLM with tool-calling, structured output, MCP support), `extract` (single-shot structured extraction) |
-| **Tools / Integration** | `mcp` (Model Context Protocol — static or OAuth-bound), `http` (any external HTTP API), `vector-db` (query + upsert across 5 providers), `gamma-ai` (slide generation), `arcade` (Arcade tools) |
+| **Tools / Integration** | `mcp` (Model Context Protocol — static or OAuth-bound), `http` (any external HTTP API), `vector-db` (query + upsert across 5 providers), `gamma-ai` (slide generation), `email` (Resend delivery), `arcade` (Arcade tools) |
 | **Data flow** | `set-state` (write a variable), `transform` (sandboxed expression with optional named output), `data-transform` (collection mapping), `join-chunks` (concatenate text chunks with separator/prefix/suffix) |
 | **Control flow** | `if-else` (boolean branch), `while` (bounded loop, max 100 iterations), `user-approval` (pause for human verdict) |
 | **Safety** | `guardrails` (LLM-based PII / moderation / jailbreak / hallucination classifiers, runs concurrently) |
@@ -259,7 +259,7 @@ composer/
 │   ├── main.py                       #   App entry + router wiring + lifespan
 │   ├── api/                          #   REST + WebSocket endpoints (workflows, executions, run, uploads, admin, mcp_servers, ...)
 │   ├── engine/                       #   LangGraph executor + workflow Pydantic models + event bus
-│   ├── executors/                    #   18 node-type implementations
+│   ├── executors/                    #   19 node-type implementations
 │   ├── llm/                          #   Provider dispatch (Anthropic / OpenAI / Google / Groq)
 │   ├── mcp/                          #   MCP client + OAuth + base64-blob sanitiser
 │   ├── tools/                        #   Built-in tool providers (Tavily, Firecrawl, ...)
@@ -290,7 +290,7 @@ Composer is **production-ready** end-to-end:
 - **Backend**: FastAPI + Postgres + LangGraph, all node types implemented + tested
 - **Frontend**: Next.js 14 canvas + runs page + admin console, all role-aware audiences shipped
 - **Auth**: standalone username/password, Azure AD SSO, embedded JWT (for IE-style integration), per-user API keys
-- **Reference content**: 17 production-ready templates seed into every fresh deployment
+- **Reference content**: 18 production-ready templates seed into every fresh deployment
 - **Operations**: full runbook collection + DR procedures + incident-response playbook
 - **SaaS readiness**: security / privacy / compliance / SLA / pricing / legal templates ready for customer review
 

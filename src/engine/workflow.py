@@ -404,6 +404,28 @@ class GammaAiNode(BaseModel):
 # ─── arcade (Phase 6) ────────────────────────────────────────────────────
 
 
+class EmailNodeData(BaseNodeData):
+    model_config = ConfigDict(populate_by_name=True)
+
+    provider: Literal["resend"] = Field(default="resend", alias="emailProvider")
+    from_email: str = Field(default="", alias="emailFrom")
+    to: str = Field(default="", alias="emailTo")
+    cc: str | None = Field(default=None, alias="emailCc")
+    bcc: str | None = Field(default=None, alias="emailBcc")
+    reply_to: str | None = Field(default=None, alias="emailReplyTo")
+    subject: str = Field(default="", alias="emailSubject")
+    body: str = Field(default="", alias="emailBody")
+    body_type: Literal["text", "html"] = Field(default="html", alias="emailBodyType")
+    idempotency_key: str | None = Field(default=None, alias="emailIdempotencyKey")
+
+
+class EmailNode(BaseModel):
+    id: str
+    type: Literal["email"]
+    position: Position
+    data: EmailNodeData
+
+
 class ArcadeNodeData(BaseNodeData):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -480,6 +502,7 @@ WorkflowNode = Annotated[
     | GuardrailsNode
     | VectorDbNode
     | GammaAiNode
+    | EmailNode
     | ArcadeNode
     | JoinChunksNode,
     Field(discriminator="type"),
@@ -518,6 +541,8 @@ __all__ = [
     "BaseNodeData",
     "DataTransformNode",
     "DataTransformNodeData",
+    "EmailNode",
+    "EmailNodeData",
     "EmbeddingProvider",
     "EndNode",
     "EndNodeData",

@@ -23,6 +23,7 @@ _PROVIDER_TO_ENV: dict[str, str] = {
     "serper": "SERPER_API_KEY",
     "browserless": "BROWSERLESS_API_KEY",
     "gamma": "GAMMA_API_KEY",
+    "resend": "RESEND_API_KEY",
 }
 
 

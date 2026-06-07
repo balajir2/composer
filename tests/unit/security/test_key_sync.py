@@ -69,20 +69,26 @@ async def test_sync_populates_empty_fields(monkeypatch: pytest.MonkeyPatch) -> N
     from src.security.key_sync import sync_llm_keys_from_db
 
     get_settings.cache_clear()
-    _clear_provider_fields("anthropic_api_key", "openai_api_key")
+    _clear_provider_fields("anthropic_api_key", "openai_api_key", "resend_api_key")
 
     db = _make_db(
         [
             _Row("anthropic", encrypt("sk-ant-real"), "sk-ant"),
             _Row("openai", encrypt("sk-openai-real"), "sk-ope"),
+            _Row("resend", encrypt("re-live-real"), "re-liv"),
         ]
     )
     populated = await sync_llm_keys_from_db(db)
 
-    assert populated == {"anthropic": "anthropic_api_key", "openai": "openai_api_key"}
+    assert populated == {
+        "anthropic": "anthropic_api_key",
+        "openai": "openai_api_key",
+        "resend": "resend_api_key",
+    }
     settings = get_settings()
     assert settings.anthropic_api_key == "sk-ant-real"
     assert settings.openai_api_key == "sk-openai-real"
+    assert settings.resend_api_key == "re-live-real"
 
 
 @pytest.mark.asyncio

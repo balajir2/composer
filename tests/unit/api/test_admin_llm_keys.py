@@ -165,6 +165,20 @@ def test_put_updates_in_process_settings(monkeypatch: pytest.MonkeyPatch) -> Non
     assert get_settings().anthropic_api_key == "sk-ant-real-key-xyz"
 
 
+def test_put_updates_resend_in_process_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, db = _client_admin(monkeypatch)
+    from src.config import get_settings
+
+    get_settings().resend_api_key = ""
+
+    db.llmapikey.find_unique = AsyncMock(return_value=None)
+    db.llmapikey.create = AsyncMock(return_value=_llm_row("resend", key_prefix="re_liv"))
+
+    resp = client.put("/admin/llm-keys/resend", json={"value": "re_live_123"})
+    assert resp.status_code == 200
+    assert get_settings().resend_api_key == "re_live_123"
+
+
 def test_delete_clears_in_process_settings(monkeypatch: pytest.MonkeyPatch) -> None:
     """A successful DELETE must immediately clear settings.<provider>_api_key.
 

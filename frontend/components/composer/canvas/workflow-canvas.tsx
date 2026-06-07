@@ -220,6 +220,7 @@ export const COMPOSER_NODE_TYPES: NodeTypes = {
   note: InnerNode,
   guardrails: InnerNode,
   "gamma-ai": InnerNode,
+  email: InnerNode,
   arcade: InnerNode,
   "vector-db": InnerNode,
 };
