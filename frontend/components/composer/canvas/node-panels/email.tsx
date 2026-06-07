@@ -5,7 +5,6 @@ import type { Node as RFNode } from "reactflow";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { NativeSelect } from "@/components/ui/native-select";
-import { Textarea } from "@/components/ui/textarea";
 import { PromptField } from "../prompt-field";
 
 const BODY_TYPE_OPTIONS = [
