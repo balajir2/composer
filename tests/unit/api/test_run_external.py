@@ -66,6 +66,7 @@ def _build_client(
     monkeypatch: pytest.MonkeyPatch,
     wf: Any,
     key_owner_role: str = "member",
+    key_owner_active: bool = True,
     key_row: Any | None = None,
     start_result: Any | None = None,
 ) -> TestClient:
@@ -87,7 +88,11 @@ def _build_client(
     db.apikey.update = AsyncMock()
     db.user = MagicMock()
     db.user.find_unique = AsyncMock(
-        return_value=SimpleNamespace(id="owner-u", role=SimpleNamespace(value=key_owner_role))
+        return_value=SimpleNamespace(
+            id="owner-u",
+            role=SimpleNamespace(value=key_owner_role),
+            isActive=key_owner_active,
+        )
     )
     db.workflow = MagicMock()
     db.workflow.find_unique = AsyncMock(return_value=wf)
@@ -182,6 +187,17 @@ def test_revoked_key_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:
     wf = _wf(isPublic=True)
     key = _key(revokedAt=datetime(2026, 4, 1, 0, 0, 0))
     client = _build_client(monkeypatch, wf, key_row=key)
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {}},
+    )
+    assert resp.status_code == 401
+
+
+def test_inactive_key_owner_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:
+    wf = _wf(isPublic=True)
+    client = _build_client(monkeypatch, wf, key_owner_active=False)
     resp = client.post(
         "/api/run/my-wf",
         headers={"Authorization": "Bearer ck_abc123456789"},

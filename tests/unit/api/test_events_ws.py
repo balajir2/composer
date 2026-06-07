@@ -11,7 +11,7 @@ from starlette.websockets import WebSocketDisconnect
 
 from src.engine.events import ExecutionEventBus
 from src.main import create_app
-from src.security.jwt import create_access_token
+from src.security.jwt import create_access_token, create_refresh_token
 from src.security.rate_limit import RateLimiter
 
 
@@ -69,6 +69,17 @@ def test_ws_closes_4401_on_missing_bearer() -> None:
     # Server closes with code 4401 before accept; Starlette's TestClient raises
     # WebSocketDisconnect when the server rejects without accepting.
     with pytest.raises(WebSocketDisconnect), client.websocket_connect("/executions/exec-1/ws"):
+        pass
+
+
+def test_ws_closes_4401_on_refresh_token() -> None:
+    execution = _execution_row(userId="u1")
+    client, _ = _build_app(execution)
+    token = create_refresh_token("u1")
+    with (
+        pytest.raises(WebSocketDisconnect),
+        client.websocket_connect("/executions/exec-1/ws", subprotocols=["bearer", token]),
+    ):
         pass
 
 

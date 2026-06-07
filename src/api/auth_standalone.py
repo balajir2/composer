@@ -197,6 +197,10 @@ async def refresh(
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="user no longer exists"
         )
+    if getattr(user, "isActive", True) is False:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="account is deactivated"
+        )
     access, new_refresh, access_exp, refresh_exp = _issue_pair(user.id)
     return TokenPairResponse(
         accessToken=access,

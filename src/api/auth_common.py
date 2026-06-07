@@ -109,6 +109,8 @@ async def sso_exchange(
                 "displayName": display_name,
             }
         )
+    elif getattr(user, "isActive", True) is False:
+        raise AuthError("account is deactivated")
 
     access = create_access_token(user.id)
     refresh = create_refresh_token(user.id)

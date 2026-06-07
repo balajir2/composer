@@ -9,7 +9,7 @@ directly via jose.jwt.encode to avoid being constrained by Phase 1's helper.
 
 import time
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -17,6 +17,7 @@ from jose import jwt as jose_jwt
 
 from src.security.auth import (
     AuthError,
+    _ensure_active_user,  # pyright: ignore[reportPrivateUsage]
     _extract_bearer,  # pyright: ignore[reportPrivateUsage]
     _verify_embedded_jwt,  # pyright: ignore[reportPrivateUsage]
     _verify_standalone_jwt,  # pyright: ignore[reportPrivateUsage]
@@ -69,6 +70,7 @@ def _make_jose_token(
     secret: str,
     algorithm: str = "HS256",
     iss: str | None = None,
+    token_type: str | None = "access",
     exp_offset: int = 3600,
 ) -> str:
     """Encode a JWT directly with python-jose for test control."""
@@ -76,6 +78,8 @@ def _make_jose_token(
     payload: dict[str, Any] = {"sub": sub, "iat": now, "exp": now + exp_offset}
     if iss is not None:
         payload["iss"] = iss
+    if token_type is not None:
+        payload["type"] = token_type
     return jose_jwt.encode(payload, secret, algorithm=algorithm)
 
 
@@ -157,6 +161,24 @@ async def test_verify_standalone_jwt_via_phase1_helper() -> None:
     settings = _mock_settings(jwt_secret=secret)
     user_id = await _verify_standalone_jwt(token, settings)
     assert user_id == "phase1-user"
+
+
+@pytest.mark.asyncio
+async def test_verify_standalone_jwt_rejects_refresh_token() -> None:
+    """A 30-day refresh token must never authenticate an API request."""
+    secret = "test-secret-at-least-32-chars-long-for-hs256"
+    settings = _mock_settings(jwt_secret=secret)
+    token = _make_jose_token(sub="user-1", secret=secret, token_type="refresh")
+    with pytest.raises(AuthError, match="access token"):
+        await _verify_standalone_jwt(token, settings)
+
+
+@pytest.mark.asyncio
+async def test_ensure_active_user_rejects_deactivated_account() -> None:
+    db = MagicMock()
+    db.user.find_unique = AsyncMock(return_value=MagicMock(isActive=False))
+    with pytest.raises(AuthError, match="deactivated"):
+        await _ensure_active_user(db, "user-1")
 
 
 # ─── _verify_embedded_jwt ────────────────────────────────────────────────────

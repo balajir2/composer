@@ -64,6 +64,8 @@ async def get_current_api_key_user(
 
     # Fetch owning user for role.
     user = await db.user.find_unique(where={"id": row.userId})  # pyright: ignore[reportAttributeAccessIssue]
+    if user is None or getattr(user, "isActive", True) is False:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "API key owner is inactive")
     role = getattr(user, "role", None)
     role_str = (
         str(role.value) if role is not None and hasattr(role, "value") else str(role or "member")

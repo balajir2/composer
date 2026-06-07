@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security - enforce credential purpose, account status, and workflow execution scope (2026-06-02)
+
+#### Fixed
+- Standalone JWT-protected routes and WebSocket subscriptions now reject refresh tokens presented as bearer access tokens.
+- `POST /executions` now applies the standard workflow authorization policy: members may execute their own or public workflows; admins may execute any workflow.
+- Deactivated standalone users can no longer refresh sessions, exchange Azure SSO tokens, use existing JWTs, or invoke production workflows with API keys.
+- Embedded-mode WebSocket authentication now uses the embedded JWT verifier instead of the standalone Composer secret.
+
 ### Improvement — Admin LLM-key saves take effect without a restart (2026-05-27)
 
 The boot-time `key_sync` only ran during the FastAPI lifespan, so after an admin saved or deleted a key via the UI the new value didn't reach `settings.<provider>_api_key` until the next revision restart. Workflows on the same revision kept reporting "key missing" until ops forced a Cloud Run roll (the `_KEYS_REENTERED_AT` trick).

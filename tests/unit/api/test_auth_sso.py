@@ -106,3 +106,19 @@ def test_sso_exchange_invalid_token_returns_401(monkeypatch: pytest.MonkeyPatch)
     client, _ = _client_sso_enabled(monkeypatch)
     resp = client.post("/auth/sso-exchange", json={"azureToken": "bad"})
     assert resp.status_code == 401
+
+
+def test_sso_exchange_inactive_user_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:
+    inactive = SimpleNamespace(
+        id="u-inactive",
+        email="alice@example.com",
+        displayName="Alice",
+        passwordHash=None,
+        role=SimpleNamespace(value="member"),
+        isActive=False,
+    )
+    client, db = _client_sso_enabled(monkeypatch, user_row=inactive)
+    resp = client.post("/auth/sso-exchange", json={"azureToken": "valid"})
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "account is deactivated"
+    db.user.create.assert_not_awaited()

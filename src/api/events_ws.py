@@ -13,12 +13,10 @@ import logging
 from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
-from jose import JWTError
-from jose import jwt as jose_jwt
-from jose.exceptions import ExpiredSignatureError
 
 from src.config import Settings, get_settings
 from src.engine.events import ExecutionEvent, ExecutionEventBus
+from src.security.auth import AuthError, verify_user_token
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["events-ws"])
@@ -38,11 +36,9 @@ async def _authenticate_ws(ws: WebSocket, settings: Settings) -> str | None:
         return None
     token = parts[1]
     try:
-        claims: dict[str, Any] = jose_jwt.decode(token, settings.jwt_secret, algorithms=["HS256"])
-    except (ExpiredSignatureError, JWTError):
+        return await verify_user_token(token, settings)
+    except AuthError:
         return None
-    sub = claims.get("sub")
-    return str(sub) if sub else None
 
 
 @router.websocket("/executions/{execution_id}/ws")
@@ -76,6 +72,11 @@ async def events_ws(  # pyright: ignore[reportUnusedFunction]
 
     # fetch role (admin bypass)
     user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if settings.deployment_mode == "standalone" and (
+        user is None or getattr(user, "isActive", True) is False
+    ):
+        await ws.close(code=4401, reason="unauthenticated")
+        return
     role = getattr(user, "role", None)
     role_str = (
         str(role.value) if role is not None and hasattr(role, "value") else str(role or "member")

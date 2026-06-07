@@ -70,10 +70,28 @@ async def _verify_standalone_jwt(token: str, settings: Any) -> str:
     Returns the 'sub' claim (user_id).  Raises AuthError on any failure.
     """
     claims = _jose_decode(token, settings.jwt_secret)
+    if claims.get("type") != "access":
+        raise AuthError("JWT must be an access token")
     sub = claims.get("sub")
     if not sub:
         raise AuthError("JWT missing 'sub' claim")
     return str(sub)
+
+
+async def _ensure_active_user(db: Any, user_id: str) -> None:
+    """Reject credentials for a deactivated or deleted standalone user."""
+    user = await db.user.find_unique(where={"id": user_id})
+    if user is None:
+        raise AuthError("user no longer exists")
+    if getattr(user, "isActive", True) is False:
+        raise AuthError("account is deactivated")
+
+
+async def verify_user_token(token: str, settings: Any) -> str:
+    """Verify a bearer JWT using the configured deployment-mode trust model."""
+    if settings.deployment_mode == "embedded":
+        return await _verify_embedded_jwt(token, settings)
+    return await _verify_standalone_jwt(token, settings)
 
 
 async def _verify_embedded_jwt(token: str, settings: Any) -> str:
@@ -129,10 +147,19 @@ async def get_current_user_id(
             return "dev"
         raise AuthError("missing Authorization header")
 
+    user_id = await verify_user_token(token, settings)
     if settings.deployment_mode == "embedded":
-        return await _verify_embedded_jwt(token, settings)
+        return user_id
 
-    return await _verify_standalone_jwt(token, settings)
+    # Standalone tokens remain cryptographically valid after an account is
+    # deactivated. Check the live user row when the app-wide Prisma client is
+    # available so deactivation takes effect immediately on every JWT route.
+    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+
+    db = getattr(request.app.state, "db", None)
+    if isinstance(db, Prisma):
+        await _ensure_active_user(db, user_id)
+    return user_id
 
 
 async def get_current_role(
@@ -172,4 +199,10 @@ async def ensure_admin(
     return user_id
 
 
-__all__ = ["AuthError", "ensure_admin", "get_current_role", "get_current_user_id"]
+__all__ = [
+    "AuthError",
+    "ensure_admin",
+    "get_current_role",
+    "get_current_user_id",
+    "verify_user_token",
+]

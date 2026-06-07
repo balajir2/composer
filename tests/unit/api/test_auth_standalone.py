@@ -148,6 +148,17 @@ def test_refresh_invalid_token_401(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resp.status_code == 401
 
 
+def test_refresh_inactive_user_401(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.security.jwt import create_refresh_token
+
+    client, db = _client_standalone(monkeypatch)
+    refresh = create_refresh_token("u1")
+    db.user.find_unique = AsyncMock(return_value=_user_row(id="u1", isActive=False))
+    resp = client.post("/auth/refresh", json={"refreshToken": refresh})
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "account is deactivated"
+
+
 def test_disconnect_returns_204(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _ = _client_standalone(monkeypatch)
     resp = client.post("/auth/disconnect")

@@ -10,7 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
 from src.engine.langgraph_executor import LangGraphExecutor
-from src.security.auth import get_current_role, get_current_user_id
+from src.security.auth import get_current_role
 from src.security.rate_limit import (
     RateLimiter,
     enforce,
@@ -82,9 +82,10 @@ async def create_execution(
     background_tasks: BackgroundTasks,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    user_id: str = Depends(get_current_user_id),
+    _role: tuple[str, str] = Depends(get_current_role),
     limiter: RateLimiter = Depends(get_rate_limiter),
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
+    user_id, role = _role
     await enforce(
         limiter,
         route_key="executions",
@@ -103,6 +104,11 @@ async def create_execution(
         where={"id": payload.workflow_id}
     )
     if workflow is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow {payload.workflow_id!r} not found.",
+        )
+    if role != "admin" and not workflow.isPublic and workflow.userId != user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow {payload.workflow_id!r} not found.",

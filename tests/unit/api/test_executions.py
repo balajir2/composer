@@ -31,6 +31,8 @@ def _workflow_row() -> SimpleNamespace:
     """Minimal workflow row that satisfies LangGraphExecutor.run()."""
     return SimpleNamespace(
         id="wf1",
+        userId="dev",
+        isPublic=False,
         name="Test Workflow",
         nodes=[
             {"id": "start", "type": "start", "data": {}},
@@ -73,6 +75,28 @@ def test_post_execution_404_when_workflow_missing() -> None:
     db.workflow.find_unique = AsyncMock(return_value=None)
     resp = client.post("/executions", json={"workflowId": "ghost", "input": "hi"})
     assert resp.status_code == 404
+
+
+def test_post_execution_404_for_other_users_private_workflow() -> None:
+    """A member cannot execute a private workflow they do not own."""
+    client, db = _client_with_mock_db()
+    workflow = _workflow_row()
+    workflow.userId = "someone-else"
+    db.workflow.find_unique = AsyncMock(return_value=workflow)
+    resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
+    assert resp.status_code == 404
+    db.workflowexecution.create.assert_not_awaited()
+
+
+def test_post_execution_allows_other_users_public_workflow() -> None:
+    """Public workflows remain executable by authenticated members."""
+    client, db = _client_with_mock_db()
+    workflow = _workflow_row()
+    workflow.userId = "someone-else"
+    workflow.isPublic = True
+    db.workflow.find_unique = AsyncMock(return_value=workflow)
+    resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
+    assert resp.status_code == 202
 
 
 def test_get_execution_returns_row() -> None:
