@@ -145,6 +145,27 @@ async def _verify_openai(model_id: str, key: str) -> ModelVerifyResult:
     return ModelVerifyResult(status=status, http_status=resp.status_code, message=msg)
 
 
+async def _verify_openai_compatible(
+    *,
+    provider_label: str,
+    url: str,
+    model_id: str,
+    key: str,
+) -> ModelVerifyResult:
+    resp = await _post(
+        url,
+        headers={"Authorization": f"Bearer {key}", "content-type": "application/json"},
+        json=openai_chat_probe_body(model_id),
+    )
+    status = _classify(resp.status_code, resp.text)
+    msg = (
+        f"{provider_label} {model_id!r} OK."
+        if status == "ok"
+        else f"{provider_label} HTTP {resp.status_code}: {resp.text[:240]}"
+    )
+    return ModelVerifyResult(status=status, http_status=resp.status_code, message=msg)
+
+
 async def _verify_google(model_id: str, key: str) -> ModelVerifyResult:
     # IMPORTANT: must use generateContent, not countTokens.  Google
     # gates them separately: countTokens is metadata-only and succeeds
@@ -173,22 +194,30 @@ async def _verify_google(model_id: str, key: str) -> ModelVerifyResult:
 
 
 async def _verify_groq(model_id: str, key: str) -> ModelVerifyResult:
-    resp = await _post(
-        "https://api.groq.com/openai/v1/chat/completions",
-        headers={"Authorization": f"Bearer {key}", "content-type": "application/json"},
-        json={
-            "model": model_id,
-            "max_tokens": 1,
-            "messages": [{"role": "user", "content": "hi"}],
-        },
+    return await _verify_openai_compatible(
+        provider_label="Groq",
+        url="https://api.groq.com/openai/v1/chat/completions",
+        model_id=model_id,
+        key=key,
     )
-    status = _classify(resp.status_code, resp.text)
-    msg = (
-        f"Groq {model_id!r} OK."
-        if status == "ok"
-        else f"Groq HTTP {resp.status_code}: {resp.text[:240]}"
+
+
+async def _verify_deepseek(model_id: str, key: str) -> ModelVerifyResult:
+    return await _verify_openai_compatible(
+        provider_label="DeepSeek",
+        url="https://api.deepseek.com/chat/completions",
+        model_id=model_id,
+        key=key,
     )
-    return ModelVerifyResult(status=status, http_status=resp.status_code, message=msg)
+
+
+async def _verify_qwen(model_id: str, key: str) -> ModelVerifyResult:
+    return await _verify_openai_compatible(
+        provider_label="Qwen",
+        url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
+        model_id=model_id,
+        key=key,
+    )
 
 
 _VERIFIERS = {
@@ -196,6 +225,8 @@ _VERIFIERS = {
     "openai": _verify_openai,
     "google": _verify_google,
     "groq": _verify_groq,
+    "deepseek": _verify_deepseek,
+    "qwen": _verify_qwen,
 }
 
 

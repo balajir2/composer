@@ -17,6 +17,8 @@ _PROVIDER_TO_ENV: dict[str, str] = {
     "openai": "OPENAI_API_KEY",
     "google": "GOOGLE_API_KEY",
     "groq": "GROQ_API_KEY",
+    "deepseek": "DEEPSEEK_API_KEY",
+    "qwen": "QWEN_API_KEY",
     "langsmith": "LANGCHAIN_API_KEY",
     "tavily": "TAVILY_API_KEY",
     "firecrawl": "FIRECRAWL_API_KEY",

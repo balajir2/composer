@@ -32,7 +32,39 @@ const OPERATION_OPTIONS = [
   { value: "upsert", label: "Upsert — embed and insert chunks" },
 ];
 
-const EMBEDDING_PROVIDER_OPTIONS = [{ value: "openai", label: "OpenAI" }];
+const EMBEDDING_PROVIDER_OPTIONS = [
+  { value: "openai", label: "OpenAI" },
+  { value: "dashscope", label: "Alibaba DashScope / Qwen" },
+  { value: "siliconflow", label: "SiliconFlow / Qwen" },
+  { value: "zhipu", label: "Zhipu / BigModel" },
+  { value: "cohere", label: "Cohere" },
+  { value: "jina", label: "Jina AI" },
+  { value: "voyage", label: "Voyage AI" },
+  { value: "pinecone-inference", label: "Pinecone Inference" },
+  { value: "custom-openai-compatible", label: "Custom OpenAI-compatible" },
+];
+
+const DEFAULT_EMBEDDING_MODELS: Record<string, string> = {
+  openai: "text-embedding-3-small",
+  dashscope: "text-embedding-v4",
+  siliconflow: "Qwen/Qwen3-Embedding-8B",
+  zhipu: "embedding-3",
+  cohere: "embed-v4.0",
+  jina: "jina-embeddings-v4",
+  voyage: "voyage-3-large",
+  "pinecone-inference": "multilingual-e5-large",
+  "custom-openai-compatible": "",
+};
+
+const EMBEDDING_BASE_URL_PLACEHOLDERS: Record<string, string> = {
+  openai: "https://api.openai.com/v1",
+  dashscope: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
+  siliconflow: "https://api.siliconflow.cn/v1",
+  zhipu: "https://open.bigmodel.cn/api/paas/v4",
+  jina: "https://api.jina.ai/v1",
+  voyage: "https://api.voyageai.com/v1",
+  "custom-openai-compatible": "https://provider.example.com/v1",
+};
 
 // Per-provider hint for the endpoint field — paste-friendly examples
 // since the connection URL shape varies wildly between vector DBs.
@@ -68,6 +100,8 @@ export default function VectorDbPanel({
     (data.vectorDbEmbeddingProvider as string) ?? "openai";
   const embeddingModel =
     (data.vectorDbEmbeddingModel as string) ?? "text-embedding-3-small";
+  const embeddingApiKey = (data.vectorDbEmbeddingApiKey as string) ?? "";
+  const embeddingBaseUrl = (data.vectorDbEmbeddingBaseUrl as string) ?? "";
   const outputVariable =
     (data.vectorDbOutputVariable as string) ?? "vectorDbResults";
   const textField = (data.vectorDbTextField as string) ?? "";
@@ -288,7 +322,13 @@ chunks  ←  pre-chunked list [{text, metadata?}, ...]
           <NativeSelect
             id="vdb-emb-provider"
             value={embeddingProvider}
-            onValueChange={(v) => onChange({ vectorDbEmbeddingProvider: v })}
+            onValueChange={(v) =>
+              onChange({
+                vectorDbEmbeddingProvider: v,
+                vectorDbEmbeddingModel:
+                  DEFAULT_EMBEDDING_MODELS[v] || embeddingModel,
+              })
+            }
             options={EMBEDDING_PROVIDER_OPTIONS}
           />
         </div>
@@ -318,6 +358,41 @@ chunks  ←  pre-chunked list [{text, metadata?}, ...]
           Must match the model used to embed your collection — mismatched
           dimensions return zero results.
         </p>
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="vdb-emb-api-key">
+          Embedding API key{" "}
+          <span className="font-normal text-muted-foreground">(optional)</span>
+        </Label>
+        <Input
+          id="vdb-emb-api-key"
+          type="password"
+          value={embeddingApiKey}
+          onChange={(e) =>
+            onChange({ vectorDbEmbeddingApiKey: e.target.value })
+          }
+          placeholder="leave blank to use backend environment key"
+          autoComplete="off"
+        />
+      </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="vdb-emb-base-url">
+          Embedding base URL{" "}
+          <span className="font-normal text-muted-foreground">(optional)</span>
+        </Label>
+        <Input
+          id="vdb-emb-base-url"
+          value={embeddingBaseUrl}
+          onChange={(e) =>
+            onChange({ vectorDbEmbeddingBaseUrl: e.target.value })
+          }
+          placeholder={
+            EMBEDDING_BASE_URL_PLACEHOLDERS[embeddingProvider] ??
+            "https://provider.example.com/v1"
+          }
+        />
       </div>
 
       {/* Output */}

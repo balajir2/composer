@@ -171,6 +171,20 @@ _PROVIDERS: dict[str, _ProviderSpec] = {
         parser=_parse_openai_compat,
         settings_key="groq_api_key",
     ),
+    "deepseek": _ProviderSpec(
+        method="GET",
+        url="https://api.deepseek.com/models",
+        headers_fn=_bearer_headers,
+        parser=_parse_openai_compat,
+        settings_key="deepseek_api_key",
+    ),
+    "qwen": _ProviderSpec(
+        method="GET",
+        url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
+        headers_fn=_bearer_headers,
+        parser=_parse_openai_compat,
+        settings_key="qwen_api_key",
+    ),
     "google": _ProviderSpec(
         method="GET",
         url="https://generativelanguage.googleapis.com/v1beta/models",
@@ -298,7 +312,10 @@ async def _db_fallback(db: Prisma, provider: str) -> list[LiveModel]:  # pyright
 
 @router.get("/llm-models/available", response_model=AvailableModelsResponse)
 async def list_available_models(
-    provider: str = Query(..., description="Provider id: anthropic|openai|google|groq"),
+    provider: str = Query(
+        ...,
+        description="Provider id: anthropic|openai|google|groq|deepseek|qwen",
+    ),
     refresh: bool = Query(
         default=False,
         description="Bypass the 5-minute in-process cache and re-hit the provider.",

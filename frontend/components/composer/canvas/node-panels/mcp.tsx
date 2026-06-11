@@ -16,6 +16,8 @@ const PROVIDER_OPTIONS = [
   { value: "openai", label: "OpenAI" },
   { value: "google", label: "Google" },
   { value: "groq", label: "Groq" },
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "qwen", label: "Qwen" },
 ];
 
 type ServerTool = { name?: unknown; description?: unknown };

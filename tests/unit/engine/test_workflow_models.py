@@ -594,8 +594,10 @@ def test_vector_db_node_data_parses_camelcase_aliases() -> None:
             "vectorDbApiKey": "{{env.QDRANT_API_KEY}}",
             "vectorDbCollection": "docs",
             "vectorDbDimension": 768,
-            "vectorDbEmbeddingProvider": "openai",
-            "vectorDbEmbeddingModel": "text-embedding-3-large",
+            "vectorDbEmbeddingProvider": "dashscope",
+            "vectorDbEmbeddingModel": "text-embedding-v4",
+            "vectorDbEmbeddingApiKey": "{{env.DASHSCOPE_API_KEY}}",
+            "vectorDbEmbeddingBaseUrl": "https://dashscope.aliyuncs.com/compatible-mode/v1",
             "vectorDbQueryPrompt": "find {{topic}}",
             "vectorDbTopK": 10,
             "vectorDbScoreThreshold": 0.7,
@@ -616,8 +618,10 @@ def test_vector_db_node_data_parses_camelcase_aliases() -> None:
     assert data.api_key == "{{env.QDRANT_API_KEY}}"
     assert data.collection == "docs"
     assert data.dimension == 768
-    assert data.embedding_provider == "openai"
-    assert data.embedding_model == "text-embedding-3-large"
+    assert data.embedding_provider == "dashscope"
+    assert data.embedding_model == "text-embedding-v4"
+    assert data.embedding_api_key == "{{env.DASHSCOPE_API_KEY}}"
+    assert data.embedding_base_url == "https://dashscope.aliyuncs.com/compatible-mode/v1"
     assert data.query_prompt == "find {{topic}}"
     assert data.top_k == 10
     assert data.score_threshold == 0.7
@@ -644,6 +648,8 @@ def test_vector_db_node_data_defaults() -> None:
     assert data.dimension == 1536
     assert data.embedding_provider == "openai"
     assert data.embedding_model == "text-embedding-3-small"
+    assert data.embedding_api_key == ""
+    assert data.embedding_base_url == ""
     assert data.query_prompt == ""
     assert data.top_k == 5
     assert data.score_threshold == 0.0

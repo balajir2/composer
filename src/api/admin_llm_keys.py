@@ -22,6 +22,8 @@ _ALLOWED_PROVIDERS = {
     "openai",
     "google",
     "groq",
+    "deepseek",
+    "qwen",
     "langsmith",
     "tavily",
     "firecrawl",

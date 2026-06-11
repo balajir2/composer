@@ -18,7 +18,7 @@ from src.engine.context import LangSmithConfig
 
 class UnsupportedProviderError(ValueError):
     """Raised when the provider prefix in the model string isn't one of
-    anthropic / openai / google / groq."""
+    anthropic / openai / google / groq / deepseek / qwen."""
 
 
 class MissingApiKeyError(RuntimeError):
@@ -30,6 +30,13 @@ _KEY_MAP: dict[str, str] = {
     "openai": "openai_api_key",
     "google": "google_api_key",
     "groq": "groq_api_key",
+    "deepseek": "deepseek_api_key",
+    "qwen": "qwen_api_key",
+}
+
+_OPENAI_COMPAT_BASE_URLS: dict[str, str] = {
+    "deepseek": "https://api.deepseek.com",
+    "qwen": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
 }
 
 
@@ -42,7 +49,7 @@ def _build_raw_chat_model(
 ) -> BaseChatModel:
     """Parse `model_string` as `provider/modelname`, return a LangChain chat model.
 
-    Providers: 'anthropic', 'openai', 'google', 'groq'.
+    Providers: 'anthropic', 'openai', 'google', 'groq', 'deepseek', 'qwen'.
     No prefix → defaults to 'openai' (matches OAB agent.ts:184-196).
 
     Raises:
@@ -76,8 +83,11 @@ def _build_raw_chat_model(
             kwargs["temperature"] = temperature
         return ChatAnthropic(**kwargs)  # pyright: ignore[reportCallIssue]
 
-    if provider == "openai":
+    if provider == "openai" or provider in _OPENAI_COMPAT_BASE_URLS:
         kwargs = {"model": model_name, "api_key": api_key, **extra_kwargs}
+        base_url = _OPENAI_COMPAT_BASE_URLS.get(provider)
+        if base_url is not None:
+            kwargs["base_url"] = base_url
         if token_limit is not None:
             kwargs["max_tokens"] = token_limit
         if temperature is not None:

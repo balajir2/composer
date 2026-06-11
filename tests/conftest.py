@@ -14,10 +14,13 @@ from collections.abc import AsyncIterator
 
 import pytest
 import pytest_asyncio
+from dotenv import load_dotenv
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
 from src.main import create_app
+
+load_dotenv()
 
 
 def pytest_collection_modifyitems(

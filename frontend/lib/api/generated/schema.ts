@@ -1566,12 +1566,14 @@ export interface components {
              * @default openai
              * @enum {string}
              */
-            vectorDbEmbeddingProvider: "openai" | "cohere" | "jina" | "pinecone-inference";
+            vectorDbEmbeddingProvider: "openai" | "dashscope" | "siliconflow" | "zhipu" | "cohere" | "jina" | "voyage" | "pinecone-inference" | "custom-openai-compatible";
             /**
              * Vectordbembeddingmodel
              * @default text-embedding-3-small
              */
             vectorDbEmbeddingModel: string;
+            vectorDbEmbeddingApiKey: string;
+            vectorDbEmbeddingBaseUrl: string;
             /**
              * Vectordbqueryprompt
              * @default

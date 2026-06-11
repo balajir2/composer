@@ -23,7 +23,7 @@ from src.config import get_settings
 from src.executors._eval import EvalError, evaluate
 from src.executors.base import register_executor
 from src.variable_substitution import substitute
-from src.vectordb.embedding import embed_text_openai
+from src.vectordb.embedding import EmbeddingConfig, embed_text
 from src.vectordb.providers import chroma, milvus, pinecone, qdrant, weaviate
 from src.vectordb.providers.base import (
     QueryConfig,
@@ -175,22 +175,39 @@ class VectorDbExecutor:
 
     async def _embed(self, prompt: str) -> list[float]:
         data = self.node.data
-        if data.embedding_provider != "openai":
-            raise NotImplementedError(
-                f"vector-db embedding_provider {data.embedding_provider!r} lands "
-                f"in a later phase; Phase 6e ships OpenAI only"
-            )
-        settings = get_settings()
-        if not settings.openai_api_key:
+        provider = data.embedding_provider
+        api_key = data.embedding_api_key or self._embedding_api_key_from_settings(provider)
+        if not api_key:
             raise VectorDbNodeError(
-                f"vector-db node {self.node.id!r}: OPENAI_API_KEY is required for embeddings"
+                f"vector-db node {self.node.id!r}: API key is required for "
+                f"{provider!r} embeddings. Set vectorDbEmbeddingApiKey on the node "
+                "or configure the matching provider API key in the backend environment."
             )
-        return await embed_text_openai(
+        return await embed_text(
             prompt,
-            model=data.embedding_model,
-            api_key=settings.openai_api_key,
-            dimension=data.dimension,
+            config=EmbeddingConfig(
+                provider=provider,
+                model=data.embedding_model,
+                api_key=api_key,
+                dimension=data.dimension,
+                base_url=data.embedding_base_url or None,
+            ),
         )
+
+    @staticmethod
+    def _embedding_api_key_from_settings(provider: str) -> str:
+        settings = get_settings()
+        return {
+            "openai": settings.openai_api_key,
+            "dashscope": settings.dashscope_api_key,
+            "siliconflow": settings.siliconflow_api_key,
+            "zhipu": settings.zhipu_api_key,
+            "cohere": settings.cohere_api_key,
+            "jina": settings.jina_api_key,
+            "voyage": settings.voyage_api_key,
+            "pinecone-inference": settings.pinecone_inference_api_key,
+            "custom-openai-compatible": "",
+        }.get(provider, "")
 
     @staticmethod
     def _result_to_dict(r: VectorDbResult) -> dict[str, Any]:

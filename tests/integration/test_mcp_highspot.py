@@ -26,7 +26,10 @@ from httpx import AsyncClient
 from prisma import Json  # pyright: ignore[reportAttributeAccessIssue]
 from src.security.encryption import encrypt
 
-pytestmark = pytest.mark.integration
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skip(reason="Highspot OAuth token is external and currently invalid"),
+]
 
 
 async def _poll_until_terminal(

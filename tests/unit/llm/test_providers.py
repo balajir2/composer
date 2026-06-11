@@ -55,6 +55,37 @@ def test_groq_returns_chat_groq(monkeypatch: pytest.MonkeyPatch) -> None:
     assert isinstance(model, ChatGroq)
 
 
+def test_deepseek_returns_openai_compatible_chat_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test-key")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    from langchain_openai import ChatOpenAI  # pyright: ignore[reportMissingImports]
+
+    model = build_chat_model("deepseek/deepseek-chat")
+    assert isinstance(model, ChatOpenAI)
+    assert str(model.openai_api_base).rstrip("/") == "https://api.deepseek.com"
+
+
+def test_qwen_returns_openai_compatible_chat_model(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("QWEN_API_KEY", "test-key")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    from langchain_openai import ChatOpenAI  # pyright: ignore[reportMissingImports]
+
+    model = build_chat_model("qwen/qwen-plus")
+    assert isinstance(model, ChatOpenAI)
+    assert (
+        str(model.openai_api_base).rstrip("/")
+        == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+    )
+
+
 def test_unknown_provider_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
     from src.config import get_settings

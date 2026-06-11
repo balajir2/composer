@@ -72,7 +72,7 @@ def _stub_provider(
         "milvus": _stub,
     }
     monkeypatch.setattr(vdb_mod, "_QUERY_PROVIDERS", stub_map)
-    monkeypatch.setattr(vdb_mod, "embed_text_openai", _fake_embed)
+    monkeypatch.setattr(vdb_mod, "embed_text", _fake_embed)
 
 
 async def test_happy_path_pinecone(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -179,11 +179,27 @@ async def test_empty_prompt_raises(monkeypatch: pytest.MonkeyPatch) -> None:
         await VectorDbExecutor(_node(vectorDbQueryPrompt="")).arun(initial_state())
 
 
-async def test_non_openai_embedding_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_non_openai_embedding_dispatches(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COHERE_API_KEY", "test-cohere-key")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
     _stub_provider(monkeypatch, [])
     node = _node(vectorDbEmbeddingProvider="cohere")
-    with pytest.raises(NotImplementedError, match="OpenAI only"):
-        await VectorDbExecutor(node).arun(initial_state())
+    delta = await VectorDbExecutor(node).arun(initial_state())
+    assert delta["variables"]["vectorDbResults"]["provider"] == "pinecone"
+
+
+async def test_embedding_key_can_come_from_node(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, Any] = {}
+    _stub_provider(monkeypatch, [], captured=captured)
+    node = _node(
+        vectorDbEmbeddingProvider="dashscope",
+        vectorDbEmbeddingApiKey="node-key",
+        vectorDbEmbeddingModel="text-embedding-v4",
+    )
+    await VectorDbExecutor(node).arun(initial_state())
+    assert captured["embedding"] == [0.1, 0.2, 0.3]
 
 
 async def test_metadata_filter_valid_json_passed_to_provider(
@@ -218,7 +234,7 @@ async def test_missing_openai_key_raises(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setenv("OPENAI_API_KEY", "")
     get_settings.cache_clear()
-    with pytest.raises(VectorDbNodeError, match="OPENAI_API_KEY"):
+    with pytest.raises(VectorDbNodeError, match="API key is required"):
         await VectorDbExecutor(_node()).arun(initial_state())
 
 
@@ -280,7 +296,7 @@ def _stub_upsert_provider(
 
     stub_map = dict.fromkeys(("pinecone", "qdrant", "chroma", "weaviate", "milvus"), _stub)
     monkeypatch.setattr(vdb_mod, "_UPSERT_PROVIDERS", stub_map)
-    monkeypatch.setattr(vdb_mod, "embed_text_openai", _fake_embed)
+    monkeypatch.setattr(vdb_mod, "embed_text", _fake_embed)
 
 
 async def test_upsert_with_pre_chunked_list(monkeypatch: pytest.MonkeyPatch) -> None:

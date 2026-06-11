@@ -101,6 +101,34 @@ async def _test_groq(key: str) -> KeyTestResult:
     )
 
 
+async def _test_deepseek(key: str) -> KeyTestResult:
+    resp = await _get(
+        "https://api.deepseek.com/models",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    if resp.status_code == 200:
+        return KeyTestResult(ok=True, status=200, message="DeepSeek key valid.")
+    return KeyTestResult(
+        ok=False,
+        status=resp.status_code,
+        message=f"DeepSeek HTTP {resp.status_code}: {resp.text[:200]}",
+    )
+
+
+async def _test_qwen(key: str) -> KeyTestResult:
+    resp = await _get(
+        "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/models",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    if resp.status_code == 200:
+        return KeyTestResult(ok=True, status=200, message="Qwen key valid.")
+    return KeyTestResult(
+        ok=False,
+        status=resp.status_code,
+        message=f"Qwen HTTP {resp.status_code}: {resp.text[:200]}",
+    )
+
+
 async def _test_langsmith(key: str) -> KeyTestResult:
     # /api/v1/runs is POST-only (GET returns 405).  /api/v1/sessions lists
     # tracing projects and accepts GET with x-api-key auth — 200 on valid
@@ -234,6 +262,8 @@ _TESTERS = {
     "openai": _test_openai,
     "google": _test_google,
     "groq": _test_groq,
+    "deepseek": _test_deepseek,
+    "qwen": _test_qwen,
     "langsmith": _test_langsmith,
     "tavily": _test_tavily,
     "firecrawl": _test_firecrawl,

@@ -63,6 +63,17 @@ class Settings(BaseSettings):
     openai_api_key: str = Field(default="", description="OpenAI API key")
     google_api_key: str = Field(default="", description="Google AI Studio API key")
     groq_api_key: str = Field(default="", description="Groq API key")
+    deepseek_api_key: str = Field(default="", description="DeepSeek API key")
+    qwen_api_key: str = Field(default="", description="Alibaba DashScope/Qwen API key")
+    dashscope_api_key: str = Field(default="", description="Alibaba DashScope API key")
+    siliconflow_api_key: str = Field(default="", description="SiliconFlow API key")
+    zhipu_api_key: str = Field(default="", description="Zhipu/BigModel API key")
+    cohere_api_key: str = Field(default="", description="Cohere API key")
+    jina_api_key: str = Field(default="", description="Jina AI API key")
+    voyage_api_key: str = Field(default="", description="Voyage AI API key")
+    pinecone_inference_api_key: str = Field(
+        default="", description="Pinecone Inference API key"
+    )
 
     # ─── Agent tools (Phase 2) ────────────────────
     tavily_api_key: str = Field(default="", description="Tavily web-search API key")

@@ -35,6 +35,8 @@ const PROVIDERS = [
   { id: "openai", label: "OpenAI" },
   { id: "google", label: "Google" },
   { id: "groq", label: "Groq" },
+  { id: "deepseek", label: "DeepSeek" },
+  { id: "qwen", label: "Qwen" },
   { id: "langsmith", label: "LangSmith" },
   { id: "tavily", label: "Tavily" },
   { id: "firecrawl", label: "Firecrawl" },

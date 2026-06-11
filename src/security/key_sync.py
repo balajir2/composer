@@ -43,6 +43,8 @@ PROVIDER_TO_SETTINGS_FIELD: dict[str, str] = {
     "openai": "openai_api_key",
     "google": "google_api_key",
     "groq": "groq_api_key",
+    "deepseek": "deepseek_api_key",
+    "qwen": "qwen_api_key",
     "langsmith": "langchain_api_key",
     "tavily": "tavily_api_key",
     "firecrawl": "firecrawl_api_key",

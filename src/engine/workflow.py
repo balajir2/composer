@@ -322,7 +322,17 @@ class GuardrailsNode(BaseModel):
 # ─── vector-db (Phase 6) ─────────────────────────────────────────────────
 
 VectorDbProvider = Literal["pinecone", "qdrant", "chroma", "weaviate", "milvus"]
-EmbeddingProvider = Literal["openai", "cohere", "jina", "pinecone-inference"]
+EmbeddingProvider = Literal[
+    "openai",
+    "dashscope",
+    "siliconflow",
+    "zhipu",
+    "cohere",
+    "jina",
+    "voyage",
+    "pinecone-inference",
+    "custom-openai-compatible",
+]
 
 
 class VectorDbNodeData(BaseNodeData):
@@ -337,6 +347,8 @@ class VectorDbNodeData(BaseNodeData):
         default="openai", alias="vectorDbEmbeddingProvider"
     )
     embedding_model: str = Field(default="text-embedding-3-small", alias="vectorDbEmbeddingModel")
+    embedding_api_key: str = Field(default="", alias="vectorDbEmbeddingApiKey")
+    embedding_base_url: str = Field(default="", alias="vectorDbEmbeddingBaseUrl")
     query_prompt: str = Field(default="", alias="vectorDbQueryPrompt")
     top_k: int = Field(default=5, alias="vectorDbTopK")
     score_threshold: float = Field(default=0.0, alias="vectorDbScoreThreshold")

@@ -139,9 +139,8 @@ def main() -> int:
                         continue
                     if anchor and resolved.endswith(".md"):
                         rel = os.path.relpath(resolved, ROOT).replace("\\", "/")
-                        if rel in headings:
-                            if gh_slug(anchor[1:]) not in headings[rel]:
-                                broken.append((f, ln, f"{target_path}{anchor}", "anchor not found in target"))
+                        if rel in headings and gh_slug(anchor[1:]) not in headings[rel]:
+                            broken.append((f, ln, f"{target_path}{anchor}", "anchor not found in target"))
 
     if not broken:
         print("All links resolve.")
