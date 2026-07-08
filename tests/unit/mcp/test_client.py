@@ -190,3 +190,87 @@ async def test_auth_header_factory_takes_precedence_over_dict(httpx_mock: HTTPXM
     req = httpx_mock.get_request()
     assert req is not None
     assert req.headers.get("authorization") == "Bearer factory-wins"
+
+
+async def test_session_id_from_initialize_is_sent_on_followup_request(
+    httpx_mock: HTTPXMock,
+) -> None:  # pyright: ignore[reportUnknownParameterType]
+    """Stateful streamable-HTTP servers require Mcp-Session-Id after initialize."""
+    httpx_mock.add_response(
+        url="https://mcp.example.com/rpc",
+        method="POST",
+        json={
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "stateful", "version": "1.0"},
+            },
+        },
+        headers={"mcp-session-id": "sess-123"},
+    )
+    httpx_mock.add_response(
+        url="https://mcp.example.com/rpc",
+        method="POST",
+        json={"jsonrpc": "2.0", "id": 2, "result": {"tools": []}},
+    )
+
+    client = MCPClient("https://mcp.example.com/rpc")
+    await client.initialize()
+    await client.tools_list()
+
+    reqs = httpx_mock.get_requests()
+    assert reqs[0].headers.get("mcp-session-id") is None
+    assert reqs[1].headers.get("mcp-session-id") == "sess-123"
+
+
+async def test_tools_list_initializes_and_retries_when_session_required(
+    httpx_mock: HTTPXMock,
+) -> None:  # pyright: ignore[reportUnknownParameterType]
+    """Atlassian Rovo MCP returns this 400 when tools/list is sent without a session."""
+    httpx_mock.add_response(
+        url="https://mcp.example.com/rpc",
+        method="POST",
+        status_code=400,
+        json={
+            "jsonrpc": "2.0",
+            "error": {
+                "code": -32600,
+                "message": "Request must be an initialize request if no session ID is provided.",
+            },
+        },
+    )
+    httpx_mock.add_response(
+        url="https://mcp.example.com/rpc",
+        method="POST",
+        json={
+            "jsonrpc": "2.0",
+            "id": 2,
+            "result": {
+                "protocolVersion": "2024-11-05",
+                "capabilities": {"tools": {}},
+                "serverInfo": {"name": "stateful", "version": "1.0"},
+            },
+        },
+        headers={"Mcp-Session-Id": "sess-456"},
+    )
+    httpx_mock.add_response(
+        url="https://mcp.example.com/rpc",
+        method="POST",
+        json={
+            "jsonrpc": "2.0",
+            "id": 3,
+            "result": {"tools": [{"name": "create_issue", "inputSchema": {}}]},
+        },
+    )
+
+    client = MCPClient("https://mcp.example.com/rpc")
+    tools = await client.tools_list()
+
+    assert tools == [{"name": "create_issue", "inputSchema": {}}]
+    reqs = httpx_mock.get_requests()
+    assert len(reqs) == 3
+    assert reqs[0].headers.get("mcp-session-id") is None
+    assert reqs[1].headers.get("mcp-session-id") is None
+    assert reqs[2].headers.get("mcp-session-id") == "sess-456"

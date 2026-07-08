@@ -55,6 +55,7 @@ class MCPClient:
         self._auth_header = dict(auth_header) if auth_header else {}
         self._auth_header_factory = auth_header_factory
         self._timeout = timeout
+        self._session_id: str | None = None
         # Per-instance counter so each MCPClient starts at id=1.
         # This keeps test isolation intact and matches OAB's spirit of
         # using an unpredictable id (OAB uses Date.now()).
@@ -82,7 +83,13 @@ class MCPClient:
 
     # ─── internals ─────────────────────────────────────────────────────
 
-    async def _rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def _rpc(
+        self,
+        method: str,
+        params: dict[str, Any],
+        *,
+        _allow_initialize_retry: bool = True,
+    ) -> dict[str, Any]:
         rpc_id = next(self._counter)
         body = {"jsonrpc": "2.0", "id": rpc_id, "method": method, "params": params}
         if self._auth_header_factory is not None:
@@ -94,6 +101,8 @@ class MCPClient:
             "Accept": "application/json, text/event-stream",
             **auth,
         }
+        if self._session_id:
+            headers["Mcp-Session-Id"] = self._session_id
         try:
             async with httpx.AsyncClient(
                 timeout=httpx.Timeout(self._timeout, connect=5.0)
@@ -107,8 +116,20 @@ class MCPClient:
             ) from exc
 
         if resp.status_code >= 400:
+            if (
+                _allow_initialize_retry
+                and method != "initialize"
+                and self._needs_initialize_before_request(resp)
+            ):
+                await self.initialize()
+                return await self._rpc(
+                    method,
+                    params,
+                    _allow_initialize_retry=False,
+                )
             raise MCPHTTPError(f"MCP {method} returned HTTP {resp.status_code}: {resp.text[:200]}")
 
+        self._capture_session_id(resp)
         payload = self._parse_response(resp, rpc_id)
 
         if "error" in payload:
@@ -117,6 +138,24 @@ class MCPClient:
                 f"MCP {method} RPC error (code={err.get('code')}): {err.get('message', 'unknown')}"
             )
         return payload.get("result", {})  # type: ignore[no-any-return]
+
+    def _capture_session_id(self, resp: httpx.Response) -> None:
+        """Remember the MCP session id returned by stateful streamable-HTTP servers."""
+        session_id = resp.headers.get("mcp-session-id")
+        if session_id:
+            self._session_id = session_id
+
+    def _needs_initialize_before_request(self, resp: httpx.Response) -> bool:
+        """Detect stateful MCP servers that reject non-initialize calls before a session exists."""
+        try:
+            payload = resp.json()
+        except json.JSONDecodeError:
+            return False
+        err = payload.get("error") if isinstance(payload, dict) else None
+        if not isinstance(err, dict):
+            return False
+        message = str(err.get("message", "")).lower()
+        return "initialize request" in message and "session id" in message
 
     def _parse_response(self, resp: httpx.Response, expected_id: int) -> dict[str, Any]:
         """Extract the JSON-RPC envelope, whether response is JSON or SSE."""
