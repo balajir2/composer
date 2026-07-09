@@ -159,6 +159,20 @@ def test_refresh_inactive_user_401(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resp.json()["detail"] == "account is deactivated"
 
 
+def test_refresh_must_change_password_403(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An admin-forced password reset must cut off refresh immediately —
+    otherwise a still-logged-in user could keep refreshing for up to 30 days
+    without ever hitting the forced-change gate."""
+    from src.security.jwt import create_refresh_token
+
+    client, db = _client_standalone(monkeypatch)
+    refresh = create_refresh_token("u1")
+    db.user.find_unique = AsyncMock(return_value=_user_row(id="u1", mustChangePassword=True))
+    resp = client.post("/auth/refresh", json={"refreshToken": refresh})
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "password change required"
+
+
 def test_disconnect_returns_204(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _ = _client_standalone(monkeypatch)
     resp = client.post("/auth/disconnect")

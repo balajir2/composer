@@ -17,6 +17,7 @@ from jose import jwt as jose_jwt
 
 from src.security.auth import (
     AuthError,
+    _ensure_active_and_no_pending_password_change,  # pyright: ignore[reportPrivateUsage]
     _ensure_active_user,  # pyright: ignore[reportPrivateUsage]
     _extract_bearer,  # pyright: ignore[reportPrivateUsage]
     _verify_embedded_jwt,  # pyright: ignore[reportPrivateUsage]
@@ -182,6 +183,34 @@ async def test_ensure_active_user_rejects_deactivated_account() -> None:
         await _ensure_active_user(db, "user-1")
 
 
+# ─── _ensure_active_and_no_pending_password_change ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_ensure_active_and_no_pending_password_change_rejects_deactivated() -> None:
+    db = MagicMock()
+    db.user.find_unique = AsyncMock(
+        return_value=MagicMock(isActive=False, mustChangePassword=False)
+    )
+    with pytest.raises(AuthError, match="deactivated"):
+        await _ensure_active_and_no_pending_password_change(db, "user-1")
+
+
+@pytest.mark.asyncio
+async def test_ensure_active_and_no_pending_password_change_rejects_must_change() -> None:
+    db = MagicMock()
+    db.user.find_unique = AsyncMock(return_value=MagicMock(isActive=True, mustChangePassword=True))
+    with pytest.raises(AuthError, match="password change required"):
+        await _ensure_active_and_no_pending_password_change(db, "user-1")
+
+
+@pytest.mark.asyncio
+async def test_ensure_active_and_no_pending_password_change_allows_normal_user() -> None:
+    db = MagicMock()
+    db.user.find_unique = AsyncMock(return_value=MagicMock(isActive=True, mustChangePassword=False))
+    await _ensure_active_and_no_pending_password_change(db, "user-1")
+
+
 # ─── _verify_embedded_jwt ────────────────────────────────────────────────────
 
 
@@ -301,6 +330,30 @@ async def test_get_current_user_id_invalid_token_raises_401() -> None:
     assert excinfo.value.status_code == 401
 
 
+@pytest.mark.asyncio
+async def test_get_current_user_id_rejects_pending_password_change() -> None:
+    """A still-valid access token must not authorize a user whose password
+    change is pending — an admin-forced reset must cut off the session
+    immediately rather than waiting for the token to expire naturally.
+
+    Mirrors get_user_id_allow_password_change's deactivation-guard test: the
+    live user row is checked whenever an app-wide Prisma client is available
+    on request.app.state.db.
+    """
+    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+
+    secret = "test-secret-at-least-32-chars-long-for-hs256"
+    settings = _mock_settings(deployment_mode="standalone", jwt_secret=secret)
+    token = _make_jose_token(sub="u1", secret=secret)
+    req = _mock_request(f"Bearer {token}")
+    db = MagicMock(spec=Prisma)
+    db.user.find_unique = AsyncMock(return_value=MagicMock(isActive=True, mustChangePassword=True))
+    req.app.state.db = db
+
+    with pytest.raises(AuthError, match="password change required"):
+        await get_current_user_id(req, settings)
+
+
 async def test_get_user_id_allow_password_change_accepts_access_token() -> None:
     from src.security.jwt import create_access_token
 
@@ -352,3 +405,22 @@ async def test_get_user_id_allow_password_change_rejects_deactivated_user() -> N
 
     with pytest.raises(AuthError, match="deactivated"):
         await get_user_id_allow_password_change(req)
+
+
+async def test_get_user_id_allow_password_change_allows_pending_password_change() -> None:
+    """Critical regression guard: a user with mustChangePassword=True must
+    still be able to authenticate here — this is precisely the endpoint that
+    completes an admin-forced reset (via /auth/change-password). It must NOT
+    be rejected by the same guard that now cuts off get_current_user_id.
+    """
+    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+    from src.security.jwt import create_access_token
+
+    token = create_access_token("u1")
+    req = _mock_request(f"Bearer {token}")
+    db = MagicMock(spec=Prisma)
+    db.user.find_unique = AsyncMock(return_value=MagicMock(isActive=True, mustChangePassword=True))
+    req.app.state.db = db
+
+    user_id = await get_user_id_allow_password_change(req)
+    assert user_id == "u1"

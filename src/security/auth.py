@@ -93,6 +93,24 @@ async def _ensure_active_user(db: Any, user_id: str) -> None:
         raise AuthError("account is deactivated")
 
 
+async def _ensure_active_and_no_pending_password_change(db: Any, user_id: str) -> None:
+    """Reject deactivated users AND users with a pending admin-forced password
+    reset, for routes other than /auth/login and /auth/change-password.
+
+    A pending mustChangePassword must cut off existing sessions immediately —
+    otherwise an admin's "force a change on next login" reset only takes
+    effect the next time the user's access/refresh token happens to expire,
+    which can be up to 30 days (the refresh token TTL).
+    """
+    user = await db.user.find_unique(where={"id": user_id})
+    if user is None:
+        raise AuthError("user no longer exists")
+    if getattr(user, "isActive", True) is False:
+        raise AuthError("account is deactivated")
+    if getattr(user, "mustChangePassword", False):
+        raise AuthError("password change required")
+
+
 async def verify_user_token(token: str, settings: Any) -> str:
     """Verify a bearer JWT using the configured deployment-mode trust model."""
     if settings.deployment_mode == "embedded":
@@ -158,13 +176,16 @@ async def get_current_user_id(
         return user_id
 
     # Standalone tokens remain cryptographically valid after an account is
-    # deactivated. Check the live user row when the app-wide Prisma client is
-    # available so deactivation takes effect immediately on every JWT route.
+    # deactivated, or after an admin forces a password change on the user.
+    # Check the live user row when the app-wide Prisma client is available so
+    # both conditions take effect immediately on every JWT route — otherwise
+    # an existing session could keep refreshing (and calling every other
+    # route) for up to 30 days without ever hitting the forced-change gate.
     from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 
     db = getattr(request.app.state, "db", None)
     if isinstance(db, Prisma):
-        await _ensure_active_user(db, user_id)
+        await _ensure_active_and_no_pending_password_change(db, user_id)
     return user_id
 
 
