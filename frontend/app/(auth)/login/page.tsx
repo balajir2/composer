@@ -2,7 +2,7 @@
 
 import { Suspense, useState } from "react";
 import Link from "next/link";
-import { signIn } from "next-auth/react";
+import { signIn, getSession } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -43,9 +43,15 @@ function LoginForm() {
       password,
       redirect: false,
     });
-    setSubmitting(false);
     if (res?.error) {
+      setSubmitting(false);
       toast.error("Sign-in failed. Check your credentials.");
+      return;
+    }
+    const session = await getSession();
+    setSubmitting(false);
+    if (session?.mustChangePassword) {
+      router.push("/change-password");
       return;
     }
     router.push(returnTo);

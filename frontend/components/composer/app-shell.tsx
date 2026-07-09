@@ -40,6 +40,12 @@ export function AppShell({
           <div className="truncate font-semibold text-white/65">
             {session?.user?.email}
           </div>
+          <Link
+            href="/change-password"
+            className="mt-1 block text-[0.7rem] text-white/40 hover:text-white/90"
+          >
+            Change password
+          </Link>
           <button
             type="button"
             onClick={() => signOut({ callbackUrl: "/login" })}

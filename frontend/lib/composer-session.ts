@@ -6,6 +6,13 @@ export async function requireSession() {
     const { redirect } = await import("next/navigation");
     redirect("/login");
   }
+  // Defense-in-depth: server components that don't go through the
+  // middleware matcher (or any request that slips past it) still get the
+  // forced-password-reset gate applied here.
+  if ((session as { mustChangePassword?: boolean }).mustChangePassword) {
+    const { redirect } = await import("next/navigation");
+    redirect("/change-password");
+  }
   return session;
 }
 
