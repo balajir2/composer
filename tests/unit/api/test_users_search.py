@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 
 from src.api.users import router as users_router
 from src.security.jwt import create_access_token
+from src.security.rate_limit import RateLimiter
 
 
 def _user_row(**overrides: Any) -> SimpleNamespace:
@@ -35,6 +36,7 @@ def _client(monkeypatch: pytest.MonkeyPatch, rows: list[SimpleNamespace]) -> Tes
     db.user = MagicMock()
     db.user.find_many = AsyncMock(return_value=rows)
     app.state.db = db
+    app.state.rate_limiter = RateLimiter()
     return TestClient(app)
 
 
@@ -60,3 +62,22 @@ def test_search_users_requires_min_query_length(monkeypatch: pytest.MonkeyPatch)
     token = create_access_token("u1")
     resp = client.get("/users/search?q=b", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 422
+
+
+async def test_search_users_rate_limited(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-caller bucket for this route is pre-exhausted -> 429, keyed on user id."""
+    client = _client(monkeypatch, [_user_row()])
+    token = create_access_token("u1")
+
+    from src.config import get_settings
+    from src.security.rate_limit import per_minute_config
+
+    limiter: RateLimiter = client.app.state.rate_limiter  # type: ignore[attr-defined]
+    config = per_minute_config(get_settings().rate_limit_users_search_per_minute)
+    # Drain the bucket for this route+user key before the real request lands.
+    for _ in range(config.capacity):
+        await limiter.check("users_search", "u1", config)
+
+    resp = client.get("/users/search?q=bob", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 429
+    assert "Retry-After" in resp.headers

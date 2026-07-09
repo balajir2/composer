@@ -140,6 +140,7 @@ class Settings(BaseSettings):
     rate_limit_resume_per_minute: int = 60
     rate_limit_mcp_test_per_minute: int = 10
     rate_limit_api_run_per_minute: int = 60
+    rate_limit_users_search_per_minute: int = 30
 
     # ─── Stuck-execution sweeper ─────────────────
     # Any WorkflowExecution row in 'running' for longer than this without a
