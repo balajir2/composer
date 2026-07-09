@@ -160,3 +160,50 @@ def test_member_cannot_list_users_403(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _ = _client_member(monkeypatch)
     resp = client.get("/admin/users")
     assert resp.status_code == 403
+
+
+# --- Admin-forced reset-password (Account + Workflow Sharing plan, Task A6) ---
+
+
+def test_admin_reset_password_returns_temp_password_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Reset endpoint returns a temporary password of adequate length, once."""
+    client, db = _client_admin(monkeypatch)
+    db.user.find_unique = AsyncMock(return_value=_user_row("u1", "alice@example.com", "member"))
+    db.user.update = AsyncMock(return_value=_user_row("u1", "alice@example.com", "member"))
+    resp = client.post("/admin/users/u1/reset-password")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert "temporaryPassword" in body
+    assert len(body["temporaryPassword"]) >= 12
+
+
+def test_admin_reset_password_sets_must_change_password_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The user row is updated with a fresh hash and mustChangePassword=True."""
+    client, db = _client_admin(monkeypatch)
+    db.user.find_unique = AsyncMock(return_value=_user_row("u1", "alice@example.com", "member"))
+    db.user.update = AsyncMock(return_value=_user_row("u1", "alice@example.com", "member"))
+    client.post("/admin/users/u1/reset-password")
+    db.user.update.assert_awaited_once()
+    call_data = db.user.update.await_args.kwargs["data"]  # type: ignore[union-attr]
+    assert call_data["mustChangePassword"] is True
+    assert "passwordHash" in call_data
+    assert call_data["passwordHash"] != ""
+
+
+def test_admin_reset_password_unknown_user_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Resetting a nonexistent user returns 404."""
+    client, db = _client_admin(monkeypatch)
+    db.user.find_unique = AsyncMock(return_value=None)
+    resp = client.post("/admin/users/ghost/reset-password")
+    assert resp.status_code == 404
+
+
+def test_member_cannot_reset_password_403(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Non-admin member receives 403 on POST /admin/users/{id}/reset-password."""
+    client, _ = _client_member(monkeypatch)
+    resp = client.post("/admin/users/u1/reset-password")
+    assert resp.status_code == 403

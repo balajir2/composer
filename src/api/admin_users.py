@@ -1,5 +1,6 @@
 """Admin-only endpoints for user management (Phase 10d)."""
 
+import secrets
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -8,6 +9,7 @@ from pydantic import BaseModel, Field
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.security.auth import ensure_admin
+from src.security.passwords import hash_password
 from src.storage.db import get_db
 
 router = APIRouter(prefix="/admin", tags=["admin-users"])
@@ -15,6 +17,13 @@ router = APIRouter(prefix="/admin", tags=["admin-users"])
 
 class RoleUpdateRequest(BaseModel):
     role: Literal["admin", "member"]
+
+
+class ResetPasswordResponse(BaseModel):
+    temporary_password: str = Field(alias="temporaryPassword")
+
+    class Config:
+        populate_by_name = True
 
 
 class UserSummary(BaseModel):
@@ -128,6 +137,30 @@ async def admin_revoke_api_key(
     await db.apikey.update(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": key_id}, data={"revokedAt": datetime.now(UTC)}
     )
+
+
+@router.post("/users/{user_id}/reset-password", response_model=ResetPasswordResponse)
+async def admin_reset_password(
+    user_id: str,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _admin: str = Depends(ensure_admin),
+) -> ResetPasswordResponse:  # pyright: ignore[reportUnusedFunction]
+    """Admin-forced reset: generate a temp password, force a change on next
+    login. The plaintext temp password is returned exactly once — it is
+    never stored or logged in plaintext.
+    """
+    user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if user is None:
+        raise HTTPException(404, f"user {user_id!r} not found")
+    temp_password = secrets.token_urlsafe(12)
+    await db.user.update(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": user_id},
+        data={
+            "passwordHash": hash_password(temp_password),
+            "mustChangePassword": True,
+        },
+    )
+    return ResetPasswordResponse(temporaryPassword=temp_password)
 
 
 __all__ = ["router"]
