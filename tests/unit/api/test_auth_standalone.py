@@ -10,6 +10,21 @@ from fastapi.testclient import TestClient
 from src.security.rate_limit import RateLimiter
 
 
+@pytest.fixture(autouse=True)
+def _reset_settings_cache_after_test() -> Any:  # pyright: ignore[reportUnusedFunction]
+    """Prevent this module's monkeypatched ENVIRONMENT=production from
+    leaking into other test files via the process-wide get_settings()
+    lru_cache. Without this, whichever test here last triggers a real
+    get_settings() read (e.g. via a rate-limited route) leaves a
+    "production" Settings instance cached indefinitely, silently breaking
+    the ADR-0015 dev-mode fallback for any later test module that expects
+    the development default and never calls cache_clear() itself."""
+    yield
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+
+
 def _user_row(**overrides: Any) -> SimpleNamespace:
     base: dict[str, Any] = {
         "id": "u1",
@@ -163,3 +178,23 @@ def test_disconnect_returns_204(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _ = _client_standalone(monkeypatch)
     resp = client.post("/auth/disconnect")
     assert resp.status_code == 204
+
+
+def test_login_must_change_password_returns_restricted_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, db = _client_standalone(monkeypatch)
+    from src.security.passwords import hash_password
+
+    db.user.find_unique = AsyncMock(
+        return_value=_user_row(passwordHash=hash_password("temp-pass-123"), mustChangePassword=True)
+    )
+    resp = client.post(
+        "/auth/login",
+        json={"email": "alice@example.com", "password": "temp-pass-123"},
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["mustChangePassword"] is True
+    assert "passwordChangeToken" in body
+    assert "accessToken" not in body

@@ -13,9 +13,11 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.security.auth import get_user_id_allow_password_change
 from src.security.jwt import (
     TokenVerificationError,
     create_access_token,
+    create_password_change_token,
     create_refresh_token,
     verify_refresh_token,
 )
@@ -69,6 +71,20 @@ class TokenPairResponse(BaseModel):
     refresh_token: str = Field(alias="refreshToken")
     access_token_expires_at: int = Field(alias="accessTokenExpiresAt")
     refresh_token_expires_at: int = Field(alias="refreshTokenExpiresAt")
+
+
+class MustChangePasswordResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    must_change_password: bool = Field(default=True, alias="mustChangePassword")
+    password_change_token: str = Field(alias="passwordChangeToken")
+
+
+class ChangePasswordRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    current_password: str = Field(alias="currentPassword")
+    new_password: str = Field(min_length=8, alias="newPassword")
 
 
 def _issue_pair(user_id: str) -> tuple[str, str, int, int]:
@@ -125,13 +141,13 @@ async def register(
     )
 
 
-@router.post("/auth/login", response_model=TokenPairResponse)
+@router.post("/auth/login", response_model=TokenPairResponse | MustChangePasswordResponse)
 async def login(
     payload: LoginRequest,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     limiter: RateLimiter = Depends(get_rate_limiter),
-) -> TokenPairResponse:  # pyright: ignore[reportUnusedFunction]
+) -> TokenPairResponse | MustChangePasswordResponse:  # pyright: ignore[reportUnusedFunction]
     ip = request.client.host if request.client else "unknown"
     await enforce(
         limiter,
@@ -153,6 +169,8 @@ async def login(
         )
     if getattr(user, "isActive", True) is False:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account is deactivated")
+    if getattr(user, "mustChangePassword", False):
+        return MustChangePasswordResponse(passwordChangeToken=create_password_change_token(user.id))
     access, refresh, access_exp, refresh_exp = _issue_pair(user.id)
     return TokenPairResponse(
         accessToken=access,
@@ -216,9 +234,45 @@ async def disconnect() -> None:  # pyright: ignore[reportUnusedFunction]
     return None
 
 
+@router.post("/auth/change-password", status_code=status.HTTP_204_NO_CONTENT)
+async def change_password(
+    payload: ChangePasswordRequest,
+    request: Request,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    user_id: str = Depends(get_user_id_allow_password_change),
+    limiter: RateLimiter = Depends(get_rate_limiter),
+) -> None:  # pyright: ignore[reportUnusedFunction]
+    ip = request.client.host if request.client else "unknown"
+    await enforce(
+        limiter,
+        route_key="auth_change_password",
+        client_key=ip,
+        config=per_minute_config(get_settings().rate_limit_change_password_per_minute),
+    )
+    user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if (
+        user is None
+        or user.passwordHash is None
+        or not verify_password(payload.current_password, user.passwordHash)
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED, detail="current password is incorrect"
+        )
+    await db.user.update(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": user_id},
+        data={
+            "passwordHash": hash_password(payload.new_password),
+            "mustChangePassword": False,
+        },
+    )
+    return None
+
+
 __all__ = [
     "AuthResponse",
+    "ChangePasswordRequest",
     "LoginRequest",
+    "MustChangePasswordResponse",
     "RefreshRequest",
     "RegisterRequest",
     "TokenPairResponse",
