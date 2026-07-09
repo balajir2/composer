@@ -75,6 +75,123 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/llm-keys/{provider}/test-connection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test Llm Key */
+        post: operations["test_llm_key_admin_llm_keys__provider__test_connection_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/llm-models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Admin List All Models */
+        get: operations["admin_list_all_models_admin_llm_models_get"];
+        put?: never;
+        /** Create Llm Model */
+        post: operations["create_llm_model_admin_llm_models_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/llm-models/{model_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /** Delete Llm Model */
+        delete: operations["delete_llm_model_admin_llm_models__model_id__delete"];
+        options?: never;
+        head?: never;
+        /** Update Llm Model */
+        patch: operations["update_llm_model_admin_llm_models__model_id__patch"];
+        trace?: never;
+    };
+    "/admin/llm-models/{model_id}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Verify Llm Model
+         * @description Probe the live provider with the actual model_id and stamp the row.
+         *
+         *     Why this exists: provider /models listings include retired or
+         *     grandfathered models; verify is the user-driven escape hatch that
+         *     catches "shows up in dropdown but 404s on first call" cases like
+         *     Google retiring `gemini-2.0-flash` for new keys.
+         *
+         *     Auth errors (401/403) are NOT recorded against the model — they
+         *     point at the API key, not the model.  Only `ok` / `unavailable`
+         *     statuses get persisted to the row; `auth_error` / `error` return
+         *     a clear message but leave the prior verification stamp intact.
+         */
+        post: operations["verify_llm_model_admin_llm_models__model_id__verify_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/tools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Built In Tools */
+        get: operations["list_built_in_tools_admin_tools_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/tools/{tool_id}/test-connection": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Test Built In Tool */
+        post: operations["test_built_in_tool_admin_tools__tool_id__test_connection_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/users": {
         parameters: {
             query?: never;
@@ -109,6 +226,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/admin/users/{user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Deactivate User
+         * @description Soft-delete: mark inactive + revoke all API keys.
+         *
+         *     Preserves audit trail (workflows, executions, approvals keep their
+         *     userId).  Use POST /users/{id}/reactivate to restore access.
+         */
+        delete: operations["deactivate_user_admin_users__user_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/users/{user_id}/reactivate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reactivate User */
+        post: operations["reactivate_user_admin_users__user_id__reactivate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/users/{user_id}/api-keys/{key_id}/revoke": {
         parameters: {
             query?: never;
@@ -120,6 +277,28 @@ export interface paths {
         put?: never;
         /** Admin Revoke Api Key */
         post: operations["admin_revoke_api_key_admin_users__user_id__api_keys__key_id__revoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/admin/users/{user_id}/reset-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Admin Reset Password
+         * @description Admin-forced reset: generate a temp password, force a change on next
+         *     login. The plaintext temp password is returned exactly once — it is
+         *     never stored or logged in plaintext.
+         */
+        post: operations["admin_reset_password_admin_users__user_id__reset_password_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -156,6 +335,40 @@ export interface paths {
         post?: never;
         /** Revoke Api Key */
         delete: operations["revoke_api_key_api_keys__key_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/llm-models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Enabled Models */
+        get: operations["list_enabled_models_llm_models_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/llm-models/available": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Available Models */
+        get: operations["list_available_models_llm_models_available_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
         options?: never;
         head?: never;
         patch?: never;
@@ -215,6 +428,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/workflows/{workflow_id}/admin-flags": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Admin Update Workflow Flags */
+        patch: operations["admin_update_workflow_flags_workflows__workflow_id__admin_flags_patch"];
+        trace?: never;
+    };
     "/workflows/{workflow_id}/owner": {
         parameters: {
             query?: never;
@@ -261,6 +491,51 @@ export interface paths {
         get: operations["get_execution_executions__execution_id__get"];
         put?: never;
         post?: never;
+        /**
+         * Delete Execution
+         * @description Delete an execution + its derived artefacts.
+         *
+         *     Authz: owner OR admin.  Admins can clean up any user's history;
+         *     members can only delete their own (matches the read-authz policy
+         *     everywhere else).  404 (not 403) on cross-tenant access so we
+         *     don't leak existence.
+         *
+         *     Cascade scope:
+         *       - `approvals` rows — via Prisma `onDelete: Cascade` on the FK.
+         *       - LangGraph checkpoints + checkpoint_writes — keyed by
+         *         `thread_id` (no FK to execution by design — checkpoints can
+         *         outlive the execution row in some scenarios).  We delete
+         *         them explicitly here because once the execution is gone the
+         *         checkpoints are unreachable garbage.
+         *       - `workflow_executions` row itself.
+         */
+        delete: operations["delete_execution_executions__execution_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executions/delete-bulk": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Delete Executions Bulk
+         * @description Delete multiple executions in one round-trip.
+         *
+         *     Same authz model as the single-row delete: members can only
+         *     delete their own; admins can delete any.  We resolve the target
+         *     set under that scope BEFORE deletion so the count returned is
+         *     honest (skipped = ids the caller asked for but didn't own).
+         *
+         *     `allInScope=true` is admin-only — see BulkDeleteRequest docstring.
+         */
+        post: operations["delete_executions_bulk_executions_delete_bulk_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -353,6 +628,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/mcp-servers/{server_id}/oauth-config": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Update Oauth Config */
+        patch: operations["update_oauth_config_mcp_servers__server_id__oauth_config_patch"];
+        trace?: never;
+    };
     "/mcp-servers/{server_id}/oauth/authorize": {
         parameters: {
             query?: never;
@@ -387,6 +679,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/mcp-servers/{server_id}/shared": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        /** Set Mcp Shared */
+        patch: operations["set_mcp_shared_mcp_servers__server_id__shared_patch"];
+        trace?: never;
+    };
     "/oauth/callback": {
         parameters: {
             query?: never;
@@ -394,7 +703,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Oauth Callback */
+        /**
+         * Oauth Callback
+         * @description Exchange the authorization code for tokens, then redirect the browser
+         *     back to the admin MCP servers page with a status query param so the UI
+         *     can surface a toast instead of leaving the user on a raw-JSON page.
+         */
         get: operations["oauth_callback_oauth_callback_get"];
         put?: never;
         post?: never;
@@ -415,6 +729,30 @@ export interface paths {
         put?: never;
         /** Run External */
         post: operations["run_external_api_run__slug__post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/uploads/extract-text": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Extract Text
+         * @description Receive a file, extract plain text, return it.
+         *
+         *     The file is held entirely in memory — bounded by `MAX_UPLOAD_BYTES`
+         *     above, so worker memory pressure is predictable.  Nothing is
+         *     persisted; once this handler returns, the bytes are gone.
+         */
+        post: operations["extract_text_uploads_extract_text_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -492,6 +830,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/auth/change-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Change Password */
+        post: operations["change_password_auth_change_password_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/me": {
         parameters: {
             query?: never;
@@ -550,6 +905,18 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * AdminFlagsRequest
+         * @description Admin-only partial update for visibility / production flags.
+         */
+        AdminFlagsRequest: {
+            /** Ispublic */
+            isPublic?: boolean | null;
+            /** Isproduction */
+            isProduction?: boolean | null;
+            /** Externalslug */
+            externalSlug?: string | null;
+        };
         /** AgentNode */
         AgentNode: {
             /** Id */
@@ -599,6 +966,8 @@ export interface components {
             mcpServerIds?: string[];
             /** Selectedtools */
             selectedTools?: string[];
+            /** Maxiterations */
+            maxIterations?: number | null;
         } & {
             [key: string]: unknown;
         };
@@ -700,6 +1069,62 @@ export interface components {
             accessToken: string;
             /** Refreshtoken */
             refreshToken: string;
+            /** Accesstokenexpiresat */
+            accessTokenExpiresAt: number;
+            /** Refreshtokenexpiresat */
+            refreshTokenExpiresAt: number;
+        };
+        /** AvailableModelsResponse */
+        AvailableModelsResponse: {
+            /** Provider */
+            provider: string;
+            /** Models */
+            models: components["schemas"]["LiveModel"][];
+        };
+        /** Body_extract_text_uploads_extract_text_post */
+        Body_extract_text_uploads_extract_text_post: {
+            /** File */
+            file: string;
+        };
+        /**
+         * BulkDeleteRequest
+         * @description Body for `POST /executions/delete-bulk`.
+         *
+         *     Two modes — both filter to the caller's authz scope (members see
+         *     only their own executions; admins see all):
+         *
+         *     * `executionIds` — explicit list of ids (preferred — what the
+         *       history-page checkboxes produce).
+         *     * `allInScope: true` — wipe every execution the caller can see.
+         *       Admin-only safety valve for "clear all history on this
+         *       deployment"; rejected (403) for non-admins to keep an
+         *       accidental click from emptying a member's full history.
+         */
+        BulkDeleteRequest: {
+            /** Executionids */
+            executionIds?: string[] | null;
+            /**
+             * Allinscope
+             * @default false
+             */
+            allInScope: boolean;
+        };
+        /** BulkDeleteResponse */
+        BulkDeleteResponse: {
+            /** Deletedcount */
+            deletedCount: number;
+            /**
+             * Skippedcount
+             * @default 0
+             */
+            skippedCount: number;
+        };
+        /** ChangePasswordRequest */
+        ChangePasswordRequest: {
+            /** Currentpassword */
+            currentPassword: string;
+            /** Newpassword */
+            newPassword: string;
         };
         /** DataTransformNode */
         DataTransformNode: {
@@ -743,6 +1168,69 @@ export interface components {
             itemVar: string;
             /** Initial */
             initial?: unknown | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** EmailNode */
+        EmailNode: {
+            /** Id */
+            id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "email";
+            position: components["schemas"]["Position"];
+            data: components["schemas"]["EmailNodeData"];
+        };
+        /** EmailNodeData */
+        EmailNodeData: {
+            /** Label */
+            label: string;
+            /** Nodetype */
+            nodeType?: string | null;
+            /** Nodename */
+            nodeName?: string | null;
+            /**
+             * Emailprovider
+             * @default resend
+             * @constant
+             */
+            emailProvider: "resend";
+            /**
+             * Emailfrom
+             * @default
+             */
+            emailFrom: string;
+            /**
+             * Emailto
+             * @default
+             */
+            emailTo: string;
+            /** Emailcc */
+            emailCc?: string | null;
+            /** Emailbcc */
+            emailBcc?: string | null;
+            /** Emailreplyto */
+            emailReplyTo?: string | null;
+            /**
+             * Emailsubject
+             * @default
+             */
+            emailSubject: string;
+            /**
+             * Emailbody
+             * @default
+             */
+            emailBody: string;
+            /**
+             * Emailbodytype
+             * @default html
+             * @enum {string}
+             */
+            emailBodyType: "text" | "html";
+            /** Emailidempotencykey */
+            emailIdempotencyKey?: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -1086,6 +1574,18 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /**
+         * LiveModel
+         * @description Normalized model entry returned to the frontend dropdown.
+         */
+        LiveModel: {
+            /** Modelid */
+            modelId: string;
+            /** Label */
+            label?: string | null;
+            /** Source */
+            source: string;
+        };
         /** LlmKeySummary */
         LlmKeySummary: {
             /** Provider */
@@ -1095,10 +1595,86 @@ export interface components {
             /** Updated At */
             updated_at: string;
         };
+        /** LlmKeyTestResponse */
+        LlmKeyTestResponse: {
+            /** Ok */
+            ok: boolean;
+            /** Status */
+            status?: number | null;
+            /** Message */
+            message: string;
+        };
         /** LlmKeyUpsert */
         LlmKeyUpsert: {
             /** Value */
             value: string;
+        };
+        /** LlmModelCreate */
+        LlmModelCreate: {
+            /** Provider */
+            provider: string;
+            /** Modelid */
+            modelId: string;
+            /** Label */
+            label?: string | null;
+            /**
+             * Enabled
+             * @default true
+             */
+            enabled: boolean;
+        };
+        /** LlmModelSummary */
+        LlmModelSummary: {
+            /** Id */
+            id: string;
+            /** Provider */
+            provider: string;
+            /** Modelid */
+            modelId: string;
+            /** Label */
+            label: string | null;
+            /** Enabled */
+            enabled: boolean;
+            /** Verificationstatus */
+            verificationStatus?: string | null;
+            /** Verificationmessage */
+            verificationMessage?: string | null;
+            /** Verifiedat */
+            verifiedAt?: string | null;
+            /**
+             * Createdat
+             * Format: date-time
+             */
+            createdAt: string;
+            /**
+             * Updatedat
+             * Format: date-time
+             */
+            updatedAt: string;
+        };
+        /** LlmModelUpdate */
+        LlmModelUpdate: {
+            /** Label */
+            label?: string | null;
+            /** Enabled */
+            enabled?: boolean | null;
+        };
+        /** LlmModelVerifyResponse */
+        LlmModelVerifyResponse: {
+            /** Status */
+            status: string;
+            /** Http Status */
+            http_status?: number | null;
+            /** Message */
+            message: string;
+            /** Verified At */
+            verified_at: string;
+            /**
+             * Auto Disabled
+             * @default false
+             */
+            auto_disabled: boolean;
+            model: components["schemas"]["LlmModelSummary"];
         };
         /** LoginRequest */
         LoginRequest: {
@@ -1132,6 +1708,14 @@ export interface components {
             nodeName?: string | null;
             /** Mcpserverid */
             mcpServerId?: string | null;
+            /** Selectedtoolnames */
+            selectedToolNames?: string[];
+            /** Instructions */
+            instructions?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Maxiterations */
+            maxIterations?: number | null;
             /** Toolname */
             toolName?: string | null;
             /** Arguments */
@@ -1173,6 +1757,7 @@ export interface components {
             headers?: {
                 [key: string]: string;
             } | null;
+            oauthConfig?: components["schemas"]["OauthConfig"] | null;
         };
         /** McpServerRead */
         McpServerRead: {
@@ -1195,6 +1780,16 @@ export interface components {
              * @default false
              */
             hasAccessToken: boolean;
+            /**
+             * Hasoauthconfig
+             * @default false
+             */
+            hasOauthConfig: boolean;
+            /**
+             * Hasoauthtoken
+             * @default false
+             */
+            hasOauthToken: boolean;
             /** Headername */
             headerName?: string | null;
             /** Tools */
@@ -1226,6 +1821,21 @@ export interface components {
             createdAt: unknown;
             /** Updatedat */
             updatedAt: unknown;
+        };
+        /** McpSharedRequest */
+        McpSharedRequest: {
+            /** Isshared */
+            isShared: boolean;
+        };
+        /** MustChangePasswordResponse */
+        MustChangePasswordResponse: {
+            /**
+             * Mustchangepassword
+             * @default true
+             */
+            mustChangePassword: boolean;
+            /** Passwordchangetoken */
+            passwordChangeToken: string;
         };
         /** NoteNode */
         NoteNode: {
@@ -1262,12 +1872,30 @@ export interface components {
             /** Authorizeurl */
             authorizeUrl: string;
         };
-        /** OAuthCallbackResponse */
-        OAuthCallbackResponse: {
-            /** Ok */
-            ok: boolean;
-            /** Serverid */
-            serverId: string;
+        /**
+         * OAuthConfigRequest
+         * @description Wrapper so the admin can PATCH oauthConfig after creation.
+         */
+        OAuthConfigRequest: {
+            oauthConfig: components["schemas"]["OauthConfig"];
+        };
+        /**
+         * OauthConfig
+         * @description OAuth 2.1 config for authType='oauth' MCP servers.
+         */
+        OauthConfig: {
+            /** Authorizeurl */
+            authorizeUrl: string;
+            /** Tokenurl */
+            tokenUrl: string;
+            /** Clientid */
+            clientId: string;
+            /** Clientsecret */
+            clientSecret?: string | null;
+            /** Scopes */
+            scopes?: string[];
+        } & {
+            [key: string]: unknown;
         };
         /** OwnerAssignRequest */
         OwnerAssignRequest: {
@@ -1299,6 +1927,11 @@ export interface components {
             password: string;
             /** Displayname */
             displayName?: string | null;
+        };
+        /** ResetPasswordResponse */
+        ResetPasswordResponse: {
+            /** Temporarypassword */
+            temporaryPassword: string;
         };
         /**
          * ResumeDecision
@@ -1393,14 +2026,25 @@ export interface components {
         StartInputVariable: {
             /** Name */
             name: string;
-            /** Type */
+            /**
+             * Type
+             * @default text
+             */
             type: string;
-            /** Required */
+            /**
+             * Required
+             * @default false
+             */
             required: boolean;
-            /** Description */
+            /**
+             * Description
+             * @default
+             */
             description: string;
             /** Defaultvalue */
             defaultValue?: unknown | null;
+        } & {
+            [key: string]: unknown;
         };
         /** StartNode */
         StartNode: {
@@ -1440,6 +2084,30 @@ export interface components {
             accessToken: string;
             /** Refreshtoken */
             refreshToken: string;
+            /** Accesstokenexpiresat */
+            accessTokenExpiresAt: number;
+            /** Refreshtokenexpiresat */
+            refreshTokenExpiresAt: number;
+        };
+        /** ToolSummary */
+        ToolSummary: {
+            /** Name */
+            name: string;
+            /** Description */
+            description: string;
+            /** Category */
+            category: string;
+        };
+        /** ToolTestResponse */
+        ToolTestResponse: {
+            /** Ok */
+            ok: boolean;
+            /** Message */
+            message: string;
+            /** Has Db Key */
+            has_db_key: boolean;
+            /** Has Runtime Key */
+            has_runtime_key: boolean;
         };
         /** TransformNode */
         TransformNode: {
@@ -1463,8 +2131,21 @@ export interface components {
             nodeName?: string | null;
             /** Transformscript */
             transformScript?: string | null;
+            /** Outputkey */
+            outputKey?: string | null;
         } & {
             [key: string]: unknown;
+        };
+        /** UploadExtractResponse */
+        UploadExtractResponse: {
+            /** Filename */
+            filename: string;
+            /** Content Type */
+            content_type: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /** Text */
+            text: string;
         };
         /** UserApprovalNode */
         UserApprovalNode: {
@@ -1501,6 +2182,11 @@ export interface components {
             role: string;
             /** Displayname */
             displayName?: string | null;
+            /**
+             * Isactive
+             * @default true
+             */
+            isActive: boolean;
         };
         /** ValidationError */
         ValidationError: {
@@ -1572,7 +2258,15 @@ export interface components {
              * @default text-embedding-3-small
              */
             vectorDbEmbeddingModel: string;
+            /**
+             * Vectordbembeddingapikey
+             * @default
+             */
             vectorDbEmbeddingApiKey: string;
+            /**
+             * Vectordbembeddingbaseurl
+             * @default
+             */
             vectorDbEmbeddingBaseUrl: string;
             /**
              * Vectordbqueryprompt
@@ -1630,6 +2324,23 @@ export interface components {
              * @default
              */
             vectorDbJoinSuffix: string;
+            /**
+             * Vectordboperation
+             * @default query
+             */
+            vectorDbOperation: string;
+            /** Vectordbdocuments */
+            vectorDbDocuments?: string | null;
+            /**
+             * Vectordbchunksize
+             * @default 1000
+             */
+            vectorDbChunkSize: number;
+            /**
+             * Vectordbchunkoverlap
+             * @default 100
+             */
+            vectorDbChunkOverlap: number;
         } & {
             [key: string]: unknown;
         };
@@ -1681,7 +2392,7 @@ export interface components {
             /** Estimatedtime */
             estimatedTime?: string | null;
             /** Nodes */
-            nodes: (components["schemas"]["StartNode"] | components["schemas"]["EndNode"] | components["schemas"]["NoteNode"] | components["schemas"]["AgentNode"] | components["schemas"]["McpNode"] | components["schemas"]["IfElseNode"] | components["schemas"]["WhileNode"] | components["schemas"]["UserApprovalNode"] | components["schemas"]["TransformNode"] | components["schemas"]["DataTransformNode"] | components["schemas"]["SetStateNode"] | components["schemas"]["ExtractNode"] | components["schemas"]["HttpNode"] | components["schemas"]["GuardrailsNode"] | components["schemas"]["VectorDbNode"] | components["schemas"]["GammaAiNode"] | components["schemas"]["ArcadeNode"] | components["schemas"]["JoinChunksNode"])[];
+            nodes: (components["schemas"]["StartNode"] | components["schemas"]["EndNode"] | components["schemas"]["NoteNode"] | components["schemas"]["AgentNode"] | components["schemas"]["McpNode"] | components["schemas"]["IfElseNode"] | components["schemas"]["WhileNode"] | components["schemas"]["UserApprovalNode"] | components["schemas"]["TransformNode"] | components["schemas"]["DataTransformNode"] | components["schemas"]["SetStateNode"] | components["schemas"]["ExtractNode"] | components["schemas"]["HttpNode"] | components["schemas"]["GuardrailsNode"] | components["schemas"]["VectorDbNode"] | components["schemas"]["GammaAiNode"] | components["schemas"]["EmailNode"] | components["schemas"]["ArcadeNode"] | components["schemas"]["JoinChunksNode"])[];
             /** Edges */
             edges: components["schemas"]["WorkflowEdge"][];
             /** Version */
@@ -1988,6 +2699,236 @@ export interface operations {
             };
         };
     };
+    test_llm_key_admin_llm_keys__provider__test_connection_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                provider: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmKeyTestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admin_list_all_models_admin_llm_models_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmModelSummary"][];
+                };
+            };
+        };
+    };
+    create_llm_model_admin_llm_models_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LlmModelCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmModelSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_llm_model_admin_llm_models__model_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_llm_model_admin_llm_models__model_id__patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["LlmModelUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmModelSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    verify_llm_model_admin_llm_models__model_id__verify_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                model_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmModelVerifyResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_built_in_tools_admin_tools_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolSummary"][];
+                };
+            };
+        };
+    };
+    test_built_in_tool_admin_tools__tool_id__test_connection_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tool_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolTestResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_users_admin_users_get: {
         parameters: {
             query?: never;
@@ -2043,6 +2984,68 @@ export interface operations {
             };
         };
     };
+    deactivate_user_admin_users__user_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reactivate_user_admin_users__user_id__reactivate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserSummary"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     admin_revoke_api_key_admin_users__user_id__api_keys__key_id__revoke_post: {
         parameters: {
             query?: never;
@@ -2061,6 +3064,37 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    admin_reset_password_admin_users__user_id__reset_password_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResetPasswordResponse"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -2143,6 +3177,71 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_enabled_models_llm_models_get: {
+        parameters: {
+            query?: {
+                provider?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LlmModelSummary"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_available_models_llm_models_available_get: {
+        parameters: {
+            query: {
+                /** @description Provider id: anthropic|openai|google|groq|deepseek|qwen */
+                provider: string;
+                /** @description Bypass the 5-minute in-process cache and re-hit the provider. */
+                refresh?: boolean;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AvailableModelsResponse"];
+                };
             };
             /** @description Validation Error */
             422: {
@@ -2351,6 +3450,41 @@ export interface operations {
             };
         };
     };
+    admin_update_workflow_flags_workflows__workflow_id__admin_flags_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AdminFlagsRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     assign_workflow_owner_workflows__workflow_id__owner_patch: {
         parameters: {
             query?: never;
@@ -2471,6 +3605,68 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExecutionRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_execution_executions__execution_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                execution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    delete_executions_bulk_executions_delete_bulk_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkDeleteRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkDeleteResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2667,6 +3863,41 @@ export interface operations {
             };
         };
     };
+    update_oauth_config_mcp_servers__server_id__oauth_config_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                server_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["OAuthConfigRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpServerRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     oauth_authorize_mcp_servers__server_id__oauth_authorize_post: {
         parameters: {
             query?: never;
@@ -2731,6 +3962,41 @@ export interface operations {
             };
         };
     };
+    set_mcp_shared_mcp_servers__server_id__shared_patch: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                server_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["McpSharedRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["McpServerRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     oauth_callback_oauth_callback_get: {
         parameters: {
             query: {
@@ -2749,7 +4015,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["OAuthCallbackResponse"];
+                    "application/json": unknown;
                 };
             };
             /** @description Validation Error */
@@ -2785,6 +4051,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    extract_text_uploads_extract_text_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_extract_text_uploads_extract_text_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UploadExtractResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2850,7 +4149,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["TokenPairResponse"];
+                    "application/json": components["schemas"]["TokenPairResponse"] | components["schemas"]["MustChangePasswordResponse"];
                 };
             };
             /** @description Validation Error */
@@ -2912,6 +4211,37 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content?: never;
+            };
+        };
+    };
+    change_password_auth_change_password_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChangePasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
             };
         };
     };
