@@ -43,6 +43,14 @@ Three issues were reported against the running application:
 
 The existing `PATCH /workflows/{id}/owner` stays as a distinct "transfer ownership" action (single owner, unaffected by the assignment list) — it is not renamed or merged with assignment.
 
+### B.1 Frontend UI changes
+
+Investigation of the current frontend found no existing multi-user picker anywhere in the codebase — the closest precedents are the reassign-owner dialog's single-select search box (`frontend/components/composer/reassign-owner-dialog.tsx:83-125`) and the MCP server sharing toggle (`frontend/components/composer/mcp-shared-toggle.tsx`), which is an all-or-nothing boolean, not a per-user list. Neither is reusable as-is, so this needs net-new UI:
+
+- **New `ManageAssigneesDialog` component** (frontend/components/composer/), modeled on the reassign-owner dialog's search/filter pattern but rendering the matched users as a checkbox list instead of single-click-to-select, plus a list of currently-assigned users with a remove (×) action per row. Backed by three new API client functions in `frontend/lib/api/workflows.ts` following the existing verb+`Workflow` naming convention: `listWorkflowAssignments(workflowId)`, `assignWorkflowUser(workflowId, userId)`, `unassignWorkflowUser(workflowId, userId)` — hitting the `/workflows/{id}/assignments` endpoints from B above.
+- **Entry points:** a "Manage access" button/action alongside the existing "Reassign" button in the admin all-workflows table (`frontend/app/admin/workflows/page.tsx:248-251`), available to admins for any workflow; and a matching action surfaced to workflow owners themselves from their own "My workflows" list (`frontend/app/designer/page.tsx`), since B's authorization rule allows owners (not just admins) to manage their own workflow's assignees.
+- **"My workflows" list must include assigned-not-owned flows:** `listWorkflows({ mine: true })` (`frontend/lib/api/workflows.ts:8-22`) currently filters strictly by `Workflow.userId` server-side (`frontend/app/designer/page.tsx:15-21`). This query needs to change to match owner **or** assignee, otherwise a user granted access via assignment still won't see the flow anywhere. Recommend a visual distinction in the list (e.g. an "Owner" vs "Shared with you" badge) so users can tell the two apart.
+
 ## C. Autosave + unsaved-changes safeguard
 
 **Autosave:** the Designer debounces node/edge changes (~3s after the last edit) and fires the existing `PUT /workflows/{id}` automatically, reusing the current save path — no new backend endpoint needed.
@@ -63,6 +71,7 @@ The existing `PATCH /workflows/{id}/owner` stays as a distinct "transfer ownersh
 
 - Unit tests: password hashing/reset flow (including the `mustChangePassword` gate on login), assignment CRUD + authorization matrix (owner/assignee/admin/stranger × public/private), autosave debounce logic and save-status transitions (frontend).
 - Integration tests (`@pytest.mark.integration`): full reset-password → forced-change → login cycle against a real Neon dev DB; assignment grant/revoke against real DB with authz assertions; PUT-based autosave round-trip.
+- Playwright e2e (existing suite from Phase 10): admin grants a second user access via `ManageAssigneesDialog`, that user sees the flow appear in their "My workflows" list, opens and edits it; owner revokes access and the flow disappears from the assignee's list on next load.
 
 ## Out of scope
 
