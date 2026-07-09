@@ -23,6 +23,11 @@ from jose import jwt as jose_jwt
 from jose.exceptions import ExpiredSignatureError
 
 from src.config import Settings, get_settings
+from src.security.jwt import (
+    TokenVerificationError,
+    verify_access_token,
+    verify_password_change_token,
+)
 
 
 class AuthError(HTTPException):
@@ -162,6 +167,25 @@ async def get_current_user_id(
     return user_id
 
 
+async def get_user_id_allow_password_change(request: Request) -> str:
+    """Standalone-mode only. Accepts EITHER a normal access token (self-service
+    change while already logged in) OR a password_change token (completing an
+    admin-forced reset). Raises AuthError (401) for anything else — including
+    refresh tokens, which must never authorize this endpoint.
+    """
+    token = _extract_bearer(request)
+    if token is None:
+        raise AuthError("missing Authorization header")
+    try:
+        return verify_access_token(token).sub
+    except TokenVerificationError:
+        pass
+    try:
+        return verify_password_change_token(token).sub
+    except TokenVerificationError as exc:
+        raise AuthError(f"invalid token: {exc}") from exc
+
+
 async def get_current_role(
     request: Request,
     settings: Settings = Depends(get_settings),  # pyright: ignore[reportCallIssue]
@@ -204,5 +228,6 @@ __all__ = [
     "ensure_admin",
     "get_current_role",
     "get_current_user_id",
+    "get_user_id_allow_password_change",
     "verify_user_token",
 ]

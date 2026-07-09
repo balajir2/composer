@@ -298,3 +298,57 @@ async def test_get_current_user_id_invalid_token_raises_401() -> None:
     with pytest.raises(HTTPException) as excinfo:
         await get_current_user_id(req, settings)
     assert excinfo.value.status_code == 401
+
+
+def test_get_user_id_allow_password_change_accepts_access_token() -> None:
+    import asyncio
+
+    from src.security.auth import get_user_id_allow_password_change
+    from src.security.jwt import create_access_token
+
+    token = create_access_token("u1")
+    req = _mock_request(f"Bearer {token}")
+    user_id = asyncio.get_event_loop().run_until_complete(
+        get_user_id_allow_password_change(req)
+    )
+    assert user_id == "u1"
+
+
+def test_get_user_id_allow_password_change_accepts_password_change_token() -> None:
+    import asyncio
+
+    from src.security.auth import get_user_id_allow_password_change
+    from src.security.jwt import create_password_change_token
+
+    token = create_password_change_token("u1")
+    req = _mock_request(f"Bearer {token}")
+    user_id = asyncio.get_event_loop().run_until_complete(
+        get_user_id_allow_password_change(req)
+    )
+    assert user_id == "u1"
+
+
+def test_get_user_id_allow_password_change_rejects_refresh_token() -> None:
+    import asyncio
+
+    from src.security.auth import AuthError, get_user_id_allow_password_change
+    from src.security.jwt import create_refresh_token
+
+    token = create_refresh_token("u1")
+    req = _mock_request(f"Bearer {token}")
+    with pytest.raises(AuthError):
+        asyncio.get_event_loop().run_until_complete(
+            get_user_id_allow_password_change(req)
+        )
+
+
+def test_get_user_id_allow_password_change_rejects_missing_header() -> None:
+    import asyncio
+
+    from src.security.auth import AuthError, get_user_id_allow_password_change
+
+    req = _mock_request(None)
+    with pytest.raises(AuthError):
+        asyncio.get_event_loop().run_until_complete(
+            get_user_id_allow_password_change(req)
+        )
