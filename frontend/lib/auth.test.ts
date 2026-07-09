@@ -62,7 +62,45 @@ describe("composer session helpers", () => {
     });
     const { composerLogin } = await import("@/lib/composer-api");
     const result = await composerLogin("u@example.com", "pw");
+    if ("mustChangePassword" in result) throw new Error("unexpected mustChangePassword result");
     expect(result.accessTokenExpiresAt).toBe(exp);
     expect(result.refreshTokenExpiresAt).toBe(exp);
+  });
+
+  it("composerLogin returns mustChangePassword variant without normalizing", async () => {
+    mockFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        mustChangePassword: true,
+        passwordChangeToken: "pc-token-123",
+      }),
+    });
+    const { composerLogin } = await import("@/lib/composer-api");
+    const result = await composerLogin("u@example.com", "temp-pass");
+    expect(result).toEqual({
+      mustChangePassword: true,
+      passwordChangeToken: "pc-token-123",
+    });
+  });
+
+  it("composerChangePassword posts with bearer token and resolves on 204", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 204 });
+    const { composerChangePassword } = await import("@/lib/composer-api");
+    await composerChangePassword("tok-1", "old-pw", "new-pw");
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining("/auth/change-password"),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ Authorization: "Bearer tok-1" }),
+      })
+    );
+  });
+
+  it("composerChangePassword throws on non-OK response", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 401 });
+    const { composerChangePassword } = await import("@/lib/composer-api");
+    await expect(
+      composerChangePassword("tok-1", "wrong", "new-pw")
+    ).rejects.toThrow(/change password failed/);
   });
 });

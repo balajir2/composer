@@ -14,6 +14,11 @@ export type ComposerTokens = {
   refreshTokenExpiresAt: number;
 };
 
+export type ComposerMustChangePassword = {
+  mustChangePassword: true;
+  passwordChangeToken: string;
+};
+
 export type ComposerUserProfile = {
   id: string;
   email: string;
@@ -59,14 +64,21 @@ function normalize(body: TokenPairWire): ComposerTokens {
   };
 }
 
-export async function composerLogin(email: string, password: string): Promise<ComposerTokens> {
+export async function composerLogin(
+  email: string,
+  password: string
+): Promise<ComposerTokens | ComposerMustChangePassword> {
   const res = await fetch(`${composerApiUrl}/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ email, password }),
   });
   if (!res.ok) throw new Error(`login failed: ${res.status}`);
-  return normalize((await res.json()) as TokenPairWire);
+  const body = (await res.json()) as TokenPairWire | ComposerMustChangePassword;
+  if ("mustChangePassword" in body && body.mustChangePassword) {
+    return body;
+  }
+  return normalize(body as TokenPairWire);
 }
 
 export async function composerSsoExchange(azureToken: string): Promise<ComposerTokens> {
@@ -95,4 +107,20 @@ export async function composerRefresh(refreshToken: string): Promise<ComposerTok
   });
   if (!res.ok) throw new Error(`refresh failed: ${res.status}`);
   return normalize((await res.json()) as TokenPairWire);
+}
+
+export async function composerChangePassword(
+  token: string,
+  currentPassword: string,
+  newPassword: string
+): Promise<void> {
+  const res = await fetch(`${composerApiUrl}/auth/change-password`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ currentPassword, newPassword }),
+  });
+  if (!res.ok) throw new Error(`change password failed: ${res.status}`);
 }
