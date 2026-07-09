@@ -10,21 +10,6 @@ from fastapi.testclient import TestClient
 from src.security.rate_limit import RateLimiter
 
 
-@pytest.fixture(autouse=True)
-def _reset_settings_cache_after_test() -> Any:  # pyright: ignore[reportUnusedFunction]
-    """Prevent this module's monkeypatched ENVIRONMENT=production from
-    leaking into other test files via the process-wide get_settings()
-    lru_cache. Without this, whichever test here last triggers a real
-    get_settings() read (e.g. via a rate-limited route) leaves a
-    "production" Settings instance cached indefinitely, silently breaking
-    the ADR-0015 dev-mode fallback for any later test module that expects
-    the development default and never calls cache_clear() itself."""
-    yield
-    from src.config import get_settings
-
-    get_settings.cache_clear()
-
-
 def _user_row(**overrides: Any) -> SimpleNamespace:
     base: dict[str, Any] = {
         "id": "u1",
