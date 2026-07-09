@@ -126,14 +126,12 @@ def test_grant_duplicate_assignment_returns_409(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_revoke_nonexistent_assignment_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prisma RecordNotFoundError on double-revoke → 404."""
-    from prisma.errors import RecordNotFoundError  # pyright: ignore[reportMissingImports]
-
+    """Real Prisma client returns None from delete() on a missing record (it swallows
+    RecordNotFoundError internally) — the route must check for None, not catch an
+    exception that never reaches it."""
     client, db = _client(monkeypatch)
     db.workflow.find_unique = AsyncMock(return_value=_wf_row())
-    db.workflowassignment.delete = AsyncMock(
-        side_effect=RecordNotFoundError({"user_facing_error": {"meta": {}}})
-    )
+    db.workflowassignment.delete = AsyncMock(return_value=None)
     token = create_access_token("owner1")
     resp = client.delete(
         "/workflows/w1/assignments/assignee1",

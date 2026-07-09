@@ -4,10 +4,7 @@ import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from prisma.errors import (  # pyright: ignore[reportMissingImports]
-    RecordNotFoundError,
-    UniqueViolationError,
-)
+from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
@@ -562,15 +559,14 @@ async def revoke_workflow_assignment(
         raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
     if role != "admin" and existing.userId != user_id:
         raise HTTPException(403, "Forbidden: not workflow owner.")
-    try:
-        await db.workflowassignment.delete(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"workflowId_userId": {"workflowId": workflow_id, "userId": target_user_id}}
-        )
-    except RecordNotFoundError as exc:
+    deleted = await db.workflowassignment.delete(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"workflowId_userId": {"workflowId": workflow_id, "userId": target_user_id}}
+    )
+    if deleted is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"assignment not found for user {target_user_id!r}",
-        ) from exc
+        )
 
 
 __all__ = [
