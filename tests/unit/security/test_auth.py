@@ -22,6 +22,7 @@ from src.security.auth import (
     _verify_embedded_jwt,  # pyright: ignore[reportPrivateUsage]
     _verify_standalone_jwt,  # pyright: ignore[reportPrivateUsage]
     get_current_user_id,
+    get_user_id_allow_password_change,
 )
 
 # ─── Mock helpers ────────────────────────────────────────────────────────────
@@ -300,55 +301,54 @@ async def test_get_current_user_id_invalid_token_raises_401() -> None:
     assert excinfo.value.status_code == 401
 
 
-def test_get_user_id_allow_password_change_accepts_access_token() -> None:
-    import asyncio
-
-    from src.security.auth import get_user_id_allow_password_change
+async def test_get_user_id_allow_password_change_accepts_access_token() -> None:
     from src.security.jwt import create_access_token
 
     token = create_access_token("u1")
     req = _mock_request(f"Bearer {token}")
-    user_id = asyncio.get_event_loop().run_until_complete(
-        get_user_id_allow_password_change(req)
-    )
+    user_id = await get_user_id_allow_password_change(req)
     assert user_id == "u1"
 
 
-def test_get_user_id_allow_password_change_accepts_password_change_token() -> None:
-    import asyncio
-
-    from src.security.auth import get_user_id_allow_password_change
+async def test_get_user_id_allow_password_change_accepts_password_change_token() -> None:
     from src.security.jwt import create_password_change_token
 
     token = create_password_change_token("u1")
     req = _mock_request(f"Bearer {token}")
-    user_id = asyncio.get_event_loop().run_until_complete(
-        get_user_id_allow_password_change(req)
-    )
+    user_id = await get_user_id_allow_password_change(req)
     assert user_id == "u1"
 
 
-def test_get_user_id_allow_password_change_rejects_refresh_token() -> None:
-    import asyncio
-
-    from src.security.auth import AuthError, get_user_id_allow_password_change
+async def test_get_user_id_allow_password_change_rejects_refresh_token() -> None:
     from src.security.jwt import create_refresh_token
 
     token = create_refresh_token("u1")
     req = _mock_request(f"Bearer {token}")
     with pytest.raises(AuthError):
-        asyncio.get_event_loop().run_until_complete(
-            get_user_id_allow_password_change(req)
-        )
+        await get_user_id_allow_password_change(req)
 
 
-def test_get_user_id_allow_password_change_rejects_missing_header() -> None:
-    import asyncio
-
-    from src.security.auth import AuthError, get_user_id_allow_password_change
-
+async def test_get_user_id_allow_password_change_rejects_missing_header() -> None:
     req = _mock_request(None)
     with pytest.raises(AuthError):
-        asyncio.get_event_loop().run_until_complete(
-            get_user_id_allow_password_change(req)
-        )
+        await get_user_id_allow_password_change(req)
+
+
+async def test_get_user_id_allow_password_change_rejects_deactivated_user() -> None:
+    """A still-valid access token must not authorize a deactivated account.
+
+    Mirrors get_current_user_id's deactivation guarantee: the live user row
+    is checked whenever an app-wide Prisma client is available on
+    request.app.state.db.
+    """
+    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+    from src.security.jwt import create_access_token
+
+    token = create_access_token("u1")
+    req = _mock_request(f"Bearer {token}")
+    db = MagicMock(spec=Prisma)
+    db.user.find_unique = AsyncMock(return_value=MagicMock(isActive=False))
+    req.app.state.db = db
+
+    with pytest.raises(AuthError, match="deactivated"):
+        await get_user_id_allow_password_change(req)

@@ -15,6 +15,7 @@ or to avoid coupling to Phase 1's internal wiring), so we call
 jose.jwt.decode directly — the same library Phase 1 uses.
 """
 
+import contextlib
 from typing import Any
 
 from fastapi import Depends, HTTPException, Request, status
@@ -172,18 +173,31 @@ async def get_user_id_allow_password_change(request: Request) -> str:
     change while already logged in) OR a password_change token (completing an
     admin-forced reset). Raises AuthError (401) for anything else — including
     refresh tokens, which must never authorize this endpoint.
+
+    Like `get_current_user_id`, this also checks the live user row when the
+    app-wide Prisma client is available, so a deactivated account can't
+    authenticate here even with a still-valid token (see the "Standalone
+    tokens remain cryptographically valid..." comment above).
     """
     token = _extract_bearer(request)
     if token is None:
         raise AuthError("missing Authorization header")
-    try:
-        return verify_access_token(token).sub
-    except TokenVerificationError:
-        pass
-    try:
-        return verify_password_change_token(token).sub
-    except TokenVerificationError as exc:
-        raise AuthError(f"invalid token: {exc}") from exc
+
+    user_id: str | None = None
+    with contextlib.suppress(TokenVerificationError):
+        user_id = verify_access_token(token).sub
+    if user_id is None:
+        try:
+            user_id = verify_password_change_token(token).sub
+        except TokenVerificationError as exc:
+            raise AuthError(f"invalid token: {exc}") from exc
+
+    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+
+    db = getattr(request.app.state, "db", None)
+    if isinstance(db, Prisma):
+        await _ensure_active_user(db, user_id)
+    return user_id
 
 
 async def get_current_role(
