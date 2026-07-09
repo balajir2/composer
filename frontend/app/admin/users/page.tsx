@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/composer/empty-state";
 import { UserActiveToggle } from "@/components/composer/user-active-toggle";
 import { UserRoleToggle } from "@/components/composer/user-role-toggle";
+import { ResetPasswordDialog } from "@/components/composer/reset-password-dialog";
 
 export default function AdminUsersPage() {
   const { data, isLoading, isError } = useQuery({
@@ -74,6 +75,7 @@ export default function AdminUsersPage() {
                   <TableCell className="flex items-center justify-end gap-2">
                     <UserRoleToggle user={user} />
                     <UserActiveToggle user={user} />
+                    <ResetPasswordDialog user={user} />
                   </TableCell>
                 </TableRow>
               );

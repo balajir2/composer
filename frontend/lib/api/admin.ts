@@ -60,6 +60,12 @@ export async function reactivateUser(id: string): Promise<AdminUser> {
   return apiFetch<AdminUser>(`/admin/users/${id}/reactivate`, { method: "POST" });
 }
 
+export async function resetUserPassword(id: string): Promise<{ temporaryPassword: string }> {
+  return apiFetch<{ temporaryPassword: string }>(`/admin/users/${id}/reset-password`, {
+    method: "POST",
+  });
+}
+
 // ── Admin: deployment settings ──────────────────────────────────────────────
 
 export type DeploymentSetting = { key: string; value: string };
