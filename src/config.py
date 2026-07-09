@@ -45,6 +45,7 @@ class Settings(BaseSettings):
     # active users rotate their refresh token on every /auth/refresh call,
     # so continuous activity extends the window indefinitely.
     jwt_refresh_ttl_seconds: int = 2592000  # 30 days
+    jwt_password_change_ttl_seconds: int = 600  # 10 minutes — forced-reset completion window
 
     # ─── Encryption (AES-256-GCM for secrets at rest) ─────
     encryption_key: str = Field(
@@ -135,6 +136,7 @@ class Settings(BaseSettings):
     rate_limit_login_per_minute: int = 10
     rate_limit_register_per_minute: int = 5
     rate_limit_refresh_per_minute: int = 30
+    rate_limit_change_password_per_minute: int = 10
     rate_limit_resume_per_minute: int = 60
     rate_limit_mcp_test_per_minute: int = 10
     rate_limit_api_run_per_minute: int = 60
