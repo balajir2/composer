@@ -28,6 +28,8 @@ type ComposerJwt = JWT & {
   accessTokenExpiresAt?: number;
   refreshTokenExpiresAt?: number;
   role?: "admin" | "member";
+  mustChangePassword?: boolean;
+  passwordChangeToken?: string;
   error?: "RefreshAccessTokenError";
 };
 
@@ -78,16 +80,27 @@ export const authConfig: NextAuthConfig = {
       async authorize(creds) {
         if (!creds?.email || !creds?.password) return null;
         try {
-          const tokens = await composerLogin(creds.email as string, creds.password as string);
-          const profile = await composerMe(tokens.accessToken);
+          const result = await composerLogin(
+            creds.email as string,
+            creds.password as string
+          );
+          if ("mustChangePassword" in result) {
+            return {
+              id: creds.email as string,
+              email: creds.email as string,
+              mustChangePassword: true,
+              passwordChangeToken: result.passwordChangeToken,
+            } as never;
+          }
+          const profile = await composerMe(result.accessToken);
           return {
             id: profile.id,
             email: profile.email,
             name: profile.displayName,
-            composerAccessToken: tokens.accessToken,
-            composerRefreshToken: tokens.refreshToken,
-            accessTokenExpiresAt: tokens.accessTokenExpiresAt,
-            refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
+            composerAccessToken: result.accessToken,
+            composerRefreshToken: result.refreshToken,
+            accessTokenExpiresAt: result.accessTokenExpiresAt,
+            refreshTokenExpiresAt: result.refreshTokenExpiresAt,
             role: profile.role,
           } as never;
         } catch {
@@ -109,7 +122,15 @@ export const authConfig: NextAuthConfig = {
           accessTokenExpiresAt?: number;
           refreshTokenExpiresAt?: number;
           role?: "admin" | "member";
+          mustChangePassword?: boolean;
+          passwordChangeToken?: string;
         };
+        if (u.mustChangePassword) {
+          t.mustChangePassword = true;
+          t.passwordChangeToken = u.passwordChangeToken;
+          t.error = undefined;
+          return t;
+        }
         if (u.composerAccessToken) {
           t.composerAccessToken = u.composerAccessToken;
           t.composerRefreshToken = u.composerRefreshToken;
@@ -162,6 +183,8 @@ export const authConfig: NextAuthConfig = {
         accessTokenExpiresAt?: number;
         refreshTokenExpiresAt?: number;
         role?: "admin" | "member";
+        mustChangePassword?: boolean;
+        passwordChangeToken?: string;
         error?: "RefreshAccessTokenError";
         user?: { id?: string };
       };
@@ -170,6 +193,8 @@ export const authConfig: NextAuthConfig = {
       s.accessTokenExpiresAt = t.accessTokenExpiresAt;
       s.refreshTokenExpiresAt = t.refreshTokenExpiresAt;
       s.role = t.role;
+      s.mustChangePassword = t.mustChangePassword;
+      s.passwordChangeToken = t.passwordChangeToken;
       s.error = t.error;
       if (t.sub) s.user = { ...s.user, id: t.sub };
       return session;

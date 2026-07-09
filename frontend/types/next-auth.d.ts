@@ -11,6 +11,12 @@ declare module "next-auth" {
      *  the user must re-authenticate. */
     refreshTokenExpiresAt?: number;
     role?: "admin" | "member";
+    /** True when the account has a pending admin-forced password reset.
+     *  A session with this set carries no usable Composer accessToken. */
+    mustChangePassword?: boolean;
+    /** Short-lived token that authorizes ONLY /auth/change-password.
+     *  Present only when mustChangePassword is true. */
+    passwordChangeToken?: string;
     /** Set to "RefreshAccessTokenError" when the JWT callback failed
      *  to refresh the access token and the session is effectively dead. */
     error?: "RefreshAccessTokenError";
@@ -27,6 +33,8 @@ declare module "next-auth/jwt" {
     accessTokenExpiresAt?: number;
     refreshTokenExpiresAt?: number;
     role?: "admin" | "member";
+    mustChangePassword?: boolean;
+    passwordChangeToken?: string;
     error?: "RefreshAccessTokenError";
   }
 }
