@@ -41,6 +41,7 @@ model Workflow {
   externalSlug  String?  @unique         @map("external_slug")
 
   executions    WorkflowExecution[]
+  assignments   WorkflowAssignment[]
 
   @@map("workflows")
   @@index([userId])
@@ -67,6 +68,21 @@ model WorkflowExecution {
   approvals     Approval[]
 
   @@map("workflow_executions")
+  @@index([workflowId])
+  @@index([userId])
+}
+
+model WorkflowAssignment {
+  id           String   @id @default(cuid())
+  workflowId   String   @map("workflow_id")
+  userId       String   @map("user_id")
+  assignedById String   @map("assigned_by_id")
+  assignedAt   DateTime @default(now()) @map("assigned_at")
+
+  workflow     Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@unique([workflowId, userId])
+  @@map("workflow_assignments")
   @@index([workflowId])
   @@index([userId])
 }
