@@ -205,6 +205,8 @@ def _client_fetch(monkeypatch: pytest.MonkeyPatch, row: Any | None) -> tuple[Tes
     # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
     db.user = MagicMock()
     db.user.find_unique = AsyncMock(return_value=None)
+    db.workflowassignment = MagicMock()
+    db.workflowassignment.find_unique = AsyncMock(return_value=None)
     app.state.db = db
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
@@ -251,6 +253,8 @@ def _client_put(
     # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
     db.user = MagicMock()
     db.user.find_unique = AsyncMock(return_value=None)
+    db.workflowassignment = MagicMock()
+    db.workflowassignment.find_unique = AsyncMock(return_value=None)
     app.state.db = db
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus

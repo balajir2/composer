@@ -51,6 +51,23 @@ def _check_workflow_size_limits(workflow: Workflow) -> None:
         )
 
 
+async def _has_assignment(
+    db: Prisma,  # pyright: ignore[reportUnknownParameterType]
+    workflow_id: str,
+    user_id: str,
+) -> bool:
+    """True when `user_id` has an active WorkflowAssignment on `workflow_id`.
+
+    Assignment grants full read+write (open, edit, run) but never delete or
+    ownership-transfer rights — those stay owner/admin-only (Account +
+    Workflow Sharing plan, Part B scope decision).
+    """
+    row = await db.workflowassignment.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"workflowId_userId": {"workflowId": workflow_id, "userId": user_id}}
+    )
+    return row is not None
+
+
 class WorkflowCreate(BaseModel):
     """Request body for POST /workflows."""
 
@@ -245,13 +262,15 @@ async def get_workflow(
         )
     if role == "admin":
         return WorkflowRead.model_validate(row)
-    if not row.isPublic and row.userId != user_id:
-        # 404 for private, not owner — info-leak tight (ADR-0021)
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Workflow {workflow_id!r} not found.",
-        )
-    return WorkflowRead.model_validate(row)
+    if row.isPublic or row.userId == user_id:
+        return WorkflowRead.model_validate(row)
+    if await _has_assignment(db, workflow_id, user_id):
+        return WorkflowRead.model_validate(row)
+    # 404 for private, not owner, not assignee — info-leak tight (ADR-0021)
+    raise HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Workflow {workflow_id!r} not found.",
+    )
 
 
 @router.put("/workflows/{workflow_id}", response_model=WorkflowRead)
@@ -270,10 +289,14 @@ async def update_workflow(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow {workflow_id!r} not found.",
         )
-    if role != "admin" and existing.userId != user_id:
+    if (
+        role != "admin"
+        and existing.userId != user_id
+        and not await _has_assignment(db, workflow_id, user_id)
+    ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Forbidden: not workflow owner.",
+            detail="Forbidden: not workflow owner or assignee.",
         )
 
     workflow = Workflow.model_validate(payload.model_dump(by_alias=True))
@@ -366,6 +389,18 @@ class OwnerAssignRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+class WorkflowAssignmentRead(BaseModel):
+    """Response body for workflow assignment CRUD endpoints."""
+
+    model_config = ConfigDict(populate_by_name=True, from_attributes=True)
+
+    id: str
+    workflow_id: str = Field(alias="workflowId")
+    user_id: str = Field(alias="userId")
+    assigned_by_id: str = Field(alias="assignedById")
+    assigned_at: Any = Field(alias="assignedAt")
+
+
 class AdminFlagsRequest(BaseModel):
     """Admin-only partial update for visibility / production flags."""
 
@@ -454,4 +489,80 @@ async def assign_workflow_owner(
     return WorkflowRead.model_validate(updated)
 
 
-__all__ = ["OwnerAssignRequest", "WorkflowCreate", "WorkflowListResponse", "WorkflowRead", "router"]
+@router.get("/workflows/{workflow_id}/assignments", response_model=list[WorkflowAssignmentRead])
+async def list_workflow_assignments(
+    workflow_id: str,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _role: tuple[str, str] = Depends(get_current_role),
+) -> list[WorkflowAssignmentRead]:  # pyright: ignore[reportUnusedFunction]
+    user_id, role = _role
+    existing = await db.workflow.find_unique(where={"id": workflow_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if existing is None:
+        raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
+    if role != "admin" and existing.userId != user_id:
+        raise HTTPException(403, "Forbidden: not workflow owner.")
+    rows = await db.workflowassignment.find_many(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"workflowId": workflow_id}
+    )
+    return [WorkflowAssignmentRead.model_validate(r) for r in rows]
+
+
+@router.post(
+    "/workflows/{workflow_id}/assignments/{target_user_id}",
+    response_model=WorkflowAssignmentRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def grant_workflow_assignment(
+    workflow_id: str,
+    target_user_id: str,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _role: tuple[str, str] = Depends(get_current_role),
+) -> WorkflowAssignmentRead:  # pyright: ignore[reportUnusedFunction]
+    user_id, role = _role
+    existing = await db.workflow.find_unique(where={"id": workflow_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if existing is None:
+        raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
+    if role != "admin" and existing.userId != user_id:
+        raise HTTPException(403, "Forbidden: not workflow owner.")
+    target_user = await db.user.find_unique(where={"id": target_user_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if target_user is None:
+        raise HTTPException(404, f"user {target_user_id!r} not found")
+    row = await db.workflowassignment.create(  # pyright: ignore[reportAttributeAccessIssue]
+        data={
+            "workflowId": workflow_id,
+            "userId": target_user_id,
+            "assignedById": user_id,
+        }
+    )
+    return WorkflowAssignmentRead.model_validate(row)
+
+
+@router.delete(
+    "/workflows/{workflow_id}/assignments/{target_user_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def revoke_workflow_assignment(
+    workflow_id: str,
+    target_user_id: str,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _role: tuple[str, str] = Depends(get_current_role),
+) -> None:  # pyright: ignore[reportUnusedFunction]
+    user_id, role = _role
+    existing = await db.workflow.find_unique(where={"id": workflow_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if existing is None:
+        raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
+    if role != "admin" and existing.userId != user_id:
+        raise HTTPException(403, "Forbidden: not workflow owner.")
+    await db.workflowassignment.delete(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"workflowId_userId": {"workflowId": workflow_id, "userId": target_user_id}}
+    )
+
+
+__all__ = [
+    "OwnerAssignRequest",
+    "WorkflowAssignmentRead",
+    "WorkflowCreate",
+    "WorkflowListResponse",
+    "WorkflowRead",
+    "router",
+]
