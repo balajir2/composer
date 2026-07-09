@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security — rate-limit GET /users/search (2026-07-09)
+
+`GET /users/search` (added for the account/workflow-sharing feature to let non-admin workflow owners find people to share with) was reachable by any authenticated member with no per-caller rate limit, letting a scripted caller reconstruct most of the user directory (email + displayName) via repeated queries.
+
+#### Fixed
+- [src/api/users.py](src/api/users.py) — `search_users` now calls `enforce()` with a new `rate_limit_users_search_per_minute` setting (default 30/min, keyed on the authenticated user id), matching the pattern used by other broad-principal endpoints (`executions`, `mcp_test`).
+- [src/config.py](src/config.py) — added `rate_limit_users_search_per_minute: int = 30`.
+
 ### Security - enforce credential purpose, account status, and workflow execution scope (2026-06-02)
 
 #### Fixed
