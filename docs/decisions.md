@@ -681,3 +681,28 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 **Implemented by.** Phase 10 (commits `a6cd130`…`4f3a4d0` on `main`, 2026-04-23).
 
 **Related.** ADR-0022 (Phase 9 cutover — email identity extended here), ADR-0021 (Phase 8 security — admin-bypass policy reused), ADR-0014 (deployment modes), [Phase 10 spec](archive/phase-history/specs/2026-04-22-phase-10-composer-frontend-design.md).
+
+---
+
+## ADR-0024: Password reset — admin-only, third JWT type gates change-password, mustChangePassword cuts off live sessions
+
+**Status.** Accepted 2026-07-09.
+
+**Context.** Composer had no way for a user to recover a forgotten password, nor for an admin to reset one for them. The user explicitly chose an admin-only reset (no email dependency) over a self-service emailed-link flow. Implementing the "must change password" gate needed a way to issue a session that can do exactly one thing (call `/auth/change-password`) without granting normal API access — and, once built, review surfaced that the gate had to cut off *existing* sessions too, not just new logins.
+
+**Decision.** Add a third JWT `type` discriminator, `password_change`, alongside the existing `access`/`refresh` types in `src/security/jwt.py`. Every existing route dependency (`get_current_user_id`) already rejects any token whose `type` isn't `"access"`, so a `password_change` token is automatically unusable everywhere except one new dependency, `get_user_id_allow_password_change` (`src/security/auth.py`), that explicitly accepts either an access token or a password_change token — used solely by the new `POST /auth/change-password` endpoint.
+
+`POST /auth/login` returns this restricted token instead of a normal pair when `User.mustChangePassword` is true. `POST /admin/users/{id}/reset-password` (admin-only) generates a random temp password via `secrets.token_urlsafe(12)`, hashes it, and sets that flag. `POST /auth/change-password` always re-verifies the caller's current password before accepting a new one, regardless of which token type authorized the call.
+
+**A follow-up fix, made during code review, closes a session-lifetime gap the initial implementation left open:** `mustChangePassword` was only checked at login, so an already-logged-in user (access token, 8h TTL; refresh token, 30d TTL) could keep using — and refreshing — their session indefinitely without ever hitting the gate. Fixed by adding `_ensure_active_and_no_pending_password_change` (checks both `isActive` and `mustChangePassword`) and wiring it into `get_current_user_id` (used by virtually every authenticated route) and into `POST /auth/refresh`. The original `_ensure_active_user` (isActive-only) is deliberately left untouched and still used by `get_user_id_allow_password_change`, since a user completing a forced reset legitimately has `mustChangePassword=True` and must not be locked out of the one endpoint that lets them clear it.
+
+On the frontend, NextAuth's `authorize()`/`jwt()`/`session()` callbacks thread `mustChangePassword`/`passwordChangeToken` through a "restricted" session that never carries a usable Composer access token. A second follow-up closed a route-level gap: `middleware.ts` and `requireSession()` (`lib/composer-session.ts`) now redirect any `mustChangePassword` session to `/change-password`, and a third fix added `requireAnySession()` (session-exists-only, no mustChangePassword branch) so the `/change-password` route itself doesn't create a redirect loop while still blocking completely anonymous visitors.
+
+**Consequences.**
+- No new route-level authorization logic needed anywhere else for the *type*-discrimination gate — it's automatic. The session-lifetime and route-level gaps were real oversights caught only by review, not by the original design — a reminder that "add a flag" features need an explicit sweep of every place a session is trusted (login, refresh, every route dependency, frontend middleware, and every page-level guard) before they're actually complete.
+- Admins never see or set a user's real password (only a randomly generated temp one).
+- Email-based self-service reset remains out of scope; if added later, it can reuse the same `password_change` token type.
+
+**Implemented by.** `docs/archive/phase-history/plans/2026-07-09-account-workflow-sharing-plan.md`, Part A (commits from `6793c64` through the Part A frontend commits on `main`, 2026-07-09).
+
+**Related.** ADR-0005 (Phase 1 API surface + authentication), ADR-0015 (dev-mode auth fallback).
