@@ -4,7 +4,10 @@ import re
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
+from prisma.errors import (  # pyright: ignore[reportMissingImports]
+    RecordNotFoundError,
+    UniqueViolationError,
+)
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
@@ -527,13 +530,19 @@ async def grant_workflow_assignment(
     target_user = await db.user.find_unique(where={"id": target_user_id})  # pyright: ignore[reportAttributeAccessIssue]
     if target_user is None:
         raise HTTPException(404, f"user {target_user_id!r} not found")
-    row = await db.workflowassignment.create(  # pyright: ignore[reportAttributeAccessIssue]
-        data={
-            "workflowId": workflow_id,
-            "userId": target_user_id,
-            "assignedById": user_id,
-        }
-    )
+    try:
+        row = await db.workflowassignment.create(  # pyright: ignore[reportAttributeAccessIssue]
+            data={
+                "workflowId": workflow_id,
+                "userId": target_user_id,
+                "assignedById": user_id,
+            }
+        )
+    except UniqueViolationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"assignment already exists for user {target_user_id!r}: {exc}",
+        ) from exc
     return WorkflowAssignmentRead.model_validate(row)
 
 
@@ -553,9 +562,15 @@ async def revoke_workflow_assignment(
         raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
     if role != "admin" and existing.userId != user_id:
         raise HTTPException(403, "Forbidden: not workflow owner.")
-    await db.workflowassignment.delete(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"workflowId_userId": {"workflowId": workflow_id, "userId": target_user_id}}
-    )
+    try:
+        await db.workflowassignment.delete(  # pyright: ignore[reportAttributeAccessIssue]
+            where={"workflowId_userId": {"workflowId": workflow_id, "userId": target_user_id}}
+        )
+    except RecordNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"assignment not found for user {target_user_id!r}",
+        ) from exc
 
 
 __all__ = [

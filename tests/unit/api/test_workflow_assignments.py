@@ -108,6 +108,40 @@ def test_owner_can_revoke_assignment(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resp.status_code == 204, resp.text
 
 
+def test_grant_duplicate_assignment_returns_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prisma UniqueViolationError on double-grant → 409."""
+    from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
+
+    client, db = _client(monkeypatch)
+    db.workflow.find_unique = AsyncMock(return_value=_wf_row())
+    db.workflowassignment.create = AsyncMock(
+        side_effect=UniqueViolationError({"user_facing_error": {"meta": {}}})
+    )
+    token = create_access_token("owner1")
+    resp = client.post(
+        "/workflows/w1/assignments/assignee1",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 409, resp.text
+
+
+def test_revoke_nonexistent_assignment_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Prisma RecordNotFoundError on double-revoke → 404."""
+    from prisma.errors import RecordNotFoundError  # pyright: ignore[reportMissingImports]
+
+    client, db = _client(monkeypatch)
+    db.workflow.find_unique = AsyncMock(return_value=_wf_row())
+    db.workflowassignment.delete = AsyncMock(
+        side_effect=RecordNotFoundError({"user_facing_error": {"meta": {}}})
+    )
+    token = create_access_token("owner1")
+    resp = client.delete(
+        "/workflows/w1/assignments/assignee1",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 404, resp.text
+
+
 def test_list_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
     client, db = _client(monkeypatch)
     db.workflow.find_unique = AsyncMock(return_value=_wf_row())
