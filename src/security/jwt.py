@@ -30,6 +30,13 @@ class RefreshTokenPayload(BaseModel):
     type: str = "refresh"
 
 
+class PasswordChangeTokenPayload(BaseModel):
+    sub: str
+    iat: int
+    exp: int
+    type: str = "password_change"
+
+
 class TokenVerificationError(ValueError):
     """Raised when a JWT cannot be verified (signature, shape, or type)."""
 
@@ -88,6 +95,17 @@ def create_refresh_token(user_id: str) -> str:
     return _encode(payload)
 
 
+def create_password_change_token(user_id: str) -> str:
+    settings = get_settings()
+    now = _now()
+    payload = PasswordChangeTokenPayload(
+        sub=user_id,
+        iat=now,
+        exp=now + settings.jwt_password_change_ttl_seconds,
+    )
+    return _encode(payload)
+
+
 def verify_access_token(token: str) -> AccessTokenPayload:
     raw = _decode(token)
     if raw.get("type") != "access":
@@ -102,13 +120,25 @@ def verify_refresh_token(token: str) -> RefreshTokenPayload:
     return RefreshTokenPayload.model_validate(raw)
 
 
+def verify_password_change_token(token: str) -> PasswordChangeTokenPayload:
+    raw = _decode(token)
+    if raw.get("type") != "password_change":
+        raise TokenVerificationError(
+            f"Expected token type 'password_change', got {raw.get('type')!r}"
+        )
+    return PasswordChangeTokenPayload.model_validate(raw)
+
+
 __all__ = [
     "AccessTokenPayload",
+    "PasswordChangeTokenPayload",
     "RefreshTokenPayload",
     "TokenExpiredError",
     "TokenVerificationError",
     "create_access_token",
+    "create_password_change_token",
     "create_refresh_token",
     "verify_access_token",
+    "verify_password_change_token",
     "verify_refresh_token",
 ]
