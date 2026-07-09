@@ -24,6 +24,7 @@ from src.api.mcp_servers import oauth_router
 from src.api.mcp_servers import router as mcp_servers_router
 from src.api.run import router as run_router
 from src.api.uploads import router as uploads_router
+from src.api.users import router as users_router
 from src.api.workflows import router as workflows_router
 from src.config import get_settings
 from src.maintenance.execution_sweeper import start_sweeper, stop_sweeper
@@ -135,6 +136,7 @@ def create_app() -> FastAPI:
     app.include_router(oauth_router)
     app.include_router(run_router)
     app.include_router(uploads_router)
+    app.include_router(users_router)
 
     # Phase 7a: auth
     if settings.deployment_mode == "standalone":
