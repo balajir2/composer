@@ -33,12 +33,30 @@ export function ResetPasswordDialog({ user }: { user: AdminUser }) {
     setTempPassword(null);
   }
 
+  function handleCopy() {
+    if (tempPassword === null) return;
+    navigator.clipboard.writeText(tempPassword).then(
+      () => toast.success("Copied."),
+      () => toast.error("Copy failed.")
+    );
+  }
+
   return (
     <>
       <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
         Reset password
       </Button>
-      <Dialog open={open} onOpenChange={(next) => (next ? setOpen(true) : close())}>
+      <Dialog
+        open={open}
+        onOpenChange={(next) => {
+          if (!next) {
+            if (mutation.isPending) return;
+            close();
+          } else {
+            setOpen(true);
+          }
+        }}
+      >
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Reset password for {user.email}</DialogTitle>
@@ -54,7 +72,8 @@ export function ResetPasswordDialog({ user }: { user: AdminUser }) {
             </div>
           )}
           <DialogFooter>
-            <Button variant="outline" onClick={close}>
+            {tempPassword && <Button onClick={handleCopy}>Copy</Button>}
+            <Button variant="outline" onClick={close} disabled={mutation.isPending}>
               {tempPassword ? "Close" : "Cancel"}
             </Button>
             {!tempPassword && (
