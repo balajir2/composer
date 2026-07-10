@@ -13,12 +13,14 @@ from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.integrations.email.resend import send_password_reset_email
 from src.security.auth import get_user_id_allow_password_change
 from src.security.jwt import (
     TokenVerificationError,
     create_access_token,
     create_password_change_token,
     create_refresh_token,
+    verify_password_change_token,
     verify_refresh_token,
 )
 from src.security.passwords import hash_password, verify_password
@@ -84,6 +86,17 @@ class ChangePasswordRequest(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
     current_password: str = Field(alias="currentPassword")
+    new_password: str = Field(min_length=8, alias="newPassword")
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    token: str
     new_password: str = Field(min_length=8, alias="newPassword")
 
 
@@ -272,13 +285,82 @@ async def change_password(
     return None
 
 
+@router.post("/auth/forgot-password", status_code=status.HTTP_204_NO_CONTENT)
+async def forgot_password(
+    payload: ForgotPasswordRequest,
+    request: Request,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    limiter: RateLimiter = Depends(get_rate_limiter),
+) -> None:  # pyright: ignore[reportUnusedFunction]
+    ip = request.client.host if request.client else "unknown"
+    await enforce(
+        limiter,
+        route_key="auth_forgot_password",
+        client_key=ip,
+        config=per_minute_config(get_settings().rate_limit_forgot_password_per_minute),
+    )
+    user = await db.user.find_unique(where={"email": str(payload.email)})  # pyright: ignore[reportAttributeAccessIssue]
+    if user is not None and user.passwordHash is not None:
+        token = create_password_change_token(user.id)
+        reset_link = f"{get_settings().frontend_url}/reset-password?token={token}"
+        try:
+            await send_password_reset_email(to=user.email, reset_link=reset_link)
+        except Exception:
+            # Never let an email-delivery failure change this endpoint's
+            # response — that would leak account-existence information to
+            # the caller. Delivery failures are operational, not the
+            # caller's concern; log for ops visibility only.
+            import logging
+
+            logging.getLogger(__name__).warning(
+                "forgot-password: failed to send reset email", exc_info=True
+            )
+    # Always 204, regardless of whether the email matched a real,
+    # password-based account — no account-enumeration leak.
+    return None
+
+
+@router.post("/auth/reset-password", status_code=status.HTTP_204_NO_CONTENT)
+async def reset_password(
+    payload: ResetPasswordRequest,
+    request: Request,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    limiter: RateLimiter = Depends(get_rate_limiter),
+) -> None:  # pyright: ignore[reportUnusedFunction]
+    ip = request.client.host if request.client else "unknown"
+    await enforce(
+        limiter,
+        route_key="auth_forgot_password",
+        client_key=ip,
+        config=per_minute_config(get_settings().rate_limit_forgot_password_per_minute),
+    )
+    try:
+        claims = verify_password_change_token(payload.token)
+    except TokenVerificationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid or expired reset token: {exc}",
+        ) from exc
+    user_id = claims.sub
+    await db.user.update(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": user_id},
+        data={
+            "passwordHash": hash_password(payload.new_password),
+            "mustChangePassword": False,
+        },
+    )
+    return None
+
+
 __all__ = [
     "AuthResponse",
     "ChangePasswordRequest",
+    "ForgotPasswordRequest",
     "LoginRequest",
     "MustChangePasswordResponse",
     "RefreshRequest",
     "RegisterRequest",
+    "ResetPasswordRequest",
     "TokenPairResponse",
     "router",
 ]
