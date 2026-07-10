@@ -706,3 +706,28 @@ On the frontend, NextAuth's `authorize()`/`jwt()`/`session()` callbacks thread `
 **Implemented by.** `docs/archive/phase-history/plans/2026-07-09-account-workflow-sharing-plan.md`, Part A (commits from `6793c64` through the Part A frontend commits on `main`, 2026-07-09).
 
 **Related.** ADR-0005 (Phase 1 API surface + authentication), ADR-0015 (dev-mode auth fallback).
+
+---
+
+## ADR-0025: Workflow assignment — additive join table, all-or-nothing access
+
+**Status.** Accepted 2026-07-10.
+
+**Context.** A workflow could only ever have one owner (`Workflow.userId`). Investigation of OAB's actual schema (`convex/schema.ts`) found OAB never supported many-to-many assignment either — it's a genuine enhancement over OAB's original design, not a restoration.
+
+**Decision.** Add `WorkflowAssignment` (`workflowId`, `userId`, `assignedById`, `assignedAt`; unique on `(workflowId, userId)`) as a layer on top of the existing single-owner field, which keeps its meaning unchanged ("who created this / who transfers/deletes it"). Assignment grants full read+write access (open, edit, run) — there is no view-vs-edit split. Only the owner or an admin can grant/revoke assignments; delete and owner-transfer remain owner/admin-only, untouched by assignment. A new `GET /users/search` endpoint (any authenticated active user, results limited to id/email/displayName, rate-limited at 30/min/user) lets non-admin owners find people to share with, since the existing `/admin/users` listing is admin-only.
+
+`GET /workflows/{id}` and `PUT /workflows/{id}` authorization both gained an assignee check (`_has_assignment`) alongside the existing owner/admin/isPublic checks. `DELETE` and `/owner` transfer were deliberately left alone. Both `list_workflows` (`mine=true` and the default non-admin view) and `search_workflows` needed a third `OR` clause (`assignments.some.userId`) so assigned-not-owned workflows are actually visible and findable anywhere in the UI — the search-endpoint gap was caught only after the list-endpoint fix shipped, underscoring that "make it visible" has more than one call site to update.
+
+**Follow-up fixes made during code review:**
+- `grant_workflow_assignment`/`revoke_workflow_assignment` initially let Prisma exceptions escape as uncaught 500s on double-grant/double-revoke. The grant side needed a straightforward `UniqueViolationError` → 409 catch. The revoke side needed a genuinely different fix: Prisma Python's generated `delete()` already catches `RecordNotFoundError` internally and returns `None` rather than raising — so the naive `except RecordNotFoundError` was dead code that could never fire against the real client. The correct fix checks `delete()`'s return value for `None`.
+- The frontend `ManageAssigneesDialog` shared one mutation's `isPending` flag across every row, so a still-visible row's button re-enabled before the invalidated query's refetch actually removed it, letting a rapid second click hit the backend's 409/404 and surface a confusing error. Fixed with per-row pending-id tracking instead of one shared flag.
+- The owner-settings page rendered the "Manage access" section unconditionally for anyone who could load the page — including non-owner assignees, who have full read/write access to the workflow itself but are correctly 403'd by the assignment-management endpoints (owner/admin-only). Fixed by gating the section on `role === "admin" || workflow.userId === currentUserId`.
+
+**Consequences.**
+- Per-assignee permission levels (view-only, etc.) are explicitly out of scope; if needed later, it's a new column on `WorkflowAssignment`, not a schema rework.
+- "A user with full API access to a resource" and "a user allowed to manage who else has that access" are different authorization questions — this feature has two now, and every new UI surface touching either one needs to ask the right question, not just check "can I see this page."
+
+**Implemented by.** `docs/archive/phase-history/plans/2026-07-09-account-workflow-sharing-plan.md`, Part B (commits from `c8df7e1` through `6e14494` on `main`, 2026-07-09/10).
+
+**Related.** ADR-0021 (Phase 8 security policy — owner-only 404 pattern), ADR-0024.
