@@ -36,6 +36,22 @@ vi.mock("@/components/composer/canvas/save-controls", () => ({
   ),
 }));
 
+// Deep-clones nodes/edges into FRESH array/object instances with identical
+// content. Stands in for what a second `toReactFlow(...)` call (React 18
+// Strict Mode double-invoking the page's render body) or ReactFlow's own
+// post-mount dimension sync would hand back: same data, different
+// reference.
+function cloneNodes(nodes: RFNode[]): RFNode[] {
+  return nodes.map((n) => ({
+    ...n,
+    position: { ...n.position },
+    data: { ...(n.data as Record<string, unknown>) },
+  }));
+}
+function cloneEdges(edges: RFEdge[]): RFEdge[] {
+  return edges.map((e) => ({ ...e }));
+}
+
 // Faithfully mirrors the real WorkflowCanvas's mount behavior (workflow-canvas.tsx
 // lines 380-386): onNodesChange/onEdgesChange fire once on mount with the
 // just-loaded initial nodes/edges via a plain useEffect, then again whenever
@@ -75,6 +91,21 @@ vi.mock("@/components/composer/canvas/workflow-canvas", () => ({
           }
         >
           edit-edges
+        </button>
+        <button
+          onClick={() => {
+            // Simulate React 18 Strict Mode double-invoking the mount
+            // effect: the SAME logical content handed back twice, each
+            // time as brand-new array/object instances (never `===` the
+            // original `initialNodes`/`initialEdges`, and not `===` each
+            // other either).
+            onNodesChange?.(cloneNodes(initialNodes));
+            onNodesChange?.(cloneNodes(initialNodes));
+            onEdgesChange?.(cloneEdges(initialEdges));
+            onEdgesChange?.(cloneEdges(initialEdges));
+          }}
+        >
+          simulate-strict-mode-remount
         </button>
       </div>
     );
@@ -124,6 +155,30 @@ describe("DesignerCanvasPage autosave dirty-tracking", () => {
     expect(screen.getByTestId("save-status").textContent).toBe("idle");
   });
 
+  it("does not mark dirty when the mount effect fires twice with same-content-but-different-reference data (React Strict Mode)", async () => {
+    getWorkflow.mockResolvedValueOnce(workflowFixture("wf-a"));
+    renderPage("wf-a");
+
+    await screen.findByTestId("save-status");
+    expect(screen.getByTestId("save-status").textContent).toBe("idle");
+
+    // Two calls, each with a freshly-cloned (never `===` the original,
+    // never `===` each other) but content-identical array — exactly what
+    // Strict Mode's setup -> cleanup(no-op) -> setup double-invoke of the
+    // mount effect produces once the page's render body (and therefore
+    // `toReactFlow`) has also run twice. A reference-equality or
+    // invocation-count based gate would incorrectly call markDirty() on
+    // the second invocation; content comparison must not.
+    fireEvent.click(screen.getByText("simulate-strict-mode-remount"));
+    expect(screen.getByTestId("save-status").textContent).toBe("idle");
+
+    // A genuinely different edit afterward must still flip it dirty.
+    fireEvent.click(screen.getByText("edit-nodes"));
+    await waitFor(() =>
+      expect(screen.getByTestId("save-status").textContent).toBe("dirty")
+    );
+  });
+
   it("marks dirty on a real edit after mount", async () => {
     getWorkflow.mockResolvedValueOnce(workflowFixture("wf-a"));
     renderPage("wf-a");
@@ -149,7 +204,7 @@ describe("DesignerCanvasPage autosave dirty-tracking", () => {
     // scenario where Next.js's App Router might reconcile the page as a
     // props update rather than an unmount/remount. The `key={workflowId}`
     // on the inner component is what forces React to treat this as a
-    // fresh mount, resetting nodesInitializedRef/edgesInitializedRef (and
+    // fresh mount, resetting initialNodesRef/initialEdgesRef (and
     // nodesRef/edgesRef) instead of leaking wf-a's state into wf-b.
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     getWorkflow.mockResolvedValueOnce(workflowFixture("wf-b"));

@@ -27,15 +27,77 @@ interface PageProps {
   params: { workflowId: string };
 }
 
+// ---------------------------------------------------------------------------
+// Mount-vs-edit content comparison
+// ---------------------------------------------------------------------------
+//
+// WorkflowCanvas's onNodesChange/onEdgesChange-firing effects (its
+// mount-driven useEffects with no cleanup, workflow-canvas.tsx ~380-386)
+// can fire MORE THAN ONCE with the exact same just-loaded data before any
+// real user edit ever happens:
+//
+//  - React 18 Strict Mode (the Next.js dev-mode default) double-invokes
+//    BOTH the mount effect (setup -> cleanup(no-op) -> setup) AND the
+//    surrounding function component's render body itself. The latter
+//    means `toReactFlow(...)` below can run twice per commit, producing
+//    two array instances that are deep-equal but NOT the same reference.
+//  - ReactFlow itself measures each node's DOM size after first paint and
+//    dispatches its own *internal* node-change (setting width/height/
+//    positionAbsolute) before our effect even fires — so even a single,
+//    non-Strict-Mode mount can hand back an array that is reference-
+//    unequal to `initialNodes` despite carrying no meaningful edit.
+//
+// A previous fix (commit 85b75a4) tracked "have I been invoked before" via
+// booleans, which breaks under Strict Mode's double mount-effect (the
+// second invocation looks just like a "real" second call). Comparing
+// content instead of invocation count sidesteps both problems above: we
+// only care whether the semantically-meaningful fields (id/type/position/
+// data for nodes; id/source/target/sourceHandle/label for edges) still
+// match what was originally loaded, not whether the array happens to be
+// the same object.
+function nodesMatchInitial(current: RFNode[], initial: RFNode[] | null): boolean {
+  if (initial === null) return true;
+  if (current === initial) return true;
+  if (current.length !== initial.length) return false;
+  const initialById = new Map(initial.map((n) => [n.id, n]));
+  return current.every((n) => {
+    const orig = initialById.get(n.id);
+    if (!orig) return false;
+    return (
+      n.type === orig.type &&
+      n.position.x === orig.position.x &&
+      n.position.y === orig.position.y &&
+      JSON.stringify(n.data ?? {}) === JSON.stringify(orig.data ?? {})
+    );
+  });
+}
+
+function edgesMatchInitial(current: RFEdge[], initial: RFEdge[] | null): boolean {
+  if (initial === null) return true;
+  if (current === initial) return true;
+  if (current.length !== initial.length) return false;
+  const initialById = new Map(initial.map((e) => [e.id, e]));
+  return current.every((e) => {
+    const orig = initialById.get(e.id);
+    if (!orig) return false;
+    return (
+      e.source === orig.source &&
+      e.target === orig.target &&
+      (e.sourceHandle ?? null) === (orig.sourceHandle ?? null) &&
+      (e.label ?? null) === (orig.label ?? null)
+    );
+  });
+}
+
 export default function DesignerCanvasPage({ params }: PageProps) {
   // `key` forces a full remount (resetting every ref/state below) whenever
   // workflowId changes. Next.js's App Router does NOT guarantee an unmount
   // when navigating client-side between two instances of the same dynamic
   // route (e.g. /designer/A -> /designer/B) — the page component can be
   // reconciled as a props update instead of a fresh mount. Without this key,
-  // stale refs (nodesRef, nodesInitializedRef, etc.) from workflow A would
-  // leak into workflow B: the "seed refs" logic below only seeds when the
-  // ref is still empty, so it'd silently keep showing A's canvas data, and
+  // stale refs (nodesRef, initialNodesRef, etc.) from workflow A would leak
+  // into workflow B: the "seed refs" logic below only seeds when the ref is
+  // still empty/null, so it'd silently keep showing A's canvas data, and
   // the mount-vs-edit dirty tracking below would never re-arm for B's
   // initial load.
   return <DesignerCanvasPageInner key={params.workflowId} workflowId={params.workflowId} />;
@@ -49,14 +111,16 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
   const nodesRef = useRef<RFNode[]>([]);
   const edgesRef = useRef<RFEdge[]>([]);
 
-  // WorkflowCanvas's onNodesChange/onEdgesChange effects fire once on
-  // mount with the just-loaded initial nodes/edges (standard useEffect
-  // semantics), even though the user hasn't edited anything. Each ref
-  // tracks whether that first, mount-driven invocation has already
-  // happened for its callback so we only call autosave.markDirty() on
-  // real (post-mount) edits, not the initial sync.
-  const nodesInitializedRef = useRef(false);
-  const edgesInitializedRef = useRef(false);
+  // The as-loaded nodes/edges, captured once per mount (see the seed
+  // logic below, right after `toReactFlow` runs). onNodesChange/
+  // onEdgesChange compare their incoming array's CONTENT against these
+  // rather than counting invocations — see the comment above
+  // nodesMatchInitial/edgesMatchInitial for why content comparison is
+  // required (Strict Mode's double-invoke of both the mount effect and
+  // the render body, plus ReactFlow's own post-mount dimension sync,
+  // both defeat a simple "first call vs. later calls" counter).
+  const initialNodesRef = useRef<RFNode[] | null>(null);
+  const initialEdgesRef = useRef<RFEdge[] | null>(null);
 
   const [isSaving, setIsSaving] = useState(false);
   // The draft-run currently in flight (if any).  Set when Run Draft
@@ -157,6 +221,17 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
     edgesRef.current = rfEdges;
   }
 
+  // Capture the as-loaded baseline exactly once per mount (unlike the
+  // seed above, this deliberately does NOT gate on length>0 — an empty
+  // brand-new workflow's `[]` is a valid, meaningful baseline to compare
+  // future callbacks against).
+  if (initialNodesRef.current === null) {
+    initialNodesRef.current = rfNodes;
+  }
+  if (initialEdgesRef.current === null) {
+    initialEdgesRef.current = rfEdges;
+  }
+
   return (
     <div className="flex h-[calc(100vh-8rem)] flex-col">
       {/* Slim canvas top bar */}
@@ -254,18 +329,14 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
             initialEdges={rfEdges}
             onNodesChange={(nodes) => {
               nodesRef.current = nodes;
-              if (nodesInitializedRef.current) {
+              if (!nodesMatchInitial(nodes, initialNodesRef.current)) {
                 autosave.markDirty();
-              } else {
-                nodesInitializedRef.current = true;
               }
             }}
             onEdgesChange={(edges) => {
               edgesRef.current = edges;
-              if (edgesInitializedRef.current) {
+              if (!edgesMatchInitial(edges, initialEdgesRef.current)) {
                 autosave.markDirty();
-              } else {
-                edgesInitializedRef.current = true;
               }
             }}
             runState={runState ?? undefined}
