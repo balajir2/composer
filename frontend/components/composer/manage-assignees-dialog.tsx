@@ -32,7 +32,22 @@ export function ManageAssigneesDialog({
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
+  const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
   const qc = useQueryClient();
+
+  function withPending(userId: string, run: () => void) {
+    if (pendingIds.has(userId)) return;
+    setPendingIds((prev) => new Set(prev).add(userId));
+    run();
+  }
+
+  function clearPending(userId: string) {
+    setPendingIds((prev) => {
+      const next = new Set(prev);
+      next.delete(userId);
+      return next;
+    });
+  }
 
   const assignmentsQ = useQuery({
     queryKey: ["workflow-assignments", workflowId],
@@ -58,6 +73,7 @@ export function ManageAssigneesDialog({
       toast.success("Access granted.");
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Failed."),
+    onSettled: (_data, _err, userId) => clearPending(userId),
   });
 
   const revokeMutation = useMutation({
@@ -67,6 +83,7 @@ export function ManageAssigneesDialog({
       toast.success("Access revoked.");
     },
     onError: (err) => toast.error(err instanceof Error ? err.message : "Failed."),
+    onSettled: (_data, _err, userId) => clearPending(userId),
   });
 
   const candidates = (searchQ.data ?? []).filter((u) => !assignedIds.has(u.id));
@@ -106,8 +123,10 @@ export function ManageAssigneesDialog({
                         variant="ghost"
                         size="icon-sm"
                         aria-label="Revoke access"
-                        onClick={() => revokeMutation.mutate(a.userId)}
-                        disabled={revokeMutation.isPending}
+                        onClick={() =>
+                          withPending(a.userId, () => revokeMutation.mutate(a.userId))
+                        }
+                        disabled={pendingIds.has(a.userId)}
                       >
                         <X className="h-3.5 w-3.5" />
                       </Button>
@@ -150,8 +169,8 @@ export function ManageAssigneesDialog({
                       </div>
                       <Button
                         size="sm"
-                        onClick={() => grantMutation.mutate(u.id)}
-                        disabled={grantMutation.isPending}
+                        onClick={() => withPending(u.id, () => grantMutation.mutate(u.id))}
+                        disabled={pendingIds.has(u.id)}
                       >
                         Add
                       </Button>
