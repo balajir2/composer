@@ -124,3 +124,27 @@ export async function composerChangePassword(
   });
   if (!res.ok) throw new Error(`change password failed: ${res.status}`);
 }
+
+/**
+ * Deliberately swallows non-OK responses: the backend always returns 204
+ * for this endpoint regardless of whether the email matched an account
+ * (no account-enumeration leak), so there's nothing meaningful to throw
+ * on here — a 429 from rate-limiting shouldn't surface as an error the
+ * UI treats differently from "email sent."
+ */
+export async function composerForgotPassword(email: string): Promise<void> {
+  await fetch(`${composerApiUrl}/auth/forgot-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+}
+
+export async function composerResetPassword(token: string, newPassword: string): Promise<void> {
+  const res = await fetch(`${composerApiUrl}/auth/reset-password`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token, newPassword }),
+  });
+  if (!res.ok) throw new Error(`reset password failed: ${res.status}`);
+}

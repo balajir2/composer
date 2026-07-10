@@ -103,4 +103,44 @@ describe("composer session helpers", () => {
       composerChangePassword("tok-1", "wrong", "new-pw")
     ).rejects.toThrow(/change password failed/);
   });
+
+  it("composerForgotPassword posts email and resolves on 204", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 204 });
+    const { composerForgotPassword } = await import("@/lib/composer-api");
+    await composerForgotPassword("alice@example.com");
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining("/auth/forgot-password"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ email: "alice@example.com" }),
+      })
+    );
+  });
+
+  it("composerForgotPassword does not throw on non-OK (never leak account existence)", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 429 });
+    const { composerForgotPassword } = await import("@/lib/composer-api");
+    await expect(composerForgotPassword("alice@example.com")).resolves.toBeUndefined();
+  });
+
+  it("composerResetPassword posts token and new password, resolves on 204", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: true, status: 204 });
+    const { composerResetPassword } = await import("@/lib/composer-api");
+    await composerResetPassword("tok-1", "new-pw-12345678");
+    expect(mockFetch).toHaveBeenCalledWith(
+      expect.stringContaining("/auth/reset-password"),
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({ token: "tok-1", newPassword: "new-pw-12345678" }),
+      })
+    );
+  });
+
+  it("composerResetPassword throws on non-OK response", async () => {
+    mockFetch.mockResolvedValueOnce({ ok: false, status: 400 });
+    const { composerResetPassword } = await import("@/lib/composer-api");
+    await expect(composerResetPassword("bad-token", "new-pw-12345678")).rejects.toThrow(
+      /reset password failed/
+    );
+  });
 });
