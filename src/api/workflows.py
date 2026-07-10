@@ -210,13 +210,14 @@ async def list_workflows(
     #   admin without mine → see all workflows (the original
     #     admin-sees-everything behaviour).
     #   non-admin without mine → public + own (discovery feed).
+    assignment_clause: dict[str, Any] = {"assignments": {"some": {"userId": user_id}}}
     authz_where: dict[str, Any] | None
     if mine:
-        authz_where = {"userId": user_id}
+        authz_where = {"OR": [{"userId": user_id}, assignment_clause]}
     elif role == "admin":
         authz_where = None
     else:
-        authz_where = {"OR": [{"isPublic": True}, {"userId": user_id}]}
+        authz_where = {"OR": [{"isPublic": True}, {"userId": user_id}, assignment_clause]}
 
     filter_conditions: list[dict[str, Any]] = []
     if is_template is not None:

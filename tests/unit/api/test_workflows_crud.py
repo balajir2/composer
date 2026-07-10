@@ -105,9 +105,10 @@ def test_list_workflows_mine_filters_by_user(monkeypatch: pytest.MonkeyPatch) ->
     client, db = _client(monkeypatch, [_wf_row(userId="dev")], total=1)
     resp = client.get("/workflows?mine=true")
     assert resp.status_code == 200
-    # mine=true → authz_where = {"userId": user_id} (no OR wrapper)
+    # mine=true → authz_where = {"OR": [{"userId": user_id}, assignment_clause]}
     # dev-mode fallback (ADR-0015) sets user_id='dev'
-    assert db.workflow.find_many.await_args.kwargs["where"].get("userId") == "dev"
+    where = db.workflow.find_many.await_args.kwargs["where"]
+    assert {"userId": "dev"} in where["OR"]
 
 
 def test_list_workflows_mine_overrides_admin_global_view(
@@ -133,9 +134,9 @@ def test_list_workflows_mine_overrides_admin_global_view(
         client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
     assert resp.status_code == 200
     where = db.workflow.find_many.await_args.kwargs["where"]
-    # Top-level userId filter — no OR-with-isPublic, no None / unfiltered.
+    # Scoped to "me" (owner OR assignee) — no OR-with-isPublic, no None / unfiltered.
     assert where is not None, "admin + mine=true must apply a filter"
-    assert where.get("userId") == "dev"
+    assert {"userId": "dev"} in where["OR"]
     # And critically: NOT the global "see all" (where=None) that the bug produced.
 
 
@@ -158,6 +159,31 @@ def test_list_workflows_admin_without_mine_sees_all(
     where = db.workflow.find_many.await_args.kwargs["where"]
     # No filter when admin asks for the global view — everything shows.
     assert where is None
+
+
+def test_list_workflows_mine_includes_assigned_not_owned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, db = _client(monkeypatch, [_wf_row(userId="owner-other", id="w-shared")], total=1)
+    resp = client.get("/workflows?mine=true")
+    assert resp.status_code == 200
+    where = db.workflow.find_many.await_args.kwargs["where"]
+    # mine=true must now match owner OR assignment, not just userId
+    assert "OR" in where
+    or_clauses = where["OR"]
+    assert {"userId": "dev"} in or_clauses
+    assert any("assignments" in c for c in or_clauses)
+
+
+def test_list_workflows_default_view_includes_assigned_private(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, db = _client(monkeypatch, [_wf_row(userId="owner-other")], total=1)
+    resp = client.get("/workflows")
+    assert resp.status_code == 200
+    where = db.workflow.find_many.await_args.kwargs["where"]
+    or_clauses = where["OR"]
+    assert any("assignments" in c for c in or_clauses)
 
 
 def test_list_workflows_limit_over_100_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
