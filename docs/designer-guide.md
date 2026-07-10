@@ -7,7 +7,7 @@ Everything you need to build workflows on the canvas. If this is your first time
 - [Concepts](#concepts) — Workflows, executions, runs, drafts
 - [The canvas](#the-canvas) — Editing nodes, drawing edges, the property panel
 - [Variables and references](#variables-and-references) — `{{name}}` substitution and the eval scope
-- [Node reference](#node-reference) — All 19 node types
+- [Node reference](#node-reference) — All 20 node types
 - [Templates](#templates) — The 18 reference workflows and what each demonstrates
 - [Publishing workflows](#publishing-workflows) — External invoke API
 - [Document uploads](#document-uploads) — PDF / DOCX / Markdown / TXT inputs
@@ -25,6 +25,7 @@ Everything you need to build workflows on the canvas. If this is your first time
 | **Production run** | A run started via the published external-invoke endpoint (`POST /api/run/{slug}`) or via the Runs page. Uses the saved workflow definition. |
 | **Template** | A workflow flagged `isTemplate=true` + `isPublic=true` that any user can clone via "Use template" on `/designer/templates`. The clone is private and unaffected by template edits. |
 | **Public workflow** | `isPublic=true` — anyone in the org can read, but only the owner (or admin) can edit. |
+| **Shared workflow** | The owner (or an admin) has granted another user full read+write access via "Manage access." Shared workflows show a "Shared" badge and behave identically to owned ones for the assignee — except delete and owner-transfer, which stay owner/admin-only. |
 | **Production workflow** | `isProduction=true` + has an `externalSlug` — callable via `POST /api/run/{slug}` with an API key. |
 | **Node alias** | The snake_case form of the node's **Name** field. Available downstream as `{{<alias>}}` (e.g. a node named `Place Picker` is `{{place_picker}}`). |
 
@@ -37,6 +38,10 @@ Everything you need to build workflows on the canvas. If this is your first time
 **The property panel** opens on the right when you select a node. Every node has a **Name** field — set it. The name becomes the node's alias for prompt references and is what shows up in the run trace, so spend the 5 seconds to give nodes meaningful names. The panel also shows a description-of-this-node-type at the top so you don't have to remember which one does what.
 
 **Save vs Run Draft**: Save persists the canvas state to the workflow row. Run Draft executes the *current canvas state* (which may differ from saved) — useful for iteration. After Run Draft, the canvas decorates each node live: pulsing purple → green (completed) / red (failed). Click any completed node in the result panel to see its input and output.
+
+**Autosave**: the canvas also saves in the background 3 seconds after you stop editing — the same status indicator next to the Save button cycles through *idle → unsaved → saving → saved* (or an error state if the save fails). Autosave doesn't replace clicking Save when you want an immediate write, but it means leaving the tab open with unpersisted edits is no longer a way to lose work. Composer also warns before you close a tab with unsaved changes.
+
+**Sharing access**: workflow owners (and admins) can grant other users full read+write access from the workflow's settings panel ("Manage access") — search by name or email, add or remove assignees. Assignees can open, edit, and run the workflow like the owner; only the owner or an admin can manage who else has access, and only the owner can delete the workflow or transfer ownership.
 
 ### Conditional routing
 
@@ -79,7 +84,7 @@ What's *not* available: `import`, `eval`, `exec`, list comprehensions, dict lite
 
 ## Node reference
 
-The nineteen node types, grouped by what they do.
+The twenty node types, grouped by what they do.
 
 ### Flow control
 
@@ -315,6 +320,23 @@ Per-user OAuth-mediated tool calls (Google Docs, Slack, etc.) via [Arcade](https
 | `arcadeUserId` | Per-user identifier (typically `{{input.user_id}}`) |
 
 If the user hasn't authorised Arcade for the requested scope, the executor pauses with an interrupt — the runs page shows an "Authorise" button. Once they finish OAuth in Arcade's UI, click Resume; execution continues. Reuses the same interrupt machinery as `user-approval`.
+
+#### `jira`
+
+Agentic Jira Cloud access (create, search, update, transition, and comment on issues) via REST API v3. Unlike the shared MCP/tool-provider credentials used elsewhere, Jira credentials are entered directly on the node — per-node, per-workflow, no shared connection required.
+
+| Field | Purpose |
+|---|---|
+| `domain` | Jira Cloud domain (e.g. `your-org.atlassian.net`). |
+| `email` | Jira Cloud account email used for Basic auth. |
+| `apiToken` | API token from [id.atlassian.com/manage/api-tokens](https://id.atlassian.com/manage/api-tokens). |
+| `instructions` | Prompt describing what the node should do; the LLM picks which Jira tool(s) to call. |
+| `model` | Optional `provider/modelId` override; falls back to a default model. |
+| `maxIterations` | Cap on the tool-call ↔ LLM-response loop (default 10, hard ceiling 100). |
+
+**Credential storage:** the API token is encrypted at rest (AES-256-GCM) the moment the workflow is saved, and every API response redacts it to a fixed `••••••••` marker — the plaintext or ciphertext never leaves the server after the initial save. The designer's Jira panel treats an unchanged, redacted field as "keep the existing token"; typing a new value replaces it. The token is only decrypted in-memory, server-side, at execution time.
+
+Output: `{lastOutput}` — the model's final text response after any tool calls complete.
 
 ## Templates
 

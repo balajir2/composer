@@ -32,6 +32,7 @@ Lists every registered user. Click a row to:
 
 - Toggle role between `admin` and `member`. The change is immediate; the user sees their next page load reflect new permissions.
 - Deactivate (soft-delete) a user. Sets `isActive=false`; the user can no longer sign in but their workflows + executions stay in place. To restore, flip the flag again.
+- **Reset password**: issues the user a temporary password and sets `mustChangePassword=true`, so their next login forces them to pick a new one. Use this for a locked-out user who can't receive email, or as a break-glass option. Most users can now self-serve via **Forgot password?** on the login page — no admin action needed unless email delivery is down or the account has no verified inbox.
 
 ### LLM models
 
@@ -65,6 +66,8 @@ Where the actual API keys live (encrypted, source of truth).
 **Test connection**: every row has a Test button that issues a minimal authenticated call to the provider (e.g. 1-token completion for LLMs, list-models for tools). Confirms the key works without you having to construct a curl by hand.
 
 **Sync to runtime**: the FastAPI app reads keys from Postgres on startup, but if you want them in the runtime's env vars too (some hosts, some integrations), the `composer keys sync --target vercel` CLI pushes the current Postgres values to Vercel env vars. See [`operations/llm-keys.md`](operations/llm-keys.md).
+
+**Not shown here — the `jira` node's per-node API token**: the `jira` node type doesn't use a centrally-managed key like the ones above. Its `domain`/`email`/`apiToken` fields live directly on the node and are entered per-workflow by the designer. The token is still AES-256-GCM-encrypted at rest and redacted (to a fixed `••••••••` marker) in every API response — it's just a separate storage path (inline in the workflow's `nodes` JSON) rather than the `LlmApiKey` table this page manages, so it has no row here and no "first 6 chars" prefix display.
 
 ### MCP servers
 
@@ -142,6 +145,8 @@ curl -X PATCH https://composer.bounteous.com/workflows/<workflow-id>/owner \
 Or via the `/admin/workflows` UI — click the workflow → Reassign → enter the new owner's email.
 
 The same pattern works for MCP servers via `PATCH /mcp-servers/{id}/owner`.
+
+If the departing employee's teammate just needs continued access rather than a full ownership transfer — e.g. someone is out temporarily, or a workflow is genuinely co-owned by a small team — **grant them an assignment instead** (owner-settings panel → "Manage access", or `POST /workflows/{id}/assignments/{userId}`). Assignment gives full read+write access without changing who can delete the workflow or transfer it again later. Reassign the owner outright only when the departing employee's access should actually be revoked.
 
 ## Authz model in one paragraph
 

@@ -4,7 +4,7 @@
 > Designers wire nodes on a canvas — LLM agents, HTTP calls, vector DB queries, branching logic, human-approval gates, document upload — and the runtime executes them as resumable state machines with full observability and a real-time stream of node-by-node events.
 
 [![Status](https://img.shields.io/badge/status-production%20ready-success)](docs/overview.md#status)
-[![Tests](https://img.shields.io/badge/tests-711%20passing-success)](#testing)
+[![Tests](https://img.shields.io/badge/tests-840%20passing-success)](#testing)
 [![Stack](https://img.shields.io/badge/stack-FastAPI%20%7C%20Postgres%20%7C%20LangGraph%20%7C%20Next.js-blueviolet)](docs/architecture.md)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -44,13 +44,13 @@ The whole loop is what most agentic-AI teams build from scratch: prompt + tool d
 
 ## Core capabilities
 
-### 19 node types
+### 20 node types
 
 | Category | Nodes |
 |---|---|
 | **Boundary** | `start` (workflow input), `end` (terminate), `note` (canvas annotation) |
 | **AI / LLM** | `agent` (multi-turn LLM with tool-calling, structured output, MCP support), `extract` (single-shot structured extraction) |
-| **Tools / Integration** | `mcp` (Model Context Protocol — static or OAuth-bound), `http` (any external HTTP API), `vector-db` (query + upsert across 5 providers), `gamma-ai` (slide generation), `email` (Resend delivery), `arcade` (Arcade tools) |
+| **Tools / Integration** | `mcp` (Model Context Protocol — static or OAuth-bound), `http` (any external HTTP API), `vector-db` (query + upsert across 5 providers), `gamma-ai` (slide generation), `email` (Resend delivery), `arcade` (Arcade tools), `jira` (Jira Cloud issue create/search/update/transition/comment, per-node encrypted credentials) |
 | **Data flow** | `set-state` (write a variable), `transform` (sandboxed expression with optional named output), `data-transform` (collection mapping), `join-chunks` (concatenate text chunks with separator/prefix/suffix) |
 | **Control flow** | `if-else` (boolean branch), `while` (bounded loop, max 100 iterations), `user-approval` (pause for human verdict) |
 | **Safety** | `guardrails` (LLM-based PII / moderation / jailbreak / hallucination classifiers, runs concurrently) |
@@ -84,6 +84,8 @@ The whole loop is what most agentic-AI teams build from scratch: prompt + tool d
 - **RBAC**: admin / member roles with explicit `Depends(ensure_admin)` enforcement at every API surface
 - **404 not 403** on cross-user reads — existence isn't leaked
 - **Owner-only delete** even for admins — protects against accidental erasure of another user's work
+- **Password reset, two paths**: admin-forced reset (temp password, `mustChangePassword` gate) and self-service "Forgot password?" email link — both share one `password_change` JWT mechanism
+- **Workflow sharing**: owners (or admins) grant/revoke full read+write access to other users via `WorkflowAssignment`, independent of the single `userId` owner field that still governs delete/transfer
 
 ### Real-time & resilience
 
@@ -91,6 +93,7 @@ The whole loop is what most agentic-AI teams build from scratch: prompt + tool d
 - **Resumable execution** via LangGraph checkpoints stored in Postgres — paused workflows survive process restarts
 - **Stuck-execution sweeper** — background task flips abandoned `running` rows to `failed` with explanatory error after a configurable threshold
 - **Resilient detached-task wrapper** — async invocations stamp `failed` to the row even on uncaught crash or worker shutdown
+- **Designer autosave** — 3s-debounced background save (same `PUT /workflows/{id}` path as manual Save) with an `idle → dirty → saving → saved/error` status indicator and a `beforeunload` guard against closing the tab with unsaved changes
 
 ### Observability
 
@@ -199,7 +202,7 @@ Deeper architecture: [`docs/architecture.md`](docs/architecture.md).
 | **Real-time** | WebSocket — node-by-node execution events |
 | **Encryption at rest** | `cryptography` AES-256-GCM |
 | **Sandboxing** | `simpleeval` (expressions) + `e2b_code_interpreter` (code) |
-| **Tests** | pytest + pytest-asyncio (711 unit + integration), Playwright (frontend e2e) |
+| **Tests** | pytest + pytest-asyncio (840 unit + integration), Playwright (frontend e2e) |
 | **Tooling** | `uv` · `ruff` · `pyright` (strict) · Prisma migrations |
 
 Why each piece was chosen, with alternatives considered: [`docs/decisions.md`](docs/decisions.md) (full ADR record).
@@ -247,7 +250,7 @@ uv run pytest -m "not integration"
 cd frontend && ./node_modules/.bin/tsc --noEmit -p tsconfig.json
 ```
 
-**711 unit tests** + 1 integration test (gated by `@pytest.mark.integration`, hits a real Neon database). Frontend Playwright suite (gated by env). Pyright runs in **strict mode** with zero errors.
+**840 unit tests** + 45 integration tests (gated by `@pytest.mark.integration`, hit a real Neon database). Frontend Playwright suite (gated by env). Pyright runs in **strict mode** with zero errors.
 
 ---
 
@@ -259,7 +262,7 @@ composer/
 │   ├── main.py                       #   App entry + router wiring + lifespan
 │   ├── api/                          #   REST + WebSocket endpoints (workflows, executions, run, uploads, admin, mcp_servers, ...)
 │   ├── engine/                       #   LangGraph executor + workflow Pydantic models + event bus
-│   ├── executors/                    #   19 node-type implementations
+│   ├── executors/                    #   20 node-type implementations
 │   ├── llm/                          #   Provider dispatch (Anthropic / OpenAI / Google / Groq)
 │   ├── mcp/                          #   MCP client + OAuth + base64-blob sanitiser
 │   ├── tools/                        #   Built-in tool providers (Tavily, Firecrawl, ...)

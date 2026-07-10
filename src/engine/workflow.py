@@ -416,6 +416,47 @@ class GammaAiNode(BaseModel):
 # ─── arcade (Phase 6) ────────────────────────────────────────────────────
 
 
+JIRA_TOKEN_ENC_PREFIX = "enc:v1:"
+JIRA_TOKEN_REDACTED = "••••••••"
+
+
+def is_jira_api_token_encrypted(value: str) -> bool:
+    return value.startswith(JIRA_TOKEN_ENC_PREFIX)
+
+
+def encrypt_jira_api_token(plaintext: str) -> str:
+    """Encrypt a Jira API token for storage in the workflow's `nodes` JSON."""
+    from src.security.encryption import encrypt
+
+    return JIRA_TOKEN_ENC_PREFIX + encrypt(plaintext)
+
+
+def decrypt_jira_api_token(value: str) -> str:
+    """Reverse of encrypt_jira_api_token(); returns unencrypted values as-is
+    so tokens stored before this fix shipped keep working without a backfill."""
+    from src.security.encryption import decrypt
+
+    if not is_jira_api_token_encrypted(value):
+        return value
+    return decrypt(value[len(JIRA_TOKEN_ENC_PREFIX) :])
+
+
+class JiraNodeData(BaseNodeData):
+    domain: str | None = None
+    email: str | None = None
+    api_token: str | None = Field(default=None, alias="apiToken")
+    instructions: str | None = None
+    model: str | None = None
+    max_iterations: int | None = Field(default=None, alias="maxIterations")
+
+
+class JiraNode(BaseModel):
+    id: str
+    type: Literal["jira"]
+    position: Position
+    data: JiraNodeData
+
+
 class EmailNodeData(BaseNodeData):
     model_config = ConfigDict(populate_by_name=True)
 
@@ -516,7 +557,8 @@ WorkflowNode = Annotated[
     | GammaAiNode
     | EmailNode
     | ArcadeNode
-    | JoinChunksNode,
+    | JoinChunksNode
+    | JiraNode,
     Field(discriminator="type"),
 ]
 
@@ -568,6 +610,8 @@ __all__ = [
     "HttpNodeData",
     "IfElseNode",
     "IfElseNodeData",
+    "JiraNode",
+    "JiraNodeData",
     "JoinChunksNode",
     "JoinChunksNodeData",
     "McpNode",

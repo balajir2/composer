@@ -23,6 +23,7 @@ import {
   Globe,
   HelpCircle,
   Layers,
+  ListTodo,
   PlayCircle,
   Plug,
   Presentation,
@@ -170,6 +171,12 @@ export const NODE_VISUALS: Record<string, NodeVisual> = {
     iconWrapClass: "bg-emerald-100 text-emerald-700",
     accent: "text-emerald-700",
     label: "Vector DB",
+  },
+  jira: {
+    icon: ListTodo,
+    iconWrapClass: "bg-blue-100 text-blue-700",
+    accent: "text-blue-700",
+    label: "Jira",
   },
 };
 

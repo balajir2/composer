@@ -24,6 +24,7 @@ import GammaAiPanel from "./node-panels/gamma-ai";
 import EmailPanel from "./node-panels/email";
 import ArcadePanel from "./node-panels/arcade";
 import VectorDbPanel from "./node-panels/vector-db";
+import JiraPanel from "./node-panels/jira";
 
 // ---------------------------------------------------------------------------
 // Panel component type
@@ -62,6 +63,7 @@ const PANEL_MAP: Record<string, PanelComponent> = {
   email: EmailPanel,
   arcade: ArcadePanel,
   "vector-db": VectorDbPanel,
+  jira: JiraPanel,
 };
 
 const TYPE_LABELS: Record<string, string> = {
@@ -84,6 +86,7 @@ const TYPE_LABELS: Record<string, string> = {
   email: "Email",
   arcade: "Arcade",
   "vector-db": "Vector DB",
+  jira: "Jira",
 };
 
 // ---------------------------------------------------------------------------

@@ -10,7 +10,14 @@ from pydantic import BaseModel, ConfigDict, Field
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
 from src.engine.graph_builder import WorkflowValidationError, validate_workflow_shape
-from src.engine.workflow import Workflow, WorkflowEdge, WorkflowNode
+from src.engine.workflow import (
+    JIRA_TOKEN_REDACTED,
+    Workflow,
+    WorkflowEdge,
+    WorkflowNode,
+    encrypt_jira_api_token,
+    is_jira_api_token_encrypted,
+)
 from src.security.auth import ensure_admin, get_current_role, get_current_user_id
 from src.storage.db import get_db
 
@@ -49,6 +56,47 @@ def _check_workflow_size_limits(workflow: Workflow) -> None:
                 f"got {len(workflow.edges)}"
             ),
         )
+
+
+def _redact_jira_tokens(nodes: list[Any]) -> list[Any]:
+    """Never let a Jira node's encrypted apiToken leave the server."""
+    redacted: list[Any] = []
+    for node in nodes:
+        if isinstance(node, dict) and node.get("type") == "jira":
+            data = dict(node.get("data") or {})
+            if data.get("apiToken"):
+                data["apiToken"] = JIRA_TOKEN_REDACTED
+            node = {**node, "data": data}
+        redacted.append(node)
+    return redacted
+
+
+def _to_workflow_read(row: Any) -> "WorkflowRead":
+    read = WorkflowRead.model_validate(row)
+    read.nodes = _redact_jira_tokens(read.nodes)
+    return read
+
+
+def _encrypt_jira_tokens(nodes_json: list[dict[str, Any]], existing_nodes: list[Any]) -> None:
+    """Encrypt plaintext Jira apiToken values in-place before persisting.
+
+    If the incoming value is the redacted marker (the UI echoed back what a
+    prior GET returned, unchanged), keep whatever was already stored for that
+    node id instead of overwriting it with the literal marker string.
+    """
+    existing_by_id = {node.get("id"): node for node in existing_nodes if isinstance(node, dict)}
+    for node in nodes_json:
+        if node.get("type") != "jira":
+            continue
+        data = node.get("data") or {}
+        token = data.get("apiToken")
+        if not token:
+            continue
+        if token == JIRA_TOKEN_REDACTED:
+            prior = existing_by_id.get(node.get("id")) or {}
+            data["apiToken"] = (prior.get("data") or {}).get("apiToken")
+        elif not is_jira_api_token_encrypted(token):
+            data["apiToken"] = encrypt_jira_api_token(token)
 
 
 async def _has_assignment(
@@ -141,6 +189,7 @@ async def create_workflow(
         node.model_dump(by_alias=True)  # pyright: ignore[reportAttributeAccessIssue]
         for node in workflow.nodes
     ]
+    _encrypt_jira_tokens(nodes_json, existing_nodes=[])
     edges_json = [edge.model_dump(by_alias=True) for edge in workflow.edges]
     row = await db.workflow.create(
         data={  # pyright: ignore[reportArgumentType]
@@ -158,7 +207,7 @@ async def create_workflow(
             "userId": user_id,
         }
     )
-    return WorkflowRead.model_validate(row)
+    return _to_workflow_read(row)
 
 
 # NOTE: /workflows/search must be registered BEFORE /workflows/{workflow_id}
@@ -194,7 +243,7 @@ async def search_workflows(
         take=limit,
         order={"updatedAt": "desc"},
     )
-    items = [WorkflowRead.model_validate(row) for row in rows]
+    items = [_to_workflow_read(row) for row in rows]
     return WorkflowListResponse(total=total, items=items, limit=limit, offset=0)
 
 
@@ -248,7 +297,7 @@ async def list_workflows(
         skip=offset,
         order={"updatedAt": "desc"},
     )
-    items = [WorkflowRead.model_validate(row) for row in rows]
+    items = [_to_workflow_read(row) for row in rows]
     return WorkflowListResponse(total=total, items=items, limit=limit, offset=offset)
 
 
@@ -268,11 +317,11 @@ async def get_workflow(
             detail=f"Workflow {workflow_id!r} not found.",
         )
     if role == "admin":
-        return WorkflowRead.model_validate(row)
+        return _to_workflow_read(row)
     if row.isPublic or row.userId == user_id:
-        return WorkflowRead.model_validate(row)
+        return _to_workflow_read(row)
     if await _has_assignment(db, workflow_id, user_id):
-        return WorkflowRead.model_validate(row)
+        return _to_workflow_read(row)
     # 404 for private, not owner, not assignee — info-leak tight (ADR-0021)
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -319,6 +368,7 @@ async def update_workflow(
         node.model_dump(by_alias=True)  # pyright: ignore[reportAttributeAccessIssue]
         for node in workflow.nodes
     ]
+    _encrypt_jira_tokens(nodes_json, existing_nodes=existing.nodes or [])
     edges_json = [edge.model_dump(by_alias=True) for edge in workflow.edges]
 
     # Publish / unpublish handling
@@ -361,7 +411,7 @@ async def update_workflow(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"external_slug already in use: {exc}",
         ) from exc
-    return WorkflowRead.model_validate(updated)
+    return _to_workflow_read(updated)
 
 
 @router.delete("/workflows/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -451,7 +501,7 @@ async def admin_update_workflow_flags(
         data["externalSlug"] = payload.external_slug
 
     if not data:
-        return WorkflowRead.model_validate(existing)
+        return _to_workflow_read(existing)
 
     try:
         updated = await db.workflow.update(  # pyright: ignore[reportAttributeAccessIssue]
@@ -463,7 +513,7 @@ async def admin_update_workflow_flags(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"external_slug already in use: {exc}",
         ) from exc
-    return WorkflowRead.model_validate(updated)
+    return _to_workflow_read(updated)
 
 
 @router.patch("/workflows/{workflow_id}/owner", response_model=WorkflowRead)
@@ -493,7 +543,7 @@ async def assign_workflow_owner(
     updated = await db.workflow.update(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": workflow_id}, data={"userId": target_user_id}
     )
-    return WorkflowRead.model_validate(updated)
+    return _to_workflow_read(updated)
 
 
 @router.get("/workflows/{workflow_id}/assignments", response_model=list[WorkflowAssignmentRead])

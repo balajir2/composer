@@ -6,6 +6,81 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — Jira node (2026-07-10)
+
+A new `jira` node type: drag it onto the canvas, configure Jira Cloud domain/email/API token directly on the node, write a prompt, and the LLM picks which of 6 Jira REST API v3 tools to call (create/get/search/update/transition issue, add comment). Per-node, per-workflow credentials — no shared MCP registration or admin-managed key required. The Jira tool provider (`src/tools/providers/jira.py`) is also available to `agent` nodes via state-variable or env-var credentials.
+
+A security review of the initial implementation (before this entry's fixes) found the API token was stored and returned in plaintext on every workflow read, and that the frontend's camelCase `apiToken` field silently failed to populate the backend model at all. Both are fixed here; see ADR-0028 for the full record.
+
+#### Added
+- `jira` node type — [src/engine/workflow.py](src/engine/workflow.py) (`JiraNodeData`/`JiraNode`), [src/executors/jira.py](src/executors/jira.py) (`JiraExecutor` — agentic loop over all 6 Jira tools), [src/tools/providers/jira.py](src/tools/providers/jira.py) (`JiraProvider` + 6 tool classes), [frontend/components/composer/canvas/node-panels/jira.tsx](frontend/components/composer/canvas/node-panels/jira.tsx), wired through the executor registry, graph builder, tools palette, property panel, node visuals, and catalog.
+- Jira apiToken encryption-at-rest (`encrypt_jira_api_token`/`decrypt_jira_api_token`/`is_jira_api_token_encrypted` in [src/engine/workflow.py](src/engine/workflow.py), reusing the existing AES-256-GCM primitive in [src/security/encryption.py](src/security/encryption.py)) and redaction-on-read (`_to_workflow_read`/`_redact_jira_tokens` in [src/api/workflows.py](src/api/workflows.py)) — the token is never returned over HTTP in plaintext or ciphertext after the first save.
+- `docs/designer-guide.md` `jira` node-reference section (now 20 node types); `docs/admin-guide.md` caveat distinguishing the Jira per-node token from the centrally-managed LLM-key masking convention.
+- 10 new tests: [tests/unit/executors/test_jira_executor.py](tests/unit/executors/test_jira_executor.py) (5 — alias round-trip, decrypt-before-use, legacy-plaintext tolerance, LangSmith threading, encrypt/decrypt round-trip), [tests/unit/api/test_workflows_jira_tokens.py](tests/unit/api/test_workflows_jira_tokens.py) (5 — encrypt-on-create, redact-on-get/list, preserve-on-unchanged-marker, encrypt-on-new-value).
+
+#### Fixed
+- `JiraNodeData.api_token` had no `alias="apiToken"`, unlike every sibling field — the frontend's camelCase payload silently failed to populate it (Pydantic's `extra="allow"` absorbed the mismatch rather than raising), so every UI-created Jira node ran with no credentials at all.
+- `JiraExecutor` now threads `langsmith_config=get_current_langsmith()` through its `build_chat_model` call, matching every other LLM-invoking executor (CLAUDE.md fix #6) — the initial implementation had silently omitted this.
+- Stale module docstring in `src/tools/providers/jira.py` listed 5 tools, omitting `jira_update_issue`; pre-existing `reportAttributeAccessIssue` pyright errors on the `_domain`/`_email`/`_api_token` tool-instance assignments (untyped `tools: list[BaseTool]` local) suppressed/annotated to keep `pyright src tests` at 0 errors.
+
+#### Notes
+- See ADR-0028 in [docs/decisions.md](docs/decisions.md) for the full design record, including why no backfill migration was written for pre-existing plaintext tokens (none existed — the feature was still in review).
+
+### Added — Self-service "Forgot password?" flow (2026-07-10)
+
+Additive to the admin-only reset shipped under ADR-0024: a standard email-link flow for users who forgot their password and have no admin handy, reusing the existing `password_change` JWT mechanism rather than inventing a second token concept.
+
+#### Added
+- **`POST /auth/forgot-password`** and **`POST /auth/reset-password`** in [src/api/auth_standalone.py](src/api/auth_standalone.py). `forgot-password` always returns `204` — whether the email matches a real, password-based account, an SSO-only account, or nothing at all — closing the account-enumeration vector; email-delivery failures are caught and logged, never surfaced. `reset-password` verifies the token directly via `verify_password_change_token` (deliberately not the dependency that also accepts normal access tokens, since this route must be reachable by a fully anonymous caller) and sets the new password without requiring the current one.
+- **`send_password_reset_email`** helper in [src/integrations/email/resend.py](src/integrations/email/resend.py), reusing the existing `ResendEmailProvider` already wired up for the workflow email-node executor — no new email infrastructure.
+- **`/forgot-password` and `/reset-password` pages** in `frontend/app/(auth)/`, a "Forgot password?" link on the login page, and matching client helpers `composerForgotPassword`/`composerResetPassword` in [frontend/lib/composer-api.ts](frontend/lib/composer-api.ts). [frontend/middleware.ts](frontend/middleware.ts) excludes both routes so they're reachable while logged out.
+- Config: `resend_from_email`, `frontend_url` (used to build the absolute reset link in the email), `rate_limit_forgot_password_per_minute` (default 5/min/IP) in [src/config.py](src/config.py).
+- 16 new tests: [tests/unit/api/test_auth_forgot_password.py](tests/unit/api/test_auth_forgot_password.py) (4), [tests/unit/api/test_auth_reset_password.py](tests/unit/api/test_auth_reset_password.py) (6), [tests/unit/integrations/test_resend_password_reset.py](tests/unit/integrations/test_resend_password_reset.py) (2), plus 4 frontend cases in [frontend/lib/auth.test.ts](frontend/lib/auth.test.ts).
+
+#### Changed
+- `jwt_password_change_ttl_seconds` bumped from 600 (10 min) to 1800 (30 min) — shared by both the admin-handoff case (interactive) and the new email case (user needs time to check their inbox).
+
+#### Fixed
+- `/auth/reset-password` now rejects a deactivated account, matching the `isActive` check already enforced everywhere else a standalone JWT authorizes an action — a stale reset link could otherwise reactivate a deactivated user.
+
+#### Notes
+- See ADR-0027 in [docs/decisions.md](docs/decisions.md) for the full design record.
+
+### Added — Designer autosave (2026-07-10)
+
+Root-caused a reported "reassigning a workflow's owner leaves only Start+End nodes" bug: the reassign endpoint never touched flow data — the Designer simply had no autosave, so an owner who edited and never clicked Save left the database row holding only its creation-time scaffold, which became visible the moment a different assignee opened it fresh.
+
+#### Added
+- **`useAutosave`** hook in [frontend/lib/use-autosave.ts](frontend/lib/use-autosave.ts) — a 3-second debounced autosave that reuses the existing manual-save mutation and `PUT /workflows/{id}` path (no new backend endpoint). A `saveNow()` variant backs the manual Save button so both paths share one status state machine (`idle → dirty → saving → saved/error`).
+- Save-status indicator wired into the Designer canvas ([frontend/app/designer/[workflowId]/page.tsx](frontend/app/designer/%5BworkflowId%5D/page.tsx), [frontend/components/composer/canvas/save-controls.tsx](frontend/components/composer/canvas/save-controls.tsx)), plus a `beforeunload` guard that blocks tab-close while unsaved.
+
+#### Fixed
+- Autosave no longer flags a workflow dirty on initial canvas mount — fixed by comparing the *content* of each `onNodesChange`/`onEdgesChange` callback's incoming nodes/edges against a baseline captured once per mount, rather than an invocation counter (which broke under React 18 Strict Mode's mount-effect double-invoke).
+- The page's inner component now remounts (`key={params.workflowId}`) on every workflow switch, since Next.js's App Router doesn't guarantee a remount on a dynamic-route param change alone — without it, the mount-vs-edit baseline leaked from the previously open workflow into the next.
+
+#### Notes
+- Last-write-wins remains the concurrency model; no multi-editor conflict resolution was introduced. See ADR-0026 in [docs/decisions.md](docs/decisions.md).
+
+### Added — Workflow assignment & sharing (2026-07-09)
+
+A workflow could previously only ever have one owner. Adds many-to-many sharing as a layer on top of the existing single-owner field, which keeps its existing meaning (who created it / who can transfer or delete it) unchanged.
+
+#### Added
+- **`WorkflowAssignment`** join table (`workflowId`, `userId`, `assignedById`, `assignedAt`; unique on `(workflowId, userId)`) — assignment grants full read+write access (open, edit, run); there is no view-vs-edit split.
+- **Assignment CRUD** in [src/api/workflows.py](src/api/workflows.py) — grant/revoke, owner-or-admin only; delete and owner-transfer remain untouched by assignment.
+- **`GET /users/search`** — lets non-admin workflow owners find people to share with (the existing `/admin/users` listing is admin-only); results limited to id/email/displayName.
+- **`ManageAssigneesDialog`** wired into the admin and owner UI, with a "Shared" badge on assigned-not-owned workflows in the workflow list.
+- `GET /workflows/{id}` / `PUT /workflows/{id}` authorization gained an assignee check (`_has_assignment`) alongside the existing owner/admin/`isPublic` checks; both `list_workflows` and `search_workflows` gained a matching `OR` clause so assigned-not-owned workflows are visible and findable everywhere in the UI.
+- Integration test covering the full assignment cycle: [tests/integration/test_workflow_assignments.py](tests/integration/test_workflow_assignments.py).
+
+#### Fixed (caught during code review)
+- Double-grant now returns `409` instead of an uncaught 500; double-revoke checks `delete()`'s return value for `None` (Prisma Python's generated `delete()` already swallows `RecordNotFoundError` internally, so the original `except RecordNotFoundError` was dead code).
+- `ManageAssigneesDialog` tracked one shared `isPending` flag across every row, letting a rapid second click hit the backend's 409/404 before the invalidated query's refetch removed the row — fixed with per-row pending-id tracking.
+- The owner-settings "Manage access" section rendered for anyone who could load the page, including non-owner assignees who are correctly 403'd by the assignment-management endpoints — gated on `role === "admin" || workflow.userId === currentUserId`.
+
+#### Notes
+- Per-assignee permission levels (view-only, etc.) are explicitly out of scope for this pass. See ADR-0025 in [docs/decisions.md](docs/decisions.md).
+
 ### Security — rate-limit GET /users/search (2026-07-09)
 
 `GET /users/search` (added for the account/workflow-sharing feature to let non-admin workflow owners find people to share with) was reachable by any authenticated member with no per-caller rate limit, letting a scripted caller reconstruct most of the user directory (email + displayName) via repeated queries.

@@ -50,6 +50,7 @@ _PHASE_FOR_TYPE: dict[str, int] = {
     "email": 7,
     "arcade": 6,
     "join-chunks": 6,
+    "jira": 6,
 }
 
 

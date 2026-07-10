@@ -23,6 +23,8 @@ In-memory token bucket per route key + client. Defaults:
 | `POST /auth/login` | configured (`rate_limit_login_per_minute`) | client IP |
 | `POST /auth/register` | configured (`rate_limit_register_per_minute`) | client IP |
 | `POST /auth/refresh` | configured (`rate_limit_refresh_per_minute`) | client IP |
+| `POST /auth/forgot-password` | 5 / min (`rate_limit_forgot_password_per_minute`) | client IP |
+| `GET /users/search` | 30 / min (`rate_limit_users_search_per_minute`) | user_id |
 | `POST /api/run/{slug}` | configured (`rate_limit_api_run_per_minute`) | API key |
 | `POST /uploads/extract-text` | 20 / min | user_id |
 
@@ -35,15 +37,20 @@ GET    /workflows?mine={true|false}&isTemplate={true|false}&isPublic={true|false
 GET    /workflows/search?q=<query>&limit=N
 GET    /workflows/{id}
 POST   /workflows                                       (create)
-PUT    /workflows/{id}                                  (update — owner or admin)
+PUT    /workflows/{id}                                  (update — owner, admin, or an assignee)
 DELETE /workflows/{id}                                  (owner only — admins cannot)
 PATCH  /workflows/{id}/owner                            (admin — reassign)
 PATCH  /workflows/{id}/admin-flags                      (admin — set isPublic / isProduction / externalSlug)
+GET    /workflows/{id}/assignments                      list assignees (owner or admin)
+POST   /workflows/{id}/assignments/{userId}              grant full read+write access (owner or admin)
+DELETE /workflows/{id}/assignments/{userId}              revoke access (owner or admin)
 ```
 
-`mine=true` always means "scope to the calling user's own workflows" regardless of role — admins asking for `mine=true` don't get the global feed (only `mine=false` or unset triggers admin-sees-all).
+`mine=true` always means "scope to the calling user's own workflows" regardless of role — admins asking for `mine=true` don't get the global feed (only `mine=false` or unset triggers admin-sees-all). It also includes workflows the caller is *assigned* to but doesn't own, not just workflows they own.
 
 The `nodes` and `edges` arrays are validated against the discriminated union of node types defined in `src/engine/workflow.py`. Validation errors come back as `422` with FastAPI's standard `{detail: [{loc, msg, type}, ...]}` shape.
+
+**Assignment** grants full read+write access (open, edit, run) to the target workflow — there's no view-vs-edit split. It's independent of the single `userId` owner field, which continues to govern `DELETE` and `PATCH .../owner`. Only the owner or an admin can grant/revoke.
 
 ## Executions
 
@@ -142,9 +149,22 @@ POST /auth/login                          body: {email, password}
 POST /auth/refresh                        body: {refreshToken}
 POST /auth/disconnect                     client-side token drop
 POST /auth/sso-exchange                   body: {azureToken}     ← SSO entry point
+POST /auth/change-password                body: {currentPassword?, newPassword}   (session or password_change token)
+POST /auth/forgot-password                body: {email}                          (always 204 — no account-enumeration leak)
+POST /auth/reset-password                 body: {token, newPassword}             (anonymous — token proves identity)
 ```
 
 `/auth/register` and `/auth/login` are only registered when `COMPOSER_DEPLOYMENT_MODE=standalone`. Embedded mode expects the parent IE app to mint JWTs that Composer validates.
+
+`/auth/forgot-password` and `/auth/reset-password` are the self-service counterpart to the admin-forced reset (`mustChangePassword` + `/auth/change-password`) — both share the same `password_change` JWT (30-minute TTL). `/auth/forgot-password` is rate-limited (`rate_limit_forgot_password_per_minute`, default 5/min/IP) and always returns `204`, whether or not the email matches an account, so the response never leaks account existence. `/auth/reset-password` accepts only a `password_change` token — access and refresh tokens are rejected with `400`.
+
+## Users
+
+```
+GET /users/search?q=<query>&limit=N       body: none — any authenticated active user
+```
+
+Returns `id`/`email`/`displayName` only, rate-limited (`rate_limit_users_search_per_minute`, default 30/min/user). Lets non-admin workflow owners find people to share a workflow with — the full `/admin/users` listing stays admin-only.
 
 ## MCP servers
 

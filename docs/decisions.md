@@ -774,3 +774,26 @@ On the frontend, NextAuth's `authorize()`/`jwt()`/`session()` callbacks thread `
 **Implemented by.** `docs/archive/phase-history/plans/2026-07-10-self-service-password-reset-plan.md` (commits on `main`, 2026-07-10).
 
 **Related.** ADR-0024 (admin-only password reset — the mechanism this reuses).
+
+## ADR-0028: Jira node — per-node credentials, encrypted at rest, redacted on every read
+
+**Status.** Accepted 2026-07-10.
+
+**Context.** The `jira` node type was built to let a designer configure Jira Cloud credentials (`domain`, `email`, `apiToken`) directly on the node, so a workflow that talks to Jira needs no shared MCP registration or admin-managed key — the trade-off being that the credential now lives inline in the workflow's `nodes` JSON rather than in a dedicated table like `LlmApiKey` (ADR unspecified but see `src/api/admin_llm_keys.py`) or the MCP OAuth-token store (the six MCP fixes, CLAUDE.md §1). A security review of the initial implementation found the `apiToken` was stored and returned in plaintext: every `GET /workflows`, `/workflows/search`, and `/workflows/{id}` response included it verbatim to anyone who could read the workflow (owner, assignee, admin, or the public if `isPublic`). The same review also found `JiraNodeData.api_token` had no `alias="apiToken"`, so the frontend's camelCase payload silently failed to populate the field at all — every UI-created Jira node was actually running with no credentials.
+
+**Decision.** Keep the per-node credential model (it's the point of the feature) but close the storage/exposure gap:
+- Fix the alias bug: `api_token: str | None = Field(default=None, alias="apiToken")`.
+- Encrypt `apiToken` with the existing AES-256-GCM helpers (`src/security/encryption.py`) the moment a workflow is created or updated, prefixed `enc:v1:` so encrypted values are self-identifying (`is_jira_api_token_encrypted`) without a schema flag.
+- Redact `apiToken` to a fixed `••••••••` marker on every read path (`get_workflow`, `list_workflows`, `search_workflows`, and the mutation endpoints' own responses) — the ciphertext itself never leaves the server, not just the plaintext.
+- On update, if the incoming `apiToken` is exactly the redacted marker (the designer didn't touch the field), preserve whatever was already stored for that node id instead of encrypting the literal marker string — otherwise every no-op save would brick the credential.
+- Decrypt only inside `JiraExecutor.arun`, in-memory, immediately before handing the value to `JiraProvider` for the live API call. `decrypt_jira_api_token` passes non-prefixed values through unchanged, so tokens saved before this fix shipped keep working with no backfill migration required.
+- Thread `langsmith_config=get_current_langsmith()` through the node's `build_chat_model` call, matching every other LLM-invoking executor (CLAUDE.md fix #6) — the initial implementation had silently omitted this.
+
+**Consequences.**
+- The designer's Jira panel (`frontend/.../node-panels/jira.tsx`) treats the redacted marker as "field unchanged": it renders the input empty with a "token is set — leave blank to keep, type to replace" placeholder rather than showing the literal dots as if they were typed, and only sends a new value when the user actually edits the field.
+- This credential model is intentionally different from the LLM-key masking convention in `src/api/admin_llm_keys.py` (which shows a 6-char prefix) — a Jira API token has no legitimate reason to be partially shown back to the UI, so it's fully redacted rather than prefixed. `docs/admin-guide.md`'s LLM-keys section calls this out explicitly so admins don't expect a `jira` row in `/admin/llm-keys`.
+- No workflows containing real Jira credentials existed before this fix shipped (the feature was still in review), so no backfill/migration script was written to re-encrypt pre-existing plaintext rows. If that assumption is ever wrong, `decrypt_jira_api_token`'s pass-through behavior means old plaintext rows keep working, but they remain unencrypted at rest until the workflow is next saved — worth revisiting if this ever matters in practice.
+
+**Implemented by.** `src/engine/workflow.py` (alias fix + crypto helpers), `src/api/workflows.py` (encrypt-on-write / redact-on-read), `src/executors/jira.py` (server-side decrypt + LangSmith threading), `tests/unit/executors/test_jira_executor.py`, `tests/unit/api/test_workflows_jira_tokens.py` (commits on `main`, 2026-07-10).
+
+**Related.** CLAUDE.md §1 (the six MCP/LLM fixes — LangSmith threading is fix #6); `src/security/encryption.py` (the AES-256-GCM primitive reused here).
