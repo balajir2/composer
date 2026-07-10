@@ -28,13 +28,35 @@ interface PageProps {
 }
 
 export default function DesignerCanvasPage({ params }: PageProps) {
-  const { workflowId } = params;
+  // `key` forces a full remount (resetting every ref/state below) whenever
+  // workflowId changes. Next.js's App Router does NOT guarantee an unmount
+  // when navigating client-side between two instances of the same dynamic
+  // route (e.g. /designer/A -> /designer/B) — the page component can be
+  // reconciled as a props update instead of a fresh mount. Without this key,
+  // stale refs (nodesRef, nodesInitializedRef, etc.) from workflow A would
+  // leak into workflow B: the "seed refs" logic below only seeds when the
+  // ref is still empty, so it'd silently keep showing A's canvas data, and
+  // the mount-vs-edit dirty tracking below would never re-arm for B's
+  // initial load.
+  return <DesignerCanvasPageInner key={params.workflowId} workflowId={params.workflowId} />;
+}
+
+function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
   const queryClient = useQueryClient();
 
   // Track current canvas state via refs so Save can read the latest without
   // requiring a re-render on every node/edge change event.
   const nodesRef = useRef<RFNode[]>([]);
   const edgesRef = useRef<RFEdge[]>([]);
+
+  // WorkflowCanvas's onNodesChange/onEdgesChange effects fire once on
+  // mount with the just-loaded initial nodes/edges (standard useEffect
+  // semantics), even though the user hasn't edited anything. Each ref
+  // tracks whether that first, mount-driven invocation has already
+  // happened for its callback so we only call autosave.markDirty() on
+  // real (post-mount) edits, not the initial sync.
+  const nodesInitializedRef = useRef(false);
+  const edgesInitializedRef = useRef(false);
 
   const [isSaving, setIsSaving] = useState(false);
   // The draft-run currently in flight (if any).  Set when Run Draft
@@ -232,11 +254,19 @@ export default function DesignerCanvasPage({ params }: PageProps) {
             initialEdges={rfEdges}
             onNodesChange={(nodes) => {
               nodesRef.current = nodes;
-              autosave.markDirty();
+              if (nodesInitializedRef.current) {
+                autosave.markDirty();
+              } else {
+                nodesInitializedRef.current = true;
+              }
             }}
             onEdgesChange={(edges) => {
               edgesRef.current = edges;
-              autosave.markDirty();
+              if (edgesInitializedRef.current) {
+                autosave.markDirty();
+              } else {
+                edgesInitializedRef.current = true;
+              }
             }}
             runState={runState ?? undefined}
           />
