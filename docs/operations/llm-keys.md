@@ -1,7 +1,11 @@
 # LLM Keys Management
 
 **Audience:** Bounteous ops/SRE. Covers the full lifecycle of LLM API keys in Composer: where they
-live, how to set and rotate them, and how they flow from Postgres to Vercel.
+live and how to set and rotate them. Composer's actual production deployment is **GCP Cloud Run**
+(see [gcp-cloud-run-setup.md](gcp-cloud-run-setup.md)), which reads keys directly from Postgres —
+the `--target vercel` sync described below is an optional, secondary distribution channel, only
+relevant if you're also running Vercel-hosted infrastructure that needs these values as env vars
+(see [vercel-setup.md](vercel-setup.md)). It is not part of the Cloud Run path.
 
 ---
 
@@ -15,26 +19,24 @@ Ops machine
   Postgres llm_api_keys table
   (AES-256-GCM encrypted, key prefix stored for display)
           │
-          ▼ composer keys sync --target vercel
-  Vercel environment variables
-  (e.g. ANTHROPIC_API_KEY=sk-ant-...)
+          ├─── read directly at app startup + on every Admin UI update ───▶ Composer FastAPI app
+          │                                                                  (Cloud Run — primary path)
           │
-          ▼ Vercel redeploy
-  Composer FastAPI app
-  reads env vars + encrypted DB keys into get_settings()
+          └─ optional ─▶ composer keys sync --target vercel ─▶ Vercel environment variables
+                          (only if you also run Vercel-hosted infra that needs these as env vars)
 ```
 
 **Key points:**
 
 - Postgres is the single source of truth for all LLM keys.
-- Vercel env vars are a derived, synced copy. They are never edited directly in the Vercel UI during
-  normal operations.
 - The running app does not query Postgres for keys on every provider call. At startup it syncs
   encrypted DB keys into in-process settings; successful Admin UI updates also refresh those
-  in-process settings immediately for the current app instance.
-- Vercel env vars still matter for deployment parity and cold starts. After changing keys in
-  Postgres, run `composer keys sync --target vercel` and redeploy so new instances start with the
-  same values.
+  in-process settings immediately for the current app instance. On Cloud Run, other replicas pick
+  up the new value the next time they boot (scale-to-zero and autoscaling churn make this happen
+  naturally; no manual redeploy is required to propagate a key change).
+- `composer keys sync --target vercel` and Vercel env vars are **optional** — only needed if some
+  part of your deployment reads these values as Vercel env vars. They are never edited directly in
+  the Vercel UI during normal operations.
 - Keys are encrypted at rest using AES-256-GCM with `ENCRYPTION_KEY` (same mechanism as MCP OAuth
   tokens). Only the first 6 characters of the plaintext key (the `keyPrefix`) are stored
   unencrypted for display.
@@ -138,7 +140,11 @@ composer keys delete serper
 
 Deletes the row from Postgres. The Vercel env var is not removed until you run `sync --prune`.
 
-### Sync to Vercel
+### Sync to Vercel (optional — only if you run Vercel-hosted infra)
+
+Not part of the Cloud Run deployment path. Skip this unless something in your deployment reads LLM
+keys as Vercel env vars (e.g. a Vercel-hosted frontend that needs them, or a component described in
+[vercel-setup.md](vercel-setup.md)).
 
 ```bash
 composer keys sync --target vercel
@@ -166,7 +172,8 @@ Sync complete:
   pruned:    []
 ```
 
-**After every sync, trigger a Vercel redeploy** so the running app picks up the new values:
+**After every sync, trigger a Vercel redeploy** so the running app picks up the new values (Vercel
+injects env vars at build time, not dynamically at request time):
 
 ```bash
 npx vercel --prod --force
@@ -211,25 +218,27 @@ doing a scheduled rotation).
    ```bash
    composer keys set anthropic sk-ant-new-key-value...
    ```
+   This immediately refreshes the in-process settings on whichever instance served the `composer
+   keys set` call (or the Admin UI request, if set that way) — no further step is required for the
+   Cloud Run deployment. Other Cloud Run replicas pick up the new value the next time they boot.
 
-3. **Sync to Vercel:**
-   ```bash
-   VERCEL_API_TOKEN=... VERCEL_PROJECT_ID=prj_... composer keys sync --target vercel
-   ```
-
-4. **Trigger a Vercel redeploy:**
-   ```bash
-   npx vercel --prod --force
-   ```
-
-5. **Verify the running app uses the new key:**
-   - Watch LangSmith or Vercel logs for a test execution.
+3. **Verify the running app uses the new key:**
+   - Watch LangSmith or Cloud Run logs for a test execution.
    - Or hit `GET /admin/llm-keys/anthropic` to confirm the `keyPrefix` changed.
 
-6. **Revoke the old key** in the provider's console once the new key is confirmed working.
+4. **Revoke the old key** in the provider's console once the new key is confirmed working.
 
-Total downtime: zero. The old key continues to work until the redeploy completes; the new key takes
-over atomically on the next Vercel function cold-start.
+**Only if you also run Vercel-hosted infra** that reads these keys as env vars (see
+[vercel-setup.md](vercel-setup.md)): additionally sync and redeploy so that infra picks up the new
+value too —
+
+```bash
+VERCEL_API_TOKEN=... VERCEL_PROJECT_ID=prj_... composer keys sync --target vercel
+npx vercel --prod --force
+```
+
+Total downtime: zero. The old key continues to work until the new one is set; on the Vercel side (if
+applicable) the new key takes over atomically on the next redeploy/cold-start.
 
 ---
 
@@ -288,9 +297,11 @@ limits or transient errors cause partial failures. Re-running the sync is safe; 
 
 ### App starts up with empty provider key
 
-`get_settings()` is populated from env vars and the encrypted DB key sync. If `ANTHROPIC_API_KEY` is empty in Vercel, the app
-starts without error but requests that invoke Claude fail. After adding/syncing the key, redeploy
-to inject the updated value.
+`get_settings()` is populated from env vars and the encrypted DB key sync. If the row is missing or
+empty in Postgres, the app starts without error but requests that invoke that provider fail. Set the
+key with `composer keys set <provider> <value>` — no restart needed on Cloud Run (see §1). If
+you're also running Vercel-hosted infra with a stale `ANTHROPIC_API_KEY` env var, sync and redeploy
+that separately.
 
 ---
 

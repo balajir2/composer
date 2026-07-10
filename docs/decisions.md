@@ -676,7 +676,7 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 - **API keys as new auth path.** Coexists with JWT; distinguished at the `Authorization: Bearer` prefix (`ck_` → API key; otherwise JWT).
 - **shadcn base-nova divergence.** Documented in Phase 10 Task 6 concerns; downstream subagents adapted (e.g., `<Link>` + `buttonVariants()` instead of `<Button asChild>`).
 - **NextAuth v5 still in beta.** Pinned to `5.0.0-beta.31`; upgrade to stable when released.
-- **WebSocket deployment constraint** forces a container-based backend, documented in `docs/deployment/vercel-setup.md`.
+- **WebSocket deployment constraint** forces a container-based backend, documented in `docs/operations/vercel-setup.md`. In practice the backend runs on GCP Cloud Run alongside the frontend (see `docs/operations/gcp-cloud-run-setup.md`) rather than the mixed Vercel-frontend/separate-container split this ADR anticipated — `vercel-setup.md` remains as an alternate path.
 
 **Implemented by.** Phase 10 (commits `a6cd130`…`4f3a4d0` on `main`, 2026-04-23).
 
