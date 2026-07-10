@@ -342,6 +342,12 @@ async def reset_password(
             detail=f"invalid or expired reset token: {exc}",
         ) from exc
     user_id = claims.sub
+    user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
+    if user is None or getattr(user, "isActive", True) is False:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid or expired reset token",
+        )
     await db.user.update(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": user_id},
         data={

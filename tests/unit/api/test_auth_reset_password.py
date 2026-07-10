@@ -109,6 +109,20 @@ def test_reset_password_rejects_malformed_token(monkeypatch: pytest.MonkeyPatch)
     assert resp.status_code == 400
 
 
+def test_reset_password_rejects_deactivated_user(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.security.jwt import create_password_change_token
+
+    client, db = _client(monkeypatch)
+    db.user.find_unique = AsyncMock(return_value=_user_row(isActive=False))
+    token = create_password_change_token("u1")
+    resp = client.post(
+        "/auth/reset-password",
+        json={"token": token, "newPassword": "brand-new-password-99"},
+    )
+    assert resp.status_code == 400
+    db.user.update.assert_not_awaited()
+
+
 def test_reset_password_short_new_password_422(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.security.jwt import create_password_change_token
 
