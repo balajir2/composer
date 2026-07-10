@@ -45,7 +45,10 @@ class Settings(BaseSettings):
     # active users rotate their refresh token on every /auth/refresh call,
     # so continuous activity extends the window indefinitely.
     jwt_refresh_ttl_seconds: int = 2592000  # 30 days
-    jwt_password_change_ttl_seconds: int = 600  # 10 minutes — forced-reset completion window
+    # Shared by the admin-forced reset (ADR-0024) and self-service email reset
+    # (ADR-0027) — 30 min balances the admin-handoff case (interactive, could
+    # be shorter) against the email case (user needs time to check their inbox).
+    jwt_password_change_ttl_seconds: int = 1800  # 30 minutes
 
     # ─── Encryption (AES-256-GCM for secrets at rest) ─────
     encryption_key: str = Field(
@@ -83,6 +86,20 @@ class Settings(BaseSettings):
     # ─── Gamma-AI (Phase 6c) ─────────────────────
     gamma_api_key: str = Field(default="", description="Gamma.app public API key.")
     resend_api_key: str = Field(default="", description="Resend API key for email delivery.")
+    resend_from_email: str = Field(
+        default="noreply@script-research.online",
+        description="Verified Resend sender address for transactional emails (password reset, etc).",
+    )
+
+    # ─── Jira (Phase 6f) ──────────────────────────
+    jira_domain: str = Field(
+        default="", description="Jira Cloud domain (e.g. your-org.atlassian.net)."
+    )
+    jira_email: str = Field(default="", description="Jira Cloud account email for Basic auth.")
+    jira_api_token: str = Field(
+        default="",
+        description="Jira Cloud API token (from https://id.atlassian.com/manage/api-tokens).",
+    )
 
     # ─── Arcade (Phase 6d) ────────────────────────
     arcade_api_key: str = Field(default="", description="Arcade.dev API key.")
@@ -118,6 +135,16 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ─── Backend-constructed links back to the frontend ─────
+    frontend_url: str = Field(
+        default="http://localhost:3000",
+        description=(
+            "Base URL of the Composer frontend, used to build absolute links "
+            "in backend-sent emails (e.g. password-reset links). Production "
+            "sets this to https://www.flowcomposer.online."
+        ),
+    )
+
     # ─── Standalone password hashing ─────────────────
     bcrypt_rounds: int = Field(default=12, description="bcrypt cost factor.")
 
@@ -139,6 +166,7 @@ class Settings(BaseSettings):
     rate_limit_mcp_test_per_minute: int = 10
     rate_limit_api_run_per_minute: int = 60
     rate_limit_users_search_per_minute: int = 30
+    rate_limit_forgot_password_per_minute: int = 5
 
     # ─── Stuck-execution sweeper ─────────────────
     # Any WorkflowExecution row in 'running' for longer than this without a
