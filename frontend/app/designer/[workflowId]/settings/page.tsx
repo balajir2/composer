@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { ArrowLeft } from "lucide-react";
 import { getWorkflow, updateWorkflow } from "@/lib/api/workflows";
+import { ManageAssigneesDialog } from "@/components/composer/manage-assignees-dialog";
 import { PublishDialog } from "@/components/composer/publish-dialog";
 import { PublishedEndpoint } from "@/components/composer/published-endpoint";
 import { Button } from "@/components/ui/button";
@@ -245,6 +246,18 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
           >
             {isTemplate ? "Template" : "Not a template"}
           </Button>
+        </div>
+
+        {/* Sharing — grants full read/write access to other users without
+            changing ownership.  All-or-nothing: no view-vs-edit split yet. */}
+        <div className="flex items-center justify-between rounded-lg border px-4 py-3">
+          <div>
+            <p className="text-sm font-medium">Shared access</p>
+            <p className="text-xs text-muted-foreground">
+              Give other users full access to view and edit this workflow.
+            </p>
+          </div>
+          <ManageAssigneesDialog workflowId={workflowId} workflowName={workflow.name} />
         </div>
 
         <Button type="submit" disabled={saveMutation.isPending}>

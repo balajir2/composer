@@ -17,6 +17,7 @@ import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/composer/empty-state";
 import { ReassignOwnerDialog } from "@/components/composer/reassign-owner-dialog";
+import { ManageAssigneesDialog } from "@/components/composer/manage-assignees-dialog";
 import { WorkflowVisibilityToggle } from "@/components/composer/workflow-visibility-toggle";
 import { WorkflowProductionToggle } from "@/components/composer/workflow-production-toggle";
 
@@ -246,6 +247,10 @@ export default function AdminWorkflowsPage() {
                   </TableCell>
                   <TableCell className="flex items-center gap-2">
                     <ReassignOwnerDialog
+                      workflowId={workflow.id}
+                      workflowName={workflow.name}
+                    />
+                    <ManageAssigneesDialog
                       workflowId={workflow.id}
                       workflowName={workflow.name}
                     />

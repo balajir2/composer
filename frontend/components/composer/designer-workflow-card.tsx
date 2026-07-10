@@ -38,9 +38,16 @@ type Workflow = {
   description?: string | null;
   isPublic: boolean;
   isProduction: boolean;
+  userId?: string | null;
 };
 
-export function DesignerWorkflowCard({ wf }: { wf: Workflow }) {
+export function DesignerWorkflowCard({
+  wf,
+  currentUserId,
+}: {
+  wf: Workflow;
+  currentUserId?: string;
+}) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [deleteOpen, setDeleteOpen] = useState(false);
@@ -169,6 +176,9 @@ export function DesignerWorkflowCard({ wf }: { wf: Workflow }) {
           <div className="flex flex-wrap gap-1">
             {wf.isPublic && <Badge variant="secondary">Public</Badge>}
             {wf.isProduction && <Badge variant="default">Production</Badge>}
+            {currentUserId && wf.userId && wf.userId !== currentUserId && (
+              <Badge variant="outline">Shared with you</Badge>
+            )}
           </div>
         </CardHeader>
         <CardContent className="space-y-4">

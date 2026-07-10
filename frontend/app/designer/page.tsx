@@ -3,6 +3,7 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useQuery } from "@tanstack/react-query";
+import { useSession } from "next-auth/react";
 import { listWorkflows } from "@/lib/api/workflows";
 import { DesignerWorkflowCard } from "@/components/composer/designer-workflow-card";
 import { NewWorkflowDialog } from "@/components/composer/new-workflow-dialog";
@@ -14,6 +15,8 @@ import { cn } from "@/lib/utils";
 
 export default function DesignerHome() {
   const [dialogOpen, setDialogOpen] = useState(false);
+  const { data: session } = useSession();
+  const currentUserId = (session?.user as { id?: string } | undefined)?.id;
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ["designer-workflows"],
@@ -64,7 +67,7 @@ export default function DesignerHome() {
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           {data.items.map((wf) => (
-            <DesignerWorkflowCard key={wf.id} wf={wf} />
+            <DesignerWorkflowCard key={wf.id} wf={wf} currentUserId={currentUserId} />
           ))}
         </div>
       )}
