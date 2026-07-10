@@ -34,6 +34,7 @@ async def test_openai_compatible_chinese_model_verify_routes_to_provider_endpoin
     assert result.status == "ok"
     post_mock.assert_awaited_once()
     call_args = post_mock.await_args
+    assert call_args is not None
     assert call_args.args[0] == url
     assert call_args.kwargs["headers"]["Authorization"] == "Bearer provider-key"
     assert call_args.kwargs["json"]["model"] == model_id

@@ -193,8 +193,8 @@ async def test_auth_header_factory_takes_precedence_over_dict(httpx_mock: HTTPXM
 
 
 async def test_session_id_from_initialize_is_sent_on_followup_request(
-    httpx_mock: HTTPXMock,
-) -> None:  # pyright: ignore[reportUnknownParameterType]
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
     """Stateful streamable-HTTP servers require Mcp-Session-Id after initialize."""
     httpx_mock.add_response(
         url="https://mcp.example.com/rpc",
@@ -226,8 +226,8 @@ async def test_session_id_from_initialize_is_sent_on_followup_request(
 
 
 async def test_tools_list_initializes_and_retries_when_session_required(
-    httpx_mock: HTTPXMock,
-) -> None:  # pyright: ignore[reportUnknownParameterType]
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
     """Atlassian Rovo MCP returns this 400 when tools/list is sent without a session."""
     httpx_mock.add_response(
         url="https://mcp.example.com/rpc",

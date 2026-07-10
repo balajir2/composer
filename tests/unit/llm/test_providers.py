@@ -66,7 +66,10 @@ def test_deepseek_returns_openai_compatible_chat_model(
 
     model = build_chat_model("deepseek/deepseek-chat")
     assert isinstance(model, ChatOpenAI)
-    assert str(model.openai_api_base).rstrip("/") == "https://api.deepseek.com"
+    assert (
+        str(model.openai_api_base).rstrip("/")  # pyright: ignore[reportAttributeAccessIssue]
+        == "https://api.deepseek.com"
+    )
 
 
 def test_qwen_returns_openai_compatible_chat_model(
@@ -81,7 +84,7 @@ def test_qwen_returns_openai_compatible_chat_model(
     model = build_chat_model("qwen/qwen-plus")
     assert isinstance(model, ChatOpenAI)
     assert (
-        str(model.openai_api_base).rstrip("/")
+        str(model.openai_api_base).rstrip("/")  # pyright: ignore[reportAttributeAccessIssue]
         == "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
     )
 
