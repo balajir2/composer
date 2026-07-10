@@ -206,6 +206,25 @@ def test_search_workflows_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "OR" in where_str
 
 
+def test_search_workflows_includes_assigned_not_owned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Counterpart to test_list_workflows_default_view_includes_assigned_private:
+    a workflow the caller has via WorkflowAssignment (not ownership, not
+    public) must still be findable through the search box, not just in
+    the default /workflows listing."""
+    client, db = _client(monkeypatch, [_wf_row(userId="owner-other", name="SearchTest")], total=1)
+    resp = client.get("/workflows/search?q=search")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["total"] == 1
+    assert body["items"][0]["name"] == "SearchTest"
+    where = db.workflow.find_many.await_args.kwargs["where"]
+    assert "AND" in where
+    authz_or = where["AND"][0]["OR"]
+    assert any("assignments" in c for c in authz_or)
+
+
 def test_search_workflows_empty_q_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _ = _client(monkeypatch, [], total=0)
     resp = client.get("/workflows/search?q=")

@@ -180,7 +180,13 @@ async def search_workflows(
     if role == "admin":
         where: dict[str, Any] = text_match
     else:
-        authz: dict[str, Any] = {"OR": [{"isPublic": True}, {"userId": user_id}]}
+        authz: dict[str, Any] = {
+            "OR": [
+                {"isPublic": True},
+                {"userId": user_id},
+                {"assignments": {"some": {"userId": user_id}}},
+            ]
+        }
         where = {"AND": [authz, text_match]}
     total = await db.workflow.count(where=where)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
     rows = await db.workflow.find_many(  # pyright: ignore[reportAttributeAccessIssue]
