@@ -72,9 +72,7 @@ class Settings(BaseSettings):
     cohere_api_key: str = Field(default="", description="Cohere API key")
     jina_api_key: str = Field(default="", description="Jina AI API key")
     voyage_api_key: str = Field(default="", description="Voyage AI API key")
-    pinecone_inference_api_key: str = Field(
-        default="", description="Pinecone Inference API key"
-    )
+    pinecone_inference_api_key: str = Field(default="", description="Pinecone Inference API key")
 
     # ─── Agent tools (Phase 2) ────────────────────
     tavily_api_key: str = Field(default="", description="Tavily web-search API key")

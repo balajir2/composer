@@ -99,7 +99,9 @@ async def _post_json(
             raise EmbeddingError(f"{provider_label} embeddings request failed: {exc}") from exc
 
     if resp.status_code >= 400:
-        raise EmbeddingError(f"{provider_label} {_format_openai_error(resp.status_code, resp.text)}")
+        raise EmbeddingError(
+            f"{provider_label} {_format_openai_error(resp.status_code, resp.text)}"
+        )
     return resp.json()
 
 
@@ -113,9 +115,7 @@ async def embed_text_openai_compatible(
 
     base_url = config.base_url or OPENAI_COMPATIBLE_BASE_URLS.get(config.provider)
     if not base_url:
-        raise EmbeddingError(
-            f"{config.provider} embeddings require vectorDbEmbeddingBaseUrl"
-        )
+        raise EmbeddingError(f"{config.provider} embeddings require vectorDbEmbeddingBaseUrl")
     payload: dict[str, Any] = {"input": text, "model": config.model}
     if config.dimension:
         payload["dimensions"] = config.dimension
