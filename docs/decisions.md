@@ -755,3 +755,22 @@ On the frontend, NextAuth's `authorize()`/`jwt()`/`session()` callbacks thread `
 **Implemented by.** `docs/archive/phase-history/plans/2026-07-09-account-workflow-sharing-plan.md`, Part C (commits `a901e18` through `ac922a7` on `main`, 2026-07-10).
 
 **Related.** ADR-0025.
+
+---
+
+## ADR-0027: Self-service password reset — additive to ADR-0024, same token mechanism
+
+**Status.** Accepted 2026-07-10.
+
+**Context.** ADR-0024 deliberately shipped admin-only password reset (no email dependency), a considered trade-off at the time. The user later asked for a standard self-service "Forgot password?" flow, explicitly wanting it reused from existing infrastructure rather than built as new auth machinery.
+
+**Decision.** Add two endpoints that reuse the existing `password_change` JWT type/mechanism from ADR-0024, rather than inventing a second token concept: `POST /auth/forgot-password` (looks up the email, and — only for a real, password-based account — emails a link containing a fresh `password_change` token; always returns 204 regardless of whether the email matched anything, closing the account-enumeration vector) and `POST /auth/reset-password` (verifies the token directly via `verify_password_change_token`, sets the new password — critically, without asking for the current password, since the whole point is the user forgot it). Email delivery reuses the existing `ResendEmailProvider` already wired up for the workflow email-node executor — no new email infrastructure. The shared `jwt_password_change_ttl_seconds` was bumped from 10 to 30 minutes to serve both the admin-handoff case (interactive) and the new email case (user needs time to check their inbox).
+
+**Consequences.**
+- `/auth/reset-password` intentionally does NOT use the `get_user_id_allow_password_change` dependency (which also accepts normal access tokens) — it calls `verify_password_change_token` directly, since this route must be reachable by a fully anonymous caller and must reject access/refresh tokens outright.
+- Resend's free-tier verified sending domain (`script-research.online`) is unrelated to and independent from the app's own domain (`flowcomposer.online`) — this is normal and doesn't need to change.
+- Email-delivery failures inside `/auth/forgot-password` are deliberately swallowed (logged, not surfaced) so a Resend outage can't be used to distinguish "this email exists" from "this email doesn't," matching the endpoint's always-204 contract.
+
+**Implemented by.** `docs/archive/phase-history/plans/2026-07-10-self-service-password-reset-plan.md` (commits on `main`, 2026-07-10).
+
+**Related.** ADR-0024 (admin-only password reset — the mechanism this reuses).
