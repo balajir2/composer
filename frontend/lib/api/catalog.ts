@@ -4,7 +4,7 @@ import type { components } from "./generated/schema";
 type McpServerRead = components["schemas"]["McpServerRead"];
 
 export type CatalogTool =
-  | { kind: "builtin"; id: "tavily" | "serper" | "firecrawl" | "browserless" | "jira"; label: string }
+  | { kind: "builtin"; id: "tavily" | "serper" | "firecrawl" | "browserless"; label: string }
   | { kind: "mcp"; id: string; name: string; url: string };
 
 export async function getCatalog(): Promise<CatalogTool[]> {
@@ -27,7 +27,6 @@ export async function getCatalog(): Promise<CatalogTool[]> {
       { kind: "builtin" as const, id: "serper" as const, label: "Serper search" },
       { kind: "builtin" as const, id: "firecrawl" as const, label: "Firecrawl scrape" },
       { kind: "builtin" as const, id: "browserless" as const, label: "Browserless" },
-      { kind: "builtin" as const, id: "jira" as const, label: "Jira" },
     ] as CatalogTool[]
   ).filter((t) => isToolEnabled((t as { id: string }).id));
 

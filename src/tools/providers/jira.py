@@ -1,8 +1,14 @@
 """JiraProvider — Jira Cloud REST API v3 tools via Basic auth.
 
+Internal implementation detail of the `jira` node type (src/executors/jira.py)
+only. Deliberately NOT decorated with @register_tool_provider — Jira is a
+standalone node, not a generic tool an `agent`/`mcp` node can select from
+the tools catalog. JiraExecutor instantiates JiraProvider directly.
+
 Credentials flow (per-node):
-  1. Start-node variables (jira_domain, jira_email, jira_api_token)
-  2. Set-state variables before the Agent node
+  1. Start-node variables (jira_domain, jira_email, jira_api_token) — set by
+     JiraExecutor from the node's own domain/email/apiToken fields
+  2. Set-state variables before the jira node
   3. Global env vars (JIRA_DOMAIN / JIRA_EMAIL / JIRA_API_TOKEN) — fallback only
 
 Tools offered:
@@ -30,7 +36,6 @@ from src.tools.base import (
     ToolDefinition,
     ToolProvider,
 )
-from src.tools.registry import register_tool_provider
 
 
 class MissingConfigError(RuntimeError):
@@ -487,7 +492,6 @@ _TOOLS: dict[str, type[BaseTool]] = {
 }
 
 
-@register_tool_provider
 class JiraProvider(ToolProvider):
     name = "jira"
     description = (

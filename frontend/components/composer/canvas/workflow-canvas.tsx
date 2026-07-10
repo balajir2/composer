@@ -223,6 +223,7 @@ export const COMPOSER_NODE_TYPES: NodeTypes = {
   email: InnerNode,
   arcade: InnerNode,
   "vector-db": InnerNode,
+  jira: InnerNode,
 };
 
 // ---------------------------------------------------------------------------

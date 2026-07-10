@@ -368,7 +368,9 @@ async def update_workflow(
         node.model_dump(by_alias=True)  # pyright: ignore[reportAttributeAccessIssue]
         for node in workflow.nodes
     ]
-    _encrypt_jira_tokens(nodes_json, existing_nodes=existing.nodes or [])
+    existing_nodes_raw = existing.nodes
+    existing_nodes: list[Any] = existing_nodes_raw if isinstance(existing_nodes_raw, list) else []
+    _encrypt_jira_tokens(nodes_json, existing_nodes=existing_nodes)
     edges_json = [edge.model_dump(by_alias=True) for edge in workflow.edges]
 
     # Publish / unpublish handling
