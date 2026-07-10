@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
+import { useSession } from "next-auth/react";
 import { ArrowLeft } from "lucide-react";
 import { getWorkflow, updateWorkflow } from "@/lib/api/workflows";
 import { ManageAssigneesDialog } from "@/components/composer/manage-assignees-dialog";
@@ -22,6 +23,9 @@ interface PageProps {
 export default function WorkflowSettingsPage({ params }: PageProps) {
   const { workflowId } = params;
   const queryClient = useQueryClient();
+  const { data: session } = useSession();
+  const currentUserId = (session?.user as { id?: string } | undefined)?.id;
+  const sessionRole = (session as unknown as { role?: "admin" | "member" } | undefined)?.role;
 
   const {
     data: workflow,
@@ -132,6 +136,12 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
       </div>
     );
   }
+
+  // Only the owner (or an admin) can manage who else has access — a
+  // shared assignee has full read/write on the workflow itself but the
+  // assignment endpoints are owner-or-admin-only, so showing this to
+  // everyone else just produces a misleading empty list + 403 toasts.
+  const canManageSharing = sessionRole === "admin" || workflow.userId === currentUserId;
 
   return (
     <div className="mx-auto max-w-2xl space-y-8 px-4 py-8">
@@ -249,16 +259,20 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
         </div>
 
         {/* Sharing — grants full read/write access to other users without
-            changing ownership.  All-or-nothing: no view-vs-edit split yet. */}
-        <div className="flex items-center justify-between rounded-lg border px-4 py-3">
-          <div>
-            <p className="text-sm font-medium">Shared access</p>
-            <p className="text-xs text-muted-foreground">
-              Give other users full access to view and edit this workflow.
-            </p>
+            changing ownership.  All-or-nothing: no view-vs-edit split yet.
+            Owner/admin only: the assignment endpoints 403 for anyone else,
+            so a shared assignee opening this page must not see it. */}
+        {canManageSharing && (
+          <div className="flex items-center justify-between rounded-lg border px-4 py-3">
+            <div>
+              <p className="text-sm font-medium">Shared access</p>
+              <p className="text-xs text-muted-foreground">
+                Give other users full access to view and edit this workflow.
+              </p>
+            </div>
+            <ManageAssigneesDialog workflowId={workflowId} workflowName={workflow.name} />
           </div>
-          <ManageAssigneesDialog workflowId={workflowId} workflowName={workflow.name} />
-        </div>
+        )}
 
         <Button type="submit" disabled={saveMutation.isPending}>
           {saveMutation.isPending ? "Saving…" : "Save settings"}
