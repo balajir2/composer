@@ -30,7 +30,7 @@ jobs:
       TEST_DATABASE_URL: postgresql://composer_test:composer_test@localhost:5432/composer_test
       DATABASE_URL: postgresql://composer_test:composer_test@localhost:5432/composer_test
       JWT_SECRET: ci-test-only-not-a-real-secret
-      ENCRYPTION_KEY: "00000000000000000000000000000000000000000000"
+      ENCRYPTION_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
       # Phase 2: LLM + Tavily keys (from repo secrets). Tests skip gracefully
       # when a secret isn't set.
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
