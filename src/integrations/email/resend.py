@@ -53,4 +53,35 @@ class ResendEmailProvider:
         return data
 
 
-__all__ = ["RESEND_API_BASE", "ResendEmailProvider", "ResendEmailProviderError"]
+async def send_password_reset_email(to: str, reset_link: str) -> None:
+    """Send a password-reset email via Resend.
+
+    Errors are intentionally allowed to propagate to the caller — the
+    /auth/forgot-password route catches them and still returns 204 (see
+    ADR-0027/spec: never let email-delivery failure leak account-existence
+    information to the caller).
+    """
+    from src.config import get_settings
+
+    settings = get_settings()
+    html = (
+        "<p>Someone requested a password reset for your Composer account.</p>"
+        f'<p><a href="{reset_link}">Click here to set a new password</a>. '
+        "This link expires in 30 minutes.</p>"
+        "<p>If you didn't request this, you can safely ignore this email.</p>"
+    )
+    payload: dict[str, Any] = {
+        "from": settings.resend_from_email,
+        "to": [to],
+        "subject": "Reset your Composer password",
+        "html": html,
+    }
+    await ResendEmailProvider(settings.resend_api_key).send_email(payload)
+
+
+__all__ = [
+    "RESEND_API_BASE",
+    "ResendEmailProvider",
+    "ResendEmailProviderError",
+    "send_password_reset_email",
+]
