@@ -731,3 +731,27 @@ On the frontend, NextAuth's `authorize()`/`jwt()`/`session()` callbacks thread `
 **Implemented by.** `docs/archive/phase-history/plans/2026-07-09-account-workflow-sharing-plan.md`, Part B (commits from `c8df7e1` through `6e14494` on `main`, 2026-07-09/10).
 
 **Related.** ADR-0021 (Phase 8 security policy — owner-only 404 pattern), ADR-0024.
+
+---
+
+## ADR-0026: Autosave replaces "transfer loses flow data" root cause
+
+**Status.** Accepted 2026-07-10.
+
+**Context.** A reported bug — "reassigning a workflow's owner leaves only Start+End nodes" — turned out, on investigation, to have no matching code path: the reassign endpoint only ever updates `Workflow.userId`. The Designer had no autosave at all; nodes/edges only reached Postgres via an explicit Save click. The real failure mode is that an owner can edit a flow, never click Save, and the database row genuinely only ever holds the Start+End scaffold from creation — which becomes visible the moment a different person (a new assignee, per ADR-0025) opens it fresh.
+
+**Decision.** Add `useAutosave` (`frontend/lib/use-autosave.ts`): a debounced (3s) autosave that reuses the existing manual-save mutation and `PUT /workflows/{id}` path — no new backend endpoint. A `saveNow()` variant backs the manual Save button so both paths share one status state machine (`idle → dirty → saving → saved/error`), surfaced next to the Save button, plus a `beforeunload` guard that blocks tab-close while unsaved. No backend or transfer-endpoint change was needed or made.
+
+**Follow-up fixes made during code review — all in `frontend/app/designer/[workflowId]/page.tsx`, none in the hook itself:**
+- The debounced auto-trigger's rethrow (needed so `saveNow()` can propagate errors to its caller) produced an unhandled-promise-rejection warning when fired from `markDirty()`'s fire-and-forget path. Fixed by swallowing the rethrow only on that path (`runSave().catch(() => {})`), while `saveNow()` still awaits and propagates.
+- `WorkflowCanvas`'s existing `onNodesChange`/`onEdgesChange` effects fire on initial mount with the just-loaded data (no cleanup function), so naively wiring `markDirty()` into them flagged every workflow open as "unsaved changes" — a false status, a false `beforeunload` warning, and a spurious autosave PUT on every view, not an edge case. A first attempt gated this with "have I been invoked before" booleans; that broke under React 18 Strict Mode (Next.js's dev-mode default), which double-invokes no-cleanup mount effects and made the false-dirty bug reappear in `npm run dev` specifically. The working fix compares the *content* of each callback's incoming nodes/edges (by id: type/position/data for nodes, source/target/sourceHandle/label for edges) against a baseline captured once per mount, rather than counting invocations — immune to both Strict Mode's double-invoke and ReactFlow's own post-mount dimension-sync producing new array instances with unchanged content.
+- Next.js's App Router doesn't guarantee a remount when a dynamic route's param changes via client-side navigation between two instances of the same route (e.g. `/designer/A` → `/designer/B`) — without forcing one, stale refs (and the mount-vs-edit baseline above) would leak from the previous workflow into the next. Fixed with `key={params.workflowId}` on the page's inner component, forcing a genuine unmount/remount on every workflow switch.
+
+**Consequences.**
+- Last-write-wins remains the concurrency model; no multi-editor conflict resolution was introduced (explicit non-goal, consistent with the current single-editor assumption).
+- All three follow-up fixes were caught by code review, not the original design or the initial test suite — mount-effect timing, Strict Mode's dev-only double-invoke semantics, and App Router's remount-on-param-change behavior are exactly the kind of framework-timing subtlety that's invisible until something exercises it (here, a reviewer reasoning through *why* an effect fires, not just *that* it fires).
+- If a genuine transfer-triggered data-loss bug surfaces later (i.e., reproduced with confirmed pre-save content), it is a different, new investigation — this ADR only closes the no-autosave gap that explained the reported symptom.
+
+**Implemented by.** `docs/archive/phase-history/plans/2026-07-09-account-workflow-sharing-plan.md`, Part C (commits `a901e18` through `ac922a7` on `main`, 2026-07-10).
+
+**Related.** ADR-0025.
