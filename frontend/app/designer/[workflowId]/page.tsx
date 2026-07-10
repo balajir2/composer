@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { ArrowLeft, Download, FileText, Settings } from "lucide-react";
@@ -21,6 +21,7 @@ import {
 import { toReactFlow, fromReactFlow } from "@/lib/workflow-to-rf";
 import type { ComposerNode, ComposerEdge } from "@/lib/workflow-to-rf";
 import type { Node as RFNode, Edge as RFEdge } from "reactflow";
+import { useAutosave } from "@/lib/use-autosave";
 
 interface PageProps {
   params: { workflowId: string };
@@ -78,14 +79,29 @@ export default function DesignerCanvasPage({ params }: PageProps) {
     },
   });
 
+  const autosave = useAutosave(async () => {
+    await saveMutation.mutateAsync();
+  }, 3000);
+
   async function handleSave() {
     setIsSaving(true);
     try {
-      await saveMutation.mutateAsync();
+      await autosave.saveNow();
     } finally {
       setIsSaving(false);
     }
   }
+
+  useEffect(() => {
+    function handleBeforeUnload(e: BeforeUnloadEvent) {
+      if (autosave.status === "dirty" || autosave.status === "saving") {
+        e.preventDefault();
+        e.returnValue = "";
+      }
+    }
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
+  }, [autosave.status]);
 
   if (isLoading) {
     return (
@@ -192,6 +208,7 @@ export default function DesignerCanvasPage({ params }: PageProps) {
           <SaveControls
             workflowId={workflowId}
             isSaving={isSaving}
+            saveStatus={autosave.status}
             onSave={handleSave}
             getCurrentNodes={() =>
               nodesRef.current.map((n) => ({
@@ -215,9 +232,11 @@ export default function DesignerCanvasPage({ params }: PageProps) {
             initialEdges={rfEdges}
             onNodesChange={(nodes) => {
               nodesRef.current = nodes;
+              autosave.markDirty();
             }}
             onEdgesChange={(edges) => {
               edgesRef.current = edges;
+              autosave.markDirty();
             }}
             runState={runState ?? undefined}
           />

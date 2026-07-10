@@ -5,10 +5,12 @@ import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
 import { RunDraftDialog } from "./run-draft-dialog";
+import type { SaveStatus } from "@/lib/use-autosave";
 
 interface SaveControlsProps {
   workflowId: string;
   isSaving?: boolean;
+  saveStatus: SaveStatus;
   onSave: () => Promise<void>;
   /** Snapshot of the current canvas — used to read the Start node's
    *  declared inputVariables so Run Draft can prompt for them.
@@ -23,6 +25,7 @@ interface SaveControlsProps {
 export function SaveControls({
   workflowId,
   isSaving = false,
+  saveStatus,
   onSave,
   getCurrentNodes,
   onExecutionStarted,
@@ -55,25 +58,38 @@ export function SaveControls({
   }
 
   return (
-    <div className="flex items-center gap-2">
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={handleSave}
-        disabled={isSaving || isPreparing}
-      >
-        {isSaving ? "Saving…" : "Save"}
-      </Button>
-      <Button size="sm" onClick={handleRunDraft} disabled={isSaving || isPreparing}>
-        {isPreparing ? "Saving…" : "Run draft"}
-      </Button>
-      <RunDraftDialog
-        open={dialogOpen}
-        onOpenChange={setDialogOpen}
-        workflowId={workflowId}
-        workflow={{ nodes: getCurrentNodes() }}
-        onStarted={(executionId) => onExecutionStarted(executionId)}
-      />
+    <div className="flex items-center gap-3">
+      <span className="text-xs text-muted-foreground">
+        {saveStatus === "saving"
+          ? "Saving…"
+          : saveStatus === "error"
+            ? "Save failed"
+            : saveStatus === "dirty"
+              ? "Unsaved changes"
+              : saveStatus === "saved"
+                ? "All changes saved"
+                : ""}
+      </span>
+      <div className="flex items-center gap-2">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleSave}
+          disabled={isSaving || isPreparing}
+        >
+          {isSaving ? "Saving…" : "Save"}
+        </Button>
+        <Button size="sm" onClick={handleRunDraft} disabled={isSaving || isPreparing}>
+          {isPreparing ? "Saving…" : "Run draft"}
+        </Button>
+        <RunDraftDialog
+          open={dialogOpen}
+          onOpenChange={setDialogOpen}
+          workflowId={workflowId}
+          workflow={{ nodes: getCurrentNodes() }}
+          onStarted={(executionId) => onExecutionStarted(executionId)}
+        />
+      </div>
     </div>
   );
 }
