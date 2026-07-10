@@ -462,6 +462,41 @@ export interface paths {
         patch: operations["assign_workflow_owner_workflows__workflow_id__owner_patch"];
         trace?: never;
     };
+    "/workflows/{workflow_id}/assignments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Workflow Assignments */
+        get: operations["list_workflow_assignments_workflows__workflow_id__assignments_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/workflows/{workflow_id}/assignments/{target_user_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Grant Workflow Assignment */
+        post: operations["grant_workflow_assignment_workflows__workflow_id__assignments__target_user_id__post"];
+        /** Revoke Workflow Assignment */
+        delete: operations["revoke_workflow_assignment_workflows__workflow_id__assignments__target_user_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/executions": {
         parameters: {
             query?: never;
@@ -753,6 +788,23 @@ export interface paths {
          *     persisted; once this handler returns, the bytes are gone.
          */
         post: operations["extract_text_uploads_extract_text_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/users/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Search Users */
+        get: operations["search_users_users_search_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -2172,6 +2224,15 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** UserSearchResult */
+        UserSearchResult: {
+            /** Id */
+            id: string;
+            /** Email */
+            email: string;
+            /** Displayname */
+            displayName?: string | null;
+        };
         /** UserSummary */
         UserSummary: {
             /** Id */
@@ -2373,6 +2434,22 @@ export interface components {
             maxIterations: number;
         } & {
             [key: string]: unknown;
+        };
+        /**
+         * WorkflowAssignmentRead
+         * @description Response body for workflow assignment CRUD endpoints.
+         */
+        WorkflowAssignmentRead: {
+            /** Id */
+            id: string;
+            /** Workflowid */
+            workflowId: string;
+            /** Userid */
+            userId: string;
+            /** Assignedbyid */
+            assignedById: string;
+            /** Assignedat */
+            assignedAt: unknown;
         };
         /**
          * WorkflowCreate
@@ -3520,6 +3597,99 @@ export interface operations {
             };
         };
     };
+    list_workflow_assignments_workflows__workflow_id__assignments_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowAssignmentRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    grant_workflow_assignment_workflows__workflow_id__assignments__target_user_id__post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+                target_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["WorkflowAssignmentRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_workflow_assignment_workflows__workflow_id__assignments__target_user_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+                target_user_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_executions_executions_get: {
         parameters: {
             query?: {
@@ -4084,6 +4254,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UploadExtractResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    search_users_users_search_get: {
+        parameters: {
+            query: {
+                q: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UserSearchResult"][];
                 };
             };
             /** @description Validation Error */

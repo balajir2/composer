@@ -103,3 +103,30 @@ export async function adminUpdateWorkflowFlags(
     body: JSON.stringify(body),
   });
 }
+
+export type WorkflowAssignment = components["schemas"]["WorkflowAssignmentRead"];
+
+export async function listWorkflowAssignments(
+  workflowId: string
+): Promise<WorkflowAssignment[]> {
+  return apiFetch<WorkflowAssignment[]>(`/workflows/${workflowId}/assignments`);
+}
+
+export async function assignWorkflowUser(
+  workflowId: string,
+  userId: string
+): Promise<WorkflowAssignment> {
+  return apiFetch<WorkflowAssignment>(
+    `/workflows/${workflowId}/assignments/${userId}`,
+    { method: "POST" }
+  );
+}
+
+export async function unassignWorkflowUser(
+  workflowId: string,
+  userId: string
+): Promise<void> {
+  return apiFetch<void>(`/workflows/${workflowId}/assignments/${userId}`, {
+    method: "DELETE",
+  });
+}
