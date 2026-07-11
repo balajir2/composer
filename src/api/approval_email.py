@@ -10,6 +10,7 @@ Reject links, or a duplicate browser retry) both pass the check before
 either commits.
 """
 
+from typing import Any
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, BackgroundTasks, Depends, Request
@@ -91,15 +92,16 @@ async def resolve_approval_email(
     if updated_count != 1:
         return _redirect("invalid")
 
+    approval_data: dict[str, Any] = {
+        "executionId": claims.sub,
+        "nodeId": claims.node_id,
+        "approverUserId": None,
+        "approverEmail": claims.approver_email,
+        "viaEmailLink": True,
+        "decision": claims.decision,
+    }
     await db.approval.create(  # pyright: ignore[reportAttributeAccessIssue]
-        data={
-            "executionId": claims.sub,
-            "nodeId": claims.node_id,
-            "approverUserId": None,
-            "approverEmail": claims.approver_email,
-            "viaEmailLink": True,
-            "decision": claims.decision,
-        }
+        data=approval_data,  # pyright: ignore[reportArgumentType]
     )
 
     checkpointer = getattr(request.app.state, "checkpointer", None)
