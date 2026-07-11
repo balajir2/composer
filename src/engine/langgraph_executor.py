@@ -163,16 +163,23 @@ class LangGraphExecutor:
         self,
         execution_id: str,
         pending_info: dict[str, Any],
-        existing_vars: dict[str, Any] | None = None,
+        existing_vars: dict[str, Any] | None,
+        pending_since: str,
     ) -> None:
         """Persist waiting_approval status + pending node/prompt into variables.
 
         Merges pending markers into existing_vars so pre-interrupt state is preserved.
+
+        `pending_since` is computed once by the caller (not here) so the exact
+        same timestamp is stamped into `variables` AND threaded into the
+        emailed approve/reject tokens' `pending_since` claim — the two must
+        match byte-for-byte for the approval-email endpoint's pause-instance
+        guard to accept a token issued for this pause.
         """
         merged: dict[str, Any] = {**(existing_vars or {})}
         merged["_pending_approval_node"] = pending_info.get("node_id")
         merged["_pending_approval_prompt"] = pending_info.get("prompt")
-        merged["_pending_approval_since"] = datetime.now(UTC).isoformat()
+        merged["_pending_approval_since"] = pending_since
 
         await self.db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
             where={"id": execution_id},
@@ -223,13 +230,17 @@ class LangGraphExecutor:
                 existing_vars: dict[str, Any] = {}
                 if isinstance(final_state.get("variables"), dict):
                     existing_vars = final_state["variables"]
-                await self._mark_waiting_approval(execution_id, pending_info, existing_vars)
+                pending_since = datetime.now(UTC).isoformat()
+                await self._mark_waiting_approval(
+                    execution_id, pending_info, existing_vars, pending_since
+                )
                 await send_approval_email(
                     execution_id=execution_id,
                     node_id=str(pending_info.get("node_id", "")),
                     prompt=str(pending_info.get("prompt", "")),
                     approver_email=str(pending_info.get("approver_email", "")),
                     approver_cc=str(pending_info.get("approver_cc", "")) or None,
+                    pending_since=pending_since,
                 )
                 await self._emit(
                     "approval_required",
@@ -297,13 +308,17 @@ class LangGraphExecutor:
                 existing_vars: dict[str, Any] = {}
                 if isinstance(final_state.get("variables"), dict):
                     existing_vars = final_state["variables"]
-                await self._mark_waiting_approval(execution_id, pending_info, existing_vars)
+                pending_since = datetime.now(UTC).isoformat()
+                await self._mark_waiting_approval(
+                    execution_id, pending_info, existing_vars, pending_since
+                )
                 await send_approval_email(
                     execution_id=execution_id,
                     node_id=str(pending_info.get("node_id", "")),
                     prompt=str(pending_info.get("prompt", "")),
                     approver_email=str(pending_info.get("approver_email", "")),
                     approver_cc=str(pending_info.get("approver_cc", "")) or None,
+                    pending_since=pending_since,
                 )
                 await self._emit(
                     "approval_required",

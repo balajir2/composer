@@ -42,6 +42,13 @@ class ApprovalEmailTokenPayload(BaseModel):
     node_id: str
     decision: str  # "approved" | "rejected"
     approver_email: str
+    # Binds the token to the specific pause *instance*, not just the node --
+    # a `while`-loop user-approval node can pause repeatedly at the same
+    # node_id, and without this a stale token from an earlier iteration
+    # would remain valid to resolve a later one. Mirrors
+    # `_pending_approval_since`, stamped fresh on every pause by
+    # LangGraphExecutor._mark_waiting_approval.
+    pending_since: str
     iat: int
     exp: int
     type: str = "approval_email"
@@ -117,7 +124,7 @@ def create_password_change_token(user_id: str) -> str:
 
 
 def create_approval_email_token(
-    execution_id: str, node_id: str, decision: str, approver_email: str
+    execution_id: str, node_id: str, decision: str, approver_email: str, pending_since: str
 ) -> str:
     settings = get_settings()
     now = _now()
@@ -126,6 +133,7 @@ def create_approval_email_token(
         node_id=node_id,
         decision=decision,
         approver_email=approver_email,
+        pending_since=pending_since,
         iat=now,
         exp=now + settings.approval_link_ttl_hours * 3600,
     )

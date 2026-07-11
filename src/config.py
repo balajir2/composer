@@ -195,6 +195,10 @@ class Settings(BaseSettings):
     rate_limit_api_run_per_minute: int = 60
     rate_limit_users_search_per_minute: int = 30
     rate_limit_forgot_password_per_minute: int = 5
+    # Higher than forgot-password's 5/min: legitimate approve/reject clicking
+    # plus headroom for transient email-security-scanner prefetches (e.g.
+    # Microsoft Safe Links) both need to fit without tripping the limiter.
+    rate_limit_approval_email_per_minute: int = 20
 
     # ─── Stuck-execution sweeper ─────────────────
     # Any WorkflowExecution row in 'running' for longer than this without a

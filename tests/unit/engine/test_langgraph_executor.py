@@ -583,13 +583,14 @@ async def test_mark_waiting_approval_stamps_pending_since() -> None:
     db.workflowexecution.update = _update
 
     orch = LangGraphExecutor(db, MagicMock())
+    pending_since = "2026-07-11T10:00:00+00:00"
     await orch._mark_waiting_approval(  # pyright: ignore[reportPrivateUsage]
-        "e1", {"node_id": "ua", "prompt": "Approve?"}, {}
+        "e1", {"node_id": "ua", "prompt": "Approve?"}, {}, pending_since
     )
 
     saved_vars: dict[str, Any] = update_calls[0]["data"]["variables"].data
     since = saved_vars.get("_pending_approval_since")
-    assert since is not None
+    assert since == pending_since
     from datetime import datetime
 
     datetime.fromisoformat(since)  # raises if not a valid ISO-8601 string

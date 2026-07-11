@@ -18,6 +18,7 @@ async def test_send_approval_email_noop_when_no_approver(monkeypatch: pytest.Mon
         prompt="Approve?",
         approver_email="",
         approver_cc=None,
+        pending_since="2026-07-11T10:00:00+00:00",
     )
     send_mock.assert_not_awaited()
 
@@ -47,6 +48,7 @@ async def test_send_approval_email_sends_with_both_links(monkeypatch: pytest.Mon
         prompt="Approve the BRD?",
         approver_email="reviewer@example.com",
         approver_cc="manager@example.com",
+        pending_since="2026-07-11T10:00:00+00:00",
     )
 
     assert captured["to"] == ["reviewer@example.com"]
@@ -80,6 +82,7 @@ async def test_send_approval_email_omits_cc_when_absent(monkeypatch: pytest.Monk
         prompt="Approve?",
         approver_email="reviewer@example.com",
         approver_cc="",
+        pending_since="2026-07-11T10:00:00+00:00",
     )
     assert "cc" not in captured
 
@@ -105,6 +108,7 @@ async def test_send_approval_email_logs_and_swallows_resend_error(
             prompt="Approve?",
             approver_email="reviewer@example.com",
             approver_cc=None,
+            pending_since="2026-07-11T10:00:00+00:00",
         )
 
     assert any(
@@ -136,6 +140,7 @@ async def test_send_approval_email_escapes_html_in_prompt(
         prompt="<script>alert(1)</script><b>bold</b>",
         approver_email="reviewer@example.com",
         approver_cc=None,
+        pending_since="2026-07-11T10:00:00+00:00",
     )
 
     html = captured["html"]

@@ -25,14 +25,25 @@ async def send_approval_email(
     prompt: str,
     approver_email: str,
     approver_cc: str | None,
+    pending_since: str,
 ) -> None:
-    """No-ops if approver_email is empty — email approval is opt-in per node."""
+    """No-ops if approver_email is empty — email approval is opt-in per node.
+
+    `pending_since` binds both issued tokens to this specific pause instance
+    (not just `node_id`), so a `while`-loop node that pauses repeatedly at the
+    same node_id can't have a stale token from an earlier iteration resolve a
+    later one.
+    """
     if not approver_email:
         return
 
     settings = get_settings()
-    approve_token = create_approval_email_token(execution_id, node_id, "approved", approver_email)
-    reject_token = create_approval_email_token(execution_id, node_id, "rejected", approver_email)
+    approve_token = create_approval_email_token(
+        execution_id, node_id, "approved", approver_email, pending_since
+    )
+    reject_token = create_approval_email_token(
+        execution_id, node_id, "rejected", approver_email, pending_since
+    )
     approve_url = f"{settings.backend_public_url}/approvals/email/{approve_token}"
     reject_url = f"{settings.backend_public_url}/approvals/email/{reject_token}"
 
