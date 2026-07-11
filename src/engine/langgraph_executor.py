@@ -16,6 +16,7 @@ from langgraph.types import Command  # pyright: ignore[reportUnknownVariableType
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.engine.approval_email import send_approval_email
 from src.engine.context import (
     LangSmithConfig,
     set_current_db,
@@ -171,6 +172,7 @@ class LangGraphExecutor:
         merged: dict[str, Any] = {**(existing_vars or {})}
         merged["_pending_approval_node"] = pending_info.get("node_id")
         merged["_pending_approval_prompt"] = pending_info.get("prompt")
+        merged["_pending_approval_since"] = datetime.now(UTC).isoformat()
 
         await self.db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
             where={"id": execution_id},
@@ -222,6 +224,13 @@ class LangGraphExecutor:
                 if isinstance(final_state.get("variables"), dict):
                     existing_vars = final_state["variables"]
                 await self._mark_waiting_approval(execution_id, pending_info, existing_vars)
+                await send_approval_email(
+                    execution_id=execution_id,
+                    node_id=str(pending_info.get("node_id", "")),
+                    prompt=str(pending_info.get("prompt", "")),
+                    approver_email=str(pending_info.get("approver_email", "")),
+                    approver_cc=str(pending_info.get("approver_cc")) or None,
+                )
                 await self._emit(
                     "approval_required",
                     execution_id,
@@ -289,6 +298,13 @@ class LangGraphExecutor:
                 if isinstance(final_state.get("variables"), dict):
                     existing_vars = final_state["variables"]
                 await self._mark_waiting_approval(execution_id, pending_info, existing_vars)
+                await send_approval_email(
+                    execution_id=execution_id,
+                    node_id=str(pending_info.get("node_id", "")),
+                    prompt=str(pending_info.get("prompt", "")),
+                    approver_email=str(pending_info.get("approver_email", "")),
+                    approver_cc=str(pending_info.get("approver_cc")) or None,
+                )
                 await self._emit(
                     "approval_required",
                     execution_id,

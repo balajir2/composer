@@ -487,3 +487,109 @@ async def test_run_emits_failed_on_exception(
 
     statuses = [e.payload.get("status") for e in events if e.type == "workflow_completed"]
     assert "failed" in statuses
+
+
+async def test_run_sends_approval_email_when_approver_email_set(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from typing import ClassVar
+    from unittest.mock import AsyncMock
+
+    from src.engine import langgraph_executor as lge_mod
+
+    send_mock = AsyncMock()
+    monkeypatch.setattr(lge_mod, "send_approval_email", send_mock)
+
+    db = MagicMock()
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="e1", workflowId="w1", userId="dev", threadId="t1", input=None
+        )
+    )
+    db.workflow = MagicMock()
+    db.workflow.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="w1",
+            name="t",
+            nodes=[
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "ua",
+                    "type": "user-approval",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "UA",
+                        "approvalMessage": "Approve?",
+                        "approverEmail": "reviewer@example.com",
+                    },
+                },
+                {"id": "a", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "A"}},
+                {"id": "b", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "B"}},
+            ],
+            edges=[
+                {"id": "e1", "source": "s", "target": "ua"},
+                {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
+                {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
+            ],
+        )
+    )
+    db.workflowexecution.update = AsyncMock()
+
+    class _FakeInterrupt:
+        value: ClassVar[dict[str, str]] = {
+            "node_id": "ua",
+            "prompt": "Approve?",
+            "approver_email": "reviewer@example.com",
+            "approver_cc": "",
+        }
+
+    class _FakeTask:
+        interrupts: ClassVar[tuple[_FakeInterrupt, ...]] = (_FakeInterrupt(),)
+
+    class _FakeSnapPaused:
+        next: ClassVar[tuple[str, ...]] = ("ua",)
+        tasks: ClassVar[tuple[_FakeTask, ...]] = (_FakeTask(),)
+
+    class _FakeCompiled:
+        async def ainvoke(self, *a: Any, **kw: Any) -> dict[str, Any]:
+            return {"variables": {"input": ""}, "node_results": {}}
+
+        async def aget_state(self, *a: Any, **kw: Any) -> Any:
+            return _FakeSnapPaused()
+
+    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+
+    orch = LangGraphExecutor(db, MagicMock())
+    await orch.run("e1")
+
+    send_mock.assert_awaited_once()
+    assert send_mock.await_args is not None
+    call_kwargs = send_mock.await_args.kwargs
+    assert call_kwargs["approver_email"] == "reviewer@example.com"
+    assert call_kwargs["node_id"] == "ua"
+    assert call_kwargs["prompt"] == "Approve?"
+
+
+async def test_mark_waiting_approval_stamps_pending_since() -> None:
+    db = MagicMock()
+    db.workflowexecution = MagicMock()
+    update_calls: list[dict[str, Any]] = []
+
+    async def _update(*, where: Any, data: Any) -> Any:
+        update_calls.append({"where": where, "data": data})
+        return None
+
+    db.workflowexecution.update = _update
+
+    orch = LangGraphExecutor(db, MagicMock())
+    await orch._mark_waiting_approval(  # pyright: ignore[reportPrivateUsage]
+        "e1", {"node_id": "ua", "prompt": "Approve?"}, {}
+    )
+
+    saved_vars: dict[str, Any] = update_calls[0]["data"]["variables"].data
+    since = saved_vars.get("_pending_approval_since")
+    assert since is not None
+    from datetime import datetime
+
+    datetime.fromisoformat(since)  # raises if not a valid ISO-8601 string
