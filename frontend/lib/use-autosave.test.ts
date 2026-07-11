@@ -63,4 +63,34 @@ describe("useAutosave", () => {
     expect(save).toHaveBeenCalledTimes(1);
     expect(result.current.status).toBe("saved");
   });
+
+  it("flushes a pending debounced save on unmount instead of discarding it", () => {
+    // Regression: client-side route changes (e.g. Designer -> Settings)
+    // don't fire beforeunload, so a dirty edit whose debounce hadn't
+    // elapsed yet used to be silently dropped on navigation.
+    const save = vi.fn().mockResolvedValue(undefined);
+    const { result, unmount } = renderHook(() => useAutosave(save, 3000));
+
+    act(() => result.current.markDirty());
+    expect(save).not.toHaveBeenCalled();
+
+    unmount();
+
+    expect(save).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not double-save on unmount when there is no pending debounce", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const { result, unmount } = renderHook(() => useAutosave(save, 3000));
+
+    act(() => result.current.markDirty());
+    await act(async () => {
+      await result.current.saveNow();
+    });
+    expect(save).toHaveBeenCalledTimes(1);
+
+    unmount();
+
+    expect(save).toHaveBeenCalledTimes(1);
+  });
 });

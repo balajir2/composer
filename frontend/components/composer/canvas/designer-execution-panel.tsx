@@ -1,14 +1,21 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
 import { AlertCircle, CheckCircle2, Clock, Loader2, X } from "lucide-react";
+import { toast } from "sonner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { getExecution } from "@/lib/api/executions";
+import { Textarea } from "@/components/ui/textarea";
+import { getExecution, resumeExecution } from "@/lib/api/executions";
 import { subscribeExecution, type ComposerEvent } from "@/lib/ws";
+
+type PendingApproval = {
+  nodeId?: string;
+  prompt?: string;
+};
 
 type NodeRunState = {
   status: "running" | "completed" | "failed";
@@ -52,6 +59,28 @@ export function DesignerExecutionPanel({
   const [status, setStatus] = useState<string>("running");
   const [byNodeId, setByNodeId] = useState<Record<string, NodeRunState>>({});
   const [currentNodeId, setCurrentNodeId] = useState<string | null>(null);
+  const [pendingApproval, setPendingApproval] = useState<PendingApproval | null>(null);
+  const [approvalNote, setApprovalNote] = useState("");
+
+  const approvalMutation = useMutation({
+    mutationFn: (approved: boolean) =>
+      resumeExecution(executionId, {
+        decision: approved ? "approved" : "rejected",
+        note: approvalNote || undefined,
+      }),
+    onSuccess: (_data, approved) => {
+      setPendingApproval(null);
+      setApprovalNote("");
+      // The backend closes the event bus on every pause, so the WS
+      // connection that delivered `approval_required` is already dead —
+      // it will not resubscribe for post-resume events.  Fall back to
+      // the 2s poll below to pick up the eventual terminal status.
+      setStatus("running");
+      toast.success(approved ? "Approved — resuming workflow." : "Rejected — resuming workflow.");
+    },
+    onError: (err) =>
+      toast.error(err instanceof Error ? err.message : "Failed to record decision."),
+  });
 
   // Fallback polling — WS events can land after the backend already closed
   // the bus, so the poll picks up terminal status/error for reliability.
@@ -65,6 +94,7 @@ export function DesignerExecutionPanel({
     if (!execution) return;
     if (TERMINAL_STATES.has(execution.status)) {
       setStatus(execution.status);
+      setPendingApproval(null);
     }
   }, [execution]);
 
@@ -92,7 +122,9 @@ export function DesignerExecutionPanel({
         return;
       }
       if (ev.type === "approval_required") {
+        const e = ev as unknown as { node_id?: string; prompt?: string };
         setStatus("waiting_approval");
+        setPendingApproval({ nodeId: e.node_id, prompt: e.prompt });
         return;
       }
       if (ev.type === "node_started") {
@@ -204,6 +236,48 @@ export function DesignerExecutionPanel({
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto p-4 text-sm">
+        {/* Inline approve/reject — mirrors OAB's in-designer ExecutionPanel
+            pattern so a Run Draft pause never forces a trip to /runs. */}
+        {status === "waiting_approval" && pendingApproval && (
+          <div className="mb-4 rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
+            <div className="mb-2 flex items-center gap-2">
+              <Clock className="size-3.5 shrink-0 text-amber-600" />
+              <p className="text-xs font-semibold uppercase tracking-wide text-amber-700">
+                Approval required
+              </p>
+            </div>
+            <p className="mb-2 whitespace-pre-wrap break-words rounded-md border bg-background px-2 py-1.5 text-xs text-foreground">
+              {pendingApproval.prompt || "This workflow requires your approval to continue."}
+            </p>
+            <Textarea
+              value={approvalNote}
+              onChange={(e) => setApprovalNote(e.target.value)}
+              placeholder="Optional note"
+              rows={2}
+              className="mb-2 text-xs"
+            />
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                className="flex-1"
+                disabled={approvalMutation.isPending}
+                onClick={() => approvalMutation.mutate(true)}
+              >
+                {approvalMutation.isPending ? "Approving…" : "Approve"}
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                className="flex-1"
+                disabled={approvalMutation.isPending}
+                onClick={() => approvalMutation.mutate(false)}
+              >
+                {approvalMutation.isPending ? "Rejecting…" : "Reject"}
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* Show the exact input the backend received so designers can
             confirm the Run Draft form actually sent the new value (vs. a
             stale default or a prompt with a hardcoded literal). */}

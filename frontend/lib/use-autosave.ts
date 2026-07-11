@@ -14,10 +14,24 @@ export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveRef = useRef(save);
   saveRef.current = save;
+  const isMountedRef = useRef(true);
 
   useEffect(() => {
+    isMountedRef.current = true;
     return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
+      isMountedRef.current = false;
+      // A pending debounce timer means markDirty() fired but the save
+      // never went out. Client-side route changes (e.g. Designer ->
+      // Settings) don't trigger beforeunload, so without this flush the
+      // edit is silently discarded and the next screen shows stale data
+      // — exactly the "lost my flow" reports this was added to fix.
+      // Fire-and-forget: nothing can display the result after unmount,
+      // but the write itself still lands.
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+        saveRef.current().catch(() => {});
+      }
     };
   }, []);
 
@@ -25,9 +39,9 @@ export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
     setStatus("saving");
     try {
       await saveRef.current();
-      setStatus("saved");
+      if (isMountedRef.current) setStatus("saved");
     } catch (err) {
-      setStatus("error");
+      if (isMountedRef.current) setStatus("error");
       throw err;
     }
   }
@@ -36,6 +50,10 @@ export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
     setStatus("dirty");
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
+      // The timer already fired, so it no longer represents pending work —
+      // null it out before the save runs so a concurrent unmount doesn't
+      // see a stale non-null ref and flush a redundant duplicate save.
+      timerRef.current = null;
       // Fire-and-forget: nothing is awaiting this debounced save, so swallow
       // the rethrow here to avoid an unhandled rejection. `saveNow()` below
       // still propagates errors to its caller for explicit manual saves.
@@ -44,7 +62,10 @@ export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
   }
 
   async function saveNow() {
-    if (timerRef.current) clearTimeout(timerRef.current);
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
     await runSave();
   }
 

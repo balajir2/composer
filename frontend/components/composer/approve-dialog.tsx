@@ -21,7 +21,10 @@ export function ApproveDialog({ executionId }: { executionId: string }) {
 
   const mutation = useMutation({
     mutationFn: (approved: boolean) =>
-      resumeExecution(executionId, { approved, feedback: note || undefined }),
+      resumeExecution(executionId, {
+        decision: approved ? "approved" : "rejected",
+        note: note || undefined,
+      }),
     onSuccess: () => {
       setOpen(false);
       toast.success("Decision recorded.");

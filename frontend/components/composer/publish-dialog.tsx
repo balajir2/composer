@@ -13,7 +13,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { updateWorkflow } from "@/lib/api/workflows";
+import { getWorkflow, updateWorkflow } from "@/lib/api/workflows";
 import { slugify } from "@/lib/slugify";
 import { ComposerApiError } from "@/lib/api/client";
 import { toast } from "sonner";
@@ -50,23 +50,33 @@ export function PublishDialog({ open, onOpenChange, workflow }: PublishDialogPro
     setSlugError(null);
     setIsPending(true);
     try {
+      // Re-fetch immediately before submitting rather than trusting the
+      // `workflow` prop's node/edge snapshot. PUT /workflows/{id} is a
+      // full replace, so publishing with a stale prop (e.g. the Settings
+      // page's query cache lagging a save made moments ago in the
+      // canvas, or in another tab) would silently overwrite newer nodes/
+      // edges with older ones. Fetching fresh here closes that window.
+      const fresh = await getWorkflow(workflow.id);
       await updateWorkflow(workflow.id, {
-        name: workflow.name,
-        description: workflow.description ?? null,
-        category: workflow.category ?? null,
-        tags: workflow.tags ?? [],
-        difficulty: workflow.difficulty ?? null,
-        estimatedTime: workflow.estimatedTime ?? null,
-        nodes: workflow.nodes as Parameters<typeof updateWorkflow>[1]["nodes"],
-        edges: workflow.edges as Parameters<typeof updateWorkflow>[1]["edges"],
-        version: workflow.version ?? null,
-        isTemplate: workflow.isTemplate,
-        isPublic: workflow.isPublic,
+        name: fresh.name,
+        description: fresh.description ?? null,
+        category: fresh.category ?? null,
+        tags: fresh.tags ?? [],
+        difficulty: fresh.difficulty ?? null,
+        estimatedTime: fresh.estimatedTime ?? null,
+        nodes: fresh.nodes as Parameters<typeof updateWorkflow>[1]["nodes"],
+        edges: fresh.edges as Parameters<typeof updateWorkflow>[1]["edges"],
+        version: fresh.version ?? null,
+        isTemplate: fresh.isTemplate,
+        isPublic: fresh.isPublic,
         isProduction: true,
         externalSlug: slug,
       });
       toast.success("Workflow published.");
       void queryClient.invalidateQueries({ queryKey: ["workflow", workflow.id] });
+      // Also bust the end-user Run list cache so the newly-published
+      // workflow shows up immediately instead of waiting out staleTime.
+      void queryClient.invalidateQueries({ queryKey: ["runnable-workflows"] });
       onOpenChange(false);
     } catch (err) {
       if (err instanceof ComposerApiError && err.status === 409) {
