@@ -19,6 +19,7 @@ from src.maintenance.execution_sweeper import (
     SweepResult,
     start_sweeper,
     stop_sweeper,
+    sweep_expired_approvals,
     sweep_stuck_executions,
 )
 
@@ -30,6 +31,7 @@ class _Row:
     startedAt: datetime
     error: str | None = None
     completedAt: datetime | None = None
+    variables: dict[str, Any] | None = None
 
 
 @dataclass
@@ -173,7 +175,9 @@ async def test_start_sweeper_disabled_returns_none() -> None:
 
     app = FastAPI()
     db = _DbStub()
-    task = start_sweeper(app, db, interval_seconds=0, stuck_after_seconds=900)
+    task = start_sweeper(
+        app, db, interval_seconds=0, stuck_after_seconds=900, approval_timeout_hours=168
+    )
     assert task is None
 
 
@@ -189,7 +193,9 @@ async def test_start_and_stop_sweeper_runs_at_least_once() -> None:
 
     # interval_seconds=1 keeps the loop responsive enough for the test to
     # observe the first sweep before cancelling.
-    task = start_sweeper(app, db, interval_seconds=1, stuck_after_seconds=900)
+    task = start_sweeper(
+        app, db, interval_seconds=1, stuck_after_seconds=900, approval_timeout_hours=168
+    )
     assert task is not None
     # Yield to the event loop so the loop body runs once.
     await asyncio.sleep(0.05)
@@ -197,3 +203,85 @@ async def test_start_and_stop_sweeper_runs_at_least_once() -> None:
     assert task.cancelled() or task.done()
     # First iteration completed the sweep before the cancel.
     assert any(call[1].get("status") == "failed" for call in db.workflowexecution.update_calls)
+
+
+async def test_stale_waiting_approval_rows_are_marked_failed() -> None:
+    now = _now()
+    stale_since = (now - timedelta(hours=200)).isoformat()
+    db = _DbStub()
+    db.workflowexecution.rows = [
+        _Row(
+            id="exe-stale",
+            status="waiting_approval",
+            startedAt=now - timedelta(hours=200),
+            variables={"_pending_approval_since": stale_since},
+        ),
+    ]
+
+    result = await sweep_expired_approvals(db, timeout_hours=168, now=now)
+
+    assert result == SweepResult(scanned=1, marked_failed=1)
+    [(exec_id, data)] = db.workflowexecution.update_calls
+    assert exec_id == "exe-stale"
+    assert data["status"] == "failed"
+    assert "expired waiting for approval" in data["error"].lower()
+    assert data["completedAt"] == now
+
+
+async def test_recent_waiting_approval_rows_are_skipped() -> None:
+    now = _now()
+    fresh_since = (now - timedelta(hours=1)).isoformat()
+    db = _DbStub()
+    db.workflowexecution.rows = [
+        _Row(
+            id="exe-fresh",
+            status="waiting_approval",
+            startedAt=now - timedelta(hours=1),
+            variables={"_pending_approval_since": fresh_since},
+        ),
+    ]
+
+    result = await sweep_expired_approvals(db, timeout_hours=168, now=now)
+
+    assert result == SweepResult(scanned=1, marked_failed=0)
+    assert db.workflowexecution.update_calls == []
+
+
+async def test_waiting_approval_rows_without_timestamp_are_skipped() -> None:
+    """Defensive: a row somehow missing the stamp (e.g. pre-migration data)
+    is left alone rather than immediately expired."""
+    now = _now()
+    db = _DbStub()
+    db.workflowexecution.rows = [
+        _Row(
+            id="exe-no-ts",
+            status="waiting_approval",
+            startedAt=now - timedelta(days=30),
+            variables={},
+        ),
+    ]
+
+    result = await sweep_expired_approvals(db, timeout_hours=168, now=now)
+
+    assert result == SweepResult(scanned=1, marked_failed=0)
+    assert db.workflowexecution.update_calls == []
+
+
+async def test_running_rows_are_not_touched_by_approval_sweep() -> None:
+    """sweep_expired_approvals only ever looks at waiting_approval — a stuck
+    running row is sweep_stuck_executions's job, not this one's."""
+    now = _now()
+    db = _DbStub()
+    db.workflowexecution.rows = [
+        _Row(id="exe-running", status="running", startedAt=now - timedelta(hours=200)),
+    ]
+
+    result = await sweep_expired_approvals(db, timeout_hours=168, now=now)
+
+    assert result == SweepResult(scanned=0, marked_failed=0)
+
+
+async def test_approval_sweep_zero_timeout_rejected() -> None:
+    db = _DbStub()
+    with pytest.raises(ValueError, match="must be > 0"):
+        await sweep_expired_approvals(db, timeout_hours=0)

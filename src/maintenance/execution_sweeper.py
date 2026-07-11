@@ -126,11 +126,84 @@ async def sweep_stuck_executions(
     return SweepResult(scanned=len(rows), marked_failed=marked)
 
 
+_APPROVAL_TIMEOUT_ERROR_TEMPLATE = (
+    "Execution expired waiting for approval after {hours}h with no decision. "
+    "Auto-failed by the approval-timeout sweeper."
+)
+
+
+async def sweep_expired_approvals(
+    db: Any,
+    *,
+    timeout_hours: int,
+    now: datetime | None = None,
+) -> SweepResult:
+    """Find waiting_approval executions past timeout_hours since they entered
+    that state, and fail them.
+
+    Independent of sweep_stuck_executions — waiting_approval rows are
+    deliberately excluded from that function (see its docstring); they get
+    their own, much longer timeout here instead, since this is a
+    Postgres/checkpoint-row-growth hygiene measure, not a crash-recovery one
+    (a paused execution holds no compute — see
+    docs/archive/phase-history/specs/2026-07-11-approval-email-notifications-design.md).
+    """
+    if timeout_hours <= 0:
+        raise ValueError("timeout_hours must be > 0")
+
+    current_time = now or datetime.now(UTC)
+    cutoff = current_time - timedelta(hours=timeout_hours)
+
+    rows: list[Any] = await db.workflowexecution.find_many(
+        where={"status": "waiting_approval"},
+    )
+
+    marked = 0
+    for row in rows:
+        variables = getattr(row, "variables", None) or {}
+        since_raw = (
+            variables.get("_pending_approval_since") if isinstance(variables, dict) else None
+        )
+        if not since_raw:
+            continue
+        try:
+            since = datetime.fromisoformat(since_raw)
+        except (TypeError, ValueError):
+            continue
+        if since >= cutoff:
+            continue
+        try:
+            await db.workflowexecution.update(
+                where={"id": row.id},
+                data={
+                    "status": "failed",
+                    "error": _APPROVAL_TIMEOUT_ERROR_TEMPLATE.format(hours=timeout_hours),
+                    "completedAt": current_time,
+                },
+            )
+            marked += 1
+        except Exception:
+            logger.exception(
+                "execution_sweeper: failed to mark expired approval %s as failed",
+                getattr(row, "id", "<unknown>"),
+            )
+
+    if marked > 0:
+        logger.info(
+            "execution_sweeper: marked %d/%d waiting_approval rows as expired",
+            marked,
+            len(rows),
+        )
+
+    return SweepResult(scanned=len(rows), marked_failed=marked)
+
+
 async def _sweeper_loop(
     db: Any,
     *,
     interval_seconds: int,
     stuck_after_seconds: int,
+    approval_timeout_hours: int,
 ) -> None:
     """Background coroutine: run the sweeper on a fixed interval forever.
 
@@ -140,6 +213,7 @@ async def _sweeper_loop(
     while True:
         try:
             await sweep_stuck_executions(db, stuck_after_seconds=stuck_after_seconds)
+            await sweep_expired_approvals(db, timeout_hours=approval_timeout_hours)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -153,6 +227,7 @@ def start_sweeper(
     *,
     interval_seconds: int,
     stuck_after_seconds: int,
+    approval_timeout_hours: int,
 ) -> asyncio.Task[None] | None:
     """Schedule the sweeper as a background task on the FastAPI app.
 
@@ -169,14 +244,16 @@ def start_sweeper(
             db,
             interval_seconds=interval_seconds,
             stuck_after_seconds=stuck_after_seconds,
+            approval_timeout_hours=approval_timeout_hours,
         ),
         name="composer.execution_sweeper",
     )
     app.state.execution_sweeper_task = task
     logger.info(
-        "execution_sweeper: started (interval=%ds, stuck_after=%ds)",
+        "execution_sweeper: started (interval=%ds, stuck_after=%ds, approval_timeout=%dh)",
         interval_seconds,
         stuck_after_seconds,
+        approval_timeout_hours,
     )
     return task
 
@@ -194,5 +271,6 @@ __all__ = [
     "SweepResult",
     "start_sweeper",
     "stop_sweeper",
+    "sweep_expired_approvals",
     "sweep_stuck_executions",
 ]
