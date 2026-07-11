@@ -21,13 +21,17 @@ This module provides:
   - `sweep_stuck_executions(db, ...)` — a one-shot function tests can call
     directly to verify the policy.  Returns a `SweepResult` so callers can
     log how many rows it touched.
-  - `start_sweeper(app, ...)` — schedules the function on a recurring
+  - `sweep_expired_approvals(db, ...)` — the equivalent one-shot function
+    for `waiting_approval` rows.  See its docstring for why it's a separate
+    function with a separate, much longer timeout.
+  - `start_sweeper(app, ...)` — schedules both functions on a recurring
     background task tied to the FastAPI lifespan.  Idempotent if the
     interval is 0 (sweeper disabled).
 
-The sweeper only touches rows in `status='running'`.  `waiting_approval`
-rows are excluded — they're paused on purpose and may sit for days waiting
-for a human reviewer.
+`sweep_stuck_executions` only touches rows in `status='running'`.
+`waiting_approval` rows are excluded from it — they're paused on purpose
+and may sit for days waiting for a human reviewer — but they are not
+unbounded: `sweep_expired_approvals` reaps them on its own, longer timeout.
 """
 
 from __future__ import annotations
