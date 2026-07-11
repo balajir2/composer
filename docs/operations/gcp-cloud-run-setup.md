@@ -203,7 +203,7 @@ Add repository variables (same page, "Variables" tab):
 
 | Variable name | Value | Purpose |
 |---|---|---|
-| `COMPOSER_API_URL` | `https://api.composer.your-domain.com` (or the backend `*.run.app` URL) | Baked into the frontend image as `NEXT_PUBLIC_COMPOSER_API_URL` |
+| `COMPOSER_API_URL` | `https://api.composer.your-domain.com` (or the backend `*.run.app` URL) | Baked into the frontend image as `NEXT_PUBLIC_COMPOSER_API_URL`, **and** set as `BACKEND_PUBLIC_URL` on the backend Cloud Run service every deploy (used to build the links inside emailed approve/reject notifications — see `src/engine/approval_email.py`) |
 | `COMPOSER_FRONTEND_URL` | `https://composer.your-domain.com` (or the frontend `*.run.app` URL) | Set as `NEXTAUTH_URL` on the frontend Cloud Run service |
 
 ### 5.3 — Delete the local key file

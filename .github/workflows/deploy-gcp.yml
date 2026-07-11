@@ -96,6 +96,30 @@ jobs:
             --platform=managed \
             --quiet
 
+      # BACKEND_PUBLIC_URL is used server-side to build the links inside
+      # emailed approve/reject notifications (src/engine/approval_email.py).
+      # It defaults to http://localhost:8000 (src/config.py) when unset, so
+      # without this step every deploy silently regresses to broken email
+      # links even though the app otherwise looks fine — bootstrap set it
+      # once by hand and no automated step kept it in sync since. Re-set it
+      # on every deploy so it can never silently drift again.
+      - name: Set BACKEND_PUBLIC_URL
+        run: |
+          if [ -n "${{ vars.COMPOSER_API_URL }}" ]; then
+            URL="${{ vars.COMPOSER_API_URL }}"
+          else
+            URL=$(gcloud run services describe ${{ env.BACKEND_SERVICE }} \
+              --region=${{ env.REGION }} \
+              --project=${{ env.PROJECT_ID }} \
+              --format='value(status.url)')
+          fi
+          gcloud run services update ${{ env.BACKEND_SERVICE }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --update-env-vars="BACKEND_PUBLIC_URL=$URL" \
+            --quiet
+          echo "BACKEND_PUBLIC_URL set to: $URL"
+
       - name: Print backend URL
         run: |
           URL=$(gcloud run services describe ${{ env.BACKEND_SERVICE }} \

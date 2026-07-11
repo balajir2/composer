@@ -204,6 +204,17 @@ Write-Host "Backend deployed: $backendRunUrl" -ForegroundColor Green
 $apiUrl = if ($BackendDomain) { "https://$BackendDomain" } else { $backendRunUrl }
 Write-Host "Frontend will call API at: $apiUrl" -ForegroundColor Yellow
 
+# BACKEND_PUBLIC_URL is used server-side (src/engine/approval_email.py) to
+# build the links inside emailed approve/reject notifications. It defaults
+# to http://localhost:8000 (src/config.py) when unset, so without this the
+# app looks fully deployed but every approval email silently links back to
+# whichever machine happens to be running a local dev server.
+Write-Host "Setting BACKEND_PUBLIC_URL=$apiUrl on $BackendService"
+gcloud run services update $BackendService `
+    --region=$Region `
+    --project=$ProjectId `
+    --update-env-vars="BACKEND_PUBLIC_URL=$apiUrl" | Out-Null
+
 if (-not $SkipBuild) {
     Write-Step "4. Build + push frontend image"
     Push-Location (Join-Path $repoRoot 'frontend')
