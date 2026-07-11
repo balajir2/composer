@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — Approve-via-email + waiting-approval auto-expiry (2026-07-11)
+
+A `user-approval` node can now also notify the reviewer by email: set **Approver email** (and optionally **Approver CC**) on the node, and the moment the graph pauses, the reviewer gets a message with two signed one-click links (Approve / Reject) — no Composer login required. Separately, a `waiting_approval` execution that sits with no decision at all (in-app or via email) for more than 7 days is now auto-failed by a background sweeper, purely to bound Postgres/checkpoint row growth; a paused execution costs zero compute while waiting (its full state is checkpointed to Postgres), so this is hygiene, not a resource necessity.
+
+#### Added
+- New `approval_email` JWT type — `create_approval_email_token`/`verify_approval_email_token` in [src/security/jwt.py](src/security/jwt.py); payload bakes in `sub` (execution id), `node_id`, `decision`, `approver_email`, `pending_since` so the decision itself is signed, not a mutable query parameter.
+- `UserApprovalNodeData.approver_email`/`approver_cc` (aliases `approverEmail`/`approverCc`) in [src/engine/workflow.py](src/engine/workflow.py); `UserApprovalExecutor` (`src/executors/user_approval.py`) folds the substituted values into the `interrupt()` payload.
+- `send_approval_email` in [src/engine/approval_email.py](src/engine/approval_email.py) — no-ops if `approverEmail` is empty; otherwise sends two signed approve/reject links via the existing Resend integration. Called only from the one-shot "just detected a fresh pause" branches in [src/engine/langgraph_executor.py](src/engine/langgraph_executor.py)'s `run()`/`.resume()` — never from inside the executor itself, since LangGraph replays a node's function body on resume and a send placed earlier would re-fire on every resume.
+- Public, unauthenticated `GET /approvals/email/{token}` in [src/api/approval_email.py](src/api/approval_email.py) (`resolve_approval_email`) — verifies the token, checks it matches the execution's current pause (`node_id` AND `pending_since`, so a `while`-loop node pausing repeatedly at the same `node_id` can't have a stale token resolve a later pause), atomically transitions status via a conditional `update_many` (`WHERE id=... AND status='waiting_approval'`) to prevent double-processing (e.g. an email-security-gateway link-scanner prefetching both links, or a duplicate click), records an `Approval` row, schedules `resume()` in the background, and redirects (303) to `{FRONTEND_URL}/approval-result?status=approved|rejected|invalid`. Rate-limited via new `rate_limit_approval_email_per_minute` setting (default 20/min).
+- `Approval.approverUserId` is now nullable, plus new `approverEmail`/`viaEmailLink` columns in `prisma/schema.prisma` — an email-link decision has no authenticated Composer user behind it.
+- New sweeper function `sweep_expired_approvals` in [src/maintenance/execution_sweeper.py](src/maintenance/execution_sweeper.py) — auto-fails `waiting_approval` executions past `approval_wait_timeout_hours` (default 168h/7 days) since `variables._pending_approval_since` was stamped, independent of the 72h emailed-link TTL. Runs on the same interval tick as the existing stuck-`running` sweeper.
+- New settings in [src/config.py](src/config.py): `backend_public_url` (base URL for building emailed links against the backend, not the frontend), `approval_link_ttl_hours` (default 72), `approval_wait_timeout_hours` (default 168), `rate_limit_approval_email_per_minute` (default 20).
+- Frontend: `frontend/components/composer/canvas/node-panels/user-approval.tsx` gained Approver email/CC input fields; new unauthenticated `frontend/app/(auth)/approval-result/page.tsx` renders a distinct approved/rejected/invalid confirmation state.
+- `docs/designer-guide.md` `user-approval` node-reference section updated with the email-approval behavior, link TTL, and auto-expiry.
+
+#### Notes
+- See ADR-0029 in [docs/decisions.md](docs/decisions.md) for the full design record, including why signed links were chosen over reply-parsing, why no login is required, why the sweeper timeout is independent of the link TTL, and confirmation that paused executions hold no live compute between pause and resume.
+
 ### Fixed — user-approval nodes misreported as failed in the run trace (2026-07-11)
 
 A `user-approval` node pausing for a decision (via LangGraph's `interrupt()`) was showing up in the run trace as `failed`, with the raw `GraphInterrupt` exception dumped as the error text — even though the execution's overall status correctly ended up `waiting_approval` once `LangGraphExecutor.run` inspected the post-`ainvoke` state.
