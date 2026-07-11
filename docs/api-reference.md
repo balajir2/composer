@@ -75,6 +75,22 @@ The WebSocket emits these event types:
 {"type": "execution_completed", "executionId": "...", "payload": {"status": "completed", "output": ...}}
 ```
 
+## Approvals
+
+```
+GET /approvals/email/{token}
+```
+
+Public, unauthenticated — no `Authorization` header, no Composer account. The signed token in the path *is* the credential. Set when a `user-approval` node has `approverEmail` (and optionally `approverCc`) configured: the moment the workflow pauses at that node, Composer emails the approver two signed one-click links (Approve / Reject).
+
+Behavior: verifies the token, atomically transitions the execution out of `waiting_approval` (a stale or already-used token is a no-op), resumes the workflow in the background, then redirects (`303`) to `{FRONTEND_URL}/approval-result?status=approved|rejected|invalid`. In-app approval via `POST /executions/{id}/resume` continues to work regardless, as a fallback.
+
+Rate-limited (`rate_limit_approval_email_per_minute`, default 20/min/IP) — headroom for a legitimate double-click plus email-security-scanner link prefetching.
+
+Two independent timeouts bound it:
+- **`approval_link_ttl_hours`** (default 72h) — how long the emailed link itself stays valid. After it expires, in-app approval still works.
+- **`approval_wait_timeout_hours`** (default 168h) — auto-fails any `waiting_approval` execution left undecided this long, regardless of how it was meant to be resolved. Pure Postgres/checkpoint hygiene (a paused execution holds no live compute), not crash recovery.
+
 ## External invoke
 
 ```

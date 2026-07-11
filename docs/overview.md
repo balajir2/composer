@@ -13,7 +13,7 @@ Phases 0–10 complete. The platform is operational: backend, frontend canvas, a
 - **Workflow automation** — classify-and-branch on customer support tickets, route via if-else, draft responses
 - **Document processing** — upload a transcript, extract action items as structured JSON, draft a follow-up email
 - **External-invoke APIs** — publish a workflow as a `POST /api/run/{slug}` endpoint with per-user API keys
-- **Human-in-the-loop flows** — agent drafts content, reviewer approves or rejects, branched routing on the verdict
+- **Human-in-the-loop flows** — agent drafts content, reviewer approves or rejects (inline on the canvas, on the runs page, or via a one-click emailed link requiring no Composer login), branched routing on the verdict
 
 The 18 reference templates under **Designer → Templates** are the recommended starting point; each is annotated with what platform capability it demonstrates. See [`designer-guide.md#templates`](designer-guide.md#templates) for a walk-through.
 
@@ -21,7 +21,7 @@ The 18 reference templates under **Designer → Templates** are the recommended 
 
 | Layer | Composer ships with |
 |---|---|
-| **19 node types** | start, end, agent, mcp, http, set-state, transform, data-transform, extract, if-else, while, user-approval, join-chunks, note, guardrails, gamma-ai, email, arcade, vector-db |
+| **19 node types** | start, end, agent, mcp, http, set-state, transform, data-transform, extract, if-else, while, user-approval (optional approve-via-email), join-chunks, note, guardrails, gamma-ai, email, arcade, vector-db |
 | **4 LLM providers** | Anthropic Claude, OpenAI, Google Gemini, Groq |
 | **5 vector DBs** | Pinecone, Qdrant, Chroma, Weaviate, Milvus (query + upsert) |
 | **6 built-in tool providers** | Tavily, Firecrawl, Serper, Browserless, Gamma, Arcade |

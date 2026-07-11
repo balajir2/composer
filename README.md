@@ -4,7 +4,7 @@
 > Designers wire nodes on a canvas — LLM agents, HTTP calls, vector DB queries, branching logic, human-approval gates, document upload — and the runtime executes them as resumable state machines with full observability and a real-time stream of node-by-node events.
 
 [![Status](https://img.shields.io/badge/status-production%20ready-success)](docs/overview.md#status)
-[![Tests](https://img.shields.io/badge/tests-840%20passing-success)](#testing)
+[![Tests](https://img.shields.io/badge/tests-868%20passing-success)](#testing)
 [![Stack](https://img.shields.io/badge/stack-FastAPI%20%7C%20Postgres%20%7C%20LangGraph%20%7C%20Next.js-blueviolet)](docs/architecture.md)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -18,7 +18,7 @@ Composer turns a visual node graph into a running, observable, resumable AI work
 2. **Validate**: Composer compiles the graph into a Pydantic-validated workflow definition with size + safety guards (100 node cap, 200 edge cap, sandboxed expression evaluation, sandboxed code execution).
 3. **Execute**: at run time, Composer translates the graph into a [LangGraph](https://github.com/langchain-ai/langgraph) state machine, drives it to completion (or to an interrupt for human approval), and persists checkpoints after every node.
 4. **Stream**: clients subscribe to the run via WebSocket (`/executions/{id}/ws`) and watch `node_started` → `node_completed` events flow in real time.
-5. **Resume**: paused workflows pick up exactly where they left off after a human approval, even across process restarts.
+5. **Resume**: paused workflows pick up exactly where they left off after a human approval — given in-app or via a one-click emailed link — even across process restarts.
 6. **Publish**: a workflow becomes an external API endpoint (`POST /api/run/{slug}`) that customers' systems can call with a per-user API key — sync (block until done) or async (fire-and-forget with a stream URL).
 
 The whole loop is what most agentic-AI teams build from scratch: prompt + tool definitions + retry logic + human approval + audit log + observability. Composer ships it as a single product.
@@ -33,7 +33,7 @@ The whole loop is what most agentic-AI teams build from scratch: prompt + tool d
 | **Multi-source research agent** | Tavily web search + Firecrawl page scrape → join results → structured-extraction agent → CRM-shaped JSON output |
 | **Classify-and-branch ticket triage** | Classifier agent emits `{urgent, category, summary}` JSON → if-else branches on `urgent` → specialist agents draft urgent or standard replies |
 | **Document → action items → email** | Upload a meeting transcript → extraction agent emits action items as JSON → drafting agent writes a polished follow-up referencing each item |
-| **Human-in-the-loop approval** | Agent drafts content → `user-approval` node pauses execution → reviewer approves or rejects via the runs page → branched routing on the verdict |
+| **Human-in-the-loop approval** | Agent drafts content → `user-approval` node pauses execution → reviewer approves or rejects inline on the designer canvas, on the runs page, or via a one-click emailed link (no Composer login required) → branched routing on the verdict |
 | **Slide deck generation** | Tavily-grounded research → Gamma AI node renders a slide deck → final agent surfaces the published URL |
 | **Lead enrichment** | Company name in → multi-source research → schema-validated profile out (industry, size, products, recent news, executives, competitors) |
 | **Code review assistant** | Diff in → review agent flags issues with severity tags → guardrails screen the *output* for accidental secret leaks → branched delivery |
@@ -52,7 +52,7 @@ The whole loop is what most agentic-AI teams build from scratch: prompt + tool d
 | **AI / LLM** | `agent` (multi-turn LLM with tool-calling, structured output, MCP support), `extract` (single-shot structured extraction) |
 | **Tools / Integration** | `mcp` (Model Context Protocol — static or OAuth-bound), `http` (any external HTTP API), `vector-db` (query + upsert across 5 providers), `gamma-ai` (slide generation), `email` (Resend delivery), `arcade` (Arcade tools), `jira` (Jira Cloud issue create/search/update/transition/comment, per-node encrypted credentials) |
 | **Data flow** | `set-state` (write a variable), `transform` (sandboxed expression with optional named output), `data-transform` (collection mapping), `join-chunks` (concatenate text chunks with separator/prefix/suffix) |
-| **Control flow** | `if-else` (boolean branch), `while` (bounded loop, max 100 iterations), `user-approval` (pause for human verdict) |
+| **Control flow** | `if-else` (boolean branch), `while` (bounded loop, max 100 iterations), `user-approval` (pause for human verdict; optionally emails the approver a one-click approve/reject link, no login required) |
 | **Safety** | `guardrails` (LLM-based PII / moderation / jailbreak / hallucination classifiers, runs concurrently) |
 
 ### LLM provider support
@@ -92,6 +92,7 @@ The whole loop is what most agentic-AI teams build from scratch: prompt + tool d
 - **WebSocket streaming** of `node_started` / `node_completed` / `node_failed` / `workflow_completed` / `approval_required` events
 - **Resumable execution** via LangGraph checkpoints stored in Postgres — paused workflows survive process restarts
 - **Stuck-execution sweeper** — background task flips abandoned `running` rows to `failed` with explanatory error after a configurable threshold
+- **Approval-timeout sweeper** — independently auto-fails `waiting_approval` executions left undecided past a configurable threshold (default 168h), bounding Postgres/checkpoint row growth for runs nobody ever approves or rejects
 - **Resilient detached-task wrapper** — async invocations stamp `failed` to the row even on uncaught crash or worker shutdown
 - **Designer autosave** — 3s-debounced background save (same `PUT /workflows/{id}` path as manual Save) with an `idle → dirty → saving → saved/error` status indicator and a `beforeunload` guard against closing the tab with unsaved changes
 
@@ -178,7 +179,7 @@ A workflow is a JSON pair of `nodes[]` + `edges[]`. The executor:
 1. **Loads** the workflow row, validates against a Pydantic discriminated union over node `type`.
 2. **Compiles** a LangGraph `StateGraph`. Plain edges become plain edges; `if-else` / `while` / `user-approval` edges become conditional edges keyed off the source node's branch label.
 3. **Runs** `compiled.ainvoke(...)`. Each node receives the current state and returns a delta; LangGraph's reducers merge deltas back. Checkpoints persist after every node.
-4. **Pauses** at `user-approval` via LangGraph's `interrupt()`. The execution row flips to `waiting_approval`; the original API call returns; the run resumes when `POST /executions/{id}/resume` arrives.
+4. **Pauses** at `user-approval` via LangGraph's `interrupt()`. The execution row flips to `waiting_approval`; the original API call returns; the run resumes when `POST /executions/{id}/resume` arrives — from the canvas, the runs page, or (if the node has an `approverEmail` set) a signed one-click Approve/Reject link emailed to the approver and resolved by the public `GET /approvals/email/{token}` endpoint, no Composer account needed.
 5. **Emits** events to a shared in-process bus. The WebSocket endpoint subscribes and streams events to the client.
 6. **Persists** the terminal state (status, output, variables, node results, error) to the execution row before returning.
 
@@ -202,7 +203,7 @@ Deeper architecture: [`docs/architecture.md`](docs/architecture.md).
 | **Real-time** | WebSocket — node-by-node execution events |
 | **Encryption at rest** | `cryptography` AES-256-GCM |
 | **Sandboxing** | `simpleeval` (expressions) + `e2b_code_interpreter` (code) |
-| **Tests** | pytest + pytest-asyncio (840 unit + integration), Playwright (frontend e2e) |
+| **Tests** | pytest + pytest-asyncio (868 unit + integration), Playwright (frontend e2e) |
 | **Tooling** | `uv` · `ruff` · `pyright` (strict) · Prisma migrations |
 
 Why each piece was chosen, with alternatives considered: [`docs/decisions.md`](docs/decisions.md) (full ADR record).
@@ -250,7 +251,7 @@ uv run pytest -m "not integration"
 cd frontend && ./node_modules/.bin/tsc --noEmit -p tsconfig.json
 ```
 
-**840 unit tests** + 45 integration tests (gated by `@pytest.mark.integration`, hit a real Neon database). Frontend Playwright suite (gated by env). Pyright runs in **strict mode** with zero errors.
+**868 unit tests** + 45 integration tests (gated by `@pytest.mark.integration`, hit a real Neon database). Frontend Playwright suite (gated by env). Pyright runs in **strict mode** with zero errors.
 
 ---
 
