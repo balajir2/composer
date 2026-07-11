@@ -154,6 +154,24 @@ class Settings(BaseSettings):
             "works — this only bounds the emailed shortcut."
         ),
     )
+    backend_public_url: str = Field(
+        default="http://localhost:8000",
+        description=(
+            "Public base URL of THIS backend (not the frontend) — used to "
+            "build emailed approve/reject links, which must resolve directly "
+            "to the backend since they trigger a server-side resume. "
+            "Production sets this to the Cloud Run backend service URL."
+        ),
+    )
+    approval_wait_timeout_hours: int = Field(
+        default=168,
+        description=(
+            "Auto-fail a waiting_approval execution after this many hours "
+            "with no decision, independent of the emailed link's own shorter "
+            "TTL — bounds Postgres/checkpoint row growth from runs nobody "
+            "ever approves or rejects."
+        ),
+    )
 
     # ─── Standalone password hashing ─────────────────
     bcrypt_rounds: int = Field(default=12, description="bcrypt cost factor.")
