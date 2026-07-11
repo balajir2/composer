@@ -229,7 +229,7 @@ class LangGraphExecutor:
                     node_id=str(pending_info.get("node_id", "")),
                     prompt=str(pending_info.get("prompt", "")),
                     approver_email=str(pending_info.get("approver_email", "")),
-                    approver_cc=str(pending_info.get("approver_cc")) or None,
+                    approver_cc=str(pending_info.get("approver_cc", "")) or None,
                 )
                 await self._emit(
                     "approval_required",
@@ -303,7 +303,7 @@ class LangGraphExecutor:
                     node_id=str(pending_info.get("node_id", "")),
                     prompt=str(pending_info.get("prompt", "")),
                     approver_email=str(pending_info.get("approver_email", "")),
-                    approver_cc=str(pending_info.get("approver_cc")) or None,
+                    approver_cc=str(pending_info.get("approver_cc", "")) or None,
                 )
                 await self._emit(
                     "approval_required",
