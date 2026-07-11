@@ -209,7 +209,9 @@ model Approval {
   id               String            @id @default(cuid())
   executionId      String            @map("execution_id")
   nodeId           String            @map("node_id")
-  approverUserId   String            @map("approver_user_id")
+  approverUserId   String?           @map("approver_user_id")
+  approverEmail    String?           @map("approver_email")
+  viaEmailLink     Boolean           @default(false) @map("via_email_link")
   decision         ApprovalDecision
   note             String?
   createdAt        DateTime          @default(now()) @map("created_at")
