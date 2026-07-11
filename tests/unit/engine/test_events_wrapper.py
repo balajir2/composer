@@ -21,6 +21,16 @@ class _RaisingExecutor:
         raise RuntimeError("boom")
 
 
+class _InterruptingExecutor:
+    """Simulates a user-approval node calling langgraph.types.interrupt()."""
+
+    async def arun(self, state: Any) -> dict[str, Any]:
+        from langgraph.errors import GraphInterrupt
+        from langgraph.types import Interrupt
+
+        raise GraphInterrupt((Interrupt(value={"node_id": "approval-1", "prompt": "Approve?"}),))
+
+
 class _FakeNodeData:
     label = "label"
     node_name = None
@@ -104,6 +114,46 @@ async def test_wrapper_emits_start_but_not_complete_on_exception() -> None:
     failed = events[1]
     assert failed.payload["nodeId"] == "n1"
     assert "boom" in failed.payload["error"]
+
+
+async def test_wrapper_does_not_emit_node_failed_on_graph_interrupt() -> None:
+    """Regression: a user-approval node's interrupt() is LangGraph's own
+    pause mechanism, not a failure. The wrapper must let GraphInterrupt
+    (and any other GraphBubbleUp subclass) propagate unmolested — without
+    emitting node_failed — so LangGraphExecutor.run's post-ainvoke
+    snapshot.next check is what surfaces the pause, not a misreported
+    node crash."""
+    from langgraph.errors import GraphInterrupt
+
+    from src.engine.context import set_current_event_bus, set_current_execution_id
+
+    bus = ExecutionEventBus()
+    q = await bus.subscribe("e1")
+    set_current_execution_id("e1")
+    set_current_event_bus(bus)
+
+    try:
+        node = _FakeNode("approval-1", "user-approval")
+        arun = wrap_executor_with_events(_InterruptingExecutor(), node)  # pyright: ignore[reportArgumentType]
+        with pytest.raises(GraphInterrupt):
+            await arun(initial_state())
+    finally:
+        set_current_execution_id(None)
+        set_current_event_bus(None)
+
+    events: list[Any] = []
+    while True:
+        try:
+            ev = await asyncio.wait_for(q.get(), timeout=0.05)
+        except TimeoutError:
+            break
+        if ev is None:
+            break
+        events.append(ev)
+
+    types = [e.type for e in events]
+    assert types == ["node_started"]
+    assert not any(e.type == "node_failed" for e in events)
 
 
 async def test_wrapper_noop_when_context_unset() -> None:

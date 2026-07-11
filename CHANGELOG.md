@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — user-approval nodes misreported as failed in the run trace (2026-07-11)
+
+A `user-approval` node pausing for a decision (via LangGraph's `interrupt()`) was showing up in the run trace as `failed`, with the raw `GraphInterrupt` exception dumped as the error text — even though the execution's overall status correctly ended up `waiting_approval` once `LangGraphExecutor.run` inspected the post-`ainvoke` state.
+
+**Root cause:** `wrap_executor_with_events`'s `except Exception as exc:` block (`src/engine/events_wrapper.py`) is generic enough to catch `GraphInterrupt`, which is a `GraphBubbleUp` subclass — LangGraph's own control-flow signal for pausing a graph, not a real failure. The wrapper emitted a `node_failed` WebSocket event (with the exception's raw text as the error) before re-raising, so the per-node UI showed a crash for what was actually an intentional approval-gate pause. The installed LangGraph version (1.1.8) still catches `GraphInterrupt` correctly inside `ainvoke()` itself — this was a Composer-side wrapper bug, not a LangGraph regression.
+
+**Fix:** added an `except GraphBubbleUp: raise` branch before the generic handler in `src/engine/events_wrapper.py`, so LangGraph's interrupt/resume signal (and the related `NodeInterrupt`/`ParentCommand` subclasses) propagate without emitting `node_failed`. The `approval_required` event (already emitted correctly by `LangGraphExecutor.run`) remains the sole signal for a pending approval.
+
+New test: [tests/unit/engine/test_events_wrapper.py](tests/unit/engine/test_events_wrapper.py) (`test_wrapper_does_not_emit_node_failed_on_graph_interrupt`).
+
 ### Added — Jira node (2026-07-10)
 
 A new `jira` node type: drag it onto the canvas, configure Jira Cloud domain/email/API token directly on the node, write a prompt, and the LLM picks which of 6 Jira REST API v3 tools to call (create/get/search/update/transition issue, add comment). Per-node, per-workflow credentials — no shared MCP registration or admin-managed key required. `JiraProvider` (`src/tools/providers/jira.py`) is an internal implementation detail of this node only — it is deliberately not registered in the tools catalog, so Jira does not also show up as a selectable tool on `agent`/`mcp` nodes.

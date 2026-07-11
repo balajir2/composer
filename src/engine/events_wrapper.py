@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from langgraph.errors import GraphBubbleUp
+
 from src.engine.context import get_current_event_bus, get_current_execution_id
 from src.engine.events import ExecutionEvent
 
@@ -148,6 +150,13 @@ def wrap_executor_with_events(
 
         try:
             result = await executor.arun(state)
+        except GraphBubbleUp:
+            # LangGraph's own control-flow signals (interrupt/resume via
+            # user-approval, subgraph hand-off) — not a node failure. Must
+            # propagate unmolested so LangGraph's runtime can handle the
+            # pause; emitting node_failed here would misreport an
+            # intentional approval-gate pause as a crash.
+            raise
         except Exception as exc:
             if bus is not None and execution_id is not None:
                 await bus.emit(
