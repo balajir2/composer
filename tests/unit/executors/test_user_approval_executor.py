@@ -107,6 +107,36 @@ async def test_user_approval_prompt_substitution(
     assert captured["value"]["node_id"] == "ua"
 
 
+async def test_arun_includes_approver_fields_in_interrupt_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Task 5: approver_email/approver_cc (substituted) must ride along in the
+    interrupt() payload so a later resume-side task can read them for email."""
+    node = _user_approval_node(
+        approvalMessage="Approve {{thing}}?",
+        approverEmail="reviewer@example.com",
+        approverCc="manager@example.com",
+    )
+
+    captured: dict[str, Any] = {}
+
+    def _fake_interrupt(value: Any) -> Any:
+        captured.update(value)
+        return "approved"
+
+    import src.executors.user_approval as ua_mod
+
+    monkeypatch.setattr(ua_mod, "interrupt", _fake_interrupt)
+
+    state = initial_state()
+    state["variables"]["thing"] = "the BRD"
+    await UserApprovalExecutor(node).arun(state)
+
+    assert captured["prompt"] == "Approve the BRD?"
+    assert captured["approver_email"] == "reviewer@example.com"
+    assert captured["approver_cc"] == "manager@example.com"
+
+
 async def test_user_approval_executor_is_registered() -> None:
     import src.executors.user_approval  # noqa: F401  # pyright: ignore[reportUnusedImport]
     from src.executors.base import build_executor

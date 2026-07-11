@@ -40,7 +40,14 @@ class UserApprovalExecutor:
         prompt_template = self.node.data.approval_message or "Please approve"
         prompt = substitute(prompt_template, state)
 
-        decision = interrupt({"node_id": self.node.id, "prompt": prompt})
+        decision = interrupt(
+            {
+                "node_id": self.node.id,
+                "prompt": prompt,
+                "approver_email": substitute(self.node.data.approver_email or "", state),
+                "approver_cc": substitute(self.node.data.approver_cc or "", state),
+            }
+        )
 
         if decision not in {"approved", "rejected"}:
             raise UserApprovalNodeError(
