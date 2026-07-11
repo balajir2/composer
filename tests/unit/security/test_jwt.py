@@ -100,3 +100,35 @@ def test_password_change_token_respects_ttl(monkeypatch: pytest.MonkeyPatch) -> 
     with pytest.raises(TokenVerificationError):
         verify_password_change_token(token)
     get_settings.cache_clear()
+
+
+def test_create_and_verify_approval_email_token() -> None:
+    from src.security.jwt import create_approval_email_token, verify_approval_email_token
+
+    token = create_approval_email_token("exec-1", "approval-1", "approved")
+    payload = verify_approval_email_token(token)
+    assert payload.sub == "exec-1"
+    assert payload.node_id == "approval-1"
+    assert payload.decision == "approved"
+    assert payload.type == "approval_email"
+
+
+def test_approval_email_token_rejects_access_token() -> None:
+    from src.security.jwt import create_access_token, verify_approval_email_token
+
+    access = create_access_token("u1")
+    with pytest.raises(TokenVerificationError):
+        verify_approval_email_token(access)
+
+
+def test_approval_email_token_respects_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.config import get_settings
+    from src.security.jwt import create_approval_email_token, verify_approval_email_token
+
+    monkeypatch.setenv("APPROVAL_LINK_TTL_HOURS", "0")
+    get_settings.cache_clear()
+    token = create_approval_email_token("exec-1", "approval-1", "rejected")
+    time.sleep(2.2)
+    with pytest.raises(TokenVerificationError):
+        verify_approval_email_token(token)
+    get_settings.cache_clear()

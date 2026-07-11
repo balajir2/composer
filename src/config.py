@@ -145,6 +145,16 @@ class Settings(BaseSettings):
         ),
     )
 
+    # ─── Approve-via-email (2026-07-11) ──────────
+    approval_link_ttl_hours: int = Field(
+        default=72,
+        description=(
+            "How long an emailed approve/reject link stays valid. After it "
+            "expires, in-app approval (POST /executions/{id}/resume) still "
+            "works — this only bounds the emailed shortcut."
+        ),
+    )
+
     # ─── Standalone password hashing ─────────────────
     bcrypt_rounds: int = Field(default=12, description="bcrypt cost factor.")
 

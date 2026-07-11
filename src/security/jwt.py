@@ -37,6 +37,15 @@ class PasswordChangeTokenPayload(BaseModel):
     type: str = "password_change"
 
 
+class ApprovalEmailTokenPayload(BaseModel):
+    sub: str  # execution_id
+    node_id: str
+    decision: str  # "approved" | "rejected"
+    iat: int
+    exp: int
+    type: str = "approval_email"
+
+
 class TokenVerificationError(ValueError):
     """Raised when a JWT cannot be verified (signature, shape, or type)."""
 
@@ -106,6 +115,19 @@ def create_password_change_token(user_id: str) -> str:
     return _encode(payload)
 
 
+def create_approval_email_token(execution_id: str, node_id: str, decision: str) -> str:
+    settings = get_settings()
+    now = _now()
+    payload = ApprovalEmailTokenPayload(
+        sub=execution_id,
+        node_id=node_id,
+        decision=decision,
+        iat=now,
+        exp=now + settings.approval_link_ttl_hours * 3600,
+    )
+    return _encode(payload)
+
+
 def verify_access_token(token: str) -> AccessTokenPayload:
     raw = _decode(token)
     if raw.get("type") != "access":
@@ -129,16 +151,28 @@ def verify_password_change_token(token: str) -> PasswordChangeTokenPayload:
     return PasswordChangeTokenPayload.model_validate(raw)
 
 
+def verify_approval_email_token(token: str) -> ApprovalEmailTokenPayload:
+    raw = _decode(token)
+    if raw.get("type") != "approval_email":
+        raise TokenVerificationError(
+            f"Expected token type 'approval_email', got {raw.get('type')!r}"
+        )
+    return ApprovalEmailTokenPayload.model_validate(raw)
+
+
 __all__ = [
     "AccessTokenPayload",
+    "ApprovalEmailTokenPayload",
     "PasswordChangeTokenPayload",
     "RefreshTokenPayload",
     "TokenExpiredError",
     "TokenVerificationError",
     "create_access_token",
+    "create_approval_email_token",
     "create_password_change_token",
     "create_refresh_token",
     "verify_access_token",
+    "verify_approval_email_token",
     "verify_password_change_token",
     "verify_refresh_token",
 ]
