@@ -721,3 +721,45 @@ def test_user_approval_node_approver_fields_optional() -> None:
     )
     assert node.data.approver_email is None
     assert node.data.approver_cc is None
+
+
+def test_file_trigger_node_parses_full_config() -> None:
+    from src.engine.workflow import FileTriggerNode
+
+    node = FileTriggerNode.model_validate(
+        {
+            "id": "ft1",
+            "type": "file-trigger",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "File Trigger",
+                "provider": "local",
+                "sourcePath": "/watch/in",
+                "destPath": "/watch/done",
+                "errorPath": "/watch/error",
+                "targetInputVariable": "requirements_doc",
+                "pollIntervalSeconds": 15,
+            },
+        }
+    )
+    assert node.data.source_path == "/watch/in"
+    assert node.data.dest_path == "/watch/done"
+    assert node.data.error_path == "/watch/error"
+    assert node.data.target_input_variable == "requirements_doc"
+    assert node.data.poll_interval_seconds == 15
+
+
+def test_file_trigger_node_defaults() -> None:
+    from src.engine.workflow import FileTriggerNode
+
+    node = FileTriggerNode.model_validate(
+        {
+            "id": "ft1",
+            "type": "file-trigger",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "File Trigger"},
+        }
+    )
+    assert node.data.provider == "local"
+    assert node.data.poll_interval_seconds == 30
+    assert node.data.source_path is None
