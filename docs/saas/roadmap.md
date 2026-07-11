@@ -2,7 +2,9 @@
 
 > **Audience:** customers, prospects, partners, internal contributors.
 > **Maintained by:** Balaji Rajan (`balajirajan@gmail.com`)
-> **Last updated:** 2026-05-04. Reviewed quarterly.
+> **Last updated:** 2026-07-11. Reviewed quarterly.
+> **Status:** Directional planning for product and fundraising discussions; not a contractual
+> delivery commitment and not evidence that every listed item is staffed or funded.
 
 This is what we plan to ship over the next four quarters, what we've shipped recently, and what we've decided not to do. The list is **directional**, not contractual — priorities shift in response to customer feedback, security needs, and ecosystem changes. Items committed in your contract take precedence over anything here.
 
@@ -15,7 +17,7 @@ This is what we plan to ship over the next four quarters, what we've shipped rec
 | Branching node UI + branch label routing | 2026-04 | Two-handle UI for if-else / while / user-approval; `sourceHandle` → `branch` field on save |
 | Transform `outputKey` ergonomics | 2026-04 | Compute and persist a named variable in one node — closes the "loop counter is verbose" gap |
 | Vector DB upsert across all 5 providers | 2026-04 | Pinecone, Qdrant, Chroma, Weaviate, Milvus all do query + upsert; auto-chunking for string input |
-| 18 reference templates | 2026-04 | Up from 12; each annotated with the capability it demonstrates |
+| 19 reference templates | 2026-07 | Each annotated with the capability it demonstrates |
 | Single + bulk delete on /runs/history | 2026-04-30 | Members delete their own; admin overrides (with the "admin can't delete other users' workflows" carve-out preserved) |
 | MCP base64-blob sanitiser | 2026-05-04 | Closes the OAB-reported defect class; Highspot xlsx fetches no longer OOM the agent context |
 | Stuck-execution sweeper | 2026-05-04 | Background coroutine flips abandoned `running` rows to `failed` with explanatory error |
@@ -26,7 +28,9 @@ The full record is in [`../../CHANGELOG.md`](../../CHANGELOG.md).
 
 ## In flight (next 90 days)
 
-These have an active prototype, a designated owner, or a written design — they are funded work, not aspirations.
+These are the highest-priority candidate investments for the next phase. Individual items may have
+design work or prototypes, but sequencing depends on customer discovery, security priorities, and
+available funding.
 
 | Item | Why it matters | Target |
 |---|---|---|

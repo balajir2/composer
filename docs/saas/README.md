@@ -2,7 +2,11 @@
 
 > **Maintained by:** Balaji Rajan (`balajirajan@gmail.com`)
 
-This folder is for anyone hosting Composer as a multi-customer service: founders, security reviewers, prospective enterprise customers, and the team running the service. If you're an internal contributor working on the codebase, start at [`../README.md`](../README.md) instead.
+This folder contains proposed customer-facing and operational-commercial documentation for
+founders, security reviewers, prospective enterprise customers, and teams evaluating a managed
+Composer service. Start with the [Investor Overview](../investor-overview.md) for the product and
+investment narrative. Commercial, legal, SLA, and compliance language remains draft material until
+reviewed and adopted by the relevant business, security, and legal owners.
 
 ## What's here
 
@@ -24,7 +28,10 @@ This folder is for anyone hosting Composer as a multi-customer service: founders
 
 **Buying Composer for your enterprise:** start at [overview.md](overview.md) → [security.md](security.md) → [compliance.md](compliance.md) → [sla.md](sla.md). The legal templates in [legal/](legal/) are the agreement skeletons; the actual contract is whatever your account team signs.
 
-**Operating Composer as a SaaS:** the customer-facing docs above describe *what we promise*. The runbooks under [`../operations/`](../operations/) describe *how we deliver* — production deployment, incident response, DR, observability, scaling. Both folders are load-bearing; one without the other leaves either commitments without a process or a process without commitments.
+**Operating Composer as a SaaS:** the customer-facing docs above describe a proposed service model.
+Only a signed agreement defines an actual customer commitment. The runbooks under
+[`../operations/`](../operations/) describe the current operating approach—production deployment,
+incident response, DR, observability, and scaling.
 
 **Engineering on Composer's codebase:** stay in [`../`](../). The architecture, designer guide, admin guide, and ADRs live there. This folder rarely gets touched during feature work.
 

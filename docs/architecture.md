@@ -54,7 +54,7 @@ composer/
 │   │   ├── events_wrapper.py       per-node event emission + alias spread
 │   │   ├── events.py               ExecutionEventBus (in-process pub/sub)
 │   │   └── graph_builder.py        validation + conditional routing
-│   ├── executors/                  # 19 node-type implementations
+│   ├── executors/                  # 20 Designer node-type implementations
 │   │   ├── base.py                    register_executor + dispatch
 │   │   ├── _eval.py                   simpleeval wrapper (Mustache aware)
 │   │   ├── start.py / end.py / agent.py / http.py / …
@@ -96,8 +96,8 @@ composer/
 │   ├── lib/api/                    typed REST clients (OpenAPI-generated schema)
 │   └── e2e/                        Playwright suite
 ├── prisma/schema.prisma            Single source of truth for the data model
-├── tests/                          ~683 unit + integration tests
-├── scripts/seed_templates.py       Seeds the 18 reference templates
+├── tests/                          925 currently collected backend tests
+├── scripts/seed_templates.py       Seeds the 19 reference templates
 └── docs/                           ← you are here
 ```
 

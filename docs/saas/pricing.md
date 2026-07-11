@@ -2,11 +2,16 @@
 
 > **Audience:** procurement, finance, customer admins evaluating plan tiers.
 > **Maintained by:** Balaji Rajan (`balajirajan@gmail.com`)
-> **Status:** This is the **plan template**. Actual prices are set per-deal and live in your contract; this document describes the *shape* of the plans and what's included in each.
+> **Status:** **Commercial hypothesis, not a live price sheet.** The tiers, quotas, overages, and
+> managed-service commitments below are proposed packaging for fundraising and customer discovery.
+> They are not implemented billing controls and are not contractual unless included in a signed
+> agreement.
 
 ## Plan shape
 
-Composer is sold in four tiers. Specific dollar values are not committed in this document — they're set per-deal based on usage, deployment shape, and contract length. The structure below is what we negotiate from.
+Composer is expected to support four commercial shapes. Specific pricing and packaging require
+validation through customer discovery; the structure below is a starting model, not evidence of
+current customers or revenue.
 
 | Tier | Audience | Deployment shape | Pricing model |
 |---|---|---|---|
@@ -43,7 +48,8 @@ The **executions / month** count is the conservative metric — anything that ge
 
 ## Overage policy
 
-For Starter and Business plans, exceeding the included quota happens on these fronts:
+The following is the proposed overage policy. Composer does not currently include a complete
+metering/billing enforcement subsystem for these commercial quotas.
 
 | Resource | Overage handling |
 |---|---|
@@ -72,7 +78,7 @@ Worth being explicit about so there are no surprises:
 The codebase is open source and free to self-host. There's no licence fee, no telemetry, no time-bombed features. What you get for $0:
 
 - Every node type, every executor, every UI surface
-- All 18 reference templates
+- All 19 reference templates
 - All 4 LLM provider integrations
 - All 5 vector DB connectors
 - All 6 built-in tool providers

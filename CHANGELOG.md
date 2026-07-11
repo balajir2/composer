@@ -82,7 +82,7 @@ Root-caused a reported "reassigning a workflow's owner leaves only Start+End nod
 
 #### Added
 - **`useAutosave`** hook in [frontend/lib/use-autosave.ts](frontend/lib/use-autosave.ts) — a 3-second debounced autosave that reuses the existing manual-save mutation and `PUT /workflows/{id}` path (no new backend endpoint). A `saveNow()` variant backs the manual Save button so both paths share one status state machine (`idle → dirty → saving → saved/error`).
-- Save-status indicator wired into the Designer canvas ([frontend/app/designer/[workflowId]/page.tsx](frontend/app/designer/%5BworkflowId%5D/page.tsx), [frontend/components/composer/canvas/save-controls.tsx](frontend/components/composer/canvas/save-controls.tsx)), plus a `beforeunload` guard that blocks tab-close while unsaved.
+- Save-status indicator wired into the Designer canvas (`frontend/app/designer/[workflowId]/page.tsx`, [frontend/components/composer/canvas/save-controls.tsx](frontend/components/composer/canvas/save-controls.tsx)), plus a `beforeunload` guard that blocks tab-close while unsaved.
 
 #### Fixed
 - Autosave no longer flags a workflow dirty on initial canvas mount — fixed by comparing the *content* of each `onNodesChange`/`onEdgesChange` callback's incoming nodes/edges against a baseline captured once per mount, rather than an invocation counter (which broke under React 18 Strict Mode's mount-effect double-invoke).

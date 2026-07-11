@@ -1,12 +1,31 @@
 # Composer
 
-> **A visual workflow platform for building agentic AI applications.**
-> Designers wire nodes on a canvas — LLM agents, HTTP calls, vector DB queries, branching logic, human-approval gates, document upload — and the runtime executes them as resumable state machines with full observability and a real-time stream of node-by-node events.
+> **Design, govern, and operate agentic AI workflows.**
+> Composer combines a visual workflow canvas with a durable LangGraph runtime, enterprise tools,
+> human approvals, published APIs, and node-level execution visibility.
 
-[![Status](https://img.shields.io/badge/status-production%20ready-success)](docs/overview.md#status)
-[![Tests](https://img.shields.io/badge/tests-868%20passing-success)](#testing)
+[![Status](https://img.shields.io/badge/status-early%20commercial-blue)](docs/overview.md#product-status)
+[![Tests](https://img.shields.io/badge/tests-925%20collected-success)](#testing)
 [![Stack](https://img.shields.io/badge/stack-FastAPI%20%7C%20Postgres%20%7C%20LangGraph%20%7C%20Next.js-blueviolet)](docs/architecture.md)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
+---
+
+## Start here
+
+| If you are... | Read... |
+|---|---|
+| An investor or strategic partner | [Investor Overview](docs/investor-overview.md) |
+| Evaluating product capabilities | [Product Capabilities](docs/product-capabilities.md) and [Overview](docs/overview.md) |
+| Building your first workflow | [Getting Started](docs/getting-started.md) and [Designer Guide](docs/designer-guide.md) |
+| Performing technical diligence | [Architecture](docs/architecture.md), [Decisions](docs/decisions.md), and [Improvement Backlog](docs/claude-improvement-backlog.md) |
+| Evaluating security or procurement | [Security](docs/saas/security.md), [Compliance](docs/saas/compliance.md), and [SaaS Overview](docs/saas/overview.md) |
+| Deploying or operating Composer | [Operations](docs/operations.md) |
+
+Composer is a functioning end-to-end platform with broad feature coverage and substantial
+automated tests. It is best described today as an **early commercial product**: ready for serious
+evaluation and dedicated deployments, with a transparent hardening roadmap for scaled managed
+service operation.
 
 ---
 
@@ -38,7 +57,7 @@ The whole loop is what most agentic-AI teams build from scratch: prompt + tool d
 | **Lead enrichment** | Company name in → multi-source research → schema-validated profile out (industry, size, products, recent news, executives, competitors) |
 | **Code review assistant** | Diff in → review agent flags issues with severity tags → guardrails screen the *output* for accidental secret leaks → branched delivery |
 
-**18 production-ready reference templates** ship out of the box covering each pattern above and more — see [`docs/designer-guide.md`](docs/designer-guide.md).
+**19 reference templates** ship out of the box covering each pattern above and more — see [`docs/designer-guide.md`](docs/designer-guide.md).
 
 ---
 
@@ -203,7 +222,7 @@ Deeper architecture: [`docs/architecture.md`](docs/architecture.md).
 | **Real-time** | WebSocket — node-by-node execution events |
 | **Encryption at rest** | `cryptography` AES-256-GCM |
 | **Sandboxing** | `simpleeval` (expressions) + `e2b_code_interpreter` (code) |
-| **Tests** | pytest + pytest-asyncio (868 unit + integration), Playwright (frontend e2e) |
+| **Tests** | pytest + pytest-asyncio (925 currently collected), Vitest, Playwright |
 | **Tooling** | `uv` · `ruff` · `pyright` (strict) · Prisma migrations |
 
 Why each piece was chosen, with alternatives considered: [`docs/decisions.md`](docs/decisions.md) (full ADR record).
@@ -251,7 +270,10 @@ uv run pytest -m "not integration"
 cd frontend && ./node_modules/.bin/tsc --noEmit -p tsconfig.json
 ```
 
-**868 unit tests** + 45 integration tests (gated by `@pytest.mark.integration`, hit a real Neon database). Frontend Playwright suite (gated by env). Pyright runs in **strict mode** with zero errors.
+The current tree collects **925 backend tests**, including unit, regression, and integration coverage.
+Integration tests that require real Postgres or external providers are environment-gated. The
+frontend adds Vitest component/unit coverage and Playwright end-to-end suites. Pyright runs in
+strict mode.
 
 ---
 
@@ -289,12 +311,12 @@ A deeper map is in [`docs/architecture.md#repository-layout`](docs/architecture.
 
 ## Status
 
-Composer is **production-ready** end-to-end:
+Composer is **operational end-to-end** and in early commercial hardening:
 
 - **Backend**: FastAPI + Postgres + LangGraph, all node types implemented + tested
 - **Frontend**: Next.js 14 canvas + runs page + admin console, all role-aware audiences shipped
 - **Auth**: standalone username/password, Azure AD SSO, embedded JWT (for IE-style integration), per-user API keys
-- **Reference content**: 18 production-ready templates seed into every fresh deployment
+- **Reference content**: 19 templates seed into every fresh deployment
 - **Operations**: full runbook collection + DR procedures + incident-response playbook
 - **SaaS readiness**: security / privacy / compliance / SLA / pricing / legal templates ready for customer review
 

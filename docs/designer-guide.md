@@ -8,7 +8,7 @@ Everything you need to build workflows on the canvas. If this is your first time
 - [The canvas](#the-canvas) — Editing nodes, drawing edges, the property panel
 - [Variables and references](#variables-and-references) — `{{name}}` substitution and the eval scope
 - [Node reference](#node-reference) — All 20 node types
-- [Templates](#templates) — The 18 reference workflows and what each demonstrates
+- [Templates](#templates) — The 19 reference workflows and what each demonstrates
 - [Publishing workflows](#publishing-workflows) — External invoke API
 - [Document uploads](#document-uploads) — PDF / DOCX / Markdown / TXT inputs
 - [Patterns and recipes](#patterns-and-recipes) — Common idioms

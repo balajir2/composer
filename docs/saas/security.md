@@ -8,7 +8,7 @@ This is what we promise about Composer's security, what we've built to deliver o
 
 ## Security posture in one paragraph
 
-Composer is a **defensive-by-default** workflow platform. Customer secrets (LLM API keys, MCP OAuth tokens) are AES-256-GCM-encrypted at rest in Postgres; passwords are bcrypt-hashed; per-user API keys are bcrypt-hashed and shown to the user once. All inter-service traffic runs over TLS. Authentication is three-layer (NextAuth → Composer JWT → per-user API key) with explicit role-based authorisation enforced at every API surface. We assume hostile inputs at every boundary — workflow definitions are size-capped, expression evaluation is sandboxed (`simpleeval`, never `eval()`), code execution lives in `e2b_code_interpreter`, MCP tool responses are sanitised for binary-blob smuggling. Every meaningful action is logged with the actor's user id; full execution traces optionally route to LangSmith. We hold the security primitives most enterprise customers ask for; we are not yet SOC 2 Type II certified — see [compliance.md](compliance.md) for the formal status.
+Composer includes meaningful security foundations: encrypted LLM keys and OAuth tokens, bcrypt-hashed passwords and API keys, role-based authorization, size limits, sandboxed expressions, isolated code execution, and MCP response sanitization. Production security still depends on deployment configuration and network controls. Known hardening work—including centralized credentials, HTTP-node SSRF defenses, scanner-safe approval confirmation, and distributed rate limiting—is tracked in the [Improvement Backlog](../claude-improvement-backlog.md). Composer is not currently SOC 2 certified; see [compliance.md](compliance.md).
 
 ## Threat model
 
@@ -31,8 +31,8 @@ Composer is a **defensive-by-default** workflow platform. Customer secrets (LLM 
 1. **External attacker without credentials.** Cannot reach private workflows or executions; cannot enumerate users; cannot brute-force passwords (bcrypt cost factor + rate limits). Public workflows are world-readable by design.
 2. **External attacker with stolen credentials (one user).** Can do what that user can do — read/write their own workflows, run published workflows their key authorises. Cannot escalate to admin without a second credential set. The blast radius is one user's data; admin operations remain protected.
 3. **Authenticated member targeting another member's data.** Returns **404, not 403**, on any cross-user read so existence isn't leaked. Admin overrides exist for incident response (see [admin-guide.md](../admin-guide.md)) but are owner-only on **delete** specifically — even an admin can't accidentally erase another user's workflow.
-4. **Malicious workflow author.** Can write any workflow they're allowed to author, but can't escape the sandbox: `simpleeval` rejects dunders, imports, `eval`/`exec`; HTTP nodes cannot reach internal-only addresses (you should configure your network to enforce this — see "Network egress" below); code execution lives in `e2b_code_interpreter`'s sandboxed runtime; expression evaluation is limited to a closed allowlist of operations.
-5. **Malicious MCP server.** Cannot execute arbitrary code on Composer; can only return data the agent reads as text. The base64 blob sanitiser ([src/mcp/sanitize.py](../../src/mcp/sanitize.py)) prevents binary smuggling that would otherwise OOM the agent context. Tool responses are size-capped at the consumer end.
+4. **Malicious workflow author.** `simpleeval` rejects dunders, imports, and direct `eval`/`exec`; code execution uses the external E2B sandbox. The HTTP node is intentionally powerful and currently requires deployment-level egress controls to prevent access to internal or metadata endpoints until application-level SSRF defenses land.
+5. **Malicious MCP server.** MCP output is treated as untrusted model input. The base64 blob sanitiser ([src/mcp/sanitize.py](../../src/mcp/sanitize.py)) removes a known class of oversized embedded binary payload; broader response-size and tool-result policies remain hardening work.
 6. **Compromised LLM provider returning malicious tool calls.** Tool calls are validated against the registered tool's JSON schema before execution; the executor only invokes tools the workflow explicitly enables; HTTP nodes use the customer's tools, not the model's free will.
 7. **Operator with database access.** Sees encrypted secrets, plaintext workflow definitions, plaintext execution logs (LangSmith too). For deployments where this is unacceptable, see "Bring your own encryption key" below.
 
@@ -62,12 +62,15 @@ The `ENCRYPTION_KEY` and `JWT_SECRET` are **per-deployment**, not shared across 
 ### Secrets in transit
 
 - **TLS 1.2+** required for all API + WebSocket traffic. Backend serves HTTP-only when bound to `localhost` for local dev; production deployments terminate TLS at the load balancer or CDN (Vercel / Cloudflare / Fly proxy).
-- **MCP tool calls** go out over HTTPS only. We refuse `http://` MCP server URLs unless explicitly allowed via a deployment-settings override (development only).
+- **MCP and HTTP egress** should use HTTPS in production. Operators must enforce network egress and destination policy at the deployment layer; application-level destination controls are incomplete.
 - **LLM provider calls** use the providers' official HTTPS endpoints.
 
 ### Secrets in memory
 
-Encrypted secrets are decrypted only at the moment they're needed (request boundary), used, and dropped. Decrypted values are not persisted to logs or telemetry — a request-context wipe ensures `decrypt(...)` results don't leak into structured log fields.
+Encrypted secrets are decrypted when needed by an integration. Application code should avoid logging
+decrypted values, but Python does not provide a guaranteed memory wipe. Operators should treat
+process memory and diagnostic dumps as sensitive. Additional argument and credential redaction is
+tracked in the improvement backlog.
 
 ## Authentication
 

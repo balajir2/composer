@@ -14,8 +14,8 @@ We are honest about what we have, what we don't, and what we're working on. If a
 |---|---|---|
 | **SOC 2 Type II** | In progress (Type I targeted Q4 2026; Type II Q3 2027) | Gap-assessment report on request under NDA |
 | **ISO 27001** | Not pursuing — SOC 2 covers our customers' needs | n/a |
-| **GDPR** (data controller / processor) | Compliant by design; DPA available | [legal/data-processing-addendum.md](legal/data-processing-addendum.md), [privacy.md](privacy.md) |
-| **CCPA / CPRA** | Compliant by design | [privacy.md](privacy.md) "Customer rights mapping" |
+| **GDPR** (data controller / processor) | Controls and templates available; deployment/operator assessment required | [legal/data-processing-addendum.md](legal/data-processing-addendum.md), [privacy.md](privacy.md) |
+| **CCPA / CPRA** | Controls and templates available; legal assessment required | [privacy.md](privacy.md) "Customer rights mapping" |
 | **HIPAA** | Not in scope today; possible with self-hosting + customer-side BAA flow | See "HIPAA stance" below |
 | **PCI DSS** | Not in scope — Composer does not store card data | n/a |
 | **FedRAMP** | Not in scope today | Roadmap candidate if a federal customer materialises |
@@ -48,7 +48,11 @@ For customers who need SOC 2 today: we provide controls evidence under NDA. The 
 
 ## GDPR
 
-Composer is GDPR-compliant by design. Operationally:
+Composer provides controls that can support a GDPR-aligned deployment, but software alone cannot
+make an operator compliant. Lawful basis, notices, contracts, retention, subprocessors, data
+residency, and data-subject request operations remain the responsibility of the deploying
+controller/processor and their counsel. The repository provides implementation controls and
+templates, not a legal certification. Operationally:
 
 - **Lawful basis** is *contract* for paid customers (Article 6(1)(b)) and *legitimate interest* for the operational logging we do.
 - **Data Processing Addendum** is available via the contract; the template is at [legal/data-processing-addendum.md](legal/data-processing-addendum.md). It includes the Standard Contractual Clauses (2021/914 modules 2 + 3) for transfers outside the EEA.

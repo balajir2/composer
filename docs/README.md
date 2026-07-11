@@ -8,6 +8,8 @@ Pick the doc that matches what you're trying to do.
 
 | ...do this | ...read this |
 |---|---|
+| **Evaluate Composer as an investor or strategic partner** | [investor-overview.md](investor-overview.md) |
+| **Review every shipped product capability** | [product-capabilities.md](product-capabilities.md) |
 | **Understand what Composer is and why it exists** | [overview.md](overview.md) |
 | **Run Composer locally and build my first workflow** | [getting-started.md](getting-started.md) |
 | **Understand how the platform works internally** | [architecture.md](architecture.md) |
@@ -21,7 +23,8 @@ Pick the doc that matches what you're trying to do.
 
 ## By role
 
-- **First-time visitor / stakeholder** — start with [overview.md](overview.md), then skim [architecture.md](architecture.md).
+- **Investor / strategic partner** — [investor-overview.md](investor-overview.md) → [product-capabilities.md](product-capabilities.md) → [architecture.md](architecture.md).
+- **First-time visitor / stakeholder** — start with [overview.md](overview.md), then skim [product-capabilities.md](product-capabilities.md).
 - **Workflow designer / business user** — [getting-started.md](getting-started.md) → [designer-guide.md](designer-guide.md).
 - **Engineer adding a new node or fixing a bug** — [architecture.md](architecture.md) → [decisions.md](decisions.md). Phase-specific design specs are under [archive/phase-history/](archive/phase-history/).
 - **Admin** — [admin-guide.md](admin-guide.md).
