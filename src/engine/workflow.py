@@ -199,6 +199,8 @@ class WhileNode(BaseModel):
 
 class UserApprovalNodeData(BaseNodeData):
     approval_message: str | None = Field(default=None, alias="approvalMessage")
+    approver_email: str | None = Field(default=None, alias="approverEmail")
+    approver_cc: str | None = Field(default=None, alias="approverCc")
 
 
 class UserApprovalNode(BaseModel):

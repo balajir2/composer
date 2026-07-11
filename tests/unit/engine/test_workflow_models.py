@@ -686,3 +686,38 @@ def test_vector_db_node_full_round_trip() -> None:
     assert node.id == "vdb1"
     assert node.type == "vector-db"
     assert node.data.provider == "pinecone"
+
+
+def test_user_approval_node_parses_approver_email_and_cc() -> None:
+    from src.engine.workflow import UserApprovalNode
+
+    node = UserApprovalNode.model_validate(
+        {
+            "id": "a1",
+            "type": "user-approval",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "User Approval",
+                "approvalMessage": "Approve?",
+                "approverEmail": "reviewer@example.com",
+                "approverCc": "manager@example.com",
+            },
+        }
+    )
+    assert node.data.approver_email == "reviewer@example.com"
+    assert node.data.approver_cc == "manager@example.com"
+
+
+def test_user_approval_node_approver_fields_optional() -> None:
+    from src.engine.workflow import UserApprovalNode
+
+    node = UserApprovalNode.model_validate(
+        {
+            "id": "a1",
+            "type": "user-approval",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "User Approval", "approvalMessage": "Approve?"},
+        }
+    )
+    assert node.data.approver_email is None
+    assert node.data.approver_cc is None
