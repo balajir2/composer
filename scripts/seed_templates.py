@@ -2516,6 +2516,121 @@ def _approved_email_distribution() -> dict[str, Any]:
     }
 
 
+# ─── Template 19 — Arcade Tool Call ───────────────────────────────────────
+
+
+def _arcade_tool_call_demo() -> dict[str, Any]:
+    """Agent drafts content → arcade node calls an external tool via
+    Arcade.dev → agent summarises the result.  Reference for the arcade
+    node: authorize/execute protocol, OAuth-pause via interrupt(), and
+    resuming exactly like the user-approval gate in Example 8.
+
+    Requires ARCADE_API_KEY. On first run the arcade node will pause the
+    workflow (status=waiting_approval) with an authorization URL — open
+    it, complete OAuth for the target tool, then resume the execution
+    from the Run Draft panel (or Runs > History) to continue.
+    """
+    return {
+        "name": "Example 19: Arcade Tool Call",
+        "description": (
+            "Draft an outline with an agent, then hand it to Arcade.dev's "
+            "Google.CreateDocument tool via the arcade node. The first run "
+            "pauses for you to authorize the tool (same interrupt/resume "
+            "pattern as the human-approval node) — resume once authorized "
+            "to see it execute. Requires ARCADE_API_KEY."
+        ),
+        "category": "examples",
+        "tags": ["example", "intermediate", "arcade", "oauth", "external-tools"],
+        "difficulty": "intermediate",
+        "estimatedTime": "5-10 minutes (pauses for OAuth authorization on first run)",
+        "externalSlug": "template-19-arcade-tool-call",
+        "nodes": [
+            _start_node(
+                label="Start",
+                inputs=[
+                    {
+                        "name": "topic",
+                        "type": "string",
+                        "required": True,
+                        "description": "What the created Google Doc should be about",
+                        "defaultValue": "Q3 product roadmap outline",
+                    },
+                    {
+                        "name": "arcade_user_id",
+                        "type": "string",
+                        "required": False,
+                        "description": (
+                            "Arcade end-user id used to resolve their OAuth "
+                            "connection. Leave blank to use the demo identity."
+                        ),
+                        "defaultValue": "workflow-builder",
+                    },
+                ],
+            ),
+            {
+                "id": "agent-draft",
+                "type": "agent",
+                "position": {"x": 340, "y": 200},
+                "data": {
+                    "label": "Draft Outline",
+                    "nodeName": "Draft Outline",
+                    "instructions": (
+                        "Write a concise bulleted outline for a document about: "
+                        "{{topic}}\n\n"
+                        "Return just the outline text — no preamble, since the "
+                        "next step sends this verbatim into a Google Doc."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            {
+                "id": "arcade-1",
+                "type": "arcade",
+                "position": {"x": 610, "y": 200},
+                "data": {
+                    "label": "Create Google Doc",
+                    "nodeName": "Create Google Doc",
+                    "arcadeTool": "Google.CreateDocument",
+                    "arcadeInput": {
+                        "title": "{{topic}}",
+                        "text_content": "{{lastOutput}}",
+                    },
+                    "arcadeUserId": "{{arcade_user_id}}",
+                },
+            },
+            {
+                "id": "agent-summary",
+                "type": "agent",
+                "position": {"x": 880, "y": 200},
+                "data": {
+                    "label": "Summarise Result",
+                    "nodeName": "Summarise Result",
+                    "instructions": (
+                        "The arcade node above returned this result from "
+                        "Arcade.dev:\n\n{{lastOutput}}\n\n"
+                        "Summarise in one sentence what happened, suitable for "
+                        "an audit log entry."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            _end_node(pos_x=1150, pos_y=200),
+        ],
+        "edges": [
+            {"id": "e1", "source": "start-1", "target": "agent-draft"},
+            {"id": "e2", "source": "agent-draft", "target": "arcade-1"},
+            {"id": "e3", "source": "arcade-1", "target": "agent-summary"},
+            {"id": "e4", "source": "agent-summary", "target": "end-1"},
+        ],
+    }
+
+
 _TEMPLATES: list[dict[str, Any]] = [
     _simple_agent(),
     _web_research_agent(),
@@ -2535,6 +2650,7 @@ _TEMPLATES: list[dict[str, Any]] = [
     _code_review_assistant(),
     _lead_enrichment(),
     _approved_email_distribution(),
+    _arcade_tool_call_demo(),
 ]
 
 
