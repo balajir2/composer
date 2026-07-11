@@ -14,6 +14,7 @@ from src.api.admin_llm_models import router as admin_llm_models_router
 from src.api.admin_tools import router as admin_tools_router
 from src.api.admin_users import router as admin_users_router
 from src.api.api_keys import router as api_keys_router
+from src.api.approval_email import router as approval_email_router
 from src.api.auth_common import router as auth_common_router
 from src.api.auth_standalone import router as auth_standalone_router
 from src.api.events_ws import router as events_ws_router
@@ -127,6 +128,7 @@ def create_app() -> FastAPI:
     app.include_router(admin_tools_router)
     app.include_router(admin_users_router)
     app.include_router(api_keys_router)
+    app.include_router(approval_email_router)
     app.include_router(llm_models_router)
     app.include_router(llm_models_live_router)
     app.include_router(workflows_router)

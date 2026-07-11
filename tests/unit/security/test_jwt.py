@@ -105,11 +105,12 @@ def test_password_change_token_respects_ttl(monkeypatch: pytest.MonkeyPatch) -> 
 def test_create_and_verify_approval_email_token() -> None:
     from src.security.jwt import create_approval_email_token, verify_approval_email_token
 
-    token = create_approval_email_token("exec-1", "approval-1", "approved")
+    token = create_approval_email_token("exec-1", "approval-1", "approved", "reviewer@example.com")
     payload = verify_approval_email_token(token)
     assert payload.sub == "exec-1"
     assert payload.node_id == "approval-1"
     assert payload.decision == "approved"
+    assert payload.approver_email == "reviewer@example.com"
     assert payload.type == "approval_email"
 
 
@@ -127,7 +128,7 @@ def test_approval_email_token_respects_ttl(monkeypatch: pytest.MonkeyPatch) -> N
 
     monkeypatch.setenv("APPROVAL_LINK_TTL_HOURS", "0")
     get_settings.cache_clear()
-    token = create_approval_email_token("exec-1", "approval-1", "rejected")
+    token = create_approval_email_token("exec-1", "approval-1", "rejected", "reviewer@example.com")
     time.sleep(2.2)
     with pytest.raises(TokenVerificationError):
         verify_approval_email_token(token)

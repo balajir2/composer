@@ -31,8 +31,8 @@ async def send_approval_email(
         return
 
     settings = get_settings()
-    approve_token = create_approval_email_token(execution_id, node_id, "approved")
-    reject_token = create_approval_email_token(execution_id, node_id, "rejected")
+    approve_token = create_approval_email_token(execution_id, node_id, "approved", approver_email)
+    reject_token = create_approval_email_token(execution_id, node_id, "rejected", approver_email)
     approve_url = f"{settings.backend_public_url}/approvals/email/{approve_token}"
     reject_url = f"{settings.backend_public_url}/approvals/email/{reject_token}"
 

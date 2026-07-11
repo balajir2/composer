@@ -41,6 +41,7 @@ class ApprovalEmailTokenPayload(BaseModel):
     sub: str  # execution_id
     node_id: str
     decision: str  # "approved" | "rejected"
+    approver_email: str
     iat: int
     exp: int
     type: str = "approval_email"
@@ -115,13 +116,16 @@ def create_password_change_token(user_id: str) -> str:
     return _encode(payload)
 
 
-def create_approval_email_token(execution_id: str, node_id: str, decision: str) -> str:
+def create_approval_email_token(
+    execution_id: str, node_id: str, decision: str, approver_email: str
+) -> str:
     settings = get_settings()
     now = _now()
     payload = ApprovalEmailTokenPayload(
         sub=execution_id,
         node_id=node_id,
         decision=decision,
+        approver_email=approver_email,
         iat=now,
         exp=now + settings.approval_link_ttl_hours * 3600,
     )
