@@ -571,6 +571,220 @@ async def test_run_sends_approval_email_when_approver_email_set(
     assert call_kwargs["prompt"] == "Approve?"
 
 
+async def test_run_pending_since_matches_persisted_and_emailed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The pending_since timestamp stamped into variables._pending_approval_since
+    must be the exact same value threaded into send_approval_email's
+    pending_since kwarg -- run() computes it once and shares it between the
+    two calls (see LangGraphExecutor._mark_waiting_approval's docstring); a
+    regression that recomputes the timestamp separately for each call would
+    silently break the approval-email pause-instance guard."""
+    from typing import ClassVar
+
+    from src.engine import langgraph_executor as lge_mod
+
+    send_mock = AsyncMock()
+    monkeypatch.setattr(lge_mod, "send_approval_email", send_mock)
+
+    db = MagicMock()
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="e1", workflowId="w1", userId="dev", threadId="t1", input=None
+        )
+    )
+    db.workflow = MagicMock()
+    db.workflow.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="w1",
+            name="t",
+            nodes=[
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "ua",
+                    "type": "user-approval",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "UA",
+                        "approvalMessage": "Approve?",
+                        "approverEmail": "reviewer@example.com",
+                    },
+                },
+                {"id": "a", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "A"}},
+                {"id": "b", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "B"}},
+            ],
+            edges=[
+                {"id": "e1", "source": "s", "target": "ua"},
+                {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
+                {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
+            ],
+        )
+    )
+
+    update_calls: list[dict[str, Any]] = []
+
+    async def _update(*, where: Any, data: Any) -> Any:
+        update_calls.append({"where": where, "data": data})
+        return None
+
+    db.workflowexecution.update = _update
+
+    class _FakeInterrupt:
+        value: ClassVar[dict[str, str]] = {
+            "node_id": "ua",
+            "prompt": "Approve?",
+            "approver_email": "reviewer@example.com",
+            "approver_cc": "",
+        }
+
+    class _FakeTask:
+        interrupts: ClassVar[tuple[_FakeInterrupt, ...]] = (_FakeInterrupt(),)
+
+    class _FakeSnapPaused:
+        next: ClassVar[tuple[str, ...]] = ("ua",)
+        tasks: ClassVar[tuple[_FakeTask, ...]] = (_FakeTask(),)
+
+    class _FakeCompiled:
+        async def ainvoke(self, *a: Any, **kw: Any) -> dict[str, Any]:
+            return {"variables": {"input": ""}, "node_results": {}}
+
+        async def aget_state(self, *a: Any, **kw: Any) -> Any:
+            return _FakeSnapPaused()
+
+    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+
+    orch = LangGraphExecutor(db, MagicMock())
+    await orch.run("e1")
+
+    send_mock.assert_awaited_once()
+    assert send_mock.await_args is not None
+    emailed_pending_since = send_mock.await_args.kwargs["pending_since"]
+
+    waiting_call = next(
+        call for call in update_calls if call["data"].get("status") == "waiting_approval"
+    )
+    saved_vars: dict[str, Any] = waiting_call["data"]["variables"].data
+    persisted_pending_since = saved_vars.get("_pending_approval_since")
+
+    assert persisted_pending_since is not None
+    assert persisted_pending_since == emailed_pending_since
+
+
+async def test_resume_chained_pause_stamps_consistent_pending_since(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """resume()'s chained-pause branch is hit when a `while`-loop re-enters
+    the same user-approval node after an earlier resume -- e.g. resuming an
+    execution feeds Command(resume=...) back into the graph, which
+    immediately hits ANOTHER interrupt rather than completing. This branch
+    duplicates run()'s pending_since-compute + _mark_waiting_approval +
+    send_approval_email sequence and previously had zero test coverage of
+    its own; verify it upholds the same cross-consistency invariant."""
+    from typing import ClassVar
+
+    from src.engine import langgraph_executor as lge_mod
+
+    send_mock = AsyncMock()
+    monkeypatch.setattr(lge_mod, "send_approval_email", send_mock)
+
+    db = MagicMock()
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="e1",
+            workflowId="w1",
+            userId="dev",
+            threadId="t1",
+            input=None,
+        )
+    )
+    db.workflow = MagicMock()
+    db.workflow.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="w1",
+            name="t",
+            nodes=[
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "ua",
+                    "type": "user-approval",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "UA",
+                        "approvalMessage": "Approve again?",
+                        "approverEmail": "reviewer@example.com",
+                    },
+                },
+                {"id": "a", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "A"}},
+                {"id": "b", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "B"}},
+            ],
+            edges=[
+                {"id": "e1", "source": "s", "target": "ua"},
+                {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
+                {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
+            ],
+        )
+    )
+
+    update_calls: list[dict[str, Any]] = []
+
+    async def _update(*, where: Any, data: Any) -> Any:
+        update_calls.append({"where": where, "data": data})
+        return None
+
+    db.workflowexecution.update = _update
+
+    # Simulates a `while`-loop re-entering the same user-approval node: after
+    # resume's ainvoke(Command(resume=...)), the graph immediately hits
+    # ANOTHER interrupt rather than completing -- snapshot.next is non-empty
+    # again, taking resume() down its own (separately-implemented)
+    # pause-handling branch rather than the completion branch.
+    class _FakeInterrupt:
+        value: ClassVar[dict[str, str]] = {
+            "node_id": "ua",
+            "prompt": "Approve again?",
+            "approver_email": "reviewer@example.com",
+            "approver_cc": "",
+        }
+
+    class _FakeTask:
+        interrupts: ClassVar[tuple[_FakeInterrupt, ...]] = (_FakeInterrupt(),)
+
+    class _FakeSnapPaused:
+        next: ClassVar[tuple[str, ...]] = ("ua",)
+        tasks: ClassVar[tuple[_FakeTask, ...]] = (_FakeTask(),)
+
+    class _FakeCompiled:
+        async def ainvoke(self, *a: Any, **kw: Any) -> dict[str, Any]:
+            return {"variables": {"lastOutput": "loop-iteration"}, "node_results": {}}
+
+        async def aget_state(self, *a: Any, **kw: Any) -> Any:
+            return _FakeSnapPaused()
+
+    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+
+    orchestrator = LangGraphExecutor(db, MagicMock())
+    await orchestrator.resume("e1", "approved")
+
+    send_mock.assert_awaited_once()
+    assert send_mock.await_args is not None
+    call_kwargs = send_mock.await_args.kwargs
+    assert call_kwargs["approver_email"] == "reviewer@example.com"
+    assert call_kwargs["node_id"] == "ua"
+    assert call_kwargs["prompt"] == "Approve again?"
+    emailed_pending_since = call_kwargs["pending_since"]
+
+    waiting_call = next(
+        call for call in update_calls if call["data"].get("status") == "waiting_approval"
+    )
+    saved_vars: dict[str, Any] = waiting_call["data"]["variables"].data
+    persisted_pending_since = saved_vars.get("_pending_approval_since")
+
+    assert persisted_pending_since is not None
+    assert persisted_pending_since == emailed_pending_since
+
+
 async def test_mark_waiting_approval_stamps_pending_since() -> None:
     db = MagicMock()
     db.workflowexecution = MagicMock()

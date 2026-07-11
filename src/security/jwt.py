@@ -11,7 +11,7 @@ import time
 
 from jose import JWTError, jwt
 from jose.exceptions import ExpiredSignatureError
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from src.config import get_settings
 
@@ -144,14 +144,20 @@ def verify_access_token(token: str) -> AccessTokenPayload:
     raw = _decode(token)
     if raw.get("type") != "access":
         raise TokenVerificationError(f"Expected token type 'access', got {raw.get('type')!r}")
-    return AccessTokenPayload.model_validate(raw)
+    try:
+        return AccessTokenPayload.model_validate(raw)
+    except ValidationError as exc:
+        raise TokenVerificationError(f"Malformed access token payload: {exc}") from exc
 
 
 def verify_refresh_token(token: str) -> RefreshTokenPayload:
     raw = _decode(token)
     if raw.get("type") != "refresh":
         raise TokenVerificationError(f"Expected token type 'refresh', got {raw.get('type')!r}")
-    return RefreshTokenPayload.model_validate(raw)
+    try:
+        return RefreshTokenPayload.model_validate(raw)
+    except ValidationError as exc:
+        raise TokenVerificationError(f"Malformed refresh token payload: {exc}") from exc
 
 
 def verify_password_change_token(token: str) -> PasswordChangeTokenPayload:
@@ -160,7 +166,10 @@ def verify_password_change_token(token: str) -> PasswordChangeTokenPayload:
         raise TokenVerificationError(
             f"Expected token type 'password_change', got {raw.get('type')!r}"
         )
-    return PasswordChangeTokenPayload.model_validate(raw)
+    try:
+        return PasswordChangeTokenPayload.model_validate(raw)
+    except ValidationError as exc:
+        raise TokenVerificationError(f"Malformed password_change token payload: {exc}") from exc
 
 
 def verify_approval_email_token(token: str) -> ApprovalEmailTokenPayload:
@@ -169,7 +178,10 @@ def verify_approval_email_token(token: str) -> ApprovalEmailTokenPayload:
         raise TokenVerificationError(
             f"Expected token type 'approval_email', got {raw.get('type')!r}"
         )
-    return ApprovalEmailTokenPayload.model_validate(raw)
+    try:
+        return ApprovalEmailTokenPayload.model_validate(raw)
+    except ValidationError as exc:
+        raise TokenVerificationError(f"Malformed approval_email token payload: {exc}") from exc
 
 
 __all__ = [

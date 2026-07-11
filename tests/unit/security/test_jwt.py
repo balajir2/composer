@@ -125,6 +125,32 @@ def test_approval_email_token_rejects_access_token() -> None:
         verify_approval_email_token(access)
 
 
+def test_approval_email_token_malformed_payload_raises_verification_error() -> None:
+    """A structurally valid JWT whose claims don't match the payload model
+    (e.g. missing required fields) must be rejected as a clean
+    `TokenVerificationError`, not propagate pydantic's `ValidationError`."""
+    from jose import jwt as jose_jwt
+
+    from src.config import get_settings
+    from src.security.jwt import verify_approval_email_token
+
+    settings = get_settings()
+    now = int(time.time())
+    # Correct type/iat/exp so `_decode` and the type check both succeed, but
+    # missing the required approval-specific claims (sub, node_id, decision,
+    # approver_email, pending_since) so `model_validate` fails.
+    incomplete_payload = {
+        "type": "approval_email",
+        "iat": now,
+        "exp": now + 3600,
+    }
+    token = jose_jwt.encode(
+        incomplete_payload, settings.jwt_secret, algorithm=settings.jwt_algorithm
+    )
+    with pytest.raises(TokenVerificationError):
+        verify_approval_email_token(token)
+
+
 def test_approval_email_token_respects_ttl(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.config import get_settings
     from src.security.jwt import create_approval_email_token, verify_approval_email_token
