@@ -24,12 +24,26 @@ export default function UserApprovalPanel({
       </div>
 
       <div className="space-y-2">
-        <Label>Approver email</Label>
+        <Label>Approver email (optional)</Label>
         <Input
           type="email"
           value={(data.approverEmail as string) ?? ""}
           onChange={(e) => onChange({ approverEmail: e.target.value })}
           placeholder="approver@example.com"
+        />
+        <p className="text-[10px] text-muted-foreground">
+          If set, this person gets an email with one-click Approve/Reject links — no
+          Composer login required. In-app approval always still works too.
+        </p>
+      </div>
+
+      <div className="space-y-2">
+        <Label>CC (optional)</Label>
+        <Input
+          type="email"
+          value={(data.approverCc as string) ?? ""}
+          onChange={(e) => onChange({ approverCc: e.target.value })}
+          placeholder="manager@example.com"
         />
       </div>
     </div>
