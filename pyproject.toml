@@ -54,6 +54,10 @@ dependencies = [
     # Document parsing (for Start node file uploads)
     "pypdf>=5.0.0",
     "python-docx>=1.1.0",
+
+    # Document generation (file-write node — Markdown -> DOCX/PDF)
+    "markdown-it-py>=3.0.0",
+    "xhtml2pdf>=0.2.16",
 ]
 
 [project.optional-dependencies]
