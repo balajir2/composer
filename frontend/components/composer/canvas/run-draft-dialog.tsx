@@ -20,6 +20,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { createExecution } from "@/lib/api/executions";
 import { startNodeSpec } from "@/lib/start-node-schema";
+import { DocumentField } from "../document-field";
 
 type CanvasWorkflow = {
   nodes: Array<{ type: string; data: Record<string, unknown> }>;
@@ -152,10 +153,7 @@ export function RunDraftDialog({
               : "Optionally provide a JSON payload; leave blank to run with no input."}
           </DialogDescription>
         </DialogHeader>
-        <form
-          onSubmit={form.handleSubmit((v) => mutation.mutate(v))}
-          className="space-y-3"
-        >
+        <form onSubmit={form.handleSubmit((v) => mutation.mutate(v))} className="space-y-3">
           {fields.map((f) => (
             <div key={f.name} className="space-y-1.5">
               <Label htmlFor={`draft-${f.name}`}>
@@ -169,6 +167,14 @@ export function RunDraftDialog({
                   {...form.register(f.name)}
                   placeholder='{"example": "value"}'
                   className="font-mono text-xs"
+                />
+              ) : f.type === "document" ? (
+                <DocumentField
+                  name={f.name}
+                  required={f.required}
+                  setValue={(v) => form.setValue(f.name, v)}
+                  registered={form.register(f.name)}
+                  idPrefix="draft"
                 />
               ) : f.type === "boolean" ? (
                 <input
