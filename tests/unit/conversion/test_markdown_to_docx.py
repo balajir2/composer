@@ -99,3 +99,16 @@ def test_inline_code_span_preserved_in_table_cell() -> None:
     table = doc.tables[0]
     cell_texts = [c.text for c in table.rows[1].cells]
     assert cell_texts == ["status", "Active"]
+
+
+def test_bracket_placeholder_is_not_silently_dropped() -> None:
+    """`<Client Name>`-style bracket placeholders (common in BRDs) must
+    survive conversion as literal text, not vanish. With CommonMark's raw-
+    HTML passthrough enabled (the pre-fix default), `<Client Name>` parses
+    as an `html_inline` token that `_add_inline_runs` has no handler for,
+    so the whole placeholder is silently dropped from the paragraph."""
+    from src.conversion.markdown_to_docx import markdown_to_docx
+
+    doc = _load(markdown_to_docx("**Client:** <Client Name>"))
+    all_text = " ".join(p.text for p in doc.paragraphs)
+    assert "<Client Name>" in all_text

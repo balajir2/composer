@@ -20,7 +20,14 @@ from markdown_it.token import Token
 if TYPE_CHECKING:
     from docx.document import Document as DocumentType
 
-_md = MarkdownIt("commonmark").enable("table")
+# `html: False` disables CommonMark's raw-HTML passthrough rules
+# (html_block/html_inline). Without it, bracket placeholders extremely
+# common in the BRD-style documents this node targets -- `<Client Name>`,
+# `<INSERT DATE>` -- parse as (unrecognized) `html_inline` tokens, which
+# `_add_inline_runs` below has no handler for and silently drops, instead
+# of rendering as literal text. See docs/archive/phase-history/plans/
+# 2026-07-11-file-storage-provider-framework-plan.md Task 6/7 follow-up.
+_md = MarkdownIt("commonmark", {"html": False}).enable("table")
 
 
 def _add_inline_runs(paragraph: Any, children: list[Token]) -> None:
