@@ -133,3 +133,18 @@ async def test_rejects_missing_destination_path(tmp_path: Path) -> None:
     node = _node(tmp_path, destinationPath="   ")
     with pytest.raises(InvalidDestinationError):
         await FileWriteExecutor(node).arun(initial_state())
+
+
+async def test_writes_docx_file(tmp_path: Path) -> None:
+    from src.engine.state import initial_state
+    from src.executors.file_write import FileWriteExecutor
+
+    node = _node(tmp_path, format="docx", content="# Title\n\nBody text.")
+    await FileWriteExecutor(node).arun(initial_state())
+
+    written = tmp_path / "report.docx"
+    assert written.exists()
+    from docx import Document
+
+    doc = Document(str(written))
+    assert any(p.text == "Title" for p in doc.paragraphs)
