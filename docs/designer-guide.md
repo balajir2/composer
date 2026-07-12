@@ -128,6 +128,8 @@ The reviewer's note (if any) is available downstream as `{{node_results.<id>.out
 
 Set **Approver email** (`approverEmail`) and, optionally, **Approver CC** (`approverCc`) — both support `{{variable}}` substitution — to also notify the reviewer by email the moment the node pauses. The email contains two signed one-click links, Approve and Reject; clicking either resolves the decision directly, with no Composer login required, so an external reviewer with no account can still act. Each emailed link is valid for 72 hours by default (`approval_link_ttl_hours`); after it expires, the in-app Approve/Reject controls on the runs page still work exactly as before — the emailed link is a convenience shortcut, not the only way to decide. Independent of that link TTL, a `waiting_approval` execution that sits with no decision at all for 7 days (168h, `approval_wait_timeout_hours`) is automatically failed by a background sweeper, purely to bound database row growth — a paused execution costs zero compute while waiting (its full state is checkpointed to Postgres), so this outer limit is hygiene, not a resource necessity.
 
+Optionally set **Attachment path** (`attachmentPath`), substituted from workflow state — typically `{{lastOutput}}` from an upstream `file-write` node — to attach that file to the approval email. The path is bounded to a server-side directory (`approval_attachment_root`, default `/tmp/composer-attachments`) and size cap (`approval_attachment_max_bytes`, default 10 MiB); a path outside that root, a missing file, an oversized file, or any other read failure is silently skipped and the email still sends without the attachment.
+
 ### Compute
 
 #### `agent`
