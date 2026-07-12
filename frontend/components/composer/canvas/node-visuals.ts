@@ -17,6 +17,7 @@ import {
   Combine,
   Database,
   FileSearch,
+  FolderInput,
   Mail,
   Gamepad2,
   GitBranch,
@@ -177,6 +178,12 @@ export const NODE_VISUALS: Record<string, NodeVisual> = {
     iconWrapClass: "bg-blue-100 text-blue-700",
     accent: "text-blue-700",
     label: "Jira",
+  },
+  "file-trigger": {
+    icon: FolderInput,
+    iconWrapClass: "bg-amber-100 text-amber-700",
+    accent: "text-amber-700",
+    label: "File Trigger",
   },
 };
 

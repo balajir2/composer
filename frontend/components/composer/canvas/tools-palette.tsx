@@ -36,6 +36,7 @@ export const COMPOSER_NODE_PALETTE: { nodeType: string; label: string }[] = [
   { nodeType: "email", label: "Email" },
   { nodeType: "arcade", label: "Arcade" },
   { nodeType: "vector-db", label: "Vector DB" },
+  { nodeType: "file-trigger", label: "File Trigger" },
   { nodeType: "jira", label: "Jira" },
 ];
 
