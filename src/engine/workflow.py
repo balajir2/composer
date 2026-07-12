@@ -99,6 +99,25 @@ class NoteNode(BaseModel):
     data: NoteNodeData
 
 
+# ─── file-trigger (visual-only; executor is a no-op; graph_builder skips) ─
+
+
+class FileTriggerNodeData(BaseNodeData):
+    provider: Literal["local"] = "local"
+    source_path: str | None = Field(default=None, alias="sourcePath")
+    dest_path: str | None = Field(default=None, alias="destPath")
+    error_path: str | None = Field(default=None, alias="errorPath")
+    target_input_variable: str | None = Field(default=None, alias="targetInputVariable")
+    poll_interval_seconds: int = Field(default=30, alias="pollIntervalSeconds")
+
+
+class FileTriggerNode(BaseModel):
+    id: str
+    type: Literal["file-trigger"]
+    position: Position
+    data: FileTriggerNodeData
+
+
 # ─── agent (Phase 2) ─────────────────────────────────────────────────────
 
 
@@ -544,6 +563,7 @@ WorkflowNode = Annotated[
     StartNode
     | EndNode
     | NoteNode
+    | FileTriggerNode
     | AgentNode
     | McpNode
     | IfElseNode
@@ -604,6 +624,8 @@ __all__ = [
     "EndNodeData",
     "ExtractNode",
     "ExtractNodeData",
+    "FileTriggerNode",
+    "FileTriggerNodeData",
     "GammaAiNode",
     "GammaAiNodeData",
     "GuardrailsNode",
