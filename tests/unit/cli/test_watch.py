@@ -116,7 +116,8 @@ async def test_claim_moves_to_error_path_on_unsupported_file_type(
 
 
 async def test_trigger_workflow_posts_expected_request(
-    tmp_path: Path, httpx_mock: HTTPXMock  # pyright: ignore[reportUnknownParameterType]
+    tmp_path: Path,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
 ) -> None:
     """Direct coverage of `_trigger_workflow` (not via `claim_file`): confirms
     the URL, bearer auth header, and JSON body actually sent over the wire."""
@@ -144,7 +145,8 @@ async def test_trigger_workflow_posts_expected_request(
 
 
 async def test_trigger_workflow_raises_runtime_error_on_non_2xx(
-    tmp_path: Path, httpx_mock: HTTPXMock  # pyright: ignore[reportUnknownParameterType]
+    tmp_path: Path,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
 ) -> None:
     """Direct coverage of the `if resp.status_code >= 400: raise RuntimeError`
     branch in `_trigger_workflow`."""
