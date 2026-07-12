@@ -20,6 +20,7 @@ from src.engine.workflow import (
 )
 from src.security.auth import ensure_admin, get_current_role, get_current_user_id
 from src.storage.db import get_db
+from src.variable_validation import find_unknown_variable_references
 
 _SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 
@@ -32,6 +33,31 @@ def _validate_slug(slug: str) -> None:
                 "external_slug must be lowercase alphanumeric + hyphens, "
                 "start with alphanumeric, and be 2-64 chars"
             ),
+        )
+
+
+def _reject_unknown_variable_references(workflow: Workflow) -> None:
+    """P0-1: refuse to publish a workflow with a {{variable}} reference
+    that doesn't match any Start input, node id/name alias, or built-in
+    — an unresolved placeholder renders as literal text at runtime
+    (src/variable_substitution.py) instead of failing, so this is the
+    only point where a typo like `{{jira_project_key}}` vs. a Start
+    input actually named `MB` gets caught before it reaches production."""
+    problems = find_unknown_variable_references(workflow)
+    if problems:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "message": "Workflow references undeclared variables and cannot be published.",
+                "problems": [
+                    {
+                        "nodeId": p.node_id,
+                        "field": p.field_path,
+                        "placeholder": p.placeholder,
+                    }
+                    for p in problems
+                ],
+            },
         )
 
 
@@ -382,6 +408,7 @@ async def update_workflow(
                 detail="external_slug is required when isProduction=True",
             )
         _validate_slug(payload.external_slug)
+        _reject_unknown_variable_references(workflow)
         publish_data["isProduction"] = True
         publish_data["externalSlug"] = payload.external_slug
     elif payload.is_production is False:
@@ -492,6 +519,11 @@ async def admin_update_workflow_flags(
                 detail="external_slug is required when isProduction=True",
             )
         _validate_slug(slug)
+        _reject_unknown_variable_references(
+            Workflow.model_validate(
+                {"name": existing.name, "nodes": existing.nodes, "edges": existing.edges}
+            )
+        )
         data["isProduction"] = True
         data["externalSlug"] = slug
     elif payload.is_production is False:

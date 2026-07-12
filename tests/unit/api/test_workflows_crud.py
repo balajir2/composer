@@ -744,6 +744,37 @@ def test_put_publish_invalid_slug_format_422(monkeypatch: pytest.MonkeyPatch) ->
         )
 
 
+def test_put_publish_rejects_unknown_variable_reference(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P0-1: publishing a workflow that references an undeclared
+    {{variable}} is rejected with a 422 naming the bad placeholder — the
+    exact live bug this guards against (Start input `MB`, a downstream
+    node referencing `{{jira_project_key}}`)."""
+    existing = _wf_row(id="w1", userId="dev")
+    client, _ = _client_put(monkeypatch, existing, None)
+    body: dict[str, Any] = {
+        "name": "Updated",
+        "nodes": [
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {
+                "id": "a",
+                "type": "agent",
+                "position": {"x": 50, "y": 0},
+                "data": {"label": "A", "instructions": "{{undeclared_var}}"},
+            },
+            {"id": "e", "type": "end", "position": {"x": 100, "y": 0}, "data": {"label": "E"}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "s", "target": "a"},
+            {"id": "e2", "source": "a", "target": "e"},
+        ],
+        "isProduction": True,
+        "externalSlug": "my-workflow",
+    }
+    resp = client.put("/workflows/w1", json=body)
+    assert resp.status_code == 422, resp.text
+    assert "undeclared_var" in resp.text
+
+
 def test_put_publish_sets_isproduction_and_slug(monkeypatch: pytest.MonkeyPatch) -> None:
     """Valid publish request updates both isProduction and externalSlug."""
     existing = _wf_row(id="w1", userId="dev")
