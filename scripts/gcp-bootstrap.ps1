@@ -282,6 +282,16 @@ gcloud run services update $BackendService `
     --project=$ProjectId `
     --update-env-vars="COMPOSER_FRONTEND_ORIGINS=$originsCsv" | Out-Null
 
+# FRONTEND_URL is used server-side (src/api/approval_email.py's _redirect)
+# to send reviewers somewhere sane after an emailed approve/reject link
+# resolves. Defaults to http://localhost:3000 (src/config.py) when unset.
+$frontendPublicUrl = if ($FrontendDomain) { "https://$FrontendDomain" } else { $frontendRunUrl }
+Write-Host "Setting FRONTEND_URL=$frontendPublicUrl on $BackendService"
+gcloud run services update $BackendService `
+    --region=$Region `
+    --project=$ProjectId `
+    --update-env-vars="FRONTEND_URL=$frontendPublicUrl" | Out-Null
+
 # ─── 7. summary ─────────────────────────────────────────────────────
 Write-Step "Done"
 Write-Host "Backend  → $backendRunUrl" -ForegroundColor Green

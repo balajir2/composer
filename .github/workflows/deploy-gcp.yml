@@ -120,6 +120,22 @@ jobs:
             --quiet
           echo "BACKEND_PUBLIC_URL set to: $URL"
 
+      # Same story as BACKEND_PUBLIC_URL above: frontend_url (src/config.py)
+      # defaults to http://localhost:3000 and is used to build the
+      # post-decision redirect after an emailed approve/reject link
+      # resolves (src/api/approval_email.py's _redirect). Found missing in
+      # production on 2026-07-11 — the redirect was sending reviewers to
+      # localhost:3000 after a successful approval.
+      - name: Set FRONTEND_URL
+        if: vars.COMPOSER_FRONTEND_URL != ''
+        run: |
+          gcloud run services update ${{ env.BACKEND_SERVICE }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --update-env-vars="FRONTEND_URL=${{ vars.COMPOSER_FRONTEND_URL }}" \
+            --quiet
+          echo "FRONTEND_URL set to: ${{ vars.COMPOSER_FRONTEND_URL }}"
+
       - name: Print backend URL
         run: |
           URL=$(gcloud run services describe ${{ env.BACKEND_SERVICE }} \
