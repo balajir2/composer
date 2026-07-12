@@ -7,7 +7,7 @@ Everything you need to build workflows on the canvas. If this is your first time
 - [Concepts](#concepts) — Workflows, executions, runs, drafts
 - [The canvas](#the-canvas) — Editing nodes, drawing edges, the property panel
 - [Variables and references](#variables-and-references) — `{{name}}` substitution and the eval scope
-- [Node reference](#node-reference) — All 20 node types
+- [Node reference](#node-reference) — All 22 node types
 - [Templates](#templates) — The 19 reference workflows and what each demonstrates
 - [Publishing workflows](#publishing-workflows) — External invoke API
 - [Document uploads](#document-uploads) — PDF / DOCX / Markdown / TXT inputs
@@ -84,7 +84,7 @@ What's *not* available: `import`, `eval`, `exec`, list comprehensions, dict lite
 
 ## Node reference
 
-The twenty node types, grouped by what they do.
+The twenty-two node types, grouped by what they do.
 
 ### Flow control
 
@@ -339,6 +339,37 @@ Agentic Jira Cloud access (create, search, update, transition, and comment on is
 **Credential storage:** the API token is encrypted at rest (AES-256-GCM) the moment the workflow is saved, and every API response redacts it to a fixed `••••••••` marker — the plaintext or ciphertext never leaves the server after the initial save. The designer's Jira panel treats an unchanged, redacted field as "keep the existing token"; typing a new value replaces it. The token is only decrypted in-memory, server-side, at execution time.
 
 Output: `{lastOutput}` — the model's final text response after any tool calls complete.
+
+#### `file-trigger`
+
+Visual-only, like `note` — never executes; `graph_builder` skips it when building the execution graph. It's a configuration surface, not a step in the flow: the actual folder-watching happens outside the graph entirely, in the separate `composer watch` CLI, which polls the folder and triggers a **published (production)** workflow through the ordinary external-invoke endpoint.
+
+| Field | Purpose |
+|---|---|
+| `provider` | Storage provider (currently `local` only). |
+| `sourcePath` | Folder to watch for new files. |
+| `destPath` | Folder a file is moved to after a successful trigger. |
+| `errorPath` | Folder a file is moved to if extraction or the trigger call fails. |
+| `targetInputVariable` | Name of the Start node's input variable the extracted file text populates. |
+| `pollIntervalSeconds` | How often to poll `sourcePath`, in seconds (default 30). |
+
+Dropping a `file-trigger` node on the canvas documents intent — by itself it does nothing at run time. To make it live: publish the workflow (see [Publishing workflows](#publishing-workflows)) and run `composer watch --api-url <backend> --slug <externalSlug> --api-key ck_... --source <sourcePath> --dest <destPath> --error <errorPath> --target-var <targetInputVariable> --interval <pollIntervalSeconds>` from a machine that can see those folders. The CLI polls `sourcePath`; a file must appear unchanged across two consecutive polls before it's claimed (guards against reading a file that's still being copied). Once claimed, it extracts plain text (`.txt` / `.md` / `.markdown` / `.pdf` / `.docx`) and calls `POST /api/run/{slug}` — the same external-invoke endpoint any other production trigger uses — with `{targetInputVariable: <extracted text>}` as input. On success the file moves to `destPath`; on extraction or trigger failure it moves to `errorPath` instead, and the loop moves on to the next file.
+
+#### `file-write`
+
+Writes generated content to a file via a storage provider (currently `local` filesystem only). Unlike `file-trigger`, this is a real executing node — it sits mid-flow like `email` or `jira`.
+
+| Field | Purpose |
+|---|---|
+| `provider` | Storage provider name. Plain string rather than a fixed choice — an unrecognised provider raises at execution time rather than being rejected when the workflow is saved. |
+| `destinationPath` | Folder to write into (substitution applies). Rejected if it resolves to blank/empty — the node refuses to fall back to writing into the server process's current working directory. |
+| `filename` | Bare filename **without an extension** — `format` always supplies it (e.g. `filename: "{{project_name}}-BRD"` with `format: pdf` writes `<project_name>-BRD.pdf`). Defaults to `output` if left blank. Rejected if it contains `/`, `\`, or `..` — use `destinationPath`, not the filename, for a nested output directory. |
+| `format` | `md` (default) / `docx` / `pdf`. |
+| `content` | Markdown source (Mustache substitution applies). |
+
+Conversion: `md` is written as-is (UTF-8 bytes, no conversion). `docx` and `pdf` both parse the Markdown and render headings, paragraphs, bullet/numbered lists, tables, and bold/italic/inline-code onto the target format — a purpose-built renderer for structured, table-heavy documents (BRDs and similar), not a full-fidelity general-purpose Markdown converter. The PDF path blocks all external resource resolution (images and any other remote reference are refused) so rendering a workflow's Markdown can't be turned into an outbound request against attacker-chosen infrastructure; both the DOCX and PDF renderers also disable raw-HTML passthrough so bracket placeholders like `<Client Name>` render as literal text instead of silently vanishing.
+
+Output: `{lastOutput}` is the full path the file was written to (e.g. `/data/out/report.pdf`) — reference it downstream as `{{<node_alias>.output}}`, for example to mention the file in a follow-up email.
 
 ## Templates
 

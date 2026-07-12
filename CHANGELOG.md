@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — File storage provider framework (2026-07-11)
+
+Two new node types built on a shared, pluggable `FileStorageProvider` abstraction: `file-trigger` watches a folder and (via a separate CLI) kicks off a production workflow when a file lands; `file-write` writes generated content out to a file as Markdown, Word, or PDF. Only a local-filesystem provider is implemented today — S3/Google Drive/OneDrive are documented extension points behind the same interface.
+
+#### Added
+- `FileStorageProvider` ABC + `FileRef`/`HealthStatus` in [src/storage_providers/base.py](src/storage_providers/base.py), modeled on the existing `ToolProvider` pattern; `LocalFilesystemProvider` in [src/storage_providers/local.py](src/storage_providers/local.py) — polling-based, partial-write-safe (a file must be stable across two consecutive polls before it's claimed).
+- `file-trigger` node type — `FileTriggerNodeData`/`FileTriggerNode` in [src/engine/workflow.py](src/engine/workflow.py) (fields: `provider`, `sourcePath`, `destPath`, `errorPath`, `targetInputVariable`, `pollIntervalSeconds`). Visual-only like `note` — never executes; `graph_builder.py`'s new `_VISUAL_ONLY_TYPES` set (`{"note", "file-trigger"}`) skips it during graph construction. Frontend: `node-panels/file-trigger.tsx` + the usual palette/visuals/canvas-type registries.
+- `file-write` node type — `FileWriteNodeData`/`FileWriteNode` in [src/engine/workflow.py](src/engine/workflow.py) (fields: `provider`, `destinationPath`, `filename`, `format` — `md`/`docx`/`pdf`, default `md` — `content`) + `FileWriteExecutor` in [src/executors/file_write.py](src/executors/file_write.py), a real executing node. Writes via `LocalFilesystemProvider`; `lastOutput` is the full written path. Frontend: `node-panels/file-write.tsx` + registries.
+- Markdown → DOCX renderer, [src/conversion/markdown_to_docx.py](src/conversion/markdown_to_docx.py) — hand-rolled `markdown-it-py` token-walker onto `python-docx`, covering headings/paragraphs/lists/tables/bold/italic/inline-code (table cells get full run-level formatting, not just plain text).
+- Markdown → PDF renderer, [src/conversion/markdown_to_pdf.py](src/conversion/markdown_to_pdf.py) — `markdown-it-py` → HTML → `xhtml2pdf`.
+- `composer watch` CLI subcommand — [src/cli/watch.py](src/cli/watch.py) + new `watch` parser in [src/cli/main.py](src/cli/main.py) (`--api-url`, `--slug`, `--api-key`, `--provider`, `--source`, `--dest`, `--error`, `--target-var`, `--interval`). Polls a folder, extracts text (`.txt`/`.md`/`.pdf`/`.docx`), triggers the target **production** workflow through the existing `POST /api/run/{slug}` external-invoke endpoint (no new backend endpoint), and moves each file to a dest or error folder based on outcome.
+- Two new dependencies in `pyproject.toml`: `markdown-it-py`, `xhtml2pdf`.
+- `docs/designer-guide.md` gained `file-trigger`/`file-write` node-reference sections (now 22 node types).
+
+#### Security
+- `file-write` rejects filenames containing `/`, `\`, or `..` (`InvalidFilenameError`) and rejects a blank/empty `destinationPath` (`InvalidDestinationError`) — both raise before any write happens. `filename`/`destinationPath` are populated via `{{variable}}` substitution from upstream node output, so an unchecked value could otherwise escape the intended output directory.
+- The PDF export path blocks all external resource resolution — `markdown_to_pdf` passes a deny-all `link_callback` into `xhtml2pdf.pisa.CreatePDF` — preventing SSRF via a crafted Markdown image reference (mirrors the HTTP-node SSRF guard, commit `999c5ac`). Both the DOCX and PDF renderers construct their `MarkdownIt` parser with `html: False`, disabling CommonMark's raw-HTML passthrough, so bracket placeholders like `<Client Name>` render as literal text instead of being silently dropped.
+
+#### Notes
+- See ADR-0030 in [docs/decisions.md](docs/decisions.md) for the full design record, including why `file-trigger` is visual-only, why `composer watch` reuses the existing external-invoke endpoint rather than a new trigger endpoint, why conversion is pure-Python rather than pandoc-based, and why storage config is inline-per-node rather than a shared connection registry.
+
 ### Added — Approve-via-email + waiting-approval auto-expiry (2026-07-11)
 
 A `user-approval` node can now also notify the reviewer by email: set **Approver email** (and optionally **Approver CC**) on the node, and the moment the graph pauses, the reviewer gets a message with two signed one-click links (Approve / Reject) — no Composer login required. Separately, a `waiting_approval` execution that sits with no decision at all (in-app or via email) for more than 7 days is now auto-failed by a background sweeper, purely to bound Postgres/checkpoint row growth; a paused execution costs zero compute while waiting (its full state is checkpointed to Postgres), so this is hygiene, not a resource necessity.
