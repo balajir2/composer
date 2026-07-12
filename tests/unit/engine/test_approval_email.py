@@ -319,6 +319,55 @@ async def test_send_approval_email_skips_attachment_over_max_bytes(
     get_settings.cache_clear()
 
 
+async def test_send_approval_email_swallows_read_error_and_skips_attachment(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """A read/encode failure inside `_build_attachment`'s try block (stat /
+    read_bytes / b64encode) -- for a file that otherwise passes the
+    containment, existence, and size checks -- is swallowed: the email
+    still sends, without the attachment."""
+    from src.engine.approval_email import send_approval_email
+
+    monkeypatch.setenv("APPROVAL_ATTACHMENT_ROOT", str(tmp_path))
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+
+    attachment_file = tmp_path / "brd.pdf"
+    attachment_file.write_bytes(b"%PDF-1.4 fake pdf content for testing")
+
+    def raising_read_bytes(self: Path) -> bytes:
+        raise OSError("simulated read failure")
+
+    monkeypatch.setattr(Path, "read_bytes", raising_read_bytes)
+
+    captured: dict[str, object] = {}
+    send_mock = AsyncMock(return_value={"id": "email-1"})
+
+    async def fake_send_email(
+        self: object, payload: dict[str, object], **kw: object
+    ) -> dict[str, object]:
+        captured.update(payload)
+        return await send_mock(payload)
+
+    monkeypatch.setattr("src.engine.approval_email.ResendEmailProvider.send_email", fake_send_email)
+
+    await send_approval_email(
+        execution_id="exec-1",
+        node_id="approval-1",
+        prompt="Approve the BRD?",
+        approver_email="reviewer@example.com",
+        approver_cc=None,
+        pending_since="2026-07-11T10:00:00+00:00",
+        attachment_path=str(attachment_file),
+    )
+
+    send_mock.assert_awaited_once()
+    assert "attachments" not in captured
+
+    get_settings.cache_clear()
+
+
 async def test_send_approval_email_no_attachment_path_unchanged(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
