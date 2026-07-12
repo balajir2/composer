@@ -28,6 +28,41 @@ class UnknownStorageProviderError(ValueError):
     """Raised when a file-write/file-trigger node names an unregistered provider."""
 
 
+class InvalidDestinationError(ValueError):
+    """Raised when a file-write node's substituted destinationPath is empty
+    or blank. Path("") resolves to the process's current working directory,
+    so silently accepting it would let the node write into whatever
+    directory the server happened to be launched from — fail loudly instead.
+    """
+
+
+class InvalidFilenameError(ValueError):
+    """Raised when a file-write node's substituted filename is not a bare
+    filename — e.g. it contains a path separator, is a `..` traversal
+    segment, or is empty.
+
+    `filename` and `destinationPath` are both substituted from workflow
+    state (see src/variable_substitution.py's `substitute()`), which can
+    carry prior node outputs (http/agent/extract/mcp results) originating
+    from untrusted external data — mirroring why src/executors/http.py
+    validates substituted URLs via validate_outbound_url() before use.
+    A bare filename can never legitimately need path segments; a workflow
+    that wants a nested output directory should express that via
+    destinationPath instead.
+    """
+
+
+def _validate_filename(node_id: str, filename: str) -> None:
+    if not filename or not filename.strip():
+        raise InvalidFilenameError(f"file-write node {node_id!r} resolved to an empty filename")
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise InvalidFilenameError(
+            f"file-write node {node_id!r} filename {filename!r} must be a bare filename "
+            "with no path separators or '..' segments — use destinationPath to control "
+            "the output directory"
+        )
+
+
 @register_executor("file-write")
 class FileWriteExecutor:
     def __init__(self, node: FileWriteNode) -> None:
@@ -42,7 +77,15 @@ class FileWriteExecutor:
             )
 
         destination = substitute(self.node.data.destination_path or "", state)
+        if not destination or not destination.strip():
+            raise InvalidDestinationError(
+                f"file-write node {self.node.id!r} resolved to an empty destinationPath; "
+                "refusing to write into the process's current working directory"
+            )
+
         filename = substitute(self.node.data.filename or "output", state)
+        _validate_filename(self.node.id, filename)
+
         content = substitute(self.node.data.content or "", state)
         fmt = self.node.data.format
 
@@ -86,4 +129,9 @@ def _convert(content: str, fmt: str) -> bytes:
     raise UnknownStorageProviderError(f"unknown format {fmt!r}")  # unreachable given Literal typing
 
 
-__all__ = ["FileWriteExecutor", "UnknownStorageProviderError"]
+__all__ = [
+    "FileWriteExecutor",
+    "InvalidDestinationError",
+    "InvalidFilenameError",
+    "UnknownStorageProviderError",
+]
