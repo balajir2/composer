@@ -525,6 +525,15 @@ class JiraNodeData(BaseNodeData):
     instructions: str | None = None
     model: str | None = None
     max_iterations: int | None = Field(default=None, alias="maxIterations")
+    # Semantic success policy (P0-2): distinguishes "the agent produced a
+    # response" from "the agent actually performed the requested Jira
+    # action" — a clarification/explanation text response can otherwise
+    # complete a node with zero Jira issues created. Default preserves
+    # existing behavior (no enforcement) for backward compatibility.
+    action_policy: Literal["best_effort", "require_tool_call", "require_successful_tool_call"] = (
+        Field(default="best_effort", alias="actionPolicy")
+    )
+    minimum_successful_calls: int = Field(default=1, alias="minimumSuccessfulCalls")
 
 
 class JiraNode(BaseModel):

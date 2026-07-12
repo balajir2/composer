@@ -86,7 +86,7 @@ async def test_arun_decrypts_stored_token_before_use(monkeypatch: pytest.MonkeyP
     assert captured_tokens, "JiraProvider.build_tool was never called"
     assert all(t == "real-secret-token" for t in captured_tokens)
     assert all(t != encrypted for t in captured_tokens)
-    assert delta["variables"]["lastOutput"] == "done"
+    assert delta["variables"]["lastOutput"]["text"] == "done"
     assert delta["node_results"]["j1"]["status"] == "completed"
 
 
@@ -161,6 +161,169 @@ async def test_falls_back_to_state_variable_when_node_has_no_domain_configured(
     assert all(d == "set-state-configured.atlassian.net" for d in captured_domains)
 
 
+class _FakeJiraTool:
+    """Stands in for a real Jira tool (jira_create_issue etc.) — returns a
+    canned result string matching the real tools' success/"Error: ..."
+    convention (src/tools/providers/jira.py) without hitting HTTP."""
+
+    def __init__(self, name: str, result: str) -> None:
+        self.name = name
+        self._result = result
+
+    async def ainvoke(self, args: dict[str, Any]) -> str:
+        return self._result
+
+
+def _stub_jira_provider(monkeypatch: pytest.MonkeyPatch, tool_name: str, result: str) -> None:
+    from src.tools.base import BuildContext, ToolDefinition
+    from src.tools.providers import jira as jira_provider_module
+
+    class _StubField:
+        pass
+
+    async def _tools(self: Any) -> list[ToolDefinition]:
+        return [ToolDefinition(name=tool_name, description="stub", args_schema=_StubField)]  # pyright: ignore[reportArgumentType]
+
+    async def _build_tool(self: Any, name: str, context: BuildContext) -> _FakeJiraTool:
+        return _FakeJiraTool(name, result)
+
+    monkeypatch.setattr(jira_provider_module.JiraProvider, "tools", _tools)
+    monkeypatch.setattr(jira_provider_module.JiraProvider, "build_tool", _build_tool)
+
+
+class _ToolCallThenTextFake:
+    """First ainvoke emits one tool call; second returns plain text."""
+
+    def __init__(self, tool_name: str, args: dict[str, Any] | None = None) -> None:
+        self._tool_name = tool_name
+        self._args = args or {}
+        self.call_count = 0
+
+    def bind_tools(self, tools: list[Any]) -> "_ToolCallThenTextFake":
+        return self
+
+    async def ainvoke(self, messages: list[Any]) -> AIMessage:
+        self.call_count += 1
+        if self.call_count == 1:
+            return AIMessage(
+                content="",
+                tool_calls=[
+                    {
+                        "name": self._tool_name,
+                        "args": self._args,
+                        "id": "call_1",
+                        "type": "tool_call",
+                    }
+                ],
+            )
+        return AIMessage(content="Done.")
+
+
+async def test_best_effort_policy_allows_response_with_no_tool_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default policy — unchanged behavior, a pure-text response (e.g. a
+    read-only search / clarification) succeeds."""
+    node = JiraNode.model_validate(_jira_node_json())
+    fake = _TextOnlyFake("just a clarifying question, no action taken")
+    from src.llm import providers
+
+    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    delta = await JiraExecutor(node).arun(initial_state())
+    assert delta["node_results"]["j1"]["status"] == "completed"
+
+
+async def test_require_tool_call_raises_when_no_tool_calls_made(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0-2: a clarification/explanation response must not be mistaken
+    for a successful action when the policy demands one."""
+    from src.executors.jira import JiraActionPolicyError
+
+    node = JiraNode.model_validate(_jira_node_json(actionPolicy="require_tool_call"))
+    fake = _TextOnlyFake("I couldn't find enough information to create the issue.")
+    from src.llm import providers
+
+    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    with pytest.raises(JiraActionPolicyError, match="no tool call"):
+        await JiraExecutor(node).arun(initial_state())
+
+
+async def test_require_successful_tool_call_raises_when_all_calls_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0-2: a failed Jira API call (returned as an 'Error: ...' string,
+    not an exception — see src/tools/providers/jira.py) must not
+    silently satisfy require_successful_tool_call."""
+    from src.executors.jira import JiraActionPolicyError
+
+    _stub_jira_provider(
+        monkeypatch, "jira_create_issue", "Error: Jira create issue failed (HTTP 403): forbidden"
+    )
+    node = JiraNode.model_validate(_jira_node_json(actionPolicy="require_successful_tool_call"))
+    fake = _ToolCallThenTextFake("jira_create_issue", {"project_key": "PROJ", "summary": "x"})
+    from src.llm import providers
+
+    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    with pytest.raises(JiraActionPolicyError, match="0 of 1"):
+        await JiraExecutor(node).arun(initial_state())
+
+
+async def test_require_successful_tool_call_passes_and_extracts_issue_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _stub_jira_provider(
+        monkeypatch,
+        "jira_create_issue",
+        "Created Jira issue PROJ-42: https://x.atlassian.net/browse/PROJ-42",
+    )
+    node = JiraNode.model_validate(_jira_node_json(actionPolicy="require_successful_tool_call"))
+    fake = _ToolCallThenTextFake("jira_create_issue", {"project_key": "PROJ", "summary": "x"})
+    from src.llm import providers
+
+    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    delta = await JiraExecutor(node).arun(initial_state())
+
+    output = delta["node_results"]["j1"]["output"]
+    assert output["successCount"] == 1
+    assert output["failureCount"] == 0
+    assert output["toolCallCount"] == 1
+    assert output["createdIssueKeys"] == ["PROJ-42"]
+
+
+async def test_minimum_successful_calls_enforced(monkeypatch: pytest.MonkeyPatch) -> None:
+    """One successful call isn't enough when minimumSuccessfulCalls=2."""
+    from src.executors.jira import JiraActionPolicyError
+
+    _stub_jira_provider(
+        monkeypatch,
+        "jira_create_issue",
+        "Created Jira issue PROJ-1: https://x.atlassian.net/browse/PROJ-1",
+    )
+    node = JiraNode.model_validate(
+        _jira_node_json(actionPolicy="require_successful_tool_call", minimumSuccessfulCalls=2)
+    )
+    fake = _ToolCallThenTextFake("jira_create_issue", {"project_key": "PROJ", "summary": "x"})
+    from src.llm import providers
+
+    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    with pytest.raises(JiraActionPolicyError, match="1 of 1"):
+        await JiraExecutor(node).arun(initial_state())
+
+
+def test_sanitize_args_for_logging_never_includes_values() -> None:
+    """P0-2: tool args can contain full BRD/comment/description text —
+    logging must never include values, only key names."""
+    from src.executors.jira import _sanitize_args_for_logging  # pyright: ignore[reportPrivateUsage]
+
+    sanitized = _sanitize_args_for_logging(
+        {"summary": "confidential customer content", "project_key": "PROJ"}
+    )
+    assert "confidential customer content" not in str(sanitized)
+    assert "PROJ" not in str(sanitized)
+    assert sanitized == ["project_key", "summary"]
+
+
 async def test_arun_tolerates_legacy_plaintext_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tokens saved before the encryption fix shipped are plaintext; decrypt
     must pass them through unchanged rather than erroring."""
@@ -186,7 +349,7 @@ async def test_arun_tolerates_legacy_plaintext_token(monkeypatch: pytest.MonkeyP
 
     delta = await JiraExecutor(node).arun(initial_state())
     assert captured_tokens == ["legacy-plaintext-token"] * len(captured_tokens)
-    assert delta["variables"]["lastOutput"] == "done"
+    assert delta["variables"]["lastOutput"]["text"] == "done"
 
 
 async def test_arun_threads_langsmith_config(monkeypatch: pytest.MonkeyPatch) -> None:
