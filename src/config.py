@@ -172,6 +172,28 @@ class Settings(BaseSettings):
             "ever approves or rejects."
         ),
     )
+    approval_attachment_root: str = Field(
+        default="/tmp/composer-attachments",
+        description=(
+            "Filesystem root a user-approval node's attachmentPath must "
+            "resolve inside of. attachmentPath is substituted from workflow "
+            "state (typically {{lastOutput}} from an upstream file-write "
+            "node), so it's treated the same as any other state-substituted "
+            "value that reaches a filesystem read: bounded to a known-safe "
+            "root rather than trusted to point anywhere readable on the "
+            "server. A path outside this root is skipped (email still "
+            "sends, without the attachment) rather than read."
+        ),
+    )
+    approval_attachment_max_bytes: int = Field(
+        default=10 * 1024 * 1024,
+        description=(
+            "Max size of a file attached to an approval email. Larger files "
+            "are skipped (email still sends, without the attachment) rather "
+            "than inflating the email payload or blowing up memory on a "
+            "base64-encode of an unexpectedly huge file."
+        ),
+    )
 
     # ─── Standalone password hashing ─────────────────
     bcrypt_rounds: int = Field(default=12, description="bcrypt cost factor.")
