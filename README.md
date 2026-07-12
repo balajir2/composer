@@ -63,13 +63,13 @@ The whole loop is what most agentic-AI teams build from scratch: prompt + tool d
 
 ## Core capabilities
 
-### 20 node types
+### 22 node types
 
 | Category | Nodes |
 |---|---|
 | **Boundary** | `start` (workflow input), `end` (terminate), `note` (canvas annotation) |
 | **AI / LLM** | `agent` (multi-turn LLM with tool-calling, structured output, MCP support), `extract` (single-shot structured extraction) |
-| **Tools / Integration** | `mcp` (Model Context Protocol — static or OAuth-bound), `http` (any external HTTP API), `vector-db` (query + upsert across 5 providers), `gamma-ai` (slide generation), `email` (Resend delivery), `arcade` (Arcade tools), `jira` (Jira Cloud issue create/search/update/transition/comment, per-node encrypted credentials) |
+| **Tools / Integration** | `mcp` (Model Context Protocol — static or OAuth-bound), `http` (any external HTTP API), `vector-db` (query + upsert across 5 providers), `gamma-ai` (slide generation), `email` (Resend delivery), `arcade` (Arcade tools), `jira` (Jira Cloud issue create/search/update/transition/comment, per-node encrypted credentials), `file-trigger` (visual-only folder-watch config for the `composer watch` CLI), `file-write` (writes generated content to a file — md/docx/pdf) |
 | **Data flow** | `set-state` (write a variable), `transform` (sandboxed expression with optional named output), `data-transform` (collection mapping), `join-chunks` (concatenate text chunks with separator/prefix/suffix) |
 | **Control flow** | `if-else` (boolean branch), `while` (bounded loop, max 100 iterations), `user-approval` (pause for human verdict; optionally emails the approver a one-click approve/reject link, no login required) |
 | **Safety** | `guardrails` (LLM-based PII / moderation / jailbreak / hallucination classifiers, runs concurrently) |

@@ -50,7 +50,7 @@ idempotency, credential centralization, and framework modernization—is tracked
 
 | Area | Shipped capability |
 |---|---|
-| Workflow design | 20 Designer node types, variables, aliases, branching, loops, autosave, templates, draft runs. |
+| Workflow design | 22 Designer node types, variables, aliases, branching, loops, autosave, templates, draft runs. |
 | AI models | Anthropic, OpenAI, Google, and Groq families; model catalogue and verification; structured output. |
 | Enterprise tools | MCP with static/OAuth auth, Jira, HTTP, email, Arcade, Gamma, search, scrape, and browser providers. |
 | Data | Five vector DBs, ingestion/upsert, retrieval, embeddings, transforms, structured extraction, document upload. |

@@ -24,7 +24,7 @@ What you can build with it: RAG pipelines, multi-source research agents, classif
 
 Whether you self-host or we host for you, the contract is the same. Each Composer environment includes:
 
-- **20 node types** (start, end, agent, mcp, http, set-state, transform, data-transform, extract, if-else, while, user-approval, join-chunks, note, guardrails, gamma-ai, email, arcade, vector-db, jira)
+- **22 node types** (start, end, agent, mcp, http, set-state, transform, data-transform, extract, if-else, while, user-approval, join-chunks, note, guardrails, gamma-ai, email, arcade, vector-db, jira, file-trigger, file-write)
 - **4 LLM providers** (Anthropic, OpenAI, Google, Groq) with per-model verification and auto-disable on retirement
 - **5 vector DB connectors** (Pinecone, Qdrant, Chroma, Weaviate, Milvus) with query + upsert
 - **6 built-in tool providers** (Tavily, Firecrawl, Serper, Browserless, Gamma, Arcade) plus full **MCP support** (static auth + OAuth flow, including Highspot-grade RFC 8707)

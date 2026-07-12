@@ -43,7 +43,8 @@ asynchronously.
 
 Repository evidence currently includes:
 
-- **20 workflow node types** spanning AI, integration, data flow, control flow, safety, and delivery.
+- **22 workflow node types** spanning AI, integration, data flow, control flow, safety, and delivery,
+  including file-trigger and file-write nodes for folder-watch ingestion and generated-file output.
 - **4 first-class LLM provider families:** Anthropic, OpenAI, Google, and Groq, with an extensible
   model catalogue and additional OpenAI-compatible provider support.
 - **5 vector database connectors:** Pinecone, Qdrant, Chroma, Weaviate, and Milvus, supporting

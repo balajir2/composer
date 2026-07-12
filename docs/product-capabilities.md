@@ -15,7 +15,7 @@ source of truth when documentation and implementation disagree.
 
 ## Workflow nodes
 
-Composer currently exposes 20 node types in the Designer palette.
+Composer currently exposes 22 node types in the Designer palette.
 
 | Category | Node | Function |
 |---|---|---|
@@ -30,6 +30,8 @@ Composer currently exposes 20 node types in the Designer palette.
 | Integration | Email | Sends text or HTML email through Resend. |
 | Integration | Arcade | Invokes an Arcade tool with per-user authorization when configured. |
 | Integration | Gamma AI | Generates presentations, documents, or social content through Gamma. |
+| Integration | File Trigger | Visual-only folder-watch configuration consumed by the `composer watch` CLI to trigger production runs. |
+| Integration | File Write | Writes generated content to a file (Markdown, DOCX, or PDF) via a storage provider. |
 | Data | Vector DB | Queries or upserts content across five supported vector databases. |
 | Data | Set State | Writes a value into workflow state. |
 | Data | Transform | Evaluates a sandboxed expression and optionally names the result. |
