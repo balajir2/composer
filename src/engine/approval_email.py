@@ -81,8 +81,7 @@ def _build_attachment(
         content = base64.b64encode(resolved.read_bytes()).decode("ascii")
     except Exception:
         logger.warning(
-            "Skipping approval-email attachment for execution_id=%s node_id=%s: "
-            "failed to read %s.",
+            "Skipping approval-email attachment for execution_id=%s node_id=%s: failed to read %s.",
             execution_id,
             node_id,
             resolved,

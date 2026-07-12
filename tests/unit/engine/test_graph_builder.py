@@ -619,7 +619,5 @@ async def test_build_graph_skips_file_trigger_node() -> None:
         }
     )
     compiled = build_graph(wf, MemorySaver())
-    result = await compiled.ainvoke(
-        initial_state(), config={"configurable": {"thread_id": "t1"}}
-    )
+    result = await compiled.ainvoke(initial_state(), config={"configurable": {"thread_id": "t1"}})
     assert "ft1" not in (result.get("node_results") or {})
