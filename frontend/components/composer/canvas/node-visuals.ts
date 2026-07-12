@@ -188,8 +188,8 @@ export const NODE_VISUALS: Record<string, NodeVisual> = {
   },
   "file-write": {
     icon: FolderOutput,
-    iconWrapClass: "bg-teal-100 text-teal-700",
-    accent: "text-teal-700",
+    iconWrapClass: "bg-lime-100 text-lime-700",
+    accent: "text-lime-700",
     label: "File Write",
   },
 };
