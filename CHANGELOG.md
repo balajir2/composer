@@ -6,6 +6,28 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — Codex audit remediation: security, correctness, execution-API semantics (2026-07-12)
+
+Working through `docs/claude-improvement-backlog.md` (an independent Codex-authored audit of the codebase). Each item below was implemented test-first (RED/GREEN), verified against the full non-integration suite, and committed separately — see the referenced commits for full rationale and diffs.
+
+#### Security
+- **P0-1** — `{{variable}}` references are validated against the workflow's actual node outputs before publish; an unresolved placeholder used to render as literal text at runtime instead of failing fast (`f723efb`).
+- **P0-2** — Jira tool calls now return structured outcomes (`ToolCallRecord`: `ok`, `resource_id`, summary) instead of a bare string, so a text-only LLM response with zero tool calls can no longer be mistaken for a successful create/comment. New `action_policy` (`require_tool_call` / `require_successful_tool_call`) makes the distinction enforceable per node (`8ccf91b`).
+- **P0-4** — `validate_production_config()` runs at FastAPI startup and refuses to boot with an unsafe production configuration (e.g. missing JWT secret, dev-mode auth fallback enabled) rather than silently running insecurely (`311828f`).
+- **P0-6** — SSRF guard (IP-literal + DNS-resolution + cloud-metadata-hostname blocking), a response-size cap, and URL redaction (credentials/sensitive query params stripped before appearing in errors or `node_results`) on the `http` node (`999c5ac`).
+- **P0-7** — Jira credential precedence fixed: a `setdefault` bug meant a caller-supplied `variables.jira_api_token` could silently override the node's own configured token. Execution-input boundary hardened alongside it (`7b5c828`). `finalOutput`/`lastOutput` resolution changed from an `or`-fallback to a presence check, so a legitimately falsy `finalOutput` (`0`, `False`, `""`, `[]`, `{}`) isn't discarded in favor of `lastOutput` (`d9b0933`).
+- **P0-8** — `_check_reachability`'s validation-time BFS now filters visual-only node types the same way `build_graph`'s compile-time edge projection does, closing a mismatch where a workflow could pass validation but fail to compile (`6697ac3`).
+- **P1-1** — Email approval links are scanner-safe: `GET /approvals/email/{token}` now only validates and redirects to a confirmation page; the actual approve/reject decision requires a `POST` from a real form submission. Previously a bare `GET` mutated state, so an email-security scanner or link-preview service auto-following the link could silently resolve the approval before a human saw it. The in-app resume endpoint gained the same atomic conditional-transition guard against a double-click/race (`a8237ac`).
+- **P1-3** — Optional `idempotencyKey` on `POST /executions` and `POST /api/run/{slug}`, scoped per workflow: a caller retrying after an HTTP timeout gets the original execution back instead of a duplicate that fires every side-effecting node a second time. Backed by a DB-level unique constraint on `(workflow_id, idempotency_key)`, not application-level check-then-act, so it also closes the race between two genuinely concurrent requests (`cf8f84c`).
+
+#### Fixed
+- **P0-3** — Applied outcome-aware routing to the live "BRD to Jira Tickets + Notification" production workflow: an `if-else` node now checks whether Jira actually created issues before sending the success notification, using P0-2's structured outcomes.
+- **P1-5** — Every node's `node_results` entry and `node_completed`/`node_failed` WebSocket event now carry `startedAt`/`completedAt`/`durationMs`, added once in `wrap_executor_with_events` (the single wrapper every node type flows through) rather than per-executor. The API docs had already promised a `duration_ms` field that the code never actually produced (`73473ee`).
+- **P1-6** — Four execution-API inconsistencies: sync `POST /api/run/{slug}` no longer polls uselessly to `timeoutSeconds` before reporting a hard-coded `running` status for a workflow actually paused at `waiting_approval`; both execution-input size checks now measure true UTF-8 byte length instead of the character length of `json.dumps()`'s escaped (`ensure_ascii=True`) output, which was over-counting non-ASCII payloads 2-6x; `DELETE /executions/{id}` and `POST /executions/delete-bulk` now reject/skip active (`running`/`waiting_approval`) executions instead of deleting live checkpoints out from under an in-flight background task; added `POST /executions/{id}/cancel` — the `canceled` status was always in the public vocabulary but nothing had ever written it (`b3e31a3`).
+
+#### Deferred (require a design/product decision, not silently implemented)
+- **P0-5** (credential centralization), **P1-2** (durable workers), **P1-4** (distributed rate limiting/events), **P2-1** (dry-run execution mode — needs a decision on how a fabricated preview outcome should flow into downstream `if-else` branching), **P2-2** (connection management), **P2-3** (module splits), **P2-4** (dependency reproducibility), **P3-1** (persistence-stack ADR).
+
 ### Added — File storage provider framework (2026-07-11)
 
 Two new node types built on a shared, pluggable `FileStorageProvider` abstraction: `file-trigger` watches a folder and (via a separate CLI) kicks off a production workflow when a file lands; `file-write` writes generated content out to a file as Markdown, Word, or PDF. Only a local-filesystem provider is implemented today — S3/Google Drive/OneDrive are documented extension points behind the same interface.
