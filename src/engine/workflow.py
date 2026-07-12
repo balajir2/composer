@@ -241,6 +241,15 @@ class WhileNode(BaseModel):
 
 
 class UserApprovalNodeData(BaseNodeData):
+    # extra="forbid": see the identical comment on HttpNodeData. The
+    # Designer's User Approval panel used to write `message` instead of
+    # `approvalMessage`. See P0-0 in docs/claude-improvement-backlog.md.
+    # One live workflow had both keys at once (approvalMessage correctly
+    # set, message a dead leftover) — cleaned up in the database as part
+    # of this change, since forbid would otherwise reject a currently-
+    # working node over an inert extra key.
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
     approval_message: str | None = Field(default=None, alias="approvalMessage")
     approver_email: str | None = Field(default=None, alias="approverEmail")
     approver_cc: str | None = Field(default=None, alias="approverCc")

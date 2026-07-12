@@ -93,6 +93,38 @@ async def test_run_completes_start_to_end() -> None:
     assert "completedAt" in update_kwargs
 
 
+async def test_mark_completed_preserves_falsy_final_output() -> None:
+    """P0-7 regression guard: `finalOutput or lastOutput` discards a
+    legitimate falsy finalOutput (0, False, "", [], {}) and silently
+    substitutes lastOutput instead, since Python treats a present-but-
+    falsy value the same as absent under `or`."""
+    db = MagicMock()
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.update = AsyncMock()
+    executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
+
+    final_state = {"variables": {"finalOutput": 0, "lastOutput": "should not be used"}}
+    await executor._mark_completed("ex1", final_state)
+
+    update_kwargs = db.workflowexecution.update.await_args.kwargs["data"]
+    assert update_kwargs["output"].data == 0
+
+
+async def test_mark_completed_falls_back_to_last_output_when_final_output_absent() -> None:
+    """The fallback itself is correct behavior — only guard against
+    `finalOutput` being SET (even falsy) getting overridden."""
+    db = MagicMock()
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.update = AsyncMock()
+    executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
+
+    final_state = {"variables": {"lastOutput": "fallback value"}}
+    await executor._mark_completed("ex1", final_state)
+
+    update_kwargs = db.workflowexecution.update.await_args.kwargs["data"]
+    assert update_kwargs["output"].data == "fallback value"
+
+
 async def test_run_marks_failed_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
     # Simulate a graph-build failure by patching build_graph to raise.
     # The vector-db executor now ships in Phase 6e; this test covers the general

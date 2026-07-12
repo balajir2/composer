@@ -194,6 +194,31 @@ async def test_last_output_precedence_over_input(monkeypatch: pytest.MonkeyPatch
     assert "INPUT_VAL" not in captured_prompts[0]
 
 
+async def test_falsy_last_output_not_replaced_by_input(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P0-7 regression guard: `variables.get("lastOutput") or variables.get("input")`
+    treats a deliberately falsy lastOutput (0, False, "", [], {}) the same
+    as absent and silently falls back to `input` instead. lastOutput=0 is
+    a legitimate value (e.g. a counter reaching zero) and must still win."""
+    from src.executors import guardrails as gr_mod
+
+    captured_prompts: list[str] = []
+
+    class _CapturingLLM:
+        async def ainvoke(self, messages: list[Any]) -> _FakeResponse:
+            captured_prompts.append(messages[1].content)
+            return _FakeResponse("NO")
+
+    monkeypatch.setattr(gr_mod, "build_chat_model", lambda *a, **kw: _CapturingLLM())  # pyright: ignore[reportUnknownLambdaType]
+
+    state = initial_state()
+    state["variables"]["input"] = "INPUT_FALLBACK"
+    state["variables"]["lastOutput"] = 0
+    await GuardrailsExecutor(_node(piiEnabled=True)).arun(state)
+
+    assert "INPUT_FALLBACK" not in captured_prompts[0]
+    assert "0" in captured_prompts[0]
+
+
 async def test_non_string_input_coerced(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.executors import guardrails as gr_mod
 

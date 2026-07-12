@@ -151,8 +151,14 @@ class LangGraphExecutor:
                 # `finalOutput` is an explicit override if a node sets it;
                 # otherwise surface whatever the last node produced so the
                 # execution panel never shows an empty "Final output" on a
-                # successful run.
-                "output": Json(final_vars.get("finalOutput") or final_vars.get("lastOutput")),
+                # successful run. Presence check (not `or`) so a
+                # legitimately falsy finalOutput (0, False, "", [], {})
+                # isn't discarded in favor of lastOutput (P0-7).
+                "output": Json(
+                    final_vars["finalOutput"]
+                    if "finalOutput" in final_vars
+                    else final_vars.get("lastOutput")
+                ),
                 "variables": Json(final_vars),
                 "nodeResults": Json(final_state.get("node_results") or {}),
                 "completedAt": datetime.now(UTC),

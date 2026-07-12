@@ -74,7 +74,15 @@ class GuardrailsExecutor:
 
     async def arun(self, state: WorkflowStateDict) -> dict[str, Any]:
         variables = state.get("variables") or {}
-        input_raw = variables.get("lastOutput") or variables.get("input") or ""
+        # Presence check (not `or`) so a legitimately falsy lastOutput/input
+        # (0, False, "", [], {}) isn't discarded in favor of the next
+        # fallback (P0-7).
+        if "lastOutput" in variables:
+            input_raw = variables["lastOutput"]
+        elif "input" in variables:
+            input_raw = variables["input"]
+        else:
+            input_raw = ""
         text = input_raw if isinstance(input_raw, str) else str(input_raw)
 
         enabled = self._enabled_checks()
