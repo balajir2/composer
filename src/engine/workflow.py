@@ -278,6 +278,12 @@ class TransformNode(BaseModel):
 
 
 class DataTransformNodeData(BaseNodeData):
+    # extra="forbid": no known legacy-key collision exists in the DB today
+    # (the panel already wrote `expression` under its canonical name), but
+    # this node type is now fully contract-audited (P0-0) so future drift
+    # should fail loudly instead of silently.
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
     operation: str = "map"  # map | filter | reduce
     collection: str = ""  # simpleeval expression that yields an iterable
     expression: str = ""  # per-item expression
@@ -311,6 +317,15 @@ class SetStateNode(BaseModel):
 
 
 class ExtractNodeData(BaseNodeData):
+    # extra="forbid": see the identical comment on HttpNodeData. The
+    # Designer's Extract panel used to write `inputVariable`/`schema`
+    # instead of `input`/`jsonSchema`. See P0-0 in
+    # docs/claude-improvement-backlog.md. extract_config/extract_tool
+    # below are declared but never read by ExtractExecutor — confirmed
+    # dead per the audit, kept as-is pending a separately-approved
+    # cleanup rather than removed here.
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
     extract_config: dict[str, Any] | None = Field(default=None, alias="extractConfig")
     extract_tool: str | None = Field(default=None, alias="extractTool")
     json_schema: dict[str, Any] | None = Field(default=None, alias="jsonSchema")
@@ -555,7 +570,11 @@ class ArcadeNode(BaseModel):
 
 
 class JoinChunksNodeData(BaseNodeData):
-    model_config = ConfigDict(populate_by_name=True)
+    # extra="forbid": see the identical comment on HttpNodeData. The
+    # Designer's Join Chunks panel used to write inputVariable/separator/
+    # prefix/suffix instead of the canonical joinChunks*-prefixed
+    # aliases. See P0-0 in docs/claude-improvement-backlog.md.
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     variable: str = Field(alias="joinChunksVariable")
     separator: str = Field(default="\n\n", alias="joinChunksSeparator")

@@ -56,7 +56,11 @@ class ArcadeExecutor:
         if not tool_name:
             raise ArcadeNodeError(f"arcade node {self.node.id!r}: arcadeTool is required")
 
-        user_id = self.node.data.user_id
+        # Substitute {{variable}} placeholders the same way arcadeInput
+        # does, so a per-end-user identity (the documented recommendation
+        # for arcadeUserId) actually resolves instead of being sent to
+        # Arcade as a literal "{{...}}" string.
+        user_id = substitute(self.node.data.user_id, state)
         variables = state.get("variables") or {}
 
         # Check resumed decision — if rejected, raise early

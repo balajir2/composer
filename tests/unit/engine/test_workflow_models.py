@@ -327,6 +327,125 @@ def test_join_chunks_node_full_round_trip() -> None:
     assert node.data.variable == "chunks"
 
 
+def test_join_chunks_node_data_rejects_legacy_field_names() -> None:
+    """P0-0 regression guard: the Designer's Join Chunks panel used to
+    write inputVariable/separator/prefix/suffix instead of the canonical
+    joinChunks*-prefixed aliases."""
+    from src.engine.workflow import JoinChunksNodeData
+
+    with pytest.raises(ValidationError):
+        JoinChunksNodeData.model_validate(
+            {"label": "JC", "joinChunksVariable": "chunks", "inputVariable": "chunks"}
+        )
+
+
+def test_extract_node_data_parses_camelcase_aliases() -> None:
+    from src.engine.workflow import ExtractNodeData
+
+    data = ExtractNodeData.model_validate(
+        {
+            "label": "EX",
+            "input": "{{lastOutput}}",
+            "jsonSchema": {"name": "string"},
+            "model": "anthropic/claude-haiku-4-5-20251001",
+        }
+    )
+    assert data.input_text == "{{lastOutput}}"
+    assert data.json_schema == {"name": "string"}
+    assert data.model == "anthropic/claude-haiku-4-5-20251001"
+
+
+def test_extract_node_data_defaults() -> None:
+    from src.engine.workflow import ExtractNodeData
+
+    data = ExtractNodeData.model_validate({"label": "EX"})
+    assert data.input_text is None
+    assert data.json_schema is None
+    assert data.model is None
+
+
+def test_extract_node_full_round_trip() -> None:
+    from src.engine.workflow import ExtractNode
+
+    node = ExtractNode.model_validate(
+        {
+            "id": "ex1",
+            "type": "extract",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "EX", "input": "text"},
+        }
+    )
+    assert node.id == "ex1"
+    assert node.type == "extract"
+    assert node.data.input_text == "text"
+
+
+def test_extract_node_data_rejects_legacy_field_names() -> None:
+    """P0-0 regression guard: the Designer's Extract panel used to write
+    inputVariable/schema instead of the canonical input/jsonSchema
+    aliases."""
+    from src.engine.workflow import ExtractNodeData
+
+    with pytest.raises(ValidationError):
+        ExtractNodeData.model_validate({"label": "EX", "inputVariable": "state.text"})
+
+
+def test_data_transform_node_data_parses_camelcase_aliases() -> None:
+    from src.engine.workflow import DataTransformNodeData
+
+    data = DataTransformNodeData.model_validate(
+        {
+            "label": "DT",
+            "operation": "filter",
+            "collection": "lastOutput.items",
+            "expression": "item.active",
+            "itemVar": "item",
+            "initial": None,
+        }
+    )
+    assert data.operation == "filter"
+    assert data.collection == "lastOutput.items"
+    assert data.expression == "item.active"
+    assert data.item_var == "item"
+
+
+def test_data_transform_node_data_defaults() -> None:
+    from src.engine.workflow import DataTransformNodeData
+
+    data = DataTransformNodeData.model_validate({"label": "DT"})
+    assert data.operation == "map"
+    assert data.collection == ""
+    assert data.expression == ""
+    assert data.item_var == "item"
+    assert data.initial is None
+
+
+def test_data_transform_node_data_rejects_unknown_field() -> None:
+    """Contract protection going forward — no known legacy mismatch exists
+    for this node type today (the panel already wrote `expression`
+    correctly), but this guards against future drift."""
+    from src.engine.workflow import DataTransformNodeData
+
+    with pytest.raises(ValidationError):
+        DataTransformNodeData.model_validate({"label": "DT", "unknownField": "x"})
+
+
+def test_data_transform_node_full_round_trip() -> None:
+    from src.engine.workflow import DataTransformNode
+
+    node = DataTransformNode.model_validate(
+        {
+            "id": "dt1",
+            "type": "data-transform",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "DT", "collection": "lastOutput", "expression": "item"},
+        }
+    )
+    assert node.id == "dt1"
+    assert node.type == "data-transform"
+    assert node.data.collection == "lastOutput"
+
+
 def test_guardrails_node_data_parses_camelcase_aliases() -> None:
     from src.engine.workflow import GuardrailsNodeData
 
@@ -803,6 +922,22 @@ def test_user_approval_node_approver_fields_optional() -> None:
     )
     assert node.data.approver_email is None
     assert node.data.approver_cc is None
+
+
+def test_user_approval_node_data_rejects_legacy_field_name() -> None:
+    """P0-0 regression guard: the Designer's User Approval panel used to
+    write `message` instead of the canonical `approvalMessage` alias. One
+    live workflow (BRD to Jira Tickets + Notification) had both keys
+    simultaneously — approvalMessage correctly set and message a dead
+    leftover — which was cleaned up in the database before this contract
+    was tightened; see scripts/ for the one-off fix script referenced in
+    the commit that added this test."""
+    from src.engine.workflow import UserApprovalNodeData
+
+    with pytest.raises(ValidationError):
+        UserApprovalNodeData.model_validate(
+            {"label": "UA", "approvalMessage": "Approve?", "message": "Approve?"}
+        )
 
 
 def test_file_trigger_node_parses_full_config() -> None:

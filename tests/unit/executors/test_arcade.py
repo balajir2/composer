@@ -215,6 +215,42 @@ async def test_variable_substitution_in_input(httpx_mock: HTTPXMock) -> None:  #
     assert body["input"]["count"] == 42  # non-string passed through
 
 
+async def test_variable_substitution_in_user_id(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
+    """arcadeUserId supports {{variable}} templating just like arcadeInput.
+
+    Regression guard for the P0-0 finding: the designer guide recommends a
+    templated arcadeUserId (e.g. so each end user authorizes under their
+    own identity), but the executor used to read it literally with no
+    substitution — so a workflow author following that guidance would
+    silently send the literal string "{{user_email}}" to Arcade instead of
+    the resolved value."""
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{ARCADE_API_BASE}/tools/authorize",
+        json={"id": "a", "status": "completed"},
+        status_code=200,
+    )
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{ARCADE_API_BASE}/tools/execute",
+        json={"output": "ok"},
+        status_code=200,
+    )
+    state = initial_state()
+    state["variables"]["user_email"] = "alice@example.com"
+    node = _node(arcadeUserId="{{user_email}}")
+    await ArcadeExecutor(node).arun(state)
+
+    import json
+
+    authorize_request = httpx_mock.get_requests(
+        method="POST",
+        url=f"{ARCADE_API_BASE}/tools/authorize",
+    )[0]
+    body = json.loads(authorize_request.content)
+    assert body["user_id"] == "alice@example.com"
+
+
 async def test_missing_api_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.config import get_settings
 
