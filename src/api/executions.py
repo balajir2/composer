@@ -5,6 +5,7 @@ from enum import StrEnum
 from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
@@ -27,6 +28,7 @@ class ExecutionCreate(BaseModel):
 
     workflow_id: str = Field(alias="workflowId")
     input: Any = None
+    idempotency_key: str | None = Field(default=None, alias="idempotencyKey")
 
 
 class ExecutionRead(BaseModel):
@@ -76,6 +78,22 @@ def _get_executor(request: Request, db: Prisma) -> LangGraphExecutor:  # pyright
     return LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
 
 
+async def _find_execution_by_idempotency_key(
+    db: Prisma,  # pyright: ignore[reportUnknownParameterType]
+    workflow_id: str,
+    idempotency_key: str,
+) -> Any:
+    where: dict[str, Any] = {
+        "workflowId_idempotencyKey": {
+            "workflowId": workflow_id,
+            "idempotencyKey": idempotency_key,
+        }
+    }
+    return await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+        where=where  # pyright: ignore[reportArgumentType]
+    )
+
+
 @router.post("/executions", response_model=ExecutionRead, status_code=status.HTTP_202_ACCEPTED)
 async def create_execution(
     payload: ExecutionCreate,
@@ -114,10 +132,42 @@ async def create_execution(
             detail=f"Workflow {payload.workflow_id!r} not found.",
         )
 
+    # Idempotent replay (P1-3): a caller that retries this POST after a
+    # network timeout is the actual duplicate-execution vector in this
+    # system — LangGraph doesn't auto-retry nodes, and the stuck-execution
+    # sweeper only marks abandoned runs failed, it never re-runs them.
+    # A matching (workflowId, idempotencyKey) row means an earlier request
+    # already started (or finished) this logical operation; return it
+    # instead of starting a second one that would fire side-effecting
+    # nodes (Jira, email, HTTP mutations) a second time.
+    if payload.idempotency_key:
+        existing = await _find_execution_by_idempotency_key(
+            db, payload.workflow_id, payload.idempotency_key
+        )
+        if existing is not None:
+            return ExecutionRead.model_validate(existing)
+
     executor = _get_executor(request, db)
-    row = await executor.start_execution(
-        workflow_id=payload.workflow_id, input=payload.input, user_id=user_id
-    )
+    try:
+        row = await executor.start_execution(
+            workflow_id=payload.workflow_id,
+            input=payload.input,
+            user_id=user_id,
+            idempotency_key=payload.idempotency_key,
+        )
+    except UniqueViolationError:
+        # Lost a race against a concurrent request carrying the same key —
+        # the DB's unique constraint is the actual guarantee; the find_unique
+        # lookup above is just a fast path that can't close the race alone.
+        if payload.idempotency_key is None:
+            raise
+        existing = await _find_execution_by_idempotency_key(
+            db, payload.workflow_id, payload.idempotency_key
+        )
+        if existing is None:
+            raise
+        return ExecutionRead.model_validate(existing)
+
     # Schedule the actual run in the background. The response returns with
     # status='running' immediately; poll GET /executions/{id} for completion.
     background_tasks.add_task(executor.run, row.id)

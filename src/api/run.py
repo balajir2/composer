@@ -16,6 +16,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.config import get_settings
@@ -101,6 +102,7 @@ class RunRequest(BaseModel):
     input: Any = None
     sync: bool = False
     timeout_seconds: int = Field(default=60, ge=1, le=300, alias="timeoutSeconds")
+    idempotency_key: str | None = Field(default=None, alias="idempotencyKey")
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -131,6 +133,20 @@ def _get_executor(request: Request, db: Any, event_bus: Any) -> LangGraphExecuto
     if checkpointer is None:
         raise RuntimeError("Checkpointer not attached to app.state")
     return LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
+
+
+async def _find_execution_by_idempotency_key(
+    db: Any, workflow_id: str, idempotency_key: str
+) -> Any:
+    where: dict[str, Any] = {
+        "workflowId_idempotencyKey": {
+            "workflowId": workflow_id,
+            "idempotencyKey": idempotency_key,
+        }
+    }
+    return await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+        where=where  # pyright: ignore[reportArgumentType]
+    )
 
 
 @router.post("/api/run/{slug}")
@@ -171,22 +187,55 @@ async def run_external(
     if not workflow.isPublic and workflow.userId != auth.user_id and auth.role != "admin":
         raise HTTPException(status_code=404, detail=f"production workflow {slug!r} not found")
 
-    # Start execution via the same executor users hit through POST /executions.
     executor = _get_executor(request, db, event_bus)
-    execution = await executor.start_execution(
-        workflow_id=workflow.id, input=payload.input, user_id=auth.user_id
-    )
+
+    # Idempotent replay (P1-3): a caller retrying this POST after a network
+    # timeout is the actual duplicate-execution vector here — LangGraph
+    # doesn't auto-retry nodes, and the stuck-execution sweeper only marks
+    # abandoned runs failed, it never re-runs them. A matching
+    # (workflowId, idempotencyKey) row means an earlier request already
+    # started this logical operation; reuse it instead of firing
+    # side-effecting nodes (Jira, email, HTTP mutations) a second time.
+    execution: Any = None
+    is_replay = False
+    if payload.idempotency_key:
+        execution = await _find_execution_by_idempotency_key(
+            db, workflow.id, payload.idempotency_key
+        )
+        is_replay = execution is not None
+
+    if not is_replay:
+        try:
+            execution = await executor.start_execution(
+                workflow_id=workflow.id,
+                input=payload.input,
+                user_id=auth.user_id,
+                idempotency_key=payload.idempotency_key,
+            )
+        except UniqueViolationError:
+            # Lost a race against a concurrent request carrying the same
+            # key — the DB's unique constraint is the actual guarantee,
+            # the find_unique lookup above is just a fast path.
+            if payload.idempotency_key is None:
+                raise
+            execution = await _find_execution_by_idempotency_key(
+                db, workflow.id, payload.idempotency_key
+            )
+            if execution is None:
+                raise
+            is_replay = True
 
     base_url = str(request.base_url).rstrip("/")
     stream_url = base_url.replace("http", "ws", 1) + f"/executions/{execution.id}/ws"
 
-    # Fire-and-forget run task.  We wrap the executor call so that any
-    # uncaught crash (or task cancellation on worker shutdown) still
-    # persists 'failed' to the row — without that wrapper the row would
-    # linger as 'running' until the maintenance sweeper notices.
-    _task = asyncio.create_task(_run_with_persistence(executor, db, execution.id))
-    # Suppress "task was destroyed but it is pending" on test teardown.
-    _task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+    if not is_replay:
+        # Fire-and-forget run task.  We wrap the executor call so that any
+        # uncaught crash (or task cancellation on worker shutdown) still
+        # persists 'failed' to the row — without that wrapper the row would
+        # linger as 'running' until the maintenance sweeper notices.
+        _task = asyncio.create_task(_run_with_persistence(executor, db, execution.id))
+        # Suppress "task was destroyed but it is pending" on test teardown.
+        _task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
 
     if not payload.sync:
         return RunAsyncResponse(

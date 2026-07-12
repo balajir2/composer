@@ -76,19 +76,29 @@ class LangGraphExecutor:
         if self.event_bus is not None:
             await self.event_bus.close(execution_id)
 
-    async def start_execution(self, *, workflow_id: str, input: Any, user_id: str | None) -> Any:
+    async def start_execution(
+        self,
+        *,
+        workflow_id: str,
+        input: Any,
+        user_id: str | None,
+        idempotency_key: str | None = None,
+    ) -> Any:
         """Create the execution row (status=running). Caller schedules `run()`."""
         thread_id = str(uuid.uuid4())
+        data: dict[str, Any] = {
+            "workflowId": workflow_id,
+            "userId": user_id,
+            "status": "running",
+            "threadId": thread_id,
+            "input": Json(input),
+            "nodeResults": Json({}),
+            "variables": Json({}),
+        }
+        if idempotency_key is not None:
+            data["idempotencyKey"] = idempotency_key
         return await self.db.workflowexecution.create(  # pyright: ignore[reportAttributeAccessIssue]
-            data={
-                "workflowId": workflow_id,
-                "userId": user_id,
-                "status": "running",
-                "threadId": thread_id,
-                "input": Json(input),
-                "nodeResults": Json({}),
-                "variables": Json({}),
-            }
+            data=data  # pyright: ignore[reportArgumentType]
         )
 
     async def _load_execution(self, execution_id: str) -> Any:

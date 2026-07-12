@@ -99,6 +99,52 @@ def test_post_execution_allows_other_users_public_workflow() -> None:
     assert resp.status_code == 202
 
 
+def test_post_execution_with_idempotency_key_replays_existing_execution() -> None:
+    """A client that retries POST /executions after a network timeout (the
+    actual retry vector in this system — LangGraph doesn't auto-retry nodes,
+    and the sweeper only marks stuck runs failed, never re-runs them) must
+    not get a second execution, or side-effecting nodes downstream (Jira,
+    email) would fire twice for one logical request (P1-3)."""
+    client, db = _client_with_mock_db()
+    existing = _execution_row(status="completed")
+    db.workflowexecution.find_unique = AsyncMock(return_value=existing)
+    resp = client.post(
+        "/executions",
+        json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "retry-key-1"},
+    )
+    assert resp.status_code == 202
+    assert resp.json()["id"] == existing.id
+    db.workflowexecution.create.assert_not_awaited()
+
+
+def test_post_execution_with_idempotency_key_creates_when_no_existing_match() -> None:
+    client, db = _client_with_mock_db()
+    db.workflowexecution.find_unique = AsyncMock(return_value=None)
+    resp = client.post(
+        "/executions",
+        json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "fresh-key"},
+    )
+    assert resp.status_code == 202
+    db.workflowexecution.create.assert_awaited_once()
+    _, kwargs = db.workflowexecution.create.call_args
+    assert kwargs["data"]["idempotencyKey"] == "fresh-key"
+
+
+def test_post_execution_without_idempotency_key_skips_lookup() -> None:
+    """find_unique still fires once the background run loads the row by id
+    (unrelated to idempotency) — assert no call keyed on the composite
+    workflowId_idempotencyKey lookup, not "never called at all"."""
+    client, db = _client_with_mock_db()
+    resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
+    assert resp.status_code == 202
+    lookup_calls = [
+        call
+        for call in db.workflowexecution.find_unique.await_args_list
+        if "workflowId_idempotencyKey" in call.kwargs.get("where", {})
+    ]
+    assert lookup_calls == []
+
+
 def test_get_execution_returns_row() -> None:
     client, _ = _client_with_mock_db()
     resp = client.get("/executions/ex1")

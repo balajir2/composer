@@ -55,7 +55,7 @@ The `nodes` and `edges` arrays are validated against the discriminated union of 
 ## Executions
 
 ```
-POST /executions                                        body: {workflowId, input}
+POST /executions                                        body: {workflowId, input, idempotencyKey?: string}
 GET  /executions?workflowId=<id>&status=<x>&limit=N&offset=N
 GET  /executions/{id}
 POST /executions/{id}/resume                            body: {decision: "approved"|"rejected", note?: string}
@@ -63,6 +63,8 @@ WS   /executions/{id}/ws                                stream node events
 ```
 
 `POST /executions` returns the new `executionId` immediately; the run continues in the background. Subscribe to the WebSocket for live updates or poll `GET /executions/{id}` for the final state.
+
+`idempotencyKey` (optional): scoped per `workflowId` — a repeated call with the same key returns the original execution instead of starting a duplicate one. This is the actual retry vector Composer has today: a caller that resubmits after an HTTP timeout, not LangGraph auto-retrying a node (it doesn't) or the stuck-execution sweeper re-running a failed one (it doesn't — it only marks rows failed). Backed by a DB-level unique constraint on `(workflow_id, idempotency_key)`, so it also closes the race between two genuinely concurrent requests carrying the same key. Omit it and every call starts a new execution, as before.
 
 Statuses: `running` / `waiting_approval` / `completed` / `failed` / `canceled`.
 
@@ -94,8 +96,10 @@ Two independent timeouts bound it:
 ## External invoke
 
 ```
-POST /api/run/{slug}                body: {input, sync?: boolean, timeoutSeconds?: number (max 300)}
+POST /api/run/{slug}                body: {input, sync?: boolean, timeoutSeconds?: number (max 300), idempotencyKey?: string}
 ```
+
+`idempotencyKey` behaves exactly as in `POST /executions` above (same replay/race semantics), scoped per resolved workflow.
 
 Auth: `Authorization: Bearer ck_<api_key>`.
 

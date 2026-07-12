@@ -63,6 +63,7 @@ model WorkflowExecution {
   completedAt   DateTime? @map("completed_at")
   threadId      String    @unique         @map("thread_id")
   originalOwnerEmail String? @map("original_owner_email")
+  idempotencyKey String?  @map("idempotency_key")
 
   workflow      Workflow  @relation(fields: [workflowId], references: [id], onDelete: Cascade)
   approvals     Approval[]
@@ -70,6 +71,7 @@ model WorkflowExecution {
   @@map("workflow_executions")
   @@index([workflowId])
   @@index([userId])
+  @@unique([workflowId, idempotencyKey])
 }
 
 model WorkflowAssignment {

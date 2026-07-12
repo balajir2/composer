@@ -69,6 +69,8 @@ def _build_client(
     key_owner_active: bool = True,
     key_row: Any | None = None,
     start_result: Any | None = None,
+    existing_execution: Any | None = None,
+    start_calls: list[dict[str, Any]] | None = None,
 ) -> TestClient:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", "development")
@@ -97,7 +99,9 @@ def _build_client(
     db.workflow = MagicMock()
     db.workflow.find_unique = AsyncMock(return_value=wf)
     db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(return_value=start_result)
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=existing_execution if existing_execution is not None else start_result
+    )
     app.state.db = db
     app.state.checkpointer = MagicMock()
     app.state.event_bus = ExecutionEventBus()
@@ -111,8 +115,15 @@ def _build_client(
             pass
 
         async def start_execution(
-            self, *, workflow_id: str, input: Any, user_id: str | None
+            self,
+            *,
+            workflow_id: str,
+            input: Any,
+            user_id: str | None,
+            idempotency_key: str | None = None,
         ) -> Any:
+            if start_calls is not None:
+                start_calls.append({"workflow_id": workflow_id, "idempotency_key": idempotency_key})
             return _exec(id="exec1", workflowId=workflow_id, userId=user_id or "owner-u")
 
         async def run(self, execution_id: str) -> None:
@@ -121,6 +132,41 @@ def _build_client(
     monkeypatch.setattr(_run_module, "LangGraphExecutor", _FakeExec)
 
     return TestClient(app)
+
+
+def test_idempotency_key_replays_existing_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A caller retrying POST /api/run/{slug} with the same idempotencyKey
+    (e.g. an HTTP client timeout retry) must get the original execution
+    back, not start a second one — otherwise a Jira/email node inside the
+    workflow fires twice for one logical call (P1-3)."""
+    wf = _wf(isPublic=True)
+    existing = _exec(id="prior-exec", status="completed")
+    start_calls: list[dict[str, Any]] = []
+    client = _build_client(monkeypatch, wf, existing_execution=existing, start_calls=start_calls)
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {"x": 1}, "idempotencyKey": "retry-key-1"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["executionId"] == "prior-exec"
+    assert start_calls == []
+
+
+def test_idempotency_key_starts_new_execution_when_no_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wf = _wf(isPublic=True)
+    start_calls: list[dict[str, Any]] = []
+    client = _build_client(monkeypatch, wf, start_calls=start_calls)
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {"x": 1}, "idempotencyKey": "fresh-key"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["executionId"] == "exec1"
+    assert start_calls == [{"workflow_id": "wf1", "idempotency_key": "fresh-key"}]
 
 
 def test_async_run_returns_200_with_stream_url(monkeypatch: pytest.MonkeyPatch) -> None:
