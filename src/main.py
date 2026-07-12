@@ -28,6 +28,7 @@ from src.api.uploads import router as uploads_router
 from src.api.users import router as users_router
 from src.api.workflows import router as workflows_router
 from src.config import get_settings
+from src.config_validation import validate_production_config
 from src.maintenance.execution_sweeper import start_sweeper, stop_sweeper
 from src.security.key_sync import sync_llm_keys_from_db
 from src.storage.db import prisma_lifespan
@@ -41,6 +42,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     settings = get_settings()
     logging.basicConfig(level=settings.log_level)
     logger.info("Starting Composer v%s in %s mode", __version__, settings.environment)
+    # Fail fast rather than silently serving broken behavior (P0-4) — see
+    # src/config_validation.py for what this catches and why.
+    validate_production_config(settings)
 
     async with prisma_lifespan(app) as db:
         # Pull admin-UI-managed LLM keys into runtime Settings so workflow
