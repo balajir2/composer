@@ -63,3 +63,39 @@ def test_empty_content_produces_valid_empty_document() -> None:
 
     doc = _load(markdown_to_docx(""))
     assert doc is not None
+
+
+def test_table_cell_markdown_is_parsed_not_literal() -> None:
+    """Table cells must have markdown syntax stripped (or rendered as real
+    bold/italic formatting) rather than leaking literal `**`/`*` characters
+    into the cell text."""
+    from src.conversion.markdown_to_docx import markdown_to_docx
+
+    md = "| Priority | Note |\n|---|---|\n| **High** | *urgent* |"
+    doc = _load(markdown_to_docx(md))
+    table = doc.tables[0]
+    cell_texts = [c.text for c in table.rows[1].cells]
+    assert "High" in cell_texts[0]
+    assert "*" not in cell_texts[0]
+    assert "urgent" in cell_texts[1]
+    assert "*" not in cell_texts[1]
+
+
+def test_inline_code_span_preserved_in_paragraph() -> None:
+    from src.conversion.markdown_to_docx import markdown_to_docx
+
+    doc = _load(markdown_to_docx("Set the `status` field to `Active`."))
+    all_text = " ".join(p.text for p in doc.paragraphs)
+    assert "status" in all_text
+    assert "Active" in all_text
+    assert all_text == "Set the status field to Active."
+
+
+def test_inline_code_span_preserved_in_table_cell() -> None:
+    from src.conversion.markdown_to_docx import markdown_to_docx
+
+    md = "| Field | Value |\n|---|---|\n| `status` | `Active` |"
+    doc = _load(markdown_to_docx(md))
+    table = doc.tables[0]
+    cell_texts = [c.text for c in table.rows[1].cells]
+    assert cell_texts == ["status", "Active"]

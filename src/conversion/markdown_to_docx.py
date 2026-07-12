@@ -40,6 +40,11 @@ def _add_inline_runs(paragraph: Any, children: list[Token]) -> None:
             run = paragraph.add_run(child.content)
             run.bold = bold
             run.italic = italic
+        elif child.type == "code_inline":
+            run = paragraph.add_run(child.content)
+            run.bold = bold
+            run.italic = italic
+            run.font.name = "Consolas"
         elif child.type in ("softbreak", "hardbreak"):
             paragraph.add_run(" ")
 
@@ -95,15 +100,19 @@ def markdown_to_docx(content: str) -> bytes:
             continue
 
         if tok.type == "table_open":
-            rows: list[list[str]] = []
+            # Cells hold their *parsed* inline children here (not the raw
+            # `.content` source string) so `_add_inline_runs` can strip
+            # markdown syntax and apply bold/italic run formatting exactly
+            # like headings/paragraphs/list items do below.
+            rows: list[list[list[Token]]] = []
             j = i + 1
             while tokens[j].type != "table_close":
                 if tokens[j].type == "tr_open":
-                    row: list[str] = []
+                    row: list[list[Token]] = []
                     k = j + 1
                     while tokens[k].type != "tr_close":
                         if tokens[k].type == "inline":
-                            row.append(tokens[k].content)
+                            row.append(tokens[k].children or [])
                         k += 1
                     rows.append(row)
                     j = k
@@ -112,8 +121,9 @@ def markdown_to_docx(content: str) -> bytes:
                 table = doc.add_table(rows=len(rows), cols=len(rows[0]))
                 table.style = "Table Grid"
                 for r_idx, row in enumerate(rows):
-                    for c_idx, cell_text in enumerate(row):
-                        table.rows[r_idx].cells[c_idx].text = cell_text
+                    for c_idx, cell_children in enumerate(row):
+                        cell_para = table.rows[r_idx].cells[c_idx].paragraphs[0]
+                        _add_inline_runs(cell_para, cell_children)
             i = j + 1
             continue
 
