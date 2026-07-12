@@ -90,13 +90,6 @@ class WorkflowValidationError(ValueError):
     """Raised when a workflow's shape is invalid before execution."""
 
 
-# Node types that never execute: they are pure canvas annotations / metadata
-# consumed by tooling outside the execution graph (note = author's memo;
-# file-trigger = config read by the `composer watch` CLI). graph_builder
-# skips them entirely and workflow-shape validation allows them disconnected.
-_VISUAL_ONLY_TYPES = {"note", "file-trigger"}
-
-
 def _nodes_by_id(nodes: Iterable[WorkflowNode]) -> dict[str, WorkflowNode]:
     seen: dict[str, WorkflowNode] = {}
     for node in nodes:
@@ -121,7 +114,7 @@ def _check_edges(edges: Iterable[WorkflowEdge], ids: set[str]) -> None:
 def _check_reachability(
     start_id: str, nodes: dict[str, WorkflowNode], edges: list[WorkflowEdge]
 ) -> None:
-    """BFS from start; every non-visual-only node must be reachable."""
+    """BFS from start; every non-note node must be reachable."""
     outgoing: dict[str, list[str]] = {node_id: [] for node_id in nodes}
     for edge in edges:
         outgoing[edge.source].append(edge.target)
@@ -136,7 +129,7 @@ def _check_reachability(
         queue.extend(outgoing[current])
 
     for node_id, node in nodes.items():
-        if node.type in _VISUAL_ONLY_TYPES:
+        if node.type == "note":
             continue  # visual-only, allowed disconnected
         if node_id not in reachable:
             raise WorkflowValidationError(
@@ -289,7 +282,7 @@ def build_graph(
     nodes_by_id = {node.id: node for node in workflow.nodes}
 
     for node in workflow.nodes:
-        if node.type in _VISUAL_ONLY_TYPES:
+        if node.type == "note":
             continue  # visual-only; skipped at build time per OAB behavior
         executor = build_executor(node)  # may raise NotImplementedError
         arun_with_events = wrap_executor_with_events(executor, node)
@@ -300,10 +293,10 @@ def build_graph(
         source_node = nodes_by_id[edge.source]
         if source_node.type in {"if-else", "while", "user-approval"}:
             continue  # handled by conditional-edges pass below
-        # Skip edges whose source or target is a visual-only node
-        if source_node.type in _VISUAL_ONLY_TYPES:
+        # Skip edges whose source or target is a note node
+        if source_node.type == "note":
             continue
-        if nodes_by_id[edge.target].type in _VISUAL_ONLY_TYPES:
+        if nodes_by_id[edge.target].type == "note":
             continue
         builder.add_edge(edge.source, edge.target)  # pyright: ignore[reportUnknownMemberType]
 
