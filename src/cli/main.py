@@ -4,12 +4,14 @@ Subcommands (one per Phase 9 sub-phase):
 - migrate:   OAB->Composer data migration (Phase 9b)
 - reconcile: post-migration user-ownership reconciliation (Phase 9b)
 - keys:      LLM API key management + Vercel sync (Phase 9e)
+- watch:     poll a folder and trigger a production workflow (2026-07-11)
 """
 
 from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import sys
 from typing import NoReturn
 
@@ -48,6 +50,20 @@ def _build_parser() -> argparse.ArgumentParser:
         "--prune", action="store_true", help="remove tracked env vars not in Postgres"
     )
 
+    # watch
+    p_watch = sub.add_parser("watch", help="Poll a folder and trigger a production workflow")
+    p_watch.add_argument(
+        "--api-url", required=True, help="Backend base URL, e.g. https://api.example.com"
+    )
+    p_watch.add_argument("--slug", required=True, help="Production workflow's externalSlug")
+    p_watch.add_argument("--api-key", required=True, help="ck_... API key")
+    p_watch.add_argument("--provider", default="local", choices=["local"])
+    p_watch.add_argument("--source", required=True, help="Source folder to watch")
+    p_watch.add_argument("--dest", required=True, help="Destination folder on successful claim")
+    p_watch.add_argument("--error", required=True, help="Destination folder on failed claim")
+    p_watch.add_argument("--target-var", required=True, help="Start input variable to populate")
+    p_watch.add_argument("--interval", type=int, default=30, help="Poll interval in seconds")
+
     return parser
 
 
@@ -77,6 +93,24 @@ def main(argv: list[str] | None = None) -> NoReturn:
             sys.exit(asyncio.run(keys_mod.keys_delete(args.provider)))
         if args.keys_cmd == "sync":
             sys.exit(asyncio.run(keys_mod.keys_sync(args.target, args.prune)))
+
+    if args.subcommand == "watch":
+        from src.cli.watch import WatchConfig, run_watch_loop
+
+        config = WatchConfig(
+            workflow_api_url=args.api_url,
+            external_slug=args.slug,
+            api_key=args.api_key,
+            provider=args.provider,
+            source_path=args.source,
+            dest_path=args.dest,
+            error_path=args.error,
+            target_input_variable=args.target_var,
+            poll_interval_seconds=args.interval,
+        )
+        with contextlib.suppress(KeyboardInterrupt):
+            asyncio.run(run_watch_loop(config))
+        sys.exit(0)
 
     parser.error(f"unknown subcommand: {args.subcommand}")
 
