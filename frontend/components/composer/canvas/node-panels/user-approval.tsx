@@ -62,6 +62,23 @@ export default function UserApprovalPanel({
           placeholder="manager@example.com"
         />
       </div>
+
+      <div className="space-y-2">
+        <Label htmlFor="user-approval-attachment">Attachment path (optional)</Label>
+        <Input
+          id="user-approval-attachment"
+          value={(data.attachmentPath as string) ?? ""}
+          onChange={(e) => onChange({ attachmentPath: e.target.value })}
+          placeholder="{{lastOutput}}"
+          className="font-mono text-xs"
+        />
+        <p className="text-[10px] text-muted-foreground">
+          Attaches a file to the approval email — typically an upstream File Write
+          node&apos;s output, e.g. <code>{"{{lastOutput}}"}</code>. Only files under the
+          server&apos;s configured attachment directory are attached; anything else is
+          silently skipped and the email still sends.
+        </p>
+      </div>
     </div>
   );
 }
