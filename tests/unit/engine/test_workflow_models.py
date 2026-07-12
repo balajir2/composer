@@ -583,6 +583,88 @@ def test_arcade_node_full_round_trip() -> None:
     assert node.data.tool == "Tool@1"
 
 
+def test_arcade_node_data_rejects_legacy_field_names() -> None:
+    """Regression guard for the P0-0 contract bug: the Designer's Arcade
+    panel used to write `toolName`/`args` instead of the canonical
+    `arcadeTool`/`arcadeInput` aliases. BaseNodeData's extra="allow" let
+    those silently pass through as no-op extras while `tool`/`input` kept
+    their empty defaults, so the node looked configured but failed at
+    execution. ArcadeNodeData must reject unknown fields so this class of
+    mismatch is caught at save/validate time instead of at runtime."""
+    from src.engine.workflow import ArcadeNodeData
+
+    with pytest.raises(ValidationError):
+        ArcadeNodeData.model_validate(
+            {
+                "label": "AR",
+                "arcadeTool": "Google.CreateDocument",
+                "toolName": "Google.CreateDocument",
+                "args": "{}",
+            }
+        )
+
+
+def test_http_node_data_parses_camelcase_aliases() -> None:
+    from src.engine.workflow import HttpNodeData
+
+    data = HttpNodeData.model_validate(
+        {
+            "label": "HTTP",
+            "httpMethod": "POST",
+            "httpUrl": "https://api.example.com/endpoint",
+            "httpHeaders": {"Authorization": "Bearer {{token}}"},
+            "httpBody": {"key": "{{value}}"},
+            "responsePath": "data.id",
+        }
+    )
+    assert data.http_method == "POST"
+    assert data.http_url == "https://api.example.com/endpoint"
+    assert data.http_headers == {"Authorization": "Bearer {{token}}"}
+    assert data.http_body == {"key": "{{value}}"}
+    assert data.response_path == "data.id"
+
+
+def test_http_node_data_defaults() -> None:
+    from src.engine.workflow import HttpNodeData
+
+    data = HttpNodeData.model_validate({"label": "HTTP"})
+    assert data.http_method is None
+    assert data.http_url is None
+    assert data.http_headers == {}
+    assert data.http_body is None
+    assert data.response_path is None
+
+
+def test_http_node_full_round_trip() -> None:
+    from src.engine.workflow import HttpNode
+
+    node = HttpNode.model_validate(
+        {
+            "id": "http1",
+            "type": "http",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "HTTP", "httpUrl": "https://x", "httpMethod": "GET"},
+        }
+    )
+    assert node.id == "http1"
+    assert node.type == "http"
+    assert node.data.http_url == "https://x"
+
+
+def test_http_node_data_rejects_legacy_field_names() -> None:
+    """Same P0-0 regression guard as Arcade: the Designer's HTTP panel used
+    to write `method`/`url`/`headers`/`body` instead of the canonical
+    `httpMethod`/`httpUrl`/`httpHeaders`/`httpBody` aliases, so a
+    UI-configured HTTP node always failed at runtime with "no httpUrl"
+    despite looking configured in the designer."""
+    from src.engine.workflow import HttpNodeData
+
+    with pytest.raises(ValidationError):
+        HttpNodeData.model_validate(
+            {"label": "HTTP", "method": "GET", "url": "https://example.com"}
+        )
+
+
 def test_vector_db_node_data_parses_camelcase_aliases() -> None:
     from src.engine.workflow import VectorDbNodeData
 
@@ -763,3 +845,42 @@ def test_file_trigger_node_defaults() -> None:
     assert node.data.provider == "local"
     assert node.data.poll_interval_seconds == 30
     assert node.data.source_path is None
+
+
+def test_file_write_node_parses_full_config() -> None:
+    from src.engine.workflow import FileWriteNode
+
+    node = FileWriteNode.model_validate(
+        {
+            "id": "fw1",
+            "type": "file-write",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "File Write",
+                "provider": "local",
+                "destinationPath": "/out",
+                "filename": "report",
+                "format": "docx",
+                "content": "# Hi",
+            },
+        }
+    )
+    assert node.data.destination_path == "/out"
+    assert node.data.filename == "report"
+    assert node.data.format == "docx"
+    assert node.data.content == "# Hi"
+
+
+def test_file_write_node_defaults_to_md() -> None:
+    from src.engine.workflow import FileWriteNode
+
+    node = FileWriteNode.model_validate(
+        {
+            "id": "fw1",
+            "type": "file-write",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "File Write"},
+        }
+    )
+    assert node.data.format == "md"
+    assert node.data.provider == "local"

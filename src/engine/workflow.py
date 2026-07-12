@@ -118,6 +118,30 @@ class FileTriggerNode(BaseModel):
     data: FileTriggerNodeData
 
 
+# ─── file-write (writes generated content to a file — PDF/DOCX/MD) ───────
+
+
+class FileWriteNodeData(BaseNodeData):
+    # Plain str (not Literal["local"]): unlike file-trigger (visual-only,
+    # never executes), file-write's executor must be able to *receive* an
+    # unrecognized provider value and raise a runtime
+    # UnknownStorageProviderError from its own registry lookup — a Literal
+    # type would instead reject it at parse time via ValidationError,
+    # one layer too early (see FileWriteExecutor._PROVIDERS.get()).
+    provider: str = "local"
+    destination_path: str | None = Field(default=None, alias="destinationPath")
+    filename: str | None = None
+    format: Literal["md", "docx", "pdf"] = "md"
+    content: str | None = None
+
+
+class FileWriteNode(BaseModel):
+    id: str
+    type: Literal["file-write"]
+    position: Position
+    data: FileWriteNodeData
+
+
 # ─── agent (Phase 2) ─────────────────────────────────────────────────────
 
 
@@ -305,6 +329,14 @@ class ExtractNode(BaseModel):
 
 
 class HttpNodeData(BaseNodeData):
+    # extra="forbid" (overriding BaseNodeData's extra="allow"): this node
+    # type is fully contract-audited, so an unrecognized field is a bug —
+    # e.g. the Designer's HTTP panel used to write `method`/`url` instead
+    # of `httpMethod`/`httpUrl` and extra="allow" let it pass through
+    # silently, leaving the real fields empty. See P0-0 in
+    # docs/claude-improvement-backlog.md.
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
     http_url: str | None = Field(default=None, alias="httpUrl")
     http_method: str | None = Field(default=None, alias="httpMethod")
     http_headers: dict[str, str] = Field(default_factory=dict, alias="httpHeaders")
@@ -501,7 +533,11 @@ class EmailNode(BaseModel):
 
 
 class ArcadeNodeData(BaseNodeData):
-    model_config = ConfigDict(populate_by_name=True)
+    # extra="forbid": see the identical comment on HttpNodeData above — the
+    # Designer's Arcade panel used to write `toolName`/`args` instead of
+    # `arcadeTool`/`arcadeInput`. See P0-0 in
+    # docs/claude-improvement-backlog.md.
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
 
     tool: str = Field(alias="arcadeTool")
     input: dict[str, Any] = Field(default_factory=dict, alias="arcadeInput")
@@ -564,6 +600,7 @@ WorkflowNode = Annotated[
     | EndNode
     | NoteNode
     | FileTriggerNode
+    | FileWriteNode
     | AgentNode
     | McpNode
     | IfElseNode
@@ -626,6 +663,8 @@ __all__ = [
     "ExtractNodeData",
     "FileTriggerNode",
     "FileTriggerNodeData",
+    "FileWriteNode",
+    "FileWriteNodeData",
     "GammaAiNode",
     "GammaAiNodeData",
     "GuardrailsNode",
