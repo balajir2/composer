@@ -212,6 +212,22 @@ class Settings(BaseSettings):
         description="Max bytes buffered from an HTTP node response before aborting.",
     )
 
+    # ─── Execution-input boundary (P0-7) ───────────
+    # Reserved-key rejection (finalOutput, _-prefixed engine bookkeeping)
+    # is always on. This flag is the stricter, opt-in layer: reject ANY
+    # execution-input key not declared on the workflow's Start node.
+    # Default off — many existing workflows intentionally rely on
+    # undeclared caller-supplied variables, so this is a deliberate
+    # per-deployment choice, not a silent behavior change.
+    strict_execution_input_enabled: bool = Field(
+        default=False,
+        description=(
+            "Reject execution input containing any variable not declared on "
+            "the workflow's Start node. Off by default for backward "
+            "compatibility."
+        ),
+    )
+
     # ─── Rate limits (Phase 8) ────────────────────
     rate_limit_executions_per_minute: int = 30
     rate_limit_login_per_minute: int = 10

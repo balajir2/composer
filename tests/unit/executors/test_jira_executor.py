@@ -90,6 +90,77 @@ async def test_arun_decrypts_stored_token_before_use(monkeypatch: pytest.MonkeyP
     assert delta["node_results"]["j1"]["status"] == "completed"
 
 
+async def test_node_configured_domain_wins_over_state_variable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0-7: an external caller (POST /api/run/{slug} or /executions) can
+    inject arbitrary keys into state.variables, including jira_domain.
+    A node with its own configured domain must never let that external
+    value redirect where tickets get created."""
+    node = JiraNode.model_validate(_jira_node_json(domain="configured.atlassian.net"))
+
+    captured_domains: list[str] = []
+
+    from src.tools.base import BuildContext
+    from src.tools.providers import jira as jira_provider_module
+
+    original_build_tool = jira_provider_module.JiraProvider.build_tool
+
+    async def _capturing_build_tool(self: Any, tool_name: str, context: BuildContext) -> Any:
+        variables = context.state.get("variables") or {}
+        captured_domains.append(str(variables.get("jira_domain", "")))
+        return await original_build_tool(self, tool_name, context)
+
+    monkeypatch.setattr(jira_provider_module.JiraProvider, "build_tool", _capturing_build_tool)
+
+    fake = _TextOnlyFake("done")
+    from src.llm import providers
+
+    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+
+    state = initial_state()
+    state["variables"]["jira_domain"] = "attacker-controlled.atlassian.net"
+    await JiraExecutor(node).arun(state)
+
+    assert captured_domains, "JiraProvider.build_tool was never called"
+    assert all(d == "configured.atlassian.net" for d in captured_domains)
+
+
+async def test_falls_back_to_state_variable_when_node_has_no_domain_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A workflow with no domain baked into the node (relying on an
+    earlier Set State node, or an admin-controlled default) keeps
+    working — the fallback exists for this legitimate case."""
+    node = JiraNode.model_validate(_jira_node_json(domain=""))
+
+    captured_domains: list[str] = []
+
+    from src.tools.base import BuildContext
+    from src.tools.providers import jira as jira_provider_module
+
+    original_build_tool = jira_provider_module.JiraProvider.build_tool
+
+    async def _capturing_build_tool(self: Any, tool_name: str, context: BuildContext) -> Any:
+        variables = context.state.get("variables") or {}
+        captured_domains.append(str(variables.get("jira_domain", "")))
+        return await original_build_tool(self, tool_name, context)
+
+    monkeypatch.setattr(jira_provider_module.JiraProvider, "build_tool", _capturing_build_tool)
+
+    fake = _TextOnlyFake("done")
+    from src.llm import providers
+
+    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+
+    state = initial_state()
+    state["variables"]["jira_domain"] = "set-state-configured.atlassian.net"
+    await JiraExecutor(node).arun(state)
+
+    assert captured_domains, "JiraProvider.build_tool was never called"
+    assert all(d == "set-state-configured.atlassian.net" for d in captured_domains)
+
+
 async def test_arun_tolerates_legacy_plaintext_token(monkeypatch: pytest.MonkeyPatch) -> None:
     """Tokens saved before the encryption fix shipped are plaintext; decrypt
     must pass them through unchanged rather than erroring."""

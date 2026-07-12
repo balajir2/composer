@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any
 
+from src.config import get_settings
 from src.executors.base import register_executor
 
 if TYPE_CHECKING:
@@ -25,7 +26,47 @@ if TYPE_CHECKING:
 
 
 class StartInputValidationError(RuntimeError):
-    """Raised when a Start node's required input variable is missing."""
+    """Raised when a Start node's required input variable is missing, or
+    when execution input violates the caller-input boundary (P0-7)."""
+
+
+# Engine-owned prefixes/names execution input must never be able to set —
+# these are internal bookkeeping the executor/checkpointer/nodes own
+# (pause-instance tracking, retry counters, the End node's declared
+# output). An external caller supplying one of these could otherwise
+# inject state that looks like it came from inside the workflow.
+_RESERVED_PREFIXES = ("_",)
+_RESERVED_EXACT = frozenset({"finalOutput"})
+
+
+def _reject_reserved_keys(user_provided: dict[str, Any]) -> None:
+    bad = sorted(
+        k
+        for k in user_provided
+        if k in _RESERVED_EXACT or any(k.startswith(p) for p in _RESERVED_PREFIXES)
+    )
+    if bad:
+        raise StartInputValidationError(
+            "Execution input contains reserved engine-owned key(s): "
+            + ", ".join(bad)
+            + ". These are set internally and cannot be supplied by the caller."
+        )
+
+
+def _reject_undeclared_keys_in_strict_mode(
+    user_provided: dict[str, Any], declared: list[StartInputVariable]
+) -> None:
+    if not get_settings().strict_execution_input_enabled:
+        return
+    declared_names = {var.name for var in declared}
+    undeclared = sorted(set(user_provided) - declared_names)
+    if undeclared:
+        raise StartInputValidationError(
+            "Execution input contains undeclared variable(s) not in this "
+            "workflow's Start inputs: "
+            + ", ".join(undeclared)
+            + " (STRICT_EXECUTION_INPUT_ENABLED is on)."
+        )
 
 
 def _coerce_default(var: StartInputVariable) -> Any:
@@ -88,6 +129,8 @@ class StartExecutor:
         variables_delta: dict[str, Any] = {}
         declared = self.node.data.input_variables or []
         user_provided = parsed if isinstance(parsed, dict) else {}
+        _reject_reserved_keys(user_provided)
+        _reject_undeclared_keys_in_strict_mode(user_provided, declared)
         missing_required: list[str] = []
 
         for var in declared:

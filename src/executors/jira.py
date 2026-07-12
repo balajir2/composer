@@ -45,17 +45,24 @@ class JiraExecutor:
         instructions = substitute(self.node.data.instructions or "", state)
 
         # Inject per-node credentials into state so the JiraProvider can
-        # read them from state.variables.  State-variable values take
-        # precedence over the node-data fallback so Set State nodes
-        # earlier in the flow can override, but the node itself carries
-        # the primary config.
+        # read them from state.variables. The node's own configured value
+        # always wins when present (P0-7) — state.variables can contain
+        # anything an external caller passed via POST /executions or
+        # /api/run/{slug} (src/executors/start.py spreads caller input
+        # into variables wholesale), so letting a state value silently
+        # override the node's configured domain/email/token would let a
+        # caller redirect ticket creation to a Jira tenant/credential of
+        # their choosing. The state fallback only applies when the node
+        # itself has nothing configured — the legitimate case of a
+        # workflow relying entirely on an earlier Set State node or an
+        # admin-provided default.
         variables = dict(state.get("variables") or {})
         if self.node.data.domain:
-            variables.setdefault("jira_domain", self.node.data.domain)
+            variables["jira_domain"] = self.node.data.domain
         if self.node.data.email:
-            variables.setdefault("jira_email", self.node.data.email)
+            variables["jira_email"] = self.node.data.email
         if self.node.data.api_token:
-            variables.setdefault("jira_api_token", decrypt_jira_api_token(self.node.data.api_token))
+            variables["jira_api_token"] = decrypt_jira_api_token(self.node.data.api_token)
 
         provider = JiraProvider()
         tools: list[BaseTool] = []  # Use all Jira tools — model picks the right one
