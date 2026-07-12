@@ -124,9 +124,20 @@ def _check_edges(edges: Iterable[WorkflowEdge], ids: set[str]) -> None:
 def _check_reachability(
     start_id: str, nodes: dict[str, WorkflowNode], edges: list[WorkflowEdge]
 ) -> None:
-    """BFS from start; every non-visual-only node must be reachable."""
+    """BFS from start; every non-visual-only node must be reachable.
+
+    Uses the same edge projection build_graph uses at compile time (edges
+    touching a visual-only node on either end are dropped — see the
+    "normal edges" pass below) so a node reachable only via a detour
+    through a note/file-trigger isn't falsely validated as reachable
+    when it would actually be disconnected once compiled (P0-8).
+    """
     outgoing: dict[str, list[str]] = {node_id: [] for node_id in nodes}
     for edge in edges:
+        if nodes[edge.source].type in _VISUAL_ONLY_TYPES:
+            continue
+        if nodes[edge.target].type in _VISUAL_ONLY_TYPES:
+            continue
         outgoing[edge.source].append(edge.target)
 
     reachable: set[str] = set()

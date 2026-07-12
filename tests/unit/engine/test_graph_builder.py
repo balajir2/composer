@@ -111,6 +111,48 @@ def test_note_node_unreachable_is_allowed() -> None:
     validate_workflow_shape(wf)
 
 
+def test_node_reachable_only_through_note_is_rejected() -> None:
+    """P0-8: compile-time (build_graph) drops every edge touching a
+    visual-only node (note/file-trigger — see test_build_graph_skips_note_nodes
+    below), so a node reachable ONLY via a path through a note is
+    validated as reachable but is actually disconnected once compiled.
+    Validation's reachability BFS must use the same edge projection as
+    compilation, not raw workflow.edges."""
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {"id": "n", "type": "note", "position": {"x": 0, "y": 0}, "data": {"label": "memo"}},
+            {"id": "a", "type": "agent", "position": {"x": 0, "y": 0}, "data": {"label": "A"}},
+            {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
+        ],
+        edges=[
+            {"id": "e1", "source": "s", "target": "n"},
+            {"id": "e2", "source": "n", "target": "a"},
+            {"id": "e3", "source": "a", "target": "e"},
+        ],
+    )
+    with pytest.raises(WorkflowValidationError, match="unreachable from the start node"):
+        validate_workflow_shape(wf)
+
+
+def test_note_node_can_still_sit_between_reachable_nodes_visually() -> None:
+    """A note dangling off a reachable path is fine (still visual-only,
+    still allowed disconnected) as long as the real nodes have their own
+    real-to-real path — this must keep passing after the P0-8 fix."""
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {"id": "n", "type": "note", "position": {"x": 0, "y": 0}, "data": {"label": "memo"}},
+            {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
+        ],
+        edges=[
+            {"id": "e1", "source": "s", "target": "e"},
+            {"id": "e2", "source": "s", "target": "n"},
+        ],
+    )
+    validate_workflow_shape(wf)  # no raise
+
+
 def test_valid_start_to_end_passes() -> None:
     wf = _mk(
         nodes=[
