@@ -116,6 +116,7 @@ async def test_arun_includes_approver_fields_in_interrupt_payload(
         approvalMessage="Approve {{thing}}?",
         approverEmail="reviewer@example.com",
         approverCc="manager@example.com",
+        attachmentPath="{{brd_path}}",
     )
 
     captured: dict[str, Any] = {}
@@ -130,11 +131,13 @@ async def test_arun_includes_approver_fields_in_interrupt_payload(
 
     state = initial_state()
     state["variables"]["thing"] = "the BRD"
+    state["variables"]["brd_path"] = "/tmp/composer-attachments/brd.pdf"
     await UserApprovalExecutor(node).arun(state)
 
     assert captured["prompt"] == "Approve the BRD?"
     assert captured["approver_email"] == "reviewer@example.com"
     assert captured["approver_cc"] == "manager@example.com"
+    assert captured["attachment_path"] == "/tmp/composer-attachments/brd.pdf"
 
 
 async def test_user_approval_executor_is_registered() -> None:

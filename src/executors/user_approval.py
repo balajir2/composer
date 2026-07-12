@@ -46,6 +46,7 @@ class UserApprovalExecutor:
                 "prompt": prompt,
                 "approver_email": substitute(self.node.data.approver_email or "", state),
                 "approver_cc": substitute(self.node.data.approver_cc or "", state),
+                "attachment_path": substitute(self.node.data.attachment_path or "", state),
             }
         )
 

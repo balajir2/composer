@@ -576,6 +576,7 @@ async def test_run_sends_approval_email_when_approver_email_set(
             "prompt": "Approve?",
             "approver_email": "reviewer@example.com",
             "approver_cc": "",
+            "attachment_path": "/tmp/composer-attachments/brd.pdf",
         }
 
     class _FakeTask:
@@ -603,6 +604,7 @@ async def test_run_sends_approval_email_when_approver_email_set(
     assert call_kwargs["approver_email"] == "reviewer@example.com"
     assert call_kwargs["node_id"] == "ua"
     assert call_kwargs["prompt"] == "Approve?"
+    assert call_kwargs["attachment_path"] == "/tmp/composer-attachments/brd.pdf"
 
 
 async def test_run_pending_since_matches_persisted_and_emailed(

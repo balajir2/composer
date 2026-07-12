@@ -924,6 +924,40 @@ def test_user_approval_node_approver_fields_optional() -> None:
     assert node.data.approver_cc is None
 
 
+def test_user_approval_node_parses_attachment_path() -> None:
+    from src.engine.workflow import UserApprovalNode
+
+    node = UserApprovalNode.model_validate(
+        {
+            "id": "a1",
+            "type": "user-approval",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "User Approval",
+                "approvalMessage": "Approve?",
+                "approverEmail": "reviewer@example.com",
+                "approverCc": "manager@example.com",
+                "attachmentPath": "/tmp/composer-attachments/brd.pdf",
+            },
+        }
+    )
+    assert node.data.attachment_path == "/tmp/composer-attachments/brd.pdf"
+
+
+def test_user_approval_node_attachment_path_optional() -> None:
+    from src.engine.workflow import UserApprovalNode
+
+    node = UserApprovalNode.model_validate(
+        {
+            "id": "a1",
+            "type": "user-approval",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "User Approval", "approvalMessage": "Approve?"},
+        }
+    )
+    assert node.data.attachment_path is None
+
+
 def test_user_approval_node_data_rejects_legacy_field_name() -> None:
     """P0-0 regression guard: the Designer's User Approval panel used to
     write `message` instead of the canonical `approvalMessage` alias. One

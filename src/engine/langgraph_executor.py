@@ -247,6 +247,7 @@ class LangGraphExecutor:
                     approver_email=str(pending_info.get("approver_email", "")),
                     approver_cc=str(pending_info.get("approver_cc", "")) or None,
                     pending_since=pending_since,
+                    attachment_path=str(pending_info.get("attachment_path", "")) or None,
                 )
                 await self._emit(
                     "approval_required",
@@ -325,6 +326,7 @@ class LangGraphExecutor:
                     approver_email=str(pending_info.get("approver_email", "")),
                     approver_cc=str(pending_info.get("approver_cc", "")) or None,
                     pending_since=pending_since,
+                    attachment_path=str(pending_info.get("attachment_path", "")) or None,
                 )
                 await self._emit(
                     "approval_required",
