@@ -4,7 +4,7 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _stub_dns_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
+def _stub_dns_resolution(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
     """Executor tests run through pytest-httpx's mock transport, which
     never touches the network — but the SSRF guard (src/security/ssrf.py)
     does a real DNS lookup before the HTTP node executor builds a
@@ -17,4 +17,4 @@ def _stub_dns_resolution(monkeypatch: pytest.MonkeyPatch) -> None:
     """
     import src.security.ssrf as ssrf_mod
 
-    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["8.8.8.8"])
+    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["8.8.8.8"])  # pyright: ignore[reportUnknownLambdaType]

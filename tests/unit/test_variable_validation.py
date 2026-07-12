@@ -7,15 +7,17 @@ that would render as the literal text "{{jira_project_key}}" and get
 passed straight to the Jira API.
 """
 
+from typing import Any
+
 from src.engine.workflow import Workflow
 from src.variable_validation import find_unknown_variable_references
 
 
-def _workflow(nodes: list[dict], edges: list[dict] | None = None) -> Workflow:
+def _workflow(nodes: list[dict[str, Any]], edges: list[dict[str, Any]] | None = None) -> Workflow:
     return Workflow.model_validate({"name": "T", "nodes": nodes, "edges": edges or []})
 
 
-def _start(inputs: list[dict] | None = None) -> dict:
+def _start(inputs: list[dict[str, Any]] | None = None) -> dict[str, Any]:
     return {
         "id": "start-1",
         "type": "start",
@@ -24,7 +26,7 @@ def _start(inputs: list[dict] | None = None) -> dict:
     }
 
 
-def _end() -> dict:
+def _end() -> dict[str, Any]:
     return {"id": "end-1", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "End"}}
 
 

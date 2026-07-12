@@ -16,14 +16,14 @@ def _settings(**overrides: Any) -> Settings:
 def test_allows_public_https_url(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.security.ssrf as ssrf_mod
 
-    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["8.8.8.8"])
+    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["8.8.8.8"])  # pyright: ignore[reportUnknownLambdaType]
     validate_outbound_url("https://api.example.com/v1/items", _settings())
 
 
 def test_blocks_plain_http_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.security.ssrf as ssrf_mod
 
-    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["8.8.8.8"])
+    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["8.8.8.8"])  # pyright: ignore[reportUnknownLambdaType]
     with pytest.raises(SSRFBlockedError, match="http"):
         validate_outbound_url("http://api.example.com/v1/items", _settings())
 
@@ -31,7 +31,7 @@ def test_blocks_plain_http_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_allows_plain_http_when_explicitly_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.security.ssrf as ssrf_mod
 
-    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["8.8.8.8"])
+    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["8.8.8.8"])  # pyright: ignore[reportUnknownLambdaType]
     validate_outbound_url("http://api.example.com/v1/items", _settings(http_node_allow_http=True))
 
 
@@ -43,7 +43,7 @@ def test_blocks_loopback_ip_literal() -> None:
 def test_blocks_localhost_hostname_via_dns(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.security.ssrf as ssrf_mod
 
-    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["127.0.0.1"])
+    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["127.0.0.1"])  # pyright: ignore[reportUnknownLambdaType]
     with pytest.raises(SSRFBlockedError):
         validate_outbound_url("https://localhost/admin", _settings())
 
@@ -51,7 +51,7 @@ def test_blocks_localhost_hostname_via_dns(monkeypatch: pytest.MonkeyPatch) -> N
 def test_blocks_private_ip_range(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.security.ssrf as ssrf_mod
 
-    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["10.0.0.5"])
+    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["10.0.0.5"])  # pyright: ignore[reportUnknownLambdaType]
     with pytest.raises(SSRFBlockedError):
         validate_outbound_url("https://internal.corp.example/api", _settings())
 
@@ -66,7 +66,7 @@ def test_blocks_gcp_metadata_hostname(monkeypatch: pytest.MonkeyPatch) -> None:
 
     # Even if DNS somehow resolved it to something that looks public, the
     # hostname itself is blocked outright.
-    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["8.8.8.8"])
+    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["8.8.8.8"])  # pyright: ignore[reportUnknownLambdaType]
     with pytest.raises(SSRFBlockedError, match="metadata"):
         validate_outbound_url("https://metadata.google.internal/computeMetadata/v1/", _settings())
 
@@ -76,7 +76,7 @@ def test_blocks_dns_rebinding_to_private_address(monkeypatch: pytest.MonkeyPatch
     private address — this is what the DNS-resolution check exists for."""
     import src.security.ssrf as ssrf_mod
 
-    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["192.168.1.1"])
+    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["192.168.1.1"])  # pyright: ignore[reportUnknownLambdaType]
     with pytest.raises(SSRFBlockedError):
         validate_outbound_url("https://looks-public.example.com/", _settings())
 
@@ -84,7 +84,7 @@ def test_blocks_dns_rebinding_to_private_address(monkeypatch: pytest.MonkeyPatch
 def test_allowlisted_hostname_bypasses_private_ip_block(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.security.ssrf as ssrf_mod
 
-    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["10.0.0.5"])
+    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["10.0.0.5"])  # pyright: ignore[reportUnknownLambdaType]
     validate_outbound_url(
         "https://internal.corp.example/api",
         _settings(http_node_hostname_allowlist="internal.corp.example"),
@@ -94,7 +94,7 @@ def test_allowlisted_hostname_bypasses_private_ip_block(monkeypatch: pytest.Monk
 def test_ssrf_protection_disabled_skips_dns_check(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.security.ssrf as ssrf_mod
 
-    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["10.0.0.5"])
+    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["10.0.0.5"])  # pyright: ignore[reportUnknownLambdaType]
     validate_outbound_url(
         "https://internal.corp.example/api",
         _settings(ssrf_protection_enabled=False),

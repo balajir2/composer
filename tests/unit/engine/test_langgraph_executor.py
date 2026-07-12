@@ -104,8 +104,9 @@ async def test_mark_completed_preserves_falsy_final_output() -> None:
     executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
 
     final_state = {"variables": {"finalOutput": 0, "lastOutput": "should not be used"}}
-    await executor._mark_completed("ex1", final_state)
+    await executor._mark_completed("ex1", final_state)  # pyright: ignore[reportPrivateUsage]
 
+    assert db.workflowexecution.update.await_args is not None
     update_kwargs = db.workflowexecution.update.await_args.kwargs["data"]
     assert update_kwargs["output"].data == 0
 
@@ -119,8 +120,9 @@ async def test_mark_completed_falls_back_to_last_output_when_final_output_absent
     executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
 
     final_state = {"variables": {"lastOutput": "fallback value"}}
-    await executor._mark_completed("ex1", final_state)
+    await executor._mark_completed("ex1", final_state)  # pyright: ignore[reportPrivateUsage]
 
+    assert db.workflowexecution.update.await_args is not None
     update_kwargs = db.workflowexecution.update.await_args.kwargs["data"]
     assert update_kwargs["output"].data == "fallback value"
 
