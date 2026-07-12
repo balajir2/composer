@@ -1,0 +1,48 @@
+"""Markdown -> PDF renderer for the file-write node.
+
+Markdown -> HTML (markdown-it-py) -> PDF (xhtml2pdf) — pure-Python, no
+system binaries/packages, keeping the existing multi-stage Docker image
+lean. See docs/archive/phase-history/specs/2026-07-11-file-storage-provider-framework-design.md §C
+for why this was chosen over a pandoc-based approach.
+"""
+
+import io
+
+from markdown_it import MarkdownIt
+from xhtml2pdf import pisa
+
+_md = MarkdownIt("commonmark").enable("table")
+
+_PDF_STYLE = """
+<style>
+  body { font-family: Helvetica, Arial, sans-serif; font-size: 10pt; }
+  h1, h2, h3 { color: #1e293b; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; }
+  th, td { border: 1px solid #94a3b8; padding: 4px 8px; text-align: left; }
+</style>
+"""
+
+
+class MarkdownToPdfError(RuntimeError):
+    """Raised when xhtml2pdf fails to render the generated HTML."""
+
+
+def markdown_to_pdf(content: str) -> bytes:
+    html_body = _md.render(content)
+    full_html = f"<html><head>{_PDF_STYLE}</head><body>{html_body}</body></html>"
+
+    buf = io.BytesIO()
+    result = pisa.CreatePDF(io.StringIO(full_html), dest=buf)
+    # pisaDocument() (aliased as pisa.CreatePDF) only returns raw `bytes` when
+    # called with dest_bytes=True, which we never pass; with `dest` supplied
+    # it returns a pisaContext exposing `.err`. xhtml2pdf ships no type stubs,
+    # so pyright can't infer that dest_bytes-conditional return on its own —
+    # narrow explicitly rather than suppressing the check.
+    if isinstance(result, bytes):
+        raise MarkdownToPdfError("xhtml2pdf unexpectedly returned raw bytes instead of a status object")
+    if result.err:
+        raise MarkdownToPdfError(f"xhtml2pdf failed with err={result.err}")
+    return buf.getvalue()
+
+
+__all__ = ["MarkdownToPdfError", "markdown_to_pdf"]

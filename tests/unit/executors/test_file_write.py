@@ -148,3 +148,15 @@ async def test_writes_docx_file(tmp_path: Path) -> None:
 
     doc = Document(str(written))
     assert any(p.text == "Title" for p in doc.paragraphs)
+
+
+async def test_writes_pdf_file(tmp_path: Path) -> None:
+    from src.engine.state import initial_state
+    from src.executors.file_write import FileWriteExecutor
+
+    node = _node(tmp_path, format="pdf", content="# Title\n\nBody.")
+    await FileWriteExecutor(node).arun(initial_state())
+
+    written = tmp_path / "report.pdf"
+    assert written.exists()
+    assert written.read_bytes().startswith(b"%PDF-")
