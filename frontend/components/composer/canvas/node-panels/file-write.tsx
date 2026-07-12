@@ -61,7 +61,7 @@ export default function FileWritePanel({
             />
             <p className="text-[10px] text-muted-foreground">
               The extension is added automatically based on Format below. Must be a bare
-              filename — no path separators or "..".
+              filename — no path separators or &quot;..&quot;.
             </p>
           </div>
           <div className="space-y-1">
