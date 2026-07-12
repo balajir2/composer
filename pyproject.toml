@@ -118,6 +118,8 @@ include = ["src", "tests"]
 exclude = ["prisma/generated", ".venv", "**/__pycache__"]
 typeCheckingMode = "strict"
 pythonVersion = "3.11"
+venvPath = "."
+venv = ".venv"
 reportMissingImports = "error"
 reportMissingTypeStubs = "warning"
 # Accept some flexibility for now; tighten as the codebase stabilizes.
