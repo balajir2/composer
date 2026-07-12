@@ -375,7 +375,28 @@ async def resume_execution(
             detail="Execution is waiting_approval but has no _pending_approval_node.",
         )
 
-    # Audit trail
+    # Atomic conditional status transition (P1-1) — the earlier status
+    # check above (`execution.status != "waiting_approval"`) is a
+    # separate find_unique and gives a friendly error for the common
+    # case, but two near-simultaneous in-app resume requests (a
+    # double-click, two reviewers racing) could both pass that check
+    # before either commits. update_many folds the guard into the same
+    # statement that performs the transition — at most one request can
+    # ever flip this row, matching the same pattern already used for the
+    # emailed-link path (src/api/approval_email.py).
+    updated_count = await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": execution_id, "status": "waiting_approval"},
+        data={"status": "running"},
+    )
+    if updated_count != 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Execution {execution_id!r} is no longer waiting_approval "
+            "(already resolved by a concurrent request).",
+        )
+
+    # Audit trail — only recorded once the atomic transition above
+    # confirms this request is the single winner.
     approval_data: dict[str, Any] = {
         "executionId": execution_id,
         "nodeId": pending_node_id,
@@ -387,22 +408,14 @@ async def resume_execution(
         data=approval_data,  # pyright: ignore[reportArgumentType]
     )
 
-    # Flip status to 'running' BEFORE scheduling the BackgroundTask, so polling
-    # sees consistent state while the background work runs.
-    updated = await db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": execution_id},
-        data={"status": "running"},
-    )
-
     executor = _get_executor(request, db)
     background_tasks.add_task(executor.resume, execution_id, payload.decision.value)
 
-    if updated is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Execution {execution_id!r} not found after update.",
-        )
-    return ExecutionRead.model_validate(updated)
+    # Reflect the transition we just made atomically without a second
+    # DB round-trip — `execution` is the row fetched above, still valid
+    # except for the status field update_many just applied.
+    execution.status = "running"
+    return ExecutionRead.model_validate(execution)
 
 
 __all__ = [

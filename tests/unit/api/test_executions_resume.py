@@ -50,6 +50,7 @@ def _client_with_execution(
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(return_value=execution)
     db.workflowexecution.update = AsyncMock(return_value=execution)
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
     db.approval = MagicMock()
     db.approval.create = AsyncMock()
     # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
@@ -132,14 +133,31 @@ def test_resume_invalid_decision_422(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_resume_marks_execution_running_before_scheduling_task(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The endpoint flips status to 'running' BEFORE the background task.
-    This prevents polling from seeing stale 'waiting_approval' state."""
+    """The endpoint flips status to 'running' via the atomic conditional
+    update_many BEFORE the background task, and returns a response that
+    reflects the transition (not the stale pre-transition row)."""
     client, db = _client_with_execution(monkeypatch, _execution_row())
     resp = client.post("/executions/e1/resume", json={"decision": "approved"})
-    assert resp.status_code == 200
-    assert db.workflowexecution.update.await_count >= 1
-    first_update = db.workflowexecution.update.await_args_list[0]
-    assert first_update.kwargs["data"]["status"] == "running"
+    assert resp.status_code == 200, resp.text
+    db.workflowexecution.update_many.assert_awaited_once()
+    call = db.workflowexecution.update_many.await_args
+    assert call.kwargs["data"]["status"] == "running"
+    assert call.kwargs["where"]["status"] == "waiting_approval"
+    assert resp.json()["status"] == "running"
+
+
+def test_resume_race_loses_when_update_many_affects_zero_rows(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-1: the atomic waiting_approval -> running transition is the real
+    concurrency guard. If a concurrent request already flipped the row
+    (update_many affects 0 rows), this request must not create a second
+    audit row or schedule a second resumption — 409, no side effects."""
+    client, db = _client_with_execution(monkeypatch, _execution_row())
+    db.workflowexecution.update_many = AsyncMock(return_value=0)
+    resp = client.post("/executions/e1/resume", json={"decision": "approved"})
+    assert resp.status_code == 409
+    db.approval.create.assert_not_awaited()
 
 
 def test_get_execution_non_owner_returns_404(

@@ -1,13 +1,21 @@
-"""Public, unauthenticated endpoint that resolves an emailed approve/reject link.
+"""Public, unauthenticated endpoints that resolve an emailed approve/reject link.
 
 No login required by design — the signed token itself is the credential,
-so external reviewers with no Composer account can decide. Single-use is
-enforced explicitly via an atomic conditional `update_many` (see
-`resolve_approval_email` below) rather than relying on a separate
-check-then-act pair, which would otherwise let two near-simultaneous
-requests (an email-security scanner prefetching both the Approve and
-Reject links, or a duplicate browser retry) both pass the check before
-either commits.
+so external reviewers with no Composer account can decide.
+
+Split into two steps (P1-1): GET only validates the token and redirects
+to a confirmation page — it never mutates state. Email security scanners
+and preview services routinely follow GET links automatically to check
+for malware/phishing, and a state-changing GET would let the first
+scanner-opened link silently make the decision before a human ever sees
+it. Only the POST /confirm step (triggered by a real user clicking
+"Confirm" on the frontend confirmation page) performs the mutation.
+
+Single-use is enforced explicitly via an atomic conditional `update_many`
+in the POST handler (see `confirm_approval_email` below) rather than a
+separate check-then-act pair, which would otherwise let two
+near-simultaneous requests (a duplicate click, or two reviewers racing)
+both pass the check before either commits.
 """
 
 from typing import Any
@@ -19,14 +27,18 @@ from starlette import status
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
-from src.security.jwt import TokenVerificationError, verify_approval_email_token
+from src.security.jwt import (
+    ApprovalEmailTokenPayload,
+    TokenVerificationError,
+    verify_approval_email_token,
+)
 from src.security.rate_limit import RateLimiter, enforce, get_rate_limiter, per_minute_config
 from src.storage.db import get_db
 
 router = APIRouter(tags=["approvals"])
 
 
-def _redirect(status_param: str) -> RedirectResponse:
+def _redirect_result(status_param: str) -> RedirectResponse:
     settings = get_settings()
     params = urlencode({"status": status_param})
     return RedirectResponse(
@@ -35,32 +47,34 @@ def _redirect(status_param: str) -> RedirectResponse:
     )
 
 
-@router.get("/approvals/email/{token}")
-async def resolve_approval_email(
-    token: str,
-    background_tasks: BackgroundTasks,
-    request: Request,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    limiter: RateLimiter = Depends(get_rate_limiter),
-) -> RedirectResponse:  # pyright: ignore[reportUnusedFunction]
-    ip = request.client.host if request.client else "unknown"
-    await enforce(
-        limiter,
-        route_key="approval_email",
-        client_key=ip,
-        config=per_minute_config(get_settings().rate_limit_approval_email_per_minute),
+def _redirect_confirm(token: str, decision: str) -> RedirectResponse:
+    settings = get_settings()
+    params = urlencode({"token": token, "decision": decision})
+    return RedirectResponse(
+        url=f"{settings.frontend_url}/approval-confirm?{params}",
+        status_code=status.HTTP_303_SEE_OTHER,
     )
 
+
+async def _validate_token_and_execution(
+    token: str,
+    db: Prisma,  # pyright: ignore[reportUnknownParameterType]
+) -> tuple[ApprovalEmailTokenPayload, Any] | None:
+    """Shared, read-only validation for both GET and POST. Returns
+    (claims, execution_row) on success, None on any failure — never
+    mutates anything."""
     try:
         claims = verify_approval_email_token(token)
     except TokenVerificationError:
-        return _redirect("invalid")
+        return None
 
     execution = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": claims.sub}
     )
     if execution is None:
-        return _redirect("invalid")
+        return None
+    if execution.status != "waiting_approval":
+        return None
 
     # Bind the token to the specific pause *instance*, not just the node --
     # a `while`-loop user-approval node can pause repeatedly at the same
@@ -74,7 +88,66 @@ async def resolve_approval_email(
         variables.get("_pending_approval_since") if isinstance(variables, dict) else None
     )
     if pending_node_id != claims.node_id or pending_since != claims.pending_since:
-        return _redirect("invalid")
+        return None
+
+    return claims, execution
+
+
+@router.get("/approvals/email/{token}")
+async def resolve_approval_email(
+    token: str,
+    request: Request,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    limiter: RateLimiter = Depends(get_rate_limiter),
+) -> RedirectResponse:  # pyright: ignore[reportUnusedFunction]
+    """Read-only: validates the token and redirects to the confirmation
+    page. Never mutates state, so a scanner/preview service prefetching
+    this link is harmless — see module docstring."""
+    ip = request.client.host if request.client else "unknown"
+    await enforce(
+        limiter,
+        route_key="approval_email",
+        client_key=ip,
+        config=per_minute_config(get_settings().rate_limit_approval_email_per_minute),
+    )
+
+    result = await _validate_token_and_execution(token, db)
+    if result is None:
+        return _redirect_result("invalid")
+    claims, _execution = result
+    return _redirect_confirm(token, claims.decision)
+
+
+@router.post("/approvals/email/{token}/confirm")
+async def confirm_approval_email(
+    token: str,
+    background_tasks: BackgroundTasks,
+    request: Request,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    limiter: RateLimiter = Depends(get_rate_limiter),
+) -> RedirectResponse:  # pyright: ignore[reportUnusedFunction]
+    """The actual mutation — only reached via a deliberate POST (the
+    frontend confirmation page's form submission), never a bare GET.
+    Re-validates everything from scratch rather than trusting the GET
+    that (probably) preceded it, since state may have changed in
+    between (e.g. resolved through another channel, or simply expired).
+    No CSRF token needed beyond the signed token itself: this endpoint
+    has no ambient session/cookie to ride, so a cross-site form couldn't
+    submit a valid request without already knowing the token — the same
+    credential the GET link itself required.
+    """
+    ip = request.client.host if request.client else "unknown"
+    await enforce(
+        limiter,
+        route_key="approval_email",
+        client_key=ip,
+        config=per_minute_config(get_settings().rate_limit_approval_email_per_minute),
+    )
+
+    result = await _validate_token_and_execution(token, db)
+    if result is None:
+        return _redirect_result("invalid")
+    claims, _execution = result
 
     # Atomic conditional status transition -- closes the check-then-act race
     # a separate find_unique + update pair would leave open. update_many (not
@@ -90,7 +163,7 @@ async def resolve_approval_email(
         data={"status": "running"},
     )
     if updated_count != 1:
-        return _redirect("invalid")
+        return _redirect_result("invalid")
 
     approval_data: dict[str, Any] = {
         "executionId": claims.sub,
@@ -113,7 +186,7 @@ async def resolve_approval_email(
     executor = LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
     background_tasks.add_task(executor.resume, claims.sub, claims.decision)
 
-    return _redirect(claims.decision)
+    return _redirect_result(claims.decision)
 
 
 __all__ = ["router"]
