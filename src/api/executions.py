@@ -1,6 +1,7 @@
 """POST /executions (start a run) + GET /executions/{id} (fetch state)."""
 
 import json as _json
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
@@ -21,6 +22,12 @@ from src.security.rate_limit import (
 from src.storage.db import get_db
 
 router = APIRouter(tags=["executions"])
+
+# Deletion endpoints reject/skip rows in these statuses (P1-6) — deleting a
+# still-active execution's LangGraph checkpoints out from under its
+# in-flight background task leaves that task unable to persist a final
+# state against a row (and checkpoints) that no longer exist.
+_ACTIVE_EXECUTION_STATUSES = frozenset({"running", "waiting_approval"})
 
 
 class ExecutionCreate(BaseModel):
@@ -110,7 +117,12 @@ async def create_execution(
         client_key=user_id,
         config=per_minute_config(get_settings().rate_limit_executions_per_minute),
     )
-    input_size = len(_json.dumps(payload.input, default=str))
+    # P1-6: measure true UTF-8 byte size, not the character length of
+    # json.dumps()'s default ensure_ascii=True output — that default
+    # escapes every non-ASCII character to a `\uXXXX` sequence (6 chars
+    # for a 3-byte UTF-8 character), which over-counts non-ASCII payloads
+    # and can reject inputs well under the real byte cap.
+    input_size = len(_json.dumps(payload.input, default=str, ensure_ascii=False).encode("utf-8"))
     max_bytes = get_settings().max_execution_input_bytes
     if input_size > max_bytes:
         raise HTTPException(
@@ -307,6 +319,10 @@ async def delete_executions_bulk(  # pyright: ignore[reportUnusedFunction]
     # checkpoint cleanup step.  Without this we'd leave orphan
     # checkpoints behind.
     rows = await db.workflowexecution.find_many(where=where)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
+    # Skip active executions (P1-6): deleting a running or waiting_approval
+    # row's checkpoints out from under its in-flight background task leaves
+    # that task unable to persist a final state against a row that's gone.
+    rows = [row for row in rows if row.status not in _ACTIVE_EXECUTION_STATUSES]
     if not rows:
         return BulkDeleteResponse(
             deletedCount=0,
@@ -369,6 +385,14 @@ async def delete_execution(  # pyright: ignore[reportUnusedFunction]
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Execution {execution_id!r} not found.",
         )
+    if row.status in _ACTIVE_EXECUTION_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                f"Execution {execution_id!r} is {row.status!r} — cancel it first, or wait "
+                "for it to reach a terminal state, before deleting."
+            ),
+        )
 
     thread_id = row.threadId
     # Order matters: writes table is FK'd into the checkpoint table,
@@ -377,6 +401,70 @@ async def delete_execution(  # pyright: ignore[reportUnusedFunction]
     await db.langgraphcheckpointwrite.delete_many(where={"threadId": thread_id})  # pyright: ignore[reportAttributeAccessIssue]
     await db.langgraphcheckpoint.delete_many(where={"threadId": thread_id})  # pyright: ignore[reportAttributeAccessIssue]
     await db.workflowexecution.delete(where={"id": execution_id})  # pyright: ignore[reportAttributeAccessIssue]
+
+
+_CANCEL_ERROR_MESSAGE = "Execution canceled by user request."
+
+
+@router.post("/executions/{execution_id}/cancel", response_model=ExecutionRead)
+async def cancel_execution(  # pyright: ignore[reportUnusedFunction]
+    execution_id: str,
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _role: tuple[str, str] = Depends(get_current_role),
+) -> ExecutionRead:
+    """First-class cancellation (P1-6): the public status vocabulary
+    documents `canceled`, but nothing ever wrote it — worker shutdown
+    persisted `failed`, and there was no user-triggered cancel operation.
+
+    Known limitation: this marks the row canceled but does not preempt an
+    in-flight background task — LangGraph has no cooperative-cancellation
+    hook wired through the executor today. Any side-effecting node
+    (Jira, email, HTTP) already in flight when cancel is called still
+    completes; this stops the row from looking permanently stuck and gives
+    callers a real terminal status to key off, which is the concrete gap
+    this closes. True mid-node preemption is a separate, larger change.
+    """
+    user_id, role = _role
+    execution = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": execution_id}
+    )
+    if execution is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execution {execution_id!r} not found.",
+        )
+    if role != "admin" and execution.userId != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Execution {execution_id!r} not found.",
+        )
+    if execution.status not in _ACTIVE_EXECUTION_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Execution is {execution.status!r}, not cancellable.",
+        )
+
+    # Atomic conditional transition (same pattern as resume_execution, P1-1)
+    # — folds the status guard into the update itself so two concurrent
+    # cancel calls (or a cancel racing a resume) can't both succeed.
+    updated_count = await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": execution_id, "status": {"in": ["running", "waiting_approval"]}},
+        data={
+            "status": "canceled",
+            "error": _CANCEL_ERROR_MESSAGE,
+            "completedAt": datetime.now(UTC),
+        },
+    )
+    if updated_count != 1:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Execution {execution_id!r} is no longer cancellable "
+            "(already resolved by a concurrent request).",
+        )
+
+    execution.status = "canceled"
+    execution.error = _CANCEL_ERROR_MESSAGE
+    return ExecutionRead.model_validate(execution)
 
 
 @router.post("/executions/{execution_id}/resume", response_model=ExecutionRead)

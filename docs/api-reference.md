@@ -59,12 +59,19 @@ POST /executions                                        body: {workflowId, input
 GET  /executions?workflowId=<id>&status=<x>&limit=N&offset=N
 GET  /executions/{id}
 POST /executions/{id}/resume                            body: {decision: "approved"|"rejected", note?: string}
+POST /executions/{id}/cancel
+DELETE /executions/{id}
+POST /executions/delete-bulk                            body: {executionIds?: string[], allInScope?: boolean}
 WS   /executions/{id}/ws                                stream node events
 ```
 
 `POST /executions` returns the new `executionId` immediately; the run continues in the background. Subscribe to the WebSocket for live updates or poll `GET /executions/{id}` for the final state.
 
 `idempotencyKey` (optional): scoped per `workflowId` — a repeated call with the same key returns the original execution instead of starting a duplicate one. This is the actual retry vector Composer has today: a caller that resubmits after an HTTP timeout, not LangGraph auto-retrying a node (it doesn't) or the stuck-execution sweeper re-running a failed one (it doesn't — it only marks rows failed). Backed by a DB-level unique constraint on `(workflow_id, idempotency_key)`, so it also closes the race between two genuinely concurrent requests carrying the same key. Omit it and every call starts a new execution, as before.
+
+`POST /executions/{id}/cancel` — owner or admin; 409 if the execution isn't `running` or `waiting_approval`. Atomically transitions to `canceled` (same conditional-update pattern as `/resume`, so a concurrent cancel/resume race can't double-resolve). **Known limitation:** this does not preempt an in-flight background task — there's no cooperative-cancellation hook wired through the executor today, so a side-effecting node (Jira, email, HTTP) already running when cancel is called still completes. What this closes is the status-vocabulary gap: `canceled` was previously documented but never actually written anywhere (worker shutdown persisted `failed` instead), leaving no coherent way to mark an execution as user-canceled.
+
+`DELETE /executions/{id}` and `POST /executions/delete-bulk` reject (409) or skip active (`running`/`waiting_approval`) executions rather than deleting them — deleting an active execution's LangGraph checkpoints out from under its in-flight background task leaves that task unable to persist a final state against a row that's gone. Cancel or wait for a terminal state first.
 
 Statuses: `running` / `waiting_approval` / `completed` / `failed` / `canceled`.
 

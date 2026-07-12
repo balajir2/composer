@@ -164,6 +164,7 @@ def test_delete_execution_owner_succeeds() -> None:
     and cascades to the LangGraph checkpoint tables (writes first,
     then checkpoints, FK ordering)."""
     client, db = _client_with_mock_db()
+    db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="completed"))
     db.langgraphcheckpointwrite = MagicMock()
     db.langgraphcheckpointwrite.delete_many = AsyncMock()
     db.langgraphcheckpoint = MagicMock()
@@ -194,12 +195,36 @@ def test_delete_execution_404_when_not_owner() -> None:
     assert resp.status_code == 404
 
 
+def test_delete_execution_running_rejected_409() -> None:
+    """Deleting a still-running execution would delete its LangGraph
+    checkpoints out from under the in-flight background task, which then
+    fails to persist its final state against a row that no longer exists
+    (P1-6). Reject rather than silently deleting live state."""
+    client, db = _client_with_mock_db()
+    db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="running"))
+    db.workflowexecution.delete = AsyncMock()
+    resp = client.delete("/executions/ex1")
+    assert resp.status_code == 409
+    db.workflowexecution.delete.assert_not_awaited()
+
+
+def test_delete_execution_waiting_approval_rejected_409() -> None:
+    client, db = _client_with_mock_db()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=_execution_row(status="waiting_approval")
+    )
+    db.workflowexecution.delete = AsyncMock()
+    resp = client.delete("/executions/ex1")
+    assert resp.status_code == 409
+    db.workflowexecution.delete.assert_not_awaited()
+
+
 def test_delete_execution_admin_can_delete_any() -> None:
     """Admin role bypasses ownership check."""
     from src.security.auth import get_current_role
 
     client, db = _client_with_mock_db()
-    other_user_row = _execution_row()
+    other_user_row = _execution_row(status="completed")
     other_user_row.userId = "someone-else"
     db.workflowexecution.find_unique = AsyncMock(return_value=other_user_row)
     db.langgraphcheckpointwrite = MagicMock()
@@ -220,7 +245,7 @@ def test_delete_execution_admin_can_delete_any() -> None:
 def test_bulk_delete_owned_ids() -> None:
     """Owner can bulk-delete their own executions by id list."""
     client, db = _client_with_mock_db()
-    rows = [_execution_row(), _execution_row()]
+    rows = [_execution_row(status="completed"), _execution_row(status="completed")]
     rows[1].id = "ex2"
     rows[1].threadId = "t2"
     db.workflowexecution.find_many = AsyncMock(return_value=rows)
@@ -241,6 +266,37 @@ def test_bulk_delete_owned_ids() -> None:
     db.workflowexecution.delete_many.assert_awaited_once_with(where={"id": {"in": ["ex1", "ex2"]}})
 
 
+def test_bulk_delete_skips_active_executions() -> None:
+    """A running or waiting_approval row in the requested set is skipped,
+    not deleted — same reasoning as the single-delete 409 (P1-6): deleting
+    live checkpoints out from under an in-flight execution breaks its
+    ability to persist a final state."""
+    client, db = _client_with_mock_db()
+    rows = [
+        _execution_row(status="completed"),
+        _execution_row(status="running"),
+        _execution_row(status="waiting_approval"),
+    ]
+    rows[1].id, rows[1].threadId = "ex2", "t2"
+    rows[2].id, rows[2].threadId = "ex3", "t3"
+    db.workflowexecution.find_many = AsyncMock(return_value=rows)
+    db.workflowexecution.delete_many = AsyncMock()
+    db.langgraphcheckpointwrite = MagicMock()
+    db.langgraphcheckpointwrite.delete_many = AsyncMock()
+    db.langgraphcheckpoint = MagicMock()
+    db.langgraphcheckpoint.delete_many = AsyncMock()
+
+    resp = client.post(
+        "/executions/delete-bulk",
+        json={"executionIds": ["ex1", "ex2", "ex3"]},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deletedCount"] == 1
+    assert body["skippedCount"] == 2
+    db.workflowexecution.delete_many.assert_awaited_once_with(where={"id": {"in": ["ex1"]}})
+
+
 def test_bulk_delete_skips_non_owned_ids() -> None:
     """Member callers passing other users' ids → those rows are
     silently skipped (the find_many WHERE clause filters by userId,
@@ -248,7 +304,7 @@ def test_bulk_delete_skips_non_owned_ids() -> None:
     client, db = _client_with_mock_db()
     # Only ex1 belongs to dev; ex2/ex3 are someone else's and get
     # filtered out by the userId scope.
-    db.workflowexecution.find_many = AsyncMock(return_value=[_execution_row()])
+    db.workflowexecution.find_many = AsyncMock(return_value=[_execution_row(status="completed")])
     db.workflowexecution.delete_many = AsyncMock()
     db.langgraphcheckpointwrite = MagicMock()
     db.langgraphcheckpointwrite.delete_many = AsyncMock()
@@ -278,7 +334,7 @@ def test_bulk_delete_all_in_scope_admin_succeeds() -> None:
     from src.security.auth import get_current_role
 
     client, db = _client_with_mock_db()
-    rows = [_execution_row(), _execution_row()]
+    rows = [_execution_row(status="completed"), _execution_row(status="completed")]
     rows[1].id = "ex2"
     rows[1].threadId = "t2"
     db.workflowexecution.find_many = AsyncMock(return_value=rows)
@@ -303,3 +359,66 @@ def test_bulk_delete_no_args_rejected() -> None:
     client, _ = _client_with_mock_db()
     resp = client.post("/executions/delete-bulk", json={})
     assert resp.status_code == 422
+
+
+def test_cancel_execution_running_succeeds() -> None:
+    """P1-6: the public status vocabulary documents `canceled`, but nothing
+    ever wrote it — worker shutdown persisted `failed` instead, and there
+    was no user-triggered cancel operation at all. A running execution can
+    now be explicitly canceled."""
+    client, db = _client_with_mock_db()
+    db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="running"))
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    resp = client.post("/executions/ex1/cancel")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "canceled"
+    where = db.workflowexecution.update_many.call_args.kwargs["where"]
+    assert where["id"] == "ex1"
+    assert where["status"] == {"in": ["running", "waiting_approval"]}
+
+
+def test_cancel_execution_waiting_approval_succeeds() -> None:
+    client, db = _client_with_mock_db()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=_execution_row(status="waiting_approval")
+    )
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    resp = client.post("/executions/ex1/cancel")
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "canceled"
+
+
+def test_cancel_execution_completed_rejected_409() -> None:
+    """Already-terminal executions can't be canceled."""
+    client, db = _client_with_mock_db()
+    db.workflowexecution.update_many = AsyncMock()
+    resp = client.post("/executions/ex1/cancel")
+    assert resp.status_code == 409
+    db.workflowexecution.update_many.assert_not_awaited()
+
+
+def test_cancel_execution_404_when_missing() -> None:
+    client, db = _client_with_mock_db()
+    db.workflowexecution.find_unique = AsyncMock(return_value=None)
+    resp = client.post("/executions/ghost/cancel")
+    assert resp.status_code == 404
+
+
+def test_cancel_execution_404_when_not_owner() -> None:
+    client, db = _client_with_mock_db()
+    other_user_row = _execution_row(status="running")
+    other_user_row.userId = "someone-else"
+    db.workflowexecution.find_unique = AsyncMock(return_value=other_user_row)
+    resp = client.post("/executions/ex1/cancel")
+    assert resp.status_code == 404
+
+
+def test_cancel_execution_race_loses_when_update_many_affects_zero_rows() -> None:
+    """Two near-simultaneous cancel requests (or a cancel racing a resume)
+    — only one can win the atomic transition."""
+    client, db = _client_with_mock_db()
+    db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="running"))
+    db.workflowexecution.update_many = AsyncMock(return_value=0)
+    resp = client.post("/executions/ex1/cancel")
+    assert resp.status_code == 409

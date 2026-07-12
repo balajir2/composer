@@ -126,6 +126,12 @@ class RunSyncResponse(BaseModel):
 
 
 TERMINAL_STATUSES = {"completed", "failed", "canceled"}
+# waiting_approval isn't terminal — the execution can still resume — but a
+# sync caller polling for a result has no way to act on the pause, and
+# polling all the way to timeout_seconds before reporting it (P1-6) makes
+# a workflow paused for human review indistinguishable from one still
+# running. Report it the moment it's observed, same as a real terminal state.
+SYNC_EARLY_RETURN_STATUSES = TERMINAL_STATUSES | {"waiting_approval"}
 
 
 def _get_executor(request: Request, db: Any, event_bus: Any) -> LangGraphExecutor:
@@ -167,8 +173,11 @@ async def run_external(
         config=per_minute_config(settings.rate_limit_api_run_per_minute),
     )
 
-    # Input size cap — reuse Phase 8's workflow_execution cap.
-    input_size = len(_json.dumps(payload.input, default=str))
+    # Input size cap — reuse Phase 8's workflow_execution cap. Measure true
+    # UTF-8 byte size, not the character length of json.dumps()'s default
+    # ensure_ascii=True output — see the matching comment in
+    # src/api/executions.py (P1-6).
+    input_size = len(_json.dumps(payload.input, default=str, ensure_ascii=False).encode("utf-8"))
     if input_size > settings.max_execution_input_bytes:
         raise HTTPException(
             status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
@@ -245,24 +254,28 @@ async def run_external(
             streamUrl=stream_url,
         )
 
-    # Sync mode — poll until terminal or timeout_seconds.
+    # Sync mode — poll until terminal, waiting_approval, or timeout_seconds.
+    last_status = execution.status
     deadline = time.monotonic() + payload.timeout_seconds
     while time.monotonic() < deadline:
         current = await db.workflowexecution.find_unique(where={"id": execution.id})  # pyright: ignore[reportAttributeAccessIssue]
-        if current is not None and current.status in TERMINAL_STATUSES:
-            return RunSyncResponse(
-                executionId=execution.id,
-                workflowId=workflow.id,
-                status=current.status,
-                output=current.output,
-            )
+        if current is not None:
+            last_status = current.status
+            if current.status in SYNC_EARLY_RETURN_STATUSES:
+                return RunSyncResponse(
+                    executionId=execution.id,
+                    workflowId=workflow.id,
+                    status=current.status,
+                    output=current.output,
+                )
         await asyncio.sleep(0.25)
 
-    # Timeout — fall back to async shape.
+    # Timeout — fall back to async shape, reporting whatever status was
+    # last observed rather than assuming 'running' (P1-6).
     return RunAsyncResponse(
         executionId=execution.id,
         workflowId=workflow.id,
-        status="running",
+        status=last_status,
         streamUrl=stream_url,
     )
 

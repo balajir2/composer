@@ -1,5 +1,6 @@
 """Unit tests for POST /api/run/{slug} (Phase 10a)."""
 
+import time
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -169,6 +170,29 @@ def test_idempotency_key_starts_new_execution_when_no_match(
     assert start_calls == [{"workflow_id": "wf1", "idempotency_key": "fresh-key"}]
 
 
+def test_sync_mode_returns_immediately_on_waiting_approval(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """sync=true must treat waiting_approval as a meaningful terminal-ish
+    response and return right away — polling until timeoutSeconds and then
+    reporting a hard-coded 'running' status when the row is actually
+    waiting_approval is misleading to a caller that can't tell whether the
+    workflow is still executing or paused for a human decision (P1-6)."""
+    wf = _wf(isPublic=True)
+    waiting_row = _exec(status="waiting_approval", output=None)
+    client = _build_client(monkeypatch, wf, start_result=waiting_row)
+    started = time.monotonic()
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {"x": 1}, "sync": True, "timeoutSeconds": 5},
+    )
+    elapsed = time.monotonic() - started
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "waiting_approval"
+    assert elapsed < 2, "should return immediately, not poll for the full timeout"
+
+
 def test_async_run_returns_200_with_stream_url(monkeypatch: pytest.MonkeyPatch) -> None:
     wf = _wf(isPublic=True)
     client = _build_client(monkeypatch, wf)
@@ -262,3 +286,21 @@ def test_input_over_size_returns_413(monkeypatch: pytest.MonkeyPatch) -> None:
         json={"input": huge},
     )
     assert resp.status_code == 413
+
+
+def test_input_non_ascii_measured_by_utf8_bytes_not_escaped_json_chars(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same UTF-8-byte-vs-escaped-char-count bug as POST /executions
+    (P1-6): a 300,000-char string of euro signs is 900,002 real UTF-8
+    bytes (under the 1 MB cap) but 1,800,002 chars once json.dumps's
+    default ensure_ascii=True escapes each '€' to `\\u20ac`."""
+    wf = _wf(isPublic=True)
+    client = _build_client(monkeypatch, wf)
+    non_ascii_input = "€" * 300_000
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": non_ascii_input},
+    )
+    assert resp.status_code != 413
