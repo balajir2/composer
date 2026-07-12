@@ -131,6 +131,57 @@ async def test_http_url_variable_substitution(httpx_mock: HTTPXMock) -> None:  #
     assert delta["variables"]["lastOutput"] == {"id": 42}
 
 
+async def test_http_blocks_ssrf_target(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P0-6: the HTTP node must not reach loopback/private/metadata
+    addresses. No httpx_mock response registered — if this reaches the
+    transport layer at all, the test fails with an unmocked-request error
+    rather than the expected HttpNodeError."""
+    node = _http_node(httpMethod="GET", httpUrl="https://169.254.169.254/latest/meta-data/")
+    with pytest.raises(HttpNodeError, match=r"[Bb]locked"):
+        await HttpExecutor(node).arun(initial_state())
+
+
+async def test_http_blocks_ssrf_target_via_dns(monkeypatch: pytest.MonkeyPatch) -> None:
+    import src.security.ssrf as ssrf_mod
+
+    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["10.0.0.5"])
+    node = _http_node(httpMethod="GET", httpUrl="https://internal.corp.example/api")
+    with pytest.raises(HttpNodeError, match=r"[Bb]locked"):
+        await HttpExecutor(node).arun(initial_state())
+
+
+async def test_http_oversized_response_raises(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.executors.http as http_mod
+
+    monkeypatch.setattr(http_mod, "_MAX_RESPONSE_BYTES", 10)
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        url="https://example.test/big",
+        method="GET",
+        text="this response body is way over ten bytes",
+    )
+    node = _http_node(httpMethod="GET", httpUrl="https://example.test/big")
+    with pytest.raises(HttpNodeError, match=r"[Tt]oo large|size"):
+        await HttpExecutor(node).arun(initial_state())
+
+
+async def test_http_error_redacts_credentials_in_url(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        url="https://example.test/secret?api_key=sk-verysecret123",
+        method="GET",
+        status_code=500,
+        text="boom",
+    )
+    node = _http_node(
+        httpMethod="GET", httpUrl="https://example.test/secret?api_key=sk-verysecret123"
+    )
+    with pytest.raises(HttpNodeError) as exc_info:
+        await HttpExecutor(node).arun(initial_state())
+    assert "sk-verysecret123" not in str(exc_info.value)
+
+
 async def test_http_executor_is_registered() -> None:
     import src.executors.http  # noqa: F401  # pyright: ignore[reportUnusedImport]
     from src.executors.base import build_executor

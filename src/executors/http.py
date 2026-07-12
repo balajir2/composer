@@ -4,22 +4,37 @@ Fires a single HTTP request and returns the parsed response body. Non-2xx
 responses raise HttpNodeError; that bubbles up through LangGraphExecutor
 as a failed execution.
 
-See Phase 4a spec §6.
+See Phase 4a spec §6. SSRF policy + response-size cap + URL redaction:
+see P0-6 in docs/claude-improvement-backlog.md.
 """
 
 import logging
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
 
+from src.config import get_settings
 from src.engine.state import WorkflowStateDict
 from src.engine.workflow import HttpNode
 from src.executors.base import register_executor
+from src.security.ssrf import SSRFBlockedError, validate_outbound_url
 from src.variable_substitution import substitute, substitute_in_value
 
 logger = logging.getLogger(__name__)
 
 _DEFAULT_TIMEOUT = 60.0
+# Read once at import time (consistent with _DEFAULT_TIMEOUT above); tests
+# monkeypatch this module attribute directly to exercise the size cap
+# without downloading a genuinely large response.
+_MAX_RESPONSE_BYTES = get_settings().http_node_max_response_bytes
+
+# Query-param names whose values get redacted before a URL appears in an
+# error message or node_results — these commonly carry secrets embedded
+# directly in the URL (e.g. `?api_key=...`).
+_SENSITIVE_QUERY_PARAMS = frozenset(
+    {"token", "api_key", "apikey", "access_token", "secret", "password", "key", "authorization"}
+)
 
 
 class HttpNodeError(RuntimeError):
@@ -40,6 +55,21 @@ def _dot_path(value: Any, path: str) -> Any:
     return cur
 
 
+def _redact_url(url: str) -> str:
+    """Strip userinfo (user:pass@) and redact sensitive query-param values
+    before a URL is persisted in an error message or node_results."""
+    parts = urlsplit(url)
+    netloc = parts.hostname or ""
+    if parts.port:
+        netloc = f"{netloc}:{parts.port}"
+    query_pairs = parse_qsl(parts.query, keep_blank_values=True)
+    redacted_pairs = [
+        (k, "***REDACTED***" if k.lower() in _SENSITIVE_QUERY_PARAMS else v) for k, v in query_pairs
+    ]
+    redacted_query = urlencode(redacted_pairs)
+    return urlunsplit((parts.scheme, netloc, parts.path, redacted_query, ""))
+
+
 @register_executor("http")
 class HttpExecutor:
     def __init__(self, node: HttpNode) -> None:
@@ -51,6 +81,14 @@ class HttpExecutor:
         if not raw_url:
             raise HttpNodeError(f"http node {self.node.id!r} has no httpUrl")
         url = substitute(raw_url, state)
+
+        try:
+            validate_outbound_url(url, get_settings())
+        except SSRFBlockedError as exc:
+            raise HttpNodeError(
+                f"http node {self.node.id!r}: blocked by SSRF policy: {exc}"
+            ) from exc
+
         headers = substitute_in_value(self.node.data.http_headers or {}, state)
         body_raw = substitute_in_value(self.node.data.http_body, state)
 
@@ -60,27 +98,47 @@ class HttpExecutor:
         elif isinstance(body_raw, str) and body_raw:
             body_kwargs["content"] = body_raw
 
+        redacted_url = _redact_url(url)
+
+        # follow_redirects defaults to False in httpx — deliberately not
+        # enabled here, since following a redirect would need the same
+        # SSRF validation re-applied to the new target (P0-6) and that
+        # isn't implemented.
         try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(_DEFAULT_TIMEOUT, connect=5.0)
-            ) as client:
-                resp = await client.request(method, url, headers=headers, **body_kwargs)
+            async with (
+                httpx.AsyncClient(timeout=httpx.Timeout(_DEFAULT_TIMEOUT, connect=5.0)) as client,
+                client.stream(method, url, headers=headers, **body_kwargs) as resp,
+            ):
+                chunks: list[bytes] = []
+                total = 0
+                async for chunk in resp.aiter_bytes():
+                    total += len(chunk)
+                    if total > _MAX_RESPONSE_BYTES:
+                        raise HttpNodeError(
+                            f"http node {self.node.id!r}: response from {redacted_url!r} "
+                            f"exceeded the {_MAX_RESPONSE_BYTES}-byte size limit"
+                        )
+                    chunks.append(chunk)
+                body = b"".join(chunks)
+                status_code = resp.status_code
+                content_type = resp.headers.get("content-type", "").lower()
         except httpx.HTTPError as exc:
             raise HttpNodeError(
                 f"http node {self.node.id!r} transport failed: {type(exc).__name__}: {exc}"
             ) from exc
 
-        if resp.status_code >= 400:
+        if status_code >= 400:
             raise HttpNodeError(
-                f"http node {self.node.id!r} got HTTP {resp.status_code} from "
-                f"{url!r}: {resp.text[:200]}"
+                f"http node {self.node.id!r} got HTTP {status_code} from "
+                f"{redacted_url!r}: {body[:200].decode('utf-8', errors='replace')}"
             )
 
-        content_type = resp.headers.get("content-type", "").lower()
         if "application/json" in content_type:
-            parsed: Any = resp.json()
+            import json
+
+            parsed: Any = json.loads(body)
         else:
-            parsed = resp.text
+            parsed = body.decode("utf-8", errors="replace")
 
         if self.node.data.response_path:
             parsed = _dot_path(parsed, self.node.data.response_path)
@@ -92,7 +150,7 @@ class HttpExecutor:
                 self.node.id: {
                     "node_id": self.node.id,
                     "status": "completed",
-                    "input": {"method": method, "url": url},
+                    "input": {"method": method, "url": redacted_url},
                     "output": parsed,
                 }
             },

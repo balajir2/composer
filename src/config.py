@@ -184,6 +184,34 @@ class Settings(BaseSettings):
         description="Max bytes for POST /executions input (JSON-serialized).",
     )
 
+    # ─── HTTP node SSRF policy (P0-6) ──────────────
+    ssrf_protection_enabled: bool = Field(
+        default=True,
+        description=(
+            "Block the HTTP node from reaching loopback/private/link-local/"
+            "metadata addresses. Only disable for a fully trusted, "
+            "single-tenant deployment."
+        ),
+    )
+    http_node_allow_http: bool = Field(
+        default=False,
+        description="Allow plain http:// (not just https://) for the HTTP node.",
+    )
+    http_node_hostname_allowlist: str = Field(
+        default="",
+        description=(
+            "Comma-separated hostnames (lowercase, exact match) the HTTP node "
+            "may reach even though they'd otherwise be blocked — e.g. a "
+            "private VPC service an administrator intentionally wants "
+            "workflows to call. Same comma-separated convention as "
+            "COMPOSER_FRONTEND_ORIGINS."
+        ),
+    )
+    http_node_max_response_bytes: int = Field(
+        default=5_000_000,
+        description="Max bytes buffered from an HTTP node response before aborting.",
+    )
+
     # ─── Rate limits (Phase 8) ────────────────────
     rate_limit_executions_per_minute: int = 30
     rate_limit_login_per_minute: int = 10
