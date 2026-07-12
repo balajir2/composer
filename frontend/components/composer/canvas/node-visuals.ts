@@ -18,6 +18,7 @@ import {
   Database,
   FileSearch,
   FolderInput,
+  FolderOutput,
   Mail,
   Gamepad2,
   GitBranch,
@@ -184,6 +185,12 @@ export const NODE_VISUALS: Record<string, NodeVisual> = {
     iconWrapClass: "bg-amber-100 text-amber-700",
     accent: "text-amber-700",
     label: "File Trigger",
+  },
+  "file-write": {
+    icon: FolderOutput,
+    iconWrapClass: "bg-teal-100 text-teal-700",
+    accent: "text-teal-700",
+    label: "File Write",
   },
 };
 

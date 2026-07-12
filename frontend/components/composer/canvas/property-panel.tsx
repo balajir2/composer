@@ -26,6 +26,7 @@ import ArcadePanel from "./node-panels/arcade";
 import VectorDbPanel from "./node-panels/vector-db";
 import JiraPanel from "./node-panels/jira";
 import FileTriggerPanel from "./node-panels/file-trigger";
+import FileWritePanel from "./node-panels/file-write";
 
 // ---------------------------------------------------------------------------
 // Panel component type
@@ -66,6 +67,7 @@ const PANEL_MAP: Record<string, PanelComponent> = {
   "vector-db": VectorDbPanel,
   jira: JiraPanel,
   "file-trigger": FileTriggerPanel,
+  "file-write": FileWritePanel,
 };
 
 const TYPE_LABELS: Record<string, string> = {
@@ -90,6 +92,7 @@ const TYPE_LABELS: Record<string, string> = {
   "vector-db": "Vector DB",
   jira: "Jira",
   "file-trigger": "File Trigger",
+  "file-write": "File Write",
 };
 
 // ---------------------------------------------------------------------------

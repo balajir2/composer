@@ -225,6 +225,7 @@ export const COMPOSER_NODE_TYPES: NodeTypes = {
   "vector-db": InnerNode,
   jira: InnerNode,
   "file-trigger": InnerNode,
+  "file-write": InnerNode,
 };
 
 // ---------------------------------------------------------------------------
