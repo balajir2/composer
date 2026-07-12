@@ -79,10 +79,12 @@ The WebSocket emits these event types:
 
 ```json
 {"type": "node_started",     "executionId": "...", "payload": {"nodeId": "agent-1", "nodeName": "Answer Question", ...}}
-{"type": "node_completed",   "executionId": "...", "payload": {"nodeId": "agent-1", "input": ..., "output": ..., "duration_ms": 1234}}
-{"type": "node_failed",      "executionId": "...", "payload": {"nodeId": "agent-1", "error": "..."}}
+{"type": "node_completed",   "executionId": "...", "payload": {"nodeId": "agent-1", "input": ..., "output": ..., "durationMs": 1234}}
+{"type": "node_failed",      "executionId": "...", "payload": {"nodeId": "agent-1", "error": "...", "durationMs": 1234}}
 {"type": "execution_completed", "executionId": "...", "payload": {"status": "completed", "output": ...}}
 ```
+
+`durationMs` (P1-5) is computed once, universally, in `wrap_executor_with_events` — the single wrapper every node type flows through — rather than per-executor. The same node also gets `startedAt`/`completedAt`/`durationMs` merged into its `nodeResults[nodeId]` entry in the persisted `WorkflowExecution.nodeResults` column, so timing survives a WebSocket disconnect and is visible on `GET /executions/{id}` after the fact, not just in the live stream.
 
 ## Approvals
 

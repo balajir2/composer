@@ -81,6 +81,81 @@ async def test_wrapper_emits_start_and_complete_on_success() -> None:
     assert "output" in completed.payload
 
 
+async def test_wrapper_adds_timing_to_node_results_and_completed_event() -> None:
+    """P1-5: every node's persisted node_results entry (and the
+    node_completed event payload) carries startedAt/completedAt/durationMs
+    so the execution trace shows how long each node took — added once,
+    universally, in this wrapper rather than per-executor, since every
+    node type already flows through it."""
+    from src.engine.context import set_current_event_bus, set_current_execution_id
+
+    bus = ExecutionEventBus()
+    q = await bus.subscribe("e1")
+    set_current_execution_id("e1")
+    set_current_event_bus(bus)
+
+    try:
+        arun = wrap_executor_with_events(_FakeExecutor(), _FakeNode("n1", "http"))  # pyright: ignore[reportArgumentType]
+        result = await arun(initial_state())
+    finally:
+        set_current_execution_id(None)
+        set_current_event_bus(None)
+
+    node_rec = result["node_results"]["n1"]
+    assert "startedAt" in node_rec
+    assert "completedAt" in node_rec
+    assert isinstance(node_rec["durationMs"], int)
+    assert node_rec["durationMs"] >= 0
+
+    events: list[Any] = []
+    while True:
+        try:
+            ev = await asyncio.wait_for(q.get(), timeout=0.05)
+        except TimeoutError:
+            break
+        if ev is None:
+            break
+        events.append(ev)
+
+    completed = next(e for e in events if e.type == "node_completed")
+    assert "durationMs" in completed.payload
+    assert completed.payload["durationMs"] >= 0
+
+
+async def test_wrapper_adds_duration_to_node_failed_event() -> None:
+    """A failed node's duration matters too — helps distinguish an
+    instant validation error from a call that hung for 30s before
+    erroring (P1-5)."""
+    from src.engine.context import set_current_event_bus, set_current_execution_id
+
+    bus = ExecutionEventBus()
+    q = await bus.subscribe("e1")
+    set_current_execution_id("e1")
+    set_current_event_bus(bus)
+
+    try:
+        arun = wrap_executor_with_events(_RaisingExecutor(), _FakeNode("n1", "http"))  # pyright: ignore[reportArgumentType]
+        with pytest.raises(RuntimeError, match="boom"):
+            await arun(initial_state())
+    finally:
+        set_current_execution_id(None)
+        set_current_event_bus(None)
+
+    events: list[Any] = []
+    while True:
+        try:
+            ev = await asyncio.wait_for(q.get(), timeout=0.05)
+        except TimeoutError:
+            break
+        if ev is None:
+            break
+        events.append(ev)
+
+    failed = next(e for e in events if e.type == "node_failed")
+    assert "durationMs" in failed.payload
+    assert failed.payload["durationMs"] >= 0
+
+
 async def test_wrapper_emits_start_but_not_complete_on_exception() -> None:
     from src.engine.context import set_current_event_bus, set_current_execution_id
 

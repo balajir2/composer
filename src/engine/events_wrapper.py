@@ -8,6 +8,8 @@ See Phase 5b spec §6.2 (event types updated to DES-007 in Phase 9a).
 
 from __future__ import annotations
 
+import time
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from langgraph.errors import GraphBubbleUp
@@ -148,6 +150,11 @@ def wrap_executor_with_events(
                 )
             )
 
+        # P1-5: start/end time + duration, captured once here rather than
+        # per-executor — every node type already flows through this wrapper.
+        started_monotonic = time.monotonic()
+        started_at = datetime.now(UTC).isoformat()
+
         try:
             result = await executor.arun(state)
         except GraphBubbleUp:
@@ -159,6 +166,7 @@ def wrap_executor_with_events(
             raise
         except Exception as exc:
             if bus is not None and execution_id is not None:
+                duration_ms = round((time.monotonic() - started_monotonic) * 1000)
                 await bus.emit(
                     ExecutionEvent(
                         type="node_failed",
@@ -166,6 +174,7 @@ def wrap_executor_with_events(
                         payload={
                             **node_info,
                             "error": f"{type(exc).__name__}: {exc}",
+                            "durationMs": duration_ms,
                         },
                     )
                 )
@@ -186,9 +195,26 @@ def wrap_executor_with_events(
         injected: dict[str, Any] = {id_alias: parsed}
         if name_alias and name_alias != id_alias:
             injected[name_alias] = parsed
+
+        completed_at = datetime.now(UTC).isoformat()
+        duration_ms = round((time.monotonic() - started_monotonic) * 1000)
+        existing_node_results: dict[str, Any] = {}
+        if isinstance(result.get("node_results"), dict):
+            existing_node_results = result["node_results"]
+        existing_node_rec: dict[str, Any] = {}
+        if isinstance(existing_node_results.get(node.id), dict):
+            existing_node_rec = existing_node_results[node.id]
+        node_rec = {
+            **existing_node_rec,
+            "startedAt": started_at,
+            "completedAt": completed_at,
+            "durationMs": duration_ms,
+        }
+
         result = {
             **result,
             "variables": {**existing_vars, **injected},
+            "node_results": {**existing_node_results, node.id: node_rec},
         }
 
         if bus is not None and execution_id is not None:
@@ -200,6 +226,7 @@ def wrap_executor_with_events(
                         **node_info,
                         "input": node_input,
                         "output": output,
+                        "durationMs": duration_ms,
                     },
                 )
             )
