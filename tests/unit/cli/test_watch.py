@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock
 
 import pytest
+from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
 
 if TYPE_CHECKING:
     from src.cli.watch import WatchConfig
@@ -112,3 +113,54 @@ async def test_claim_moves_to_error_path_on_unsupported_file_type(
     await claim_file(provider, ref, config)
 
     assert (error / "image.png").exists()
+
+
+async def test_trigger_workflow_posts_expected_request(
+    tmp_path: Path, httpx_mock: HTTPXMock  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """Direct coverage of `_trigger_workflow` (not via `claim_file`): confirms
+    the URL, bearer auth header, and JSON body actually sent over the wire."""
+    from src.cli.watch import _trigger_workflow  # pyright: ignore[reportPrivateUsage]
+
+    source = tmp_path / "in"
+    dest = tmp_path / "done"
+    error = tmp_path / "error"
+    config = _trigger_config(source, dest, error)
+
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        url="https://api.example.com/api/run/my-workflow",
+        method="POST",
+        status_code=200,
+        json={"ok": True},
+    )
+
+    await _trigger_workflow(config=config, input_payload={"some_var": "some text"})
+
+    req = httpx_mock.get_request()  # pyright: ignore[reportUnknownMemberType]
+    assert req is not None
+    assert str(req.url) == "https://api.example.com/api/run/my-workflow"
+    assert req.headers.get("authorization") == "Bearer ck_test"
+    assert req.content == b'{"input":{"some_var":"some text"}}'
+
+
+async def test_trigger_workflow_raises_runtime_error_on_non_2xx(
+    tmp_path: Path, httpx_mock: HTTPXMock  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """Direct coverage of the `if resp.status_code >= 400: raise RuntimeError`
+    branch in `_trigger_workflow`."""
+    from src.cli.watch import _trigger_workflow  # pyright: ignore[reportPrivateUsage]
+
+    source = tmp_path / "in"
+    dest = tmp_path / "done"
+    error = tmp_path / "error"
+    config = _trigger_config(source, dest, error)
+
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        url="https://api.example.com/api/run/my-workflow",
+        method="POST",
+        status_code=500,
+        text="backend exploded",
+    )
+
+    with pytest.raises(RuntimeError, match="trigger failed"):
+        await _trigger_workflow(config=config, input_payload={"some_var": "some text"})
