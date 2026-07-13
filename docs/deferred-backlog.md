@@ -48,52 +48,43 @@ it?) — orthogonal to closing the disclosure gap, which didn't need it.
 
 ---
 
-## 🔴 P1-2 — Move workflow execution to durable workers
+## 🟡 P1-2 — Move workflow execution to durable workers (ADR PROPOSED — awaiting approval)
 
-**Problem:** Executions run as request-bound background tasks / raw `asyncio.create_task`. A
-Cloud Run instance kill, deploy, or CPU suspension can silently interrupt a run mid-node; the
-stuck-execution sweeper can only mark it `failed`, never finish or resume the actual work.
+**ADR written 2026-07-13 — see ADR-0033 in `docs/decisions.md`.** Not yet approved; no code
+changes made. Verified the risk is active today, not theoretical: Cloud Run deploys with
+`--min-instances=0` (`scripts/gcp-bootstrap.ps1`), and Google's own guidance for this exact
+FastAPI-`BackgroundTasks`-on-Cloud-Run pattern independently confirms scale-to-zero can kill a
+detached background task once its HTTP response has been sent, regardless of whether the task is
+still running.
 
-**Why it's a decision:** The audit itself frames this as requiring an ADR first — Google Cloud
-Tasks vs. Pub/Sub vs. a Postgres-backed queue vs. Redis-backed workers, each with different
-operational cost, lease/heartbeat semantics, and LangGraph-checkpoint interaction. This is also a
-stack-locked change per `CLAUDE.md` (execution model is part of the locked architecture) —
-explicit approval required before even prototyping.
+**Recommendation in the ADR:** Google Cloud Tasks (HTTP-push delivery keeps the Cloud Run
+instance alive for the task's duration, native retry/backoff/dead-letter) triggering a claim
+endpoint that still uses the row-locking pattern already validated in ADR-0031
+(`SELECT ... FOR UPDATE SKIP LOCKED`) as the actual concurrency guard — Cloud Tasks' at-least-once
+delivery alone doesn't guarantee single-claim, Postgres does.
 
-**Decisions needed:**
-1. Which durable-queue backend — bias toward "smallest reliable option compatible with Cloud Run
-   + LangGraph checkpoints" per the audit's own framing (a Postgres-backed queue reuses the
-   existing DB and avoids a new managed dependency; Cloud Tasks avoids building queue semantics
-   from scratch but adds a GCP-specific coupling).
-2. Does this replace `LangGraphExecutor.run()`'s current in-process model entirely, or run
-   alongside it for new executions while old-style ones drain out?
-3. How does approval-resume (`POST /executions/{id}/resume`, the email-link flow) route through
-   the same durable mechanism without a second, parallel resume path to maintain?
+**Open questions for the user (from the ADR) before implementation starts:**
+1. Approve introducing Cloud Tasks as new infrastructure (new GCP service, IAM/OIDC config, new
+   `google-cloud-tasks` dependency)?
+2. Full replacement of `LangGraphExecutor.run()`'s in-process model, or run alongside it while
+   old-style executions drain out?
+3. Land P1-2 and P1-4 together as the ADR frames them, or P1-2 first (the higher-severity,
+   confirmed-active risk)?
 
-**Full spec:** `docs/claude-improvement-backlog.md` §P1-2 — write the ADR first, per the audit's
-own "Required discovery" instruction.
+**Full spec:** `docs/claude-improvement-backlog.md` §P1-2.
 
 ---
 
-## 🔴 P1-4 — Replace process-local events and rate limits
+## 🟡 P1-4 — Replace process-local events and rate limits (ADR PROPOSED — awaiting approval)
 
-**Problem:** The execution event bus (WebSocket fan-out) and the rate-limit token buckets are
-both in-process Python state. Correct only for a single backend instance — Cloud Run can and does
-autoscale to N instances, at which point a client connected to instance A never sees events
-emitted by instance B, and rate limits reset per-instance instead of being global.
+**ADR written 2026-07-13 — see ADR-0033 in `docs/decisions.md`** (same ADR as P1-2 — the audit's
+own framing groups these as one shared-infra decision). Not yet approved; no code changes made.
 
-**Why it's a decision:** Needs a shared backing store — Redis, Postgres `LISTEN/NOTIFY`, or GCP
-Pub/Sub — each a new operational dependency (or a new usage pattern on the existing Postgres) with
-different cost/complexity tradeoffs. Directly overlaps with P1-2's queue-backend choice; deciding
-these together avoids picking two different shared-infra pieces where one would do.
-
-**Decisions needed:**
-1. Backing store choice — and whether it should be the *same* one chosen for P1-2's durable-worker
-   queue (e.g., Postgres `LISTEN/NOTIFY` could plausibly serve both).
-2. Event history/retention policy — how long a reconnecting client can look back to recover missed
-   terminal events.
-3. Whether this blocks or can ship independently of P1-2 (they're related but not strictly
-   sequential).
+**Recommendation in the ADR:** no new infrastructure for this one — Postgres `LISTEN/NOTIFY` for
+low-latency event delivery (verified: 8000-byte payload cap, non-durable, transactional with
+commits) combined with a new persisted events table for reconnect-cursor/missed-event-recovery
+history `LISTEN/NOTIFY` alone can't provide; rate limiting via a Postgres table using the same
+atomic-conditional-update pattern already shipped three times this session (P1-1, P1-3, P1-6).
 
 **Full spec:** `docs/claude-improvement-backlog.md` §P1-4.
 
@@ -230,9 +221,10 @@ Dependencies between these argue for roughly this sequence, not strict P0→P3 p
 2. ~~**P0-5** (disclosure gap)~~ — **patched** 2026-07-13; the concrete security gap (plaintext
    secrets in public workflow/MCP reads) is closed. The `Credential`/`Connection` model decision
    (needed for P2-2's reuse/rotation UX) is still open — see the updated P0-5 entry above.
-3. **P1-2** + **P1-4** together — durable workers and shared events/rate-limits both need a
-   shared-infra decision; picking one backing store for both avoids two separate new dependencies.
-   No longer blocked on a persistence decision (see #1).
+3. **P1-2** + **P1-4** — ADR written (ADR-0033), **awaiting your approval to implement**. Not one
+   shared backend after all, per the evidence: Cloud Tasks for the execution queue (purpose-built,
+   solves the confirmed-active Cloud-Run-scale-to-zero risk directly), Postgres for events/rate
+   limits (no new infra, reuses this session's already-proven patterns). One new service total.
 4. **P2-2** (connections UI) — needs P0-5's `Credential` model decision made first (still open).
 5. **P2-1** (dry-run mode) — independent of the above; blocked only on the control-flow semantics
    decision.
