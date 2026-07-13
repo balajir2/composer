@@ -51,6 +51,8 @@ def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     db.workflowexecution.create = AsyncMock(return_value=_execution_row())
     db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="completed"))
     db.workflowexecution.update = AsyncMock(return_value=_execution_row(status="completed"))
+    db.executionevent = MagicMock()
+    db.executionevent.delete_many = AsyncMock()
     # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
     db.user = MagicMock()
     db.user.find_unique = AsyncMock(return_value=None)
@@ -162,7 +164,7 @@ def test_get_execution_404_when_missing() -> None:
 def test_delete_execution_owner_succeeds() -> None:
     """Owner can delete their own execution.  Returns 204 with no body
     and cascades to the LangGraph checkpoint tables (writes first,
-    then checkpoints, FK ordering)."""
+    then checkpoints, FK ordering) and to execution_events (P1-4)."""
     client, db = _client_with_mock_db()
     db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="completed"))
     db.langgraphcheckpointwrite = MagicMock()
@@ -175,6 +177,7 @@ def test_delete_execution_owner_succeeds() -> None:
     assert resp.status_code == 204
     db.langgraphcheckpointwrite.delete_many.assert_awaited_once_with(where={"threadId": "t1"})
     db.langgraphcheckpoint.delete_many.assert_awaited_once_with(where={"threadId": "t1"})
+    db.executionevent.delete_many.assert_awaited_once_with(where={"executionId": "ex1"})
     db.workflowexecution.delete.assert_awaited_once_with(where={"id": "ex1"})
 
 
@@ -263,6 +266,9 @@ def test_bulk_delete_owned_ids() -> None:
     body = resp.json()
     assert body["deletedCount"] == 2
     assert body["skippedCount"] == 0
+    db.executionevent.delete_many.assert_awaited_once_with(
+        where={"executionId": {"in": ["ex1", "ex2"]}}
+    )
     db.workflowexecution.delete_many.assert_awaited_once_with(where={"id": {"in": ["ex1", "ex2"]}})
 
 

@@ -341,6 +341,7 @@ async def delete_executions_bulk(  # pyright: ignore[reportUnusedFunction]
     await db.langgraphcheckpoint.delete_many(  # pyright: ignore[reportAttributeAccessIssue]
         where={"threadId": {"in": thread_ids}}
     )
+    await db.executionevent.delete_many(where={"executionId": {"in": target_ids}})  # pyright: ignore[reportAttributeAccessIssue]
     await db.workflowexecution.delete_many(where={"id": {"in": target_ids}})  # pyright: ignore[reportAttributeAccessIssue]
 
     skipped = max(0, len(requested_ids) - len(target_ids)) if requested_ids else 0
@@ -370,6 +371,9 @@ async def delete_execution(  # pyright: ignore[reportUnusedFunction]
         outlive the execution row in some scenarios).  We delete
         them explicitly here because once the execution is gone the
         checkpoints are unreachable garbage.
+      - `execution_events` — no FK to the execution either (same
+        rationale as checkpoints, P1-4).  Deleted explicitly so
+        events don't orphan permanently.
       - `workflow_executions` row itself.
     """
     user_id, role = _role
@@ -400,6 +404,7 @@ async def delete_execution(  # pyright: ignore[reportUnusedFunction]
     # Approvals cascade through the execution FK.
     await db.langgraphcheckpointwrite.delete_many(where={"threadId": thread_id})  # pyright: ignore[reportAttributeAccessIssue]
     await db.langgraphcheckpoint.delete_many(where={"threadId": thread_id})  # pyright: ignore[reportAttributeAccessIssue]
+    await db.executionevent.delete_many(where={"executionId": execution_id})  # pyright: ignore[reportAttributeAccessIssue]
     await db.workflowexecution.delete(where={"id": execution_id})  # pyright: ignore[reportAttributeAccessIssue]
 
 
