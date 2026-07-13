@@ -39,7 +39,7 @@ from pydantic import BaseModel
 
 from src.security.auth import get_current_user_id
 from src.security.rate_limit import (
-    RateLimiter,
+    RateLimiterProtocol,
     enforce,
     get_rate_limiter,
     per_minute_config,
@@ -154,7 +154,7 @@ def _dispatch_extractor(filename: str, data: bytes) -> str:
 async def extract_text(
     file: UploadFile = File(...),
     user_id: str = Depends(get_current_user_id),
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> UploadExtractResponse:  # pyright: ignore[reportUnusedFunction]
     """Receive a file, extract plain text, return it.
 

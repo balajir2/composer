@@ -25,7 +25,7 @@ from src.security.jwt import (
 )
 from src.security.passwords import hash_password, verify_password
 from src.security.rate_limit import (
-    RateLimiter,
+    RateLimiterProtocol,
     enforce,
     get_rate_limiter,
     per_minute_config,
@@ -120,7 +120,7 @@ async def register(
     payload: RegisterRequest,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> AuthResponse:  # pyright: ignore[reportUnusedFunction]
     ip = request.client.host if request.client else "unknown"
     await enforce(
@@ -159,7 +159,7 @@ async def login(
     payload: LoginRequest,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> TokenPairResponse | MustChangePasswordResponse:  # pyright: ignore[reportUnusedFunction]
     ip = request.client.host if request.client else "unknown"
     await enforce(
@@ -198,7 +198,7 @@ async def refresh(
     payload: RefreshRequest,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> TokenPairResponse:  # pyright: ignore[reportUnusedFunction]
     ip = request.client.host if request.client else "unknown"
     await enforce(
@@ -257,7 +257,7 @@ async def change_password(
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     user_id: str = Depends(get_user_id_allow_password_change),
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> None:  # pyright: ignore[reportUnusedFunction]
     ip = request.client.host if request.client else "unknown"
     await enforce(
@@ -290,7 +290,7 @@ async def forgot_password(
     payload: ForgotPasswordRequest,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> None:  # pyright: ignore[reportUnusedFunction]
     ip = request.client.host if request.client else "unknown"
     await enforce(
@@ -325,7 +325,7 @@ async def reset_password(
     payload: ResetPasswordRequest,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> None:  # pyright: ignore[reportUnusedFunction]
     ip = request.client.host if request.client else "unknown"
     await enforce(

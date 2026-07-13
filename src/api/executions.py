@@ -14,7 +14,7 @@ from src.config import get_settings
 from src.engine.langgraph_executor import LangGraphExecutor
 from src.security.auth import get_current_role
 from src.security.rate_limit import (
-    RateLimiter,
+    RateLimiterProtocol,
     enforce,
     get_rate_limiter,
     per_minute_config,
@@ -108,7 +108,7 @@ async def create_execution(
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     _role: tuple[str, str] = Depends(get_current_role),
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
     await enforce(
@@ -475,7 +475,7 @@ async def resume_execution(
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     _role: tuple[str, str] = Depends(get_current_role),
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
     await enforce(

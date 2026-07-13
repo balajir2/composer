@@ -4,9 +4,10 @@ from datetime import UTC, datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from fastapi import HTTPException
 from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 
-from src.security.rate_limit import BucketConfig
+from src.security.rate_limit import BucketConfig, enforce
 from src.security.rate_limit_pg import PostgresRateLimiter
 
 
@@ -89,10 +90,6 @@ async def test_concurrent_first_requests_race_on_create_falls_back_to_refill() -
 
 
 async def test_enforce_raises_429_when_denied() -> None:
-    from fastapi import HTTPException
-
-    from src.security.rate_limit import BucketConfig, enforce
-
     db = _mock_db()
     db.ratelimitbucket.find_unique = AsyncMock(
         return_value=MagicMock(tokens=0.0, lastRefill=datetime.now(UTC))

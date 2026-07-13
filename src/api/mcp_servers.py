@@ -32,7 +32,7 @@ from src.security.encryption import (
     redact_sensitive_headers,
 )
 from src.security.rate_limit import (
-    RateLimiter,
+    RateLimiterProtocol,
     enforce,
     get_rate_limiter,
     per_minute_config,
@@ -239,7 +239,7 @@ async def test_mcp_connection(
     server_id: str,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     user_id: str = Depends(get_current_user_id),
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> TestConnectionResponse:
     await enforce(
         limiter,

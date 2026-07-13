@@ -32,7 +32,12 @@ from src.security.jwt import (
     TokenVerificationError,
     verify_approval_email_token,
 )
-from src.security.rate_limit import RateLimiter, enforce, get_rate_limiter, per_minute_config
+from src.security.rate_limit import (
+    RateLimiterProtocol,
+    enforce,
+    get_rate_limiter,
+    per_minute_config,
+)
 from src.storage.db import get_db
 
 router = APIRouter(tags=["approvals"])
@@ -98,7 +103,7 @@ async def resolve_approval_email(
     token: str,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> RedirectResponse:  # pyright: ignore[reportUnusedFunction]
     """Read-only: validates the token and redirects to the confirmation
     page. Never mutates state, so a scanner/preview service prefetching
@@ -124,7 +129,7 @@ async def confirm_approval_email(
     background_tasks: BackgroundTasks,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> RedirectResponse:  # pyright: ignore[reportUnusedFunction]
     """The actual mutation — only reached via a deliberate POST (the
     frontend confirmation page's form submission), never a bare GET.

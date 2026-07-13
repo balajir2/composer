@@ -23,7 +23,7 @@ from src.config import get_settings
 from src.engine.langgraph_executor import LangGraphExecutor
 from src.security.api_key_auth import ApiKeyAuthResult, get_current_api_key_user
 from src.security.rate_limit import (
-    RateLimiter,
+    RateLimiterProtocol,
     enforce,
     get_rate_limiter,
     per_minute_config,
@@ -163,7 +163,7 @@ async def run_external(
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     event_bus: ExecutionEventBus = Depends(get_event_bus),
     auth: ApiKeyAuthResult = Depends(get_current_api_key_user),
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> Any:  # pyright: ignore[reportUnusedFunction]
     settings = get_settings()
     await enforce(
