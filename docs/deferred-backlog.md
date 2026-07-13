@@ -10,7 +10,7 @@ Each entry: the problem, why it's a decision (not a bug fix), the specific quest
 before implementation starts, and a pointer to the full requirements/acceptance-criteria in the
 source audit doc.
 
-Status legend: 🔴 not started.
+Status legend: 🔴 not started · 🟢 resolved (see linked ADR).
 
 ---
 
@@ -190,26 +190,25 @@ table and the audit's recommended upgrade order).
 
 ---
 
-## 🔴 P3-1 — Evaluate the long-term Python persistence stack
+## 🟢 P3-1 — Evaluate the long-term Python persistence stack (RESOLVED)
 
-**Problem:** Prisma Client Python's upstream repository was archived (read-only) in April 2025.
-Highest structural risk in the current backend stack.
+**Resolved 2026-07-13 — see ADR-0031 in `docs/decisions.md`.**
 
-**Why it's a decision:** Explicitly framed by the audit itself as "an ADR and proof-of-concept
-task first — not authorization for a repository-wide ORM rewrite." `CLAUDE.md`'s stack table
-locks Prisma Python as the chosen ORM; changing it requires the explicit user approval the
-governing rules already call for. This decision also gates P1-2 (durable workers need real
-transaction/row-locking/lease semantics from whichever ORM wins) and P2-4 (dependency-risk
-resolution).
+**Outcome:** Stay on Prisma Python, don't migrate now. The archived-repo risk (confirmed via
+`gh api`: archived, no commits since 2025-04-10) is real, but a POC
+(`scripts/poc_persistence_row_lock.py`) proved Prisma Python's raw-SQL escape hatch
+(`query_raw`/`execute_raw`/`db.tx()`) already supports real Postgres row-locking
+(`FOR UPDATE SKIP LOCKED`) with correct concurrent-worker semantics — the exact pattern P1-2
+needs, and the strongest technical argument for migrating turned out not to be a blocker. A full
+migration (14 models, 30 files with DB call sites) isn't justified by risk that hasn't yet broken
+anything. ADR-0031 records concrete trigger conditions for revisiting, and an incremental
+migration path (new tables on SQLAlchemy first, starting with P1-2's worker-queue tables) if one
+of those triggers.
 
-**Decisions needed:**
-1. Commission the ADR + POC — compare Prisma Python (accept the archived-repo risk) vs.
-   SQLAlchemy 2 + Alembic, specifically for: async support, transactions/row-locking/leases
-   (needed by P1-2), migration tooling, and LangGraph-checkpoint integration.
-2. If the POC favors migration: incremental (new tables on SQLAlchemy, existing ones stay on
-   Prisma until touched) or a scoped big-bang cutover?
+This unblocks **P1-2** (durable workers) to proceed on Prisma directly, using the row-locking
+pattern the POC validated, whenever P1-2 itself is picked up.
 
-**Full spec:** `docs/claude-improvement-backlog.md` §P3-1.
+**Original problem/spec:** `docs/claude-improvement-backlog.md` §P3-1.
 
 ---
 
@@ -217,12 +216,13 @@ resolution).
 
 Dependencies between these argue for roughly this sequence, not strict P0→P3 priority order:
 
-1. **P3-1** (persistence ADR) — gates P1-2's transaction/lease design; smallest to start (it's a
-   research task, not implementation) and de-risks the rest.
+1. ~~**P3-1** (persistence ADR)~~ — **done**, see ADR-0031. Decision: stay on Prisma; P1-2 can
+   proceed directly using the validated row-locking pattern.
 2. **P0-5** (credential model) — gates P2-2; also closes the most concrete security gap
    (plaintext secrets in public workflow reads today).
 3. **P1-2** + **P1-4** together — durable workers and shared events/rate-limits both need a
    shared-infra decision; picking one backing store for both avoids two separate new dependencies.
+   No longer blocked on a persistence decision (see #1).
 4. **P2-2** (connections UI) — once P0-5's credential model exists to manage.
 5. **P2-1** (dry-run mode) — independent of the above; blocked only on the control-flow semantics
    decision.

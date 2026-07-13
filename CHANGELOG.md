@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Docs — Persistence stack ADR: stay on Prisma Python (2026-07-13)
+
+Resolved the first item from `docs/deferred-backlog.md` (P3-1). Verified the archived-repo risk directly (`gh api`: archived, no commits since 2025-04-10), then built and ran a proof-of-concept (`scripts/poc_persistence_row_lock.py`) against the real dev database to test the strongest technical case for migrating — durable-worker row-claiming via `SELECT ... FOR UPDATE SKIP LOCKED`. Result: two concurrent Prisma connections claimed two distinct rows with zero double-claims, confirming Prisma Python's raw-SQL escape hatch already supports this pattern. Decision (ADR-0031 in `docs/decisions.md`): stay on Prisma Python, don't migrate now — the risk is real but hasn't blocked anything concrete, and a 14-model/30-file rewrite isn't justified pre-emptively. Documents concrete trigger conditions for revisiting and an incremental (new-tables-first) migration path if one fires. Unblocks P1-2 (durable workers) to proceed on Prisma directly.
+
 ### Fixed — Codex audit remediation: security, correctness, execution-API semantics (2026-07-12)
 
 Working through `docs/claude-improvement-backlog.md` (an independent Codex-authored audit of the codebase). Each item below was implemented test-first (RED/GREEN), verified against the full non-integration suite, and committed separately — see the referenced commits for full rationale and diffs.
