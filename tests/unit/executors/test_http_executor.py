@@ -115,6 +115,31 @@ async def test_http_header_variable_substitution(httpx_mock: HTTPXMock) -> None:
     assert req.headers.get("x-token") == "Bearer abc"
 
 
+async def test_http_encrypted_sensitive_header_is_decrypted_before_send(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """P0-5: httpHeaders' Authorization value is now encrypted at rest by
+    the workflow API — the executor must decrypt it before sending, or
+    every workflow saved after that change sends ciphertext as the
+    Authorization header."""
+    from src.security.encryption import encrypt_marked
+
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        url="https://example.test/",
+        method="GET",
+        json={"ok": True},
+    )
+    node = _http_node(
+        httpMethod="GET",
+        httpUrl="https://example.test/",
+        httpHeaders={"Authorization": encrypt_marked("Bearer real-secret-token")},
+    )
+    await HttpExecutor(node).arun(initial_state())
+    req = httpx_mock.get_request()  # pyright: ignore[reportUnknownMemberType]
+    assert req is not None
+    assert req.headers.get("authorization") == "Bearer real-secret-token"
+
+
 async def test_http_url_variable_substitution(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
     httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
         url="https://example.test/users/42",

@@ -25,7 +25,12 @@ from src.mcp.schema_adapter import (
     substitute_url_placeholders,
 )
 from src.security.auth import ensure_admin, get_current_user_id
-from src.security.encryption import encrypt
+from src.security.encryption import (
+    encrypt,
+    encrypt_marked,
+    encrypt_sensitive_headers,
+    redact_sensitive_headers,
+)
 from src.security.rate_limit import (
     RateLimiter,
     enforce,
@@ -121,6 +126,16 @@ class OAuthCallbackResponse(BaseModel):
     model_config = ConfigDict(populate_by_name=True)
 
 
+def _encrypted_oauth_config_dict(config: OauthConfig) -> dict[str, Any]:
+    """Dump an OauthConfig for storage with clientSecret encrypted at rest
+    (P0-5) — it was previously persisted as plaintext even though
+    McpOAuthToken access/refresh tokens already were."""
+    dumped = config.model_dump(by_alias=True)
+    if dumped.get("clientSecret"):
+        dumped["clientSecret"] = encrypt_marked(dumped["clientSecret"])
+    return dumped
+
+
 def _to_read(row: Any, *, has_oauth_token: bool = False) -> McpServerRead:
     """Redact encrypted fields before returning to client."""
     return McpServerRead.model_validate(
@@ -143,7 +158,9 @@ def _to_read(row: Any, *, has_oauth_token: bool = False) -> McpServerRead:
             "enabled": row.enabled,
             "isOfficial": row.isOfficial,
             "isShared": row.isShared,
-            "headers": row.headers,
+            # P0-5: never let a secret-looking header value (Authorization,
+            # X-Api-Key, ...) leave the server; other headers pass through.
+            "headers": redact_sensitive_headers(row.headers) if row.headers else row.headers,
             "createdAt": row.createdAt,
             "updatedAt": row.updatedAt,
         }
@@ -195,9 +212,12 @@ async def create_mcp_server(
     }
     # Prisma rejects `None` for Json? columns; only include when set.
     if payload.headers is not None:
-        create_data["headers"] = Json(payload.headers)
+        # P0-5: encrypt secret-looking header values at rest — no prior
+        # server row exists yet at create time, so no preserve-on-marker
+        # concern (there's currently no PATCH endpoint for headers either).
+        create_data["headers"] = Json(encrypt_sensitive_headers(payload.headers))
     if payload.oauth_config is not None:
-        create_data["oauthConfig"] = Json(payload.oauth_config.model_dump(by_alias=True))
+        create_data["oauthConfig"] = Json(_encrypted_oauth_config_dict(payload.oauth_config))
 
     row = await db.mcpserver.create(data=create_data)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
     return _to_read(row)
@@ -350,7 +370,7 @@ async def update_oauth_config(
         )
     updated = await db.mcpserver.update(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": server_id},
-        data={"oauthConfig": Json(payload.oauth_config.model_dump(by_alias=True))},
+        data={"oauthConfig": Json(_encrypted_oauth_config_dict(payload.oauth_config))},
     )
     return _to_read(updated)
 

@@ -19,8 +19,20 @@ from src.engine.workflow import (
     is_jira_api_token_encrypted,
 )
 from src.security.auth import ensure_admin, get_current_role, get_current_user_id
+from src.security.encryption import (
+    REDACTED_MARKER,
+    encrypt_marked,
+    encrypt_sensitive_headers,
+    is_marked_encrypted,
+    redact_sensitive_headers,
+)
 from src.storage.db import get_db
 from src.variable_validation import find_unknown_variable_references
+
+# P0-5: vector-db node fields carrying secret API keys, same class of gap
+# Jira's apiToken already had closed (ADR-0028) — encrypt at rest, redact
+# on every read.
+_VECTOR_DB_SECRET_FIELDS = ("vectorDbApiKey", "vectorDbEmbeddingApiKey")
 
 _SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 
@@ -97,9 +109,43 @@ def _redact_jira_tokens(nodes: list[Any]) -> list[Any]:
     return redacted
 
 
+def _redact_vector_db_keys(nodes: list[Any]) -> list[Any]:
+    """Never let a vector-db node's encrypted apiKey/embeddingApiKey leave
+    the server (P0-5) — same treatment as _redact_jira_tokens above."""
+    redacted: list[Any] = []
+    for node in nodes:
+        if isinstance(node, dict) and node.get("type") == "vector-db":
+            data = dict(node.get("data") or {})
+            for field in _VECTOR_DB_SECRET_FIELDS:
+                if data.get(field):
+                    data[field] = REDACTED_MARKER
+            node = {**node, "data": data}
+        redacted.append(node)
+    return redacted
+
+
+def _redact_http_headers(nodes: list[Any]) -> list[Any]:
+    """Never let an http node's encrypted sensitive header values (e.g.
+    Authorization) leave the server (P0-5) — same treatment as
+    _redact_jira_tokens above, applied per-header-name via
+    redact_sensitive_headers rather than a single fixed field."""
+    redacted: list[Any] = []
+    for node in nodes:
+        if isinstance(node, dict) and node.get("type") == "http":
+            data = dict(node.get("data") or {})
+            headers = data.get("httpHeaders")
+            if isinstance(headers, dict):
+                data["httpHeaders"] = redact_sensitive_headers(headers)
+            node = {**node, "data": data}
+        redacted.append(node)
+    return redacted
+
+
 def _to_workflow_read(row: Any) -> "WorkflowRead":
     read = WorkflowRead.model_validate(row)
     read.nodes = _redact_jira_tokens(read.nodes)
+    read.nodes = _redact_vector_db_keys(read.nodes)
+    read.nodes = _redact_http_headers(read.nodes)
     return read
 
 
@@ -123,6 +169,45 @@ def _encrypt_jira_tokens(nodes_json: list[dict[str, Any]], existing_nodes: list[
             data["apiToken"] = (prior.get("data") or {}).get("apiToken")
         elif not is_jira_api_token_encrypted(token):
             data["apiToken"] = encrypt_jira_api_token(token)
+
+
+def _encrypt_vector_db_keys(nodes_json: list[dict[str, Any]], existing_nodes: list[Any]) -> None:
+    """Encrypt plaintext vector-db apiKey/embeddingApiKey values in-place
+    before persisting (P0-5) — same preserve-on-redacted-marker treatment
+    as _encrypt_jira_tokens above."""
+    existing_by_id = {node.get("id"): node for node in existing_nodes if isinstance(node, dict)}
+    for node in nodes_json:
+        if node.get("type") != "vector-db":
+            continue
+        data = node.get("data") or {}
+        for field in _VECTOR_DB_SECRET_FIELDS:
+            value = data.get(field)
+            if not value:
+                continue
+            if value == REDACTED_MARKER:
+                prior = existing_by_id.get(node.get("id")) or {}
+                data[field] = (prior.get("data") or {}).get(field)
+            elif not is_marked_encrypted(value):
+                data[field] = encrypt_marked(value)
+
+
+def _encrypt_http_headers(nodes_json: list[dict[str, Any]], existing_nodes: list[Any]) -> None:
+    """Encrypt plaintext sensitive http-node header values in-place before
+    persisting (P0-5) — same preserve-on-redacted-marker treatment as
+    _encrypt_jira_tokens above, applied per-header-name."""
+    existing_by_id = {node.get("id"): node for node in existing_nodes if isinstance(node, dict)}
+    for node in nodes_json:
+        if node.get("type") != "http":
+            continue
+        data = node.get("data") or {}
+        headers = data.get("httpHeaders")
+        if not isinstance(headers, dict):
+            continue
+        prior = existing_by_id.get(node.get("id")) or {}
+        prior_headers = (prior.get("data") or {}).get("httpHeaders")
+        data["httpHeaders"] = encrypt_sensitive_headers(
+            headers, prior_headers=prior_headers if isinstance(prior_headers, dict) else None
+        )
 
 
 async def _has_assignment(
@@ -216,6 +301,8 @@ async def create_workflow(
         for node in workflow.nodes
     ]
     _encrypt_jira_tokens(nodes_json, existing_nodes=[])
+    _encrypt_vector_db_keys(nodes_json, existing_nodes=[])
+    _encrypt_http_headers(nodes_json, existing_nodes=[])
     edges_json = [edge.model_dump(by_alias=True) for edge in workflow.edges]
     row = await db.workflow.create(
         data={  # pyright: ignore[reportArgumentType]
@@ -397,6 +484,8 @@ async def update_workflow(
     existing_nodes_raw = existing.nodes
     existing_nodes: list[Any] = existing_nodes_raw if isinstance(existing_nodes_raw, list) else []
     _encrypt_jira_tokens(nodes_json, existing_nodes=existing_nodes)
+    _encrypt_vector_db_keys(nodes_json, existing_nodes=existing_nodes)
+    _encrypt_http_headers(nodes_json, existing_nodes=existing_nodes)
     edges_json = [edge.model_dump(by_alias=True) for edge in workflow.edges]
 
     # Publish / unpublish handling

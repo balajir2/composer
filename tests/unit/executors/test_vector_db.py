@@ -229,6 +229,45 @@ async def test_metadata_filter_malformed_json_logged_and_skipped(
     assert cfg.metadata_filter is None
 
 
+async def test_encrypted_api_key_is_decrypted_before_query(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0-5: vectorDbApiKey is now encrypted at rest by the workflow API —
+    the executor must decrypt it before handing it to the provider, or
+    every workflow saved after that change sends ciphertext as the API key."""
+    from src.security.encryption import encrypt_marked
+
+    captured: dict[str, Any] = {}
+    _stub_provider(monkeypatch, [], captured=captured)
+    node = _node(vectorDbApiKey=encrypt_marked("real-pinecone-key"))
+    await VectorDbExecutor(node).arun(initial_state())
+    cfg: QueryConfig = captured["config"]
+    assert cfg.api_key == "real-pinecone-key"
+
+
+async def test_encrypted_embedding_api_key_is_decrypted_before_embed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.executors.vector_db as vdb_mod
+    from src.security.encryption import encrypt_marked
+
+    captured: dict[str, Any] = {}
+
+    async def _capturing_embed(prompt: str, *, config: Any) -> list[float]:
+        captured["embedding_config"] = config
+        return [0.1, 0.2, 0.3]
+
+    _stub_provider(monkeypatch, [])
+    monkeypatch.setattr(vdb_mod, "embed_text", _capturing_embed)
+    node = _node(
+        vectorDbEmbeddingProvider="dashscope",
+        vectorDbEmbeddingApiKey=encrypt_marked("real-dashscope-key"),
+        vectorDbEmbeddingModel="text-embedding-v4",
+    )
+    await VectorDbExecutor(node).arun(initial_state())
+    assert captured["embedding_config"].api_key == "real-dashscope-key"
+
+
 async def test_missing_openai_key_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.config import get_settings
 

@@ -140,6 +140,93 @@ def test_get_mcp_servers_lists_own_and_shared(
         assert "hasAccessToken" in item
 
 
+def test_post_mcp_server_encrypts_sensitive_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0-5: McpServer.headers is returned raw in every read today —
+    any secret-looking header value (Authorization, X-Api-Key, ...) must
+    be encrypted at rest, same treatment as the workflow node fields."""
+    _set_encryption_key(monkeypatch)
+    client, db = _client_with_mock_db()
+    payload = {
+        "name": "Custom",
+        "url": "https://mcp.example.com/rpc",
+        "authType": "none",
+        "headers": {"Authorization": "Bearer plain-secret", "X-Tenant-Id": "acme"},
+    }
+    resp = client.post("/mcp-servers", json=payload)
+    assert resp.status_code == 201, resp.text
+
+    call_args = db.mcpserver.create.await_args
+    created_data = call_args.kwargs["data"]  # type: ignore[union-attr]
+    stored_headers = created_data["headers"].data  # prisma.Json wraps the raw value
+    assert stored_headers["Authorization"] != "Bearer plain-secret"
+    assert stored_headers["X-Tenant-Id"] == "acme"
+
+    from src.security.encryption import decrypt_marked
+
+    assert decrypt_marked(stored_headers["Authorization"]) == "Bearer plain-secret"
+
+
+def test_get_mcp_servers_redacts_sensitive_headers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_encryption_key(monkeypatch)
+    from src.security.encryption import encrypt_marked
+
+    client, db = _client_with_mock_db()
+    db.mcpserver.find_many = AsyncMock(
+        return_value=[
+            _server_row(
+                headers={
+                    "Authorization": encrypt_marked("Bearer real-secret"),
+                    "X-Tenant-Id": "acme",
+                }
+            ),
+        ]
+    )
+    resp = client.get("/mcp-servers")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    from src.security.encryption import REDACTED_MARKER
+
+    assert body[0]["headers"]["Authorization"] == REDACTED_MARKER
+    assert body[0]["headers"]["X-Tenant-Id"] == "acme"
+    assert "real-secret" not in resp.text
+
+
+def test_post_mcp_server_encrypts_oauth_client_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P0-5: oauthConfig.clientSecret is persisted as plaintext today even
+    though McpOAuthToken access/refresh tokens are encrypted — close that
+    gap the same way access tokens already are."""
+    _set_encryption_key(monkeypatch)
+    client, db = _client_with_mock_db()
+    payload = {
+        "name": "Highspot",
+        "url": "https://api.highspot.com/mcp",
+        "authType": "oauth",
+        "oauthConfig": {
+            "authorizeUrl": "https://api.highspot.com/oauth/authorize",
+            "tokenUrl": "https://api.highspot.com/oauth/token",
+            "clientId": "client-abc",
+            "clientSecret": "plain-client-secret",
+        },
+    }
+    resp = client.post("/mcp-servers", json=payload)
+    assert resp.status_code == 201, resp.text
+
+    call_args = db.mcpserver.create.await_args
+    created_data = call_args.kwargs["data"]  # type: ignore[union-attr]
+    stored_config = created_data["oauthConfig"].data
+    assert stored_config["clientSecret"] != "plain-client-secret"
+
+    from src.security.encryption import decrypt_marked
+
+    assert decrypt_marked(stored_config["clientSecret"]) == "plain-client-secret"
+
+
 def test_post_test_connection_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

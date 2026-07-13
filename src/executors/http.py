@@ -18,6 +18,7 @@ from src.config import get_settings
 from src.engine.state import WorkflowStateDict
 from src.engine.workflow import HttpNode
 from src.executors.base import register_executor
+from src.security.encryption import decrypt_sensitive_headers
 from src.security.ssrf import SSRFBlockedError, validate_outbound_url
 from src.variable_substitution import substitute, substitute_in_value
 
@@ -89,7 +90,12 @@ class HttpExecutor:
                 f"http node {self.node.id!r}: blocked by SSRF policy: {exc}"
             ) from exc
 
-        headers = substitute_in_value(self.node.data.http_headers or {}, state)
+        # P0-5: sensitive header values (Authorization, X-Api-Key, ...) are
+        # encrypted at rest by the workflow API; decrypt before
+        # substitution so `{{var}}` templates inside a decrypted value
+        # still resolve normally.
+        raw_headers = decrypt_sensitive_headers(self.node.data.http_headers or {})
+        headers = substitute_in_value(raw_headers, state)
         body_raw = substitute_in_value(self.node.data.http_body, state)
 
         body_kwargs: dict[str, Any] = {}

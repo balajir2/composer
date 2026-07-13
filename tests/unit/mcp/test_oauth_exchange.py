@@ -123,6 +123,39 @@ async def test_exchange_deletes_state_row_once(
     db.mcpoauthstate.delete.assert_awaited_once()
 
 
+async def test_exchange_decrypts_encrypted_client_secret(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """P0-5: oauthConfig.clientSecret is now encrypted at rest by the
+    mcp-servers API — the exchange must decrypt it before sending, or the
+    IdP's token endpoint receives ciphertext as client_secret."""
+    from src.security.encryption import encrypt_marked
+
+    _set_enc_key(monkeypatch)
+    httpx_mock.add_response(
+        url="https://api.highspot.com/oauth/token",
+        method="POST",
+        json={"access_token": "at", "expires_in": 3600},
+    )
+    server = _server(
+        oauthConfig={
+            "authorizeUrl": "https://api.highspot.com/oauth/authorize",
+            "tokenUrl": "https://api.highspot.com/oauth/token",
+            "clientId": "client-abc",
+            "clientSecret": encrypt_marked("real-client-secret"),
+            "scopes": ["read"],
+        }
+    )
+    db = _mock_db(_state_row())
+    await exchange_code_for_tokens(server, code="c", state="abc", db=db)
+
+    req = httpx_mock.get_request()
+    assert req is not None
+    body = req.content.decode()
+    assert "client_secret=real-client-secret" in body
+
+
 async def test_exchange_raises_for_unknown_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

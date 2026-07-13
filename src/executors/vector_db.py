@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any
 from src.config import get_settings
 from src.executors._eval import EvalError, evaluate
 from src.executors.base import register_executor
+from src.security.encryption import decrypt_marked
 from src.variable_substitution import substitute
 from src.vectordb.embedding import EmbeddingConfig, embed_text
 from src.vectordb.providers import chroma, milvus, pinecone, qdrant, weaviate
@@ -85,7 +86,10 @@ class VectorDbExecutor:
         provider_name = data.provider
 
         endpoint = substitute(data.endpoint, state)
-        api_key = substitute(data.api_key, state) if data.api_key else ""
+        # P0-5: apiKey is encrypted at rest by the workflow API; decrypt
+        # before substitution (a no-op on plaintext/pass-through values, so
+        # this is safe even for workflows saved before encryption existed).
+        api_key = substitute(decrypt_marked(data.api_key), state) if data.api_key else ""
         collection = substitute(data.collection, state)
         prompt = substitute(data.query_prompt, state) if data.query_prompt else ""
         namespace = substitute(data.namespace, state) if data.namespace else None
@@ -176,7 +180,11 @@ class VectorDbExecutor:
     async def _embed(self, prompt: str) -> list[float]:
         data = self.node.data
         provider = data.embedding_provider
-        api_key = data.embedding_api_key or self._embedding_api_key_from_settings(provider)
+        api_key = (
+            decrypt_marked(data.embedding_api_key)
+            if data.embedding_api_key
+            else self._embedding_api_key_from_settings(provider)
+        )
         if not api_key:
             raise VectorDbNodeError(
                 f"vector-db node {self.node.id!r}: API key is required for "
@@ -238,7 +246,7 @@ class VectorDbExecutor:
         provider_name = data.provider
 
         endpoint = substitute(data.endpoint, state)
-        api_key = substitute(data.api_key, state) if data.api_key else ""
+        api_key = substitute(decrypt_marked(data.api_key), state) if data.api_key else ""
         collection = substitute(data.collection, state)
         namespace = substitute(data.namespace, state) if data.namespace else None
 

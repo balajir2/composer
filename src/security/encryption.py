@@ -72,4 +72,118 @@ def decrypt(ciphertext_b64: str) -> str:
     return pt.decode("utf-8")
 
 
-__all__ = ["EncryptionError", "EncryptionKeyMissingError", "decrypt", "encrypt"]
+# Generic marker-prefixed encryption for secret-bearing fields stored inline
+# in JSON columns (workflow node data, MCP server headers/oauth config) —
+# same wire format Jira's apiToken already uses (JIRA_TOKEN_ENC_PREFIX in
+# src/engine/workflow.py), extracted here so P0-5's vector-DB/HTTP/MCP
+# fields don't each reimplement it. Jira's own helpers are left as-is
+# (already shipped and tested) but are wire-compatible with these.
+SECRET_ENC_PREFIX = "enc:v1:"
+REDACTED_MARKER = "••••••••"
+
+
+def is_marked_encrypted(value: str) -> bool:
+    return value.startswith(SECRET_ENC_PREFIX)
+
+
+def encrypt_marked(plaintext: str) -> str:
+    """Encrypt a string for storage in a JSON column, self-identifying via prefix."""
+    return SECRET_ENC_PREFIX + encrypt(plaintext)
+
+
+def decrypt_marked(value: str) -> str:
+    """Reverse of encrypt_marked(). Values without the prefix pass through
+    unchanged, so fields saved before encryption was added keep working
+    with no backfill migration required."""
+    if not is_marked_encrypted(value):
+        return value
+    return decrypt(value[len(SECRET_ENC_PREFIX) :])
+
+
+# Header NAMES (case-insensitive) whose VALUES get the same encrypt/redact
+# treatment as a single secret field — used for the http and mcp node's
+# arbitrary headers dicts, where most entries (Content-Type, Accept, ...)
+# are not secret but a few commonly are. Mirrors the query-param list
+# already used for URL redaction (src/executors/http.py's
+# _SENSITIVE_QUERY_PARAMS, P0-6).
+SENSITIVE_HEADER_NAMES = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "api-key",
+        "apikey",
+        "x-auth-token",
+        "x-access-token",
+        "access-token",
+    }
+)
+
+
+def is_sensitive_header_name(name: str) -> bool:
+    return name.lower() in SENSITIVE_HEADER_NAMES
+
+
+def redact_sensitive_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Mask secret-looking header VALUES for return in an API response.
+    Header names stay visible (e.g. 'Content-Type') — only values for
+    names in SENSITIVE_HEADER_NAMES get replaced with REDACTED_MARKER."""
+    return {
+        k: (REDACTED_MARKER if is_sensitive_header_name(k) and v else v) for k, v in headers.items()
+    }
+
+
+def encrypt_sensitive_headers(
+    headers: dict[str, str], prior_headers: dict[str, str] | None = None
+) -> dict[str, str]:
+    """Encrypt secret-looking header VALUES before persisting.
+
+    If an incoming value is the redacted marker (the UI echoed back what a
+    prior read returned, unchanged), preserve whatever was previously
+    stored under that header name instead of persisting the literal
+    marker string — same preserve-on-no-op-save guarantee as
+    encrypt_jira_api_token's callers.
+    """
+    prior = prior_headers or {}
+    result: dict[str, str] = {}
+    for k, v in headers.items():
+        if not is_sensitive_header_name(k) or not v:
+            result[k] = v
+            continue
+        if v == REDACTED_MARKER:
+            result[k] = prior.get(k, v)
+        elif not is_marked_encrypted(v):
+            result[k] = encrypt_marked(v)
+        else:
+            result[k] = v
+    return result
+
+
+def decrypt_sensitive_headers(headers: dict[str, str]) -> dict[str, str]:
+    """Decrypt secret-looking header VALUES immediately before actual
+    outbound use. Values without the marker prefix pass through
+    unchanged (decrypt_marked's guarantee), so this is also safe to call
+    on headers saved before encryption existed."""
+    return {
+        k: (decrypt_marked(v) if is_sensitive_header_name(k) else v) for k, v in headers.items()
+    }
+
+
+__all__ = [
+    "REDACTED_MARKER",
+    "SECRET_ENC_PREFIX",
+    "SENSITIVE_HEADER_NAMES",
+    "EncryptionError",
+    "EncryptionKeyMissingError",
+    "decrypt",
+    "decrypt_marked",
+    "decrypt_sensitive_headers",
+    "encrypt",
+    "encrypt_marked",
+    "encrypt_sensitive_headers",
+    "is_marked_encrypted",
+    "is_sensitive_header_name",
+    "redact_sensitive_headers",
+]

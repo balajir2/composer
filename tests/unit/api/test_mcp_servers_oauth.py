@@ -97,6 +97,36 @@ def test_authorize_on_non_oauth_server_422(monkeypatch: pytest.MonkeyPatch) -> N
     assert "authType" in resp.json()["detail"]
 
 
+def test_update_oauth_config_encrypts_client_secret(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P0-5: same encryption treatment as create — the PATCH path must not
+    persist a fresh plaintext clientSecret either."""
+    _set_enc_key(monkeypatch)
+    client, db = _client_with_mock_db()
+    db.mcpserver.update = AsyncMock(return_value=_server_row())
+
+    resp = client.patch(
+        "/mcp-servers/srv1/oauth-config",
+        json={
+            "oauthConfig": {
+                "authorizeUrl": "https://api.highspot.com/oauth/authorize",
+                "tokenUrl": "https://api.highspot.com/oauth/token",
+                "clientId": "client-abc",
+                "clientSecret": "brand-new-plain-secret",
+            }
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    call_args = db.mcpserver.update.await_args
+    updated_data = call_args.kwargs["data"]  # type: ignore[union-attr]
+    stored_config = updated_data["oauthConfig"].data
+    assert stored_config["clientSecret"] != "brand-new-plain-secret"
+
+    from src.security.encryption import decrypt_marked
+
+    assert decrypt_marked(stored_config["clientSecret"]) == "brand-new-plain-secret"
+
+
 def test_authorize_server_not_found_404() -> None:
     client, db = _client_with_mock_db()
     db.mcpserver.find_unique = AsyncMock(return_value=None)

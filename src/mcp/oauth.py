@@ -19,7 +19,7 @@ from urllib.parse import urlencode, urlsplit
 
 import httpx
 
-from src.security.encryption import decrypt, encrypt
+from src.security.encryption import decrypt, decrypt_marked, encrypt
 
 
 class OAuthError(RuntimeError):
@@ -166,7 +166,11 @@ async def exchange_code_for_tokens(
     config = server.oauthConfig or {}
     token_url = config["tokenUrl"]
     client_id = config["clientId"]
-    client_secret = config.get("clientSecret", "")
+    # P0-5: clientSecret is encrypted at rest by the mcp-servers API;
+    # decrypt_marked passes through unmarked (pre-existing plaintext)
+    # values unchanged, so this is safe for servers saved before
+    # encryption existed too.
+    client_secret = decrypt_marked(config.get("clientSecret", ""))
 
     form = {
         "grant_type": "authorization_code",
@@ -241,7 +245,11 @@ async def refresh_token(
     config = server.oauthConfig or {}
     token_url = config["tokenUrl"]
     client_id = config["clientId"]
-    client_secret = config.get("clientSecret", "")
+    # P0-5: clientSecret is encrypted at rest by the mcp-servers API;
+    # decrypt_marked passes through unmarked (pre-existing plaintext)
+    # values unchanged, so this is safe for servers saved before
+    # encryption existed too.
+    client_secret = decrypt_marked(config.get("clientSecret", ""))
     refresh_plaintext = decrypt(token_row.encryptedRefreshToken)
 
     form = {

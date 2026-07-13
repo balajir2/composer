@@ -10,30 +10,39 @@ Each entry: the problem, why it's a decision (not a bug fix), the specific quest
 before implementation starts, and a pointer to the full requirements/acceptance-criteria in the
 source audit doc.
 
-Status legend: 🔴 not started · 🟢 resolved (see linked ADR).
+Status legend: 🔴 not started · 🟡 partially resolved · 🟢 resolved (see linked ADR).
 
 ---
 
-## 🔴 P0-5 — Centralize and protect workflow credentials
+## 🟡 P0-5 — Centralize and protect workflow credentials (disclosure gap PATCHED, model still deferred)
 
-**Problem:** Jira tokens get encryption/redaction. Vector-DB keys, embedding keys, HTTP
-authorization headers, and MCP OAuth client secrets / shared-server headers do not — some are
-returned in plain read APIs today (audit specifically calls out public-workflow reads as a
-disclosure path).
+**Patched 2026-07-13:** the live plaintext-disclosure gap is closed. Vector-DB `apiKey`/
+`embeddingApiKey`, HTTP node `httpHeaders` (secret-looking header values), and MCP
+`headers`/`oauthConfig.clientSecret` now get the exact same encrypt-at-rest + redact-on-read
+treatment Jira's `apiToken` already had (ADR-0028) — extended via generic, reusable helpers in
+`src/security/encryption.py` (`encrypt_marked`/`decrypt_marked`/`redact_sensitive_headers`/
+`encrypt_sensitive_headers`/`decrypt_sensitive_headers`) rather than a fifth copy-pasted
+implementation. Full TDD, all new + existing tests green. No schema migration — same JSON-column
+approach Jira already uses.
 
-**Why it's a decision:** A real fix means one canonical secrets model — encrypted `Credential`/
-`Connection` records referenced from node JSON, not values embedded in it — applied consistently
-across every provider (Jira, vector DB, HTTP, MCP, email). Encrypting one more field ad hoc
-without that model gets redone the moment the real model lands, and the existing-workflow
-migration path (old plaintext → new reference) needs to be decided up front, not bolted on after.
+**What's still open — the original problem, now smaller in scope:**
 
-**Decisions needed:**
-1. `Credential` as a new first-class model, or extend the existing per-node encrypted-field
-   pattern used for Jira? (Former scales better across providers; latter is less migration.)
-2. Migration strategy for existing workflows with inline plaintext credentials — auto-migrate on
-   next save, one-time backfill script, or lazy-migrate on read?
-3. Scope for v1 — everything in the audit's inventory, or Jira + vector DB + HTTP first, MCP
-   headers/OAuth secrets in a follow-up?
+**Problem:** No single canonical secrets model. Each credential-bearing field (Jira, vector-DB,
+HTTP, MCP) has its own inline encrypt/redact pair rather than one shared `Credential`/
+`Connection` abstraction — reuse, rotation, ownership, and "which workflows depend on this
+credential" visibility (P2-2's prerequisites) still don't exist.
+
+**Why it's still a decision:** A real `Credential`/`Connection` model is a genuine architecture
+choice (new table? admin UI? migration path for the now-encrypted-but-still-inline values into
+it?) — orthogonal to closing the disclosure gap, which didn't need it.
+
+**Decisions needed (unchanged):**
+1. `Credential` as a new first-class model, or keep the current per-field encrypted-inline
+   pattern indefinitely (now proven across 4 field types, not just Jira)?
+2. Migration strategy if a `Credential` model is built later — the now-encrypted inline values
+   would need moving into it, not just re-encrypting.
+3. Whether P2-2 (reusable connection management) actually requires this, or whether "encrypted
+   inline, redacted on read" is sufficient indefinitely for a single-owner-per-credential model.
 
 **Full spec:** `docs/claude-improvement-backlog.md` §P0-5 (requirements + acceptance criteria).
 
@@ -218,12 +227,13 @@ Dependencies between these argue for roughly this sequence, not strict P0→P3 p
 
 1. ~~**P3-1** (persistence ADR)~~ — **done**, see ADR-0031. Decision: stay on Prisma; P1-2 can
    proceed directly using the validated row-locking pattern.
-2. **P0-5** (credential model) — gates P2-2; also closes the most concrete security gap
-   (plaintext secrets in public workflow reads today).
+2. ~~**P0-5** (disclosure gap)~~ — **patched** 2026-07-13; the concrete security gap (plaintext
+   secrets in public workflow/MCP reads) is closed. The `Credential`/`Connection` model decision
+   (needed for P2-2's reuse/rotation UX) is still open — see the updated P0-5 entry above.
 3. **P1-2** + **P1-4** together — durable workers and shared events/rate-limits both need a
    shared-infra decision; picking one backing store for both avoids two separate new dependencies.
    No longer blocked on a persistence decision (see #1).
-4. **P2-2** (connections UI) — once P0-5's credential model exists to manage.
+4. **P2-2** (connections UI) — needs P0-5's `Credential` model decision made first (still open).
 5. **P2-1** (dry-run mode) — independent of the above; blocked only on the control-flow semantics
    decision.
 6. **P2-3** (module splits) — whenever the concurrent-session file contention on
