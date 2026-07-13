@@ -266,6 +266,31 @@ class Settings(BaseSettings):
     # Microsoft Safe Links) both need to fit without tripping the limiter.
     rate_limit_approval_email_per_minute: int = 20
 
+    # ─── Cloud Tasks (P1-2 durable execution) ──────────────────────
+    gcp_project_id: str = ""
+    gcp_region: str = "us-central1"
+    cloud_tasks_queue: str = "composer-executions"
+    # Service account Cloud Tasks uses to mint the OIDC token it presents
+    # to the claim-and-run endpoint. Empty in dev (auth skipped when unset
+    # — see src/api/internal.py's _verify_cloud_tasks_oidc).
+    cloud_tasks_service_account: str = ""
+    # DESIGN DECISION (P1-2, "lease and heartbeat behavior"): rather than a
+    # short lease with periodic mid-execution heartbeat renewal (the usual
+    # pattern for long batch jobs), claim-and-run (src/api/internal.py) runs
+    # an execution to completion synchronously within ONE bounded Cloud
+    # Tasks-delivered HTTP request. The lease is sized to match — not
+    # exceed — that request's own maximum duration (Cloud Run's configured
+    # request timeout), so it needs no separate renewal: the lease *is* the
+    # heartbeat, because "the request is still running" and "the lease is
+    # still valid" cover the same span by construction. If Cloud Run's
+    # request timeout for the service ever changes, this must change with
+    # it — keep them equal, don't drift.
+    execution_lease_seconds: int = 3600
+    # How many times sweep_expired_leases will re-enqueue a fresh Cloud
+    # Task for the same execution before giving up and dead-lettering it
+    # (marking `failed` rather than retrying indefinitely).
+    execution_max_delivery_attempts: int = 5
+
     # ─── Stuck-execution sweeper ─────────────────
     # Any WorkflowExecution row in 'running' for longer than this without a
     # terminal status update is treated as crashed (worker died, runtime

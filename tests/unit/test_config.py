@@ -66,3 +66,18 @@ def test_composer_frontend_origins_reads_env(monkeypatch: pytest.MonkeyPatch) ->
 
     get_settings.cache_clear()
     assert get_settings().composer_frontend_origins == "https://a.example.com,https://b.example.com"
+
+
+def test_cloud_tasks_settings_have_safe_defaults(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.config import get_settings
+
+    monkeypatch.delenv("GCP_PROJECT_ID", raising=False)
+    monkeypatch.delenv("CLOUD_TASKS_QUEUE", raising=False)
+    get_settings.cache_clear()
+    settings = get_settings()
+    assert settings.gcp_project_id == ""
+    assert settings.gcp_region == "us-central1"
+    assert settings.cloud_tasks_queue == "composer-executions"
+    assert settings.cloud_tasks_service_account == ""
+    assert settings.execution_lease_seconds == 3600
+    assert settings.execution_max_delivery_attempts == 5
