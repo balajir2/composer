@@ -22,6 +22,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
+from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
+
 if TYPE_CHECKING:
     from src.security.rate_limit import BucketConfig
 
@@ -39,20 +41,43 @@ class PostgresRateLimiter:
         row = await self.db.ratelimitbucket.find_unique(
             where={"routeKey_clientKey": {"routeKey": route_key, "clientKey": client_key}}
         )
-        now = datetime.now(UTC)
 
         if row is None:
+            now = datetime.now(UTC)
             tokens = float(config.capacity) - 1.0
-            await self.db.ratelimitbucket.create(
-                data={
-                    "routeKey": route_key,
-                    "clientKey": client_key,
-                    "tokens": tokens,
-                    "lastRefill": now,
-                }
-            )
+            try:
+                await self.db.ratelimitbucket.create(
+                    data={
+                        "routeKey": route_key,
+                        "clientKey": client_key,
+                        "tokens": tokens,
+                        "lastRefill": now,
+                    }
+                )
+            except UniqueViolationError:
+                # Lost a race against a concurrent first request for the same
+                # (route_key, client_key) — the DB's unique constraint is the
+                # actual guarantee; the find_unique lookup above is just a
+                # fast path that can't close the race alone. The row the
+                # other request just created may have already consumed the
+                # only available token, so fall through to the normal
+                # refill/consume path against the row that now exists
+                # instead of assuming we still get a token.
+                row = await self.db.ratelimitbucket.find_unique(
+                    where={"routeKey_clientKey": {"routeKey": route_key, "clientKey": client_key}}
+                )
+                if row is None:
+                    raise
+                return await self._consume(route_key, client_key, row, config)
             return True, 0.0
 
+        return await self._consume(route_key, client_key, row, config)
+
+    async def _consume(
+        self, route_key: str, client_key: str, row: Any, config: BucketConfig
+    ) -> tuple[bool, float]:
+        """Apply elapsed-time refill to an existing bucket row and consume a token."""
+        now = datetime.now(UTC)
         elapsed = (now - row.lastRefill).total_seconds()
         tokens = min(float(config.capacity), row.tokens + elapsed * config.refill_per_second)
 
