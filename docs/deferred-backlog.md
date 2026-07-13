@@ -48,43 +48,43 @@ it?) — orthogonal to closing the disclosure gap, which didn't need it.
 
 ---
 
-## 🟡 P1-2 — Move workflow execution to durable workers (ADR PROPOSED — awaiting approval)
+## 🟡 P1-2 — Move workflow execution to durable workers (ADR ACCEPTED, plan ready — not yet implemented)
 
-**ADR written 2026-07-13 — see ADR-0033 in `docs/decisions.md`.** Not yet approved; no code
-changes made. Verified the risk is active today, not theoretical: Cloud Run deploys with
-`--min-instances=0` (`scripts/gcp-bootstrap.ps1`), and Google's own guidance for this exact
-FastAPI-`BackgroundTasks`-on-Cloud-Run pattern independently confirms scale-to-zero can kill a
-detached background task once its HTTP response has been sent, regardless of whether the task is
-still running.
+**ADR-0033 accepted 2026-07-13** (`docs/decisions.md`). User approved: Cloud Tasks as new
+infrastructure, full replacement of the in-process model, P1-2 + P1-4 together. Verified the risk
+is active today, not theoretical: Cloud Run deploys with `--min-instances=0`
+(`scripts/gcp-bootstrap.ps1`), and Google's own guidance for this exact FastAPI-`BackgroundTasks`-
+on-Cloud-Run pattern independently confirms scale-to-zero can kill a detached background task once
+its HTTP response has been sent, regardless of whether the task is still running.
 
-**Recommendation in the ADR:** Google Cloud Tasks (HTTP-push delivery keeps the Cloud Run
-instance alive for the task's duration, native retry/backoff/dead-letter) triggering a claim
-endpoint that still uses the row-locking pattern already validated in ADR-0031
-(`SELECT ... FOR UPDATE SKIP LOCKED`) as the actual concurrency guard — Cloud Tasks' at-least-once
-delivery alone doesn't guarantee single-claim, Postgres does.
+**Approach:** Google Cloud Tasks (HTTP-push delivery keeps the Cloud Run instance alive for the
+task's duration, native retry/backoff/dead-letter) triggering a claim endpoint that still uses the
+row-locking pattern already validated in ADR-0031 (`SELECT ... FOR UPDATE SKIP LOCKED`) as the
+actual concurrency guard — Cloud Tasks' at-least-once delivery alone doesn't guarantee
+single-claim, Postgres does.
 
-**Open questions for the user (from the ADR) before implementation starts:**
-1. Approve introducing Cloud Tasks as new infrastructure (new GCP service, IAM/OIDC config, new
-   `google-cloud-tasks` dependency)?
-2. Full replacement of `LangGraphExecutor.run()`'s in-process model, or run alongside it while
-   old-style executions drain out?
-3. Land P1-2 and P1-4 together as the ADR frames them, or P1-2 first (the higher-severity,
-   confirmed-active risk)?
+**Implementation plan ready:** `docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md`
+— 16 TDD tasks (schema, config, claim-and-run endpoint, lease/heartbeat recovery, dead-letter,
+integration tests, deployment provisioning, docs). Not yet executed — awaiting the user's choice
+of execution mode (subagent-driven vs. inline) and a start signal.
 
 **Full spec:** `docs/claude-improvement-backlog.md` §P1-2.
 
 ---
 
-## 🟡 P1-4 — Replace process-local events and rate limits (ADR PROPOSED — awaiting approval)
+## 🟡 P1-4 — Replace process-local events and rate limits (ADR ACCEPTED, plan ready — not yet implemented)
 
-**ADR written 2026-07-13 — see ADR-0033 in `docs/decisions.md`** (same ADR as P1-2 — the audit's
-own framing groups these as one shared-infra decision). Not yet approved; no code changes made.
+**ADR-0033 accepted 2026-07-13** (same ADR as P1-2 — the audit's own framing groups these as one
+shared-infra decision).
 
-**Recommendation in the ADR:** no new infrastructure for this one — Postgres `LISTEN/NOTIFY` for
-low-latency event delivery (verified: 8000-byte payload cap, non-durable, transactional with
-commits) combined with a new persisted events table for reconnect-cursor/missed-event-recovery
-history `LISTEN/NOTIFY` alone can't provide; rate limiting via a Postgres table using the same
-atomic-conditional-update pattern already shipped three times this session (P1-1, P1-3, P1-6).
+**Approach:** no new infrastructure for this one — Postgres `LISTEN/NOTIFY` for low-latency event
+delivery (verified: 8000-byte payload cap, non-durable, transactional with commits) combined with
+a new persisted events table for reconnect-cursor/missed-event-recovery history `LISTEN/NOTIFY`
+alone can't provide; rate limiting via a Postgres table using the same atomic-conditional-update
+pattern already shipped three times this session (P1-1, P1-3, P1-6).
+
+**Implementation plan ready:** same plan as P1-2 —
+`docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md` (Tasks 3-8 cover this half).
 
 **Full spec:** `docs/claude-improvement-backlog.md` §P1-4.
 

@@ -909,9 +909,9 @@ The full P0-5 objective — "one secure credential abstraction shared by all int
 
 **Related.** ADR-0028 (the Jira pattern this generalizes); `docs/claude-improvement-backlog.md` §P0-5 and §P0-6 (`_SENSITIVE_QUERY_PARAMS`, the precedent for `SENSITIVE_HEADER_NAMES`); `docs/deferred-backlog.md` (updated P0-5 entry — model decision still open).
 
-## ADR-0033: Durable execution + shared events/rate-limits — Cloud Tasks + Postgres (PROPOSED, not yet approved)
+## ADR-0033: Durable execution + shared events/rate-limits — Cloud Tasks + Postgres
 
-**Status.** Proposed 2026-07-13. **Not accepted — this is a recommendation awaiting explicit user sign-off before any implementation begins**, per `docs/claude-improvement-backlog.md` §P1-2's own "Required discovery: Write an ADR... [this] is not authorization for implementation" framing, and `CLAUDE.md`'s stack-lock rule (the execution model is part of the locked architecture).
+**Status.** Accepted 2026-07-13. User approved: Cloud Tasks as new infrastructure, full replacement of the in-process execution model (not run-alongside), and P1-2 + P1-4 implemented together. Implementation plan: `docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md` (16 tasks, TDD). Not yet implemented — approval covers the design; execution is a separate, tracked step.
 
 **Context.** Two related backlog items (P1-2, P1-4) both stem from the same root cause: Composer's execution model and cross-cutting infrastructure (event bus, rate limiter) are process-local, correct only for a single, continuously-running backend instance.
 
