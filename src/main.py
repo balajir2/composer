@@ -19,6 +19,7 @@ from src.api.auth_common import router as auth_common_router
 from src.api.auth_standalone import router as auth_standalone_router
 from src.api.events_ws import router as events_ws_router
 from src.api.executions import router as executions_router
+from src.api.internal import router as internal_router
 from src.api.llm_models import router as llm_models_router
 from src.api.llm_models_live import router as llm_models_live_router
 from src.api.mcp_servers import oauth_router
@@ -139,6 +140,7 @@ def create_app() -> FastAPI:
     app.include_router(workflows_router)
     app.include_router(executions_router)
     app.include_router(events_ws_router)
+    app.include_router(internal_router)
     app.include_router(mcp_servers_router)
     app.include_router(oauth_router)
     app.include_router(run_router)
