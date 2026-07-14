@@ -84,12 +84,22 @@ async def prisma_lifespan(  # pyright: ignore[reportUnknownParameterType]
         # The NOTIFY connection (src/engine/events_notify.py) is a separate
         # dedicated asyncpg connection, independent of Prisma's pool — close
         # it alongside Prisma's disconnect so nothing is left dangling at
-        # shutdown. Order between the two doesn't matter functionally since
-        # they're independent connections.
+        # shutdown. Each cleanup is independently guarded: a failure in one
+        # (e.g. asyncpg.Connection.close() raising because the transport is
+        # already in a bad state) must never skip the other, so order truly
+        # doesn't matter. Errors are logged, not raised — shutdown must run
+        # to completion.
         from src.engine.events_notify import close_notify_connection
 
-        await close_notify_connection()
-        await db.disconnect()
+        try:
+            await close_notify_connection()
+        except Exception:
+            logger.exception("prisma_lifespan: close_notify_connection() failed during shutdown")
+
+        try:
+            await db.disconnect()
+        except Exception:
+            logger.exception("prisma_lifespan: db.disconnect() failed during shutdown")
 
 
 def get_db(request: Request) -> Prisma:  # pyright: ignore[reportUnknownParameterType]
