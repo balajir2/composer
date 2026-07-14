@@ -1,5 +1,6 @@
 """Tests for POST /internal/claim-and-run (P1-2)."""
 
+import asyncio
 import re
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -393,6 +394,148 @@ def test_claim_and_run_rejects_oidc_token_with_wrong_email(
         headers={"Authorization": "Bearer some-token"},
     )
     assert resp.status_code == 401
+
+
+def test_claim_and_run_crash_in_run_marks_row_failed_and_returns_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-2 Task 13 follow-up: a genuine crash inside `executor.run()` must
+    be caught synchronously, the row marked 'failed' with an informative
+    message (mirroring the deleted `_run_with_persistence` wrapper's
+    `f"{type(exc).__name__}: {exc}"` format), and the HTTP response must
+    reflect the failure with real context — not an opaque 500."""
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    client, db = _client_with_mock_db()
+    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
+    db.execute_raw = AsyncMock()
+    db.workflowexecution.update = AsyncMock()
+
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    async def _crashing_run(self: LangGraphExecutor, execution_id: str) -> None:
+        raise RuntimeError("simulated executor crash")
+
+    monkeypatch.setattr(LangGraphExecutor, "run", _crashing_run)
+
+    resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
+
+    assert resp.status_code == 500
+    assert "RuntimeError" in resp.text
+    assert "simulated executor crash" in resp.text
+
+    db.workflowexecution.update.assert_awaited_once()
+    call = db.workflowexecution.update.call_args
+    assert call.kwargs["where"] == {"id": "exec-1"}
+    data = call.kwargs["data"]
+    assert data["status"] == "failed"
+    assert "RuntimeError" in data["error"]
+    assert "simulated executor crash" in data["error"]
+    assert data["completedAt"] is not None
+
+
+def test_claim_and_run_crash_in_resume_marks_row_failed_and_returns_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same fast-fail guard, resume path: a crash inside `executor.resume()`
+    marks the row 'failed' immediately and surfaces an informative error
+    response, rather than silently leaving the row 'running' for the
+    sweeper to eventually notice."""
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    client, db = _client_with_mock_db()
+    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
+    db.execute_raw = AsyncMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(variables={"_resume_decision": "approved"})
+    )
+    db.workflowexecution.update = AsyncMock()
+
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    async def _crashing_resume(self: LangGraphExecutor, execution_id: str, decision: str) -> None:
+        raise RuntimeError("simulated resume crash")
+
+    monkeypatch.setattr(LangGraphExecutor, "resume", _crashing_resume)
+
+    resp = client.post(
+        "/internal/claim-and-run",
+        json={"executionId": "exec-1", "kind": "resume"},
+    )
+
+    assert resp.status_code == 500
+    assert "RuntimeError" in resp.text
+    assert "simulated resume crash" in resp.text
+
+    db.workflowexecution.update.assert_awaited_once()
+    call = db.workflowexecution.update.call_args
+    assert call.kwargs["where"] == {"id": "exec-1"}
+    data = call.kwargs["data"]
+    assert data["status"] == "failed"
+    assert "RuntimeError" in data["error"]
+    assert "simulated resume crash" in data["error"]
+    assert data["completedAt"] is not None
+
+
+def test_claim_and_run_cancelled_error_is_not_caught_by_fast_fail_guard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Narrow-scope regression: `asyncio.CancelledError` (graceful worker
+    shutdown, e.g. Cloud Run scale-down) must propagate through the new
+    fast-fail guard uncaught — it must NOT be treated as a crash and must
+    NOT cause this code path to mark the row 'failed'. Cancellation falls
+    through to `sweep_expired_leases`'s slower recovery instead, same as a
+    hard worker kill.
+
+    Calling the route function directly (bypassing TestClient, which
+    would swallow/translate the exception via Starlette's exception
+    handling) is what lets this test observe the raw propagation."""
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    db = MagicMock()
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.update = AsyncMock()
+    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
+    db.execute_raw = AsyncMock()
+
+    def _make_tx(**_kwargs: object) -> _FakeTx:
+        return _FakeTx(db)
+
+    db.tx = MagicMock(side_effect=_make_tx)
+
+    from src.api.internal import ClaimAndRunRequest, claim_and_run
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    async def _cancelled_run(self: LangGraphExecutor, execution_id: str) -> None:
+        raise asyncio.CancelledError
+
+    monkeypatch.setattr(LangGraphExecutor, "run", _cancelled_run)
+
+    fake_request = SimpleNamespace(
+        client=SimpleNamespace(host="test"),
+        app=SimpleNamespace(state=SimpleNamespace(checkpointer=MagicMock(), event_bus=MagicMock())),
+    )
+
+    def _fake_get_checkpointer(_req: object) -> MagicMock:
+        return MagicMock()
+
+    def _fake_get_event_bus(_req: object) -> MagicMock:
+        return MagicMock()
+
+    monkeypatch.setattr("src.api.internal.get_checkpointer", _fake_get_checkpointer)
+    monkeypatch.setattr("src.api.internal.get_event_bus", _fake_get_event_bus)
+
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(
+            claim_and_run(
+                payload=ClaimAndRunRequest(executionId="exec-1", kind="run"),
+                request=fake_request,  # type: ignore[arg-type]
+                db=db,
+                _oidc=None,
+            )
+        )
+
+    # The fast-fail guard must not have touched the row at all — this is
+    # what proves CancelledError skipped `except Exception` entirely
+    # rather than being caught and re-raised after a (wrong) DB write.
+    db.workflowexecution.update.assert_not_awaited()
 
 
 def test_claim_and_run_accepts_valid_oidc_token(monkeypatch: pytest.MonkeyPatch) -> None:

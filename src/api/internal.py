@@ -234,27 +234,104 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
             payload.execution_id,
         )
 
-    checkpointer = get_checkpointer(request)
-    event_bus = get_event_bus(request)
-    executor = LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
+    # By the time we reach this point, the lease UPDATE above has already
+    # committed (the `async with db.tx(...)` block exited) — the row is
+    # durably marked 'running' with an owner and an expiry BEFORE any of
+    # the code below runs. That ordering matters for what follows: this
+    # try/except is a fast-fail belt-and-suspenders layered ALONGSIDE
+    # `sweep_expired_leases`, not a replacement for it (P1-2 Task 13
+    # follow-up — restores the fast-fail path deleted in e50cb81 after
+    # code review flagged that lease+sweep alone means up to
+    # `execution_lease_seconds` (default 1h) before a crash is even
+    # noticed, and up to `execution_max_delivery_attempts` sweep cycles
+    # before dead-letter). If a genuine crash happens here (an uncaught
+    # exception from the executor, a bug in this handler's own code), we
+    # want the row marked 'failed' *now*, synchronously, in the same
+    # request — not an hour from now.
+    #
+    # This mirrors the deleted `_run_with_persistence` wrapper
+    # (src/api/run.py, removed in e50cb81) in spirit and in the exact
+    # error-message format (`f"{type(exc).__name__}: {exc}"`), adapted
+    # from a detached-task done-callback to a request handler: instead of
+    # re-raising for a task's done-callback to observe, we raise an
+    # `HTTPException` so Cloud Tasks' HTTP client sees a 5xx with a real
+    # body instead of an opaque, context-free 500. That 5xx may prompt
+    # Cloud Tasks to retry the delivery, but that retry is a harmless
+    # no-op: the claim query above only matches rows whose status is in
+    # `ACTIVE_EXECUTION_STATUSES_SORTED`, and this code path has already
+    # stamped the row 'failed' before raising, so the redelivered request
+    # finds nothing to claim and returns `{"status": "already_claimed"}`.
+    #
+    # Deliberately `except Exception`, not `except BaseException`:
+    # `asyncio.CancelledError` inherits from `BaseException` (not
+    # `Exception`, since Python 3.8), so it is NOT caught here and
+    # propagates untouched — a graceful Cloud Run scale-down/shutdown
+    # cancelling this request must NOT get marked 'failed' by this fast
+    # path; it correctly falls through to `sweep_expired_leases`'s slower
+    # recovery instead, same as a hard worker kill that never runs any
+    # Python code at all. `HTTPException` (itself an `Exception`
+    # subclass) is caught and immediately re-raised unchanged, before the
+    # generic handler below, so the existing "decision is required" 422
+    # validation error is untouched by this guard — that's expected
+    # application-level rejection, not a crash.
+    #
+    # If persisting 'failed' itself fails (e.g. a DB error while writing
+    # the failure), that inner exception is swallowed (logged, not
+    # raised) so it can never mask the original crash — and the lease
+    # committed above remains in place for `sweep_expired_leases` to
+    # eventually recover. The safety net has its own safety net.
+    try:
+        checkpointer = get_checkpointer(request)
+        event_bus = get_event_bus(request)
+        executor = LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
 
-    if payload.kind == "resume":
-        # P1-2 (Task 13): the decision travels via the claimed row's
-        # `variables._resume_decision`, stamped by the enqueueing call
-        # site BEFORE the Cloud Task fired (see ClaimAndRunRequest's
-        # docstring) — not via any request-body field.
-        row_data = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"id": payload.execution_id}
-        )
-        decision = (row_data.variables or {}).get("_resume_decision") if row_data else None
-        if not decision:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail="decision is required when kind='resume'",
+        if payload.kind == "resume":
+            # P1-2 (Task 13): the decision travels via the claimed row's
+            # `variables._resume_decision`, stamped by the enqueueing call
+            # site BEFORE the Cloud Task fired (see ClaimAndRunRequest's
+            # docstring) — not via any request-body field.
+            row_data = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+                where={"id": payload.execution_id}
             )
-        await executor.resume(payload.execution_id, decision)
-    else:
-        await executor.run(payload.execution_id)
+            decision = (row_data.variables or {}).get("_resume_decision") if row_data else None
+            if not decision:
+                raise HTTPException(
+                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    detail="decision is required when kind='resume'",
+                )
+            await executor.resume(payload.execution_id, decision)
+        else:
+            await executor.run(payload.execution_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception(
+            "internal: claim_and_run crashed for execution %s (kind=%s)",
+            payload.execution_id,
+            payload.kind,
+        )
+        try:
+            await db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
+                where={"id": payload.execution_id},
+                data={
+                    "status": "failed",
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "completedAt": datetime.now(UTC),
+                },
+            )
+        except Exception:
+            logger.exception(
+                "internal: failed to mark crashed execution %s as failed "
+                "(lease remains for sweep_expired_leases to recover)",
+                payload.execution_id,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"execution {payload.execution_id} crashed during "
+                f"{payload.kind}: {type(exc).__name__}: {exc}"
+            ),
+        ) from exc
 
     return {"status": "completed"}
 
