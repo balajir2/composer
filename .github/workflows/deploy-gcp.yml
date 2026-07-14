@@ -9,10 +9,18 @@
 #      https://composer-backend-<hash>-uc.a.run.app).
 #   4. (Optional) Add the public frontend URL as `COMPOSER_FRONTEND_URL`
 #      so NEXTAUTH_URL points at the right host.
+#   5. (Optional, P1-2/P1-4 durable execution) Add the shared Cloud
+#      Tasks/Scheduler service account email — created by
+#      scripts/gcp-bootstrap.ps1's "1a" step — as a repository variable
+#      named `CLOUD_TASKS_SERVICE_ACCOUNT` (e.g.
+#      composer-tasks@composer-497608.iam.gserviceaccount.com). Left
+#      unset, /internal/claim-and-run and /internal/sweep skip OIDC
+#      verification (dev-mode fallback; see src/api/internal.py).
 #
 # The workflow assumes the bootstrap script has already run (Secret
-# Manager populated, Cloud Run services exist).  Day-to-day pushes
-# only rebuild + redeploy the containers.
+# Manager populated, Cloud Run services exist, Cloud Tasks queue +
+# Cloud Scheduler job provisioned).  Day-to-day pushes only rebuild +
+# redeploy the containers.
 
 name: Deploy to GCP Cloud Run
 
@@ -135,6 +143,33 @@ jobs:
             --update-env-vars="FRONTEND_URL=${{ vars.COMPOSER_FRONTEND_URL }}" \
             --quiet
           echo "FRONTEND_URL set to: ${{ vars.COMPOSER_FRONTEND_URL }}"
+
+      # GCP_PROJECT_ID/GCP_REGION are what enqueue_execution()
+      # (src/execution/cloud_tasks.py) uses to build the Cloud Tasks queue
+      # path; they're already known to this job as env.PROJECT_ID/env.REGION,
+      # so no new repo variable is needed for those two.
+      # CLOUD_TASKS_SERVICE_ACCOUNT is what _verify_internal_oidc()
+      # (src/api/internal.py) matches the incoming OIDC token's `email`
+      # claim against — read from a repo variable (vars.*, not secrets.*)
+      # since a service account email is an identifier, not a credential,
+      # matching this workflow's existing COMPOSER_API_URL/
+      # COMPOSER_FRONTEND_URL convention. Unconditional (unlike the
+      # FRONTEND_URL step above): GCP_PROJECT_ID/GCP_REGION are always
+      # available, and an unset vars.CLOUD_TASKS_SERVICE_ACCOUNT resolves
+      # to an empty string, which src/config.py already treats as a safe
+      # default (OIDC verification skipped, matching local/dev) rather
+      # than a broken one — see scripts/gcp-bootstrap.ps1's section 1a for
+      # how this value is provisioned (queue + service account created
+      # together; not automated here — set this repo variable by hand
+      # after running that script once).
+      - name: Set Cloud Tasks env vars
+        run: |
+          gcloud run services update ${{ env.BACKEND_SERVICE }} \
+            --region=${{ env.REGION }} \
+            --project=${{ env.PROJECT_ID }} \
+            --update-env-vars="GCP_PROJECT_ID=${{ env.PROJECT_ID }},GCP_REGION=${{ env.REGION }},CLOUD_TASKS_SERVICE_ACCOUNT=${{ vars.CLOUD_TASKS_SERVICE_ACCOUNT }}" \
+            --quiet
+          echo "GCP_PROJECT_ID/GCP_REGION/CLOUD_TASKS_SERVICE_ACCOUNT set"
 
       - name: Print backend URL
         run: |
