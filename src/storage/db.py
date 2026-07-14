@@ -96,6 +96,17 @@ async def prisma_lifespan(  # pyright: ignore[reportUnknownParameterType]
         except Exception:
             logger.exception("prisma_lifespan: close_notify_connection() failed during shutdown")
 
+        # The cached Cloud Tasks client (src/execution/cloud_tasks.py) holds
+        # its own grpc_asyncio transport, independent of Prisma's pool and
+        # the NOTIFY connection — close it too, independently guarded for the
+        # same reason as above.
+        from src.execution.cloud_tasks import close_cloud_tasks_client
+
+        try:
+            await close_cloud_tasks_client()
+        except Exception:
+            logger.exception("prisma_lifespan: close_cloud_tasks_client() failed during shutdown")
+
         try:
             await db.disconnect()
         except Exception:
