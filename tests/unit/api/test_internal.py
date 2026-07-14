@@ -113,9 +113,12 @@ def test_claim_and_run_claim_query_filters_on_status(monkeypatch: pytest.MonkeyP
 
     async def _fake_query_raw(sql: str, *args: object) -> list[dict[str, str]]:
         assert "status" in sql, "claim query must filter on status"
-        match = re.search(r"status\s+IN\s*\(([^)]+)\)", sql, re.IGNORECASE)
-        assert match, "claim query must have a `status IN (...)` predicate"
-        allowed = {s.strip().strip("'") for s in match.group(1).split(",")}
+        assert re.search(r"status\s*=\s*ANY\(\$\d+::text\[\]\)", sql, re.IGNORECASE), (
+            "claim query must filter status via a bound `= ANY($N::text[])` "
+            "parameter, not a hardcoded literal"
+        )
+        assert len(args) >= 2, "claim query must bind the allowed statuses as a parameter"
+        allowed = set(args[1])  # type: ignore[arg-type]
         # Terminal statuses must never be claimable, whatever else changes.
         assert "completed" not in allowed
         assert "failed" not in allowed
@@ -161,9 +164,11 @@ def test_claim_and_run_claim_query_includes_queued_status(
     client, db = _client_with_mock_db()
 
     async def _fake_query_raw(sql: str, *args: object) -> list[dict[str, str]]:
-        match = re.search(r"status\s+IN\s*\(([^)]+)\)", sql, re.IGNORECASE)
-        assert match, "claim query must have a `status IN (...)` predicate"
-        allowed = {s.strip().strip("'") for s in match.group(1).split(",")}
+        assert re.search(r"status\s*=\s*ANY\(\$\d+::text\[\]\)", sql, re.IGNORECASE), (
+            "claim query must have a bound `status = ANY($N::text[])` predicate"
+        )
+        assert len(args) >= 2, "claim query must bind the allowed statuses as a parameter"
+        allowed = set(args[1])  # type: ignore[arg-type]
         assert "queued" in allowed, "freshly created 'queued' rows must be claimable"
         return [{"id": "exec-1"}]
 
@@ -182,6 +187,48 @@ def test_claim_and_run_claim_query_includes_queued_status(
     resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
     assert resp.status_code == 200, resp.text
     assert ran == ["exec-1"]
+
+
+def test_claim_and_run_claim_query_status_set_matches_shared_constant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Anti-drift regression (P1-2 followup, Issue 1): the claim query's
+    bound status list must equal `ACTIVE_EXECUTION_STATUSES_SORTED`
+    (src/api/execution_status.py) EXACTLY — not just "queued is present"
+    (test_claim_and_run_claim_query_includes_queued_status) or "terminal
+    statuses are excluded" (test_claim_and_run_claim_query_filters_on_status).
+    Before this fix, `claim_and_run` hardcoded its own independent
+    `status IN ('queued', 'running', 'waiting_approval')` SQL literal,
+    completely decoupled from the constant `executions.py`'s delete/cancel
+    guards use — a change to the active-status set anywhere else would
+    silently desync this query and this test would have caught it.
+    """
+    from src.api.execution_status import ACTIVE_EXECUTION_STATUSES_SORTED
+
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    client, db = _client_with_mock_db()
+
+    captured_status_lists: list[list[str]] = []
+
+    async def _fake_query_raw(sql: str, *args: object) -> list[dict[str, str]]:
+        assert len(args) >= 2, "claim query must bind the allowed statuses as a parameter"
+        captured_status_lists.append(list(args[1]))  # type: ignore[arg-type]
+        return [{"id": "exec-1"}]
+
+    db.query_raw = AsyncMock(side_effect=_fake_query_raw)
+    db.execute_raw = AsyncMock()
+
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    async def _fake_run(self: LangGraphExecutor, execution_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(LangGraphExecutor, "run", _fake_run)
+
+    resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
+    assert resp.status_code == 200, resp.text
+    assert len(captured_status_lists) == 1
+    assert set(captured_status_lists[0]) == set(ACTIVE_EXECUTION_STATUSES_SORTED)
 
 
 def test_claim_and_run_update_sets_status_running(monkeypatch: pytest.MonkeyPatch) -> None:

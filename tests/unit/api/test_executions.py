@@ -127,7 +127,14 @@ def test_post_execution_marks_row_failed_when_enqueue_raises(
     idempotencyKey, permanently un-repairable (the idempotency
     short-circuit would just keep returning the same stuck row without
     ever calling enqueue_execution again). The endpoint must mark the row
-    'failed' and return a handled error, not an unhandled 500."""
+    'failed' and return a handled error, not an unhandled 500.
+
+    The mark-failed write must be an atomic, status-guarded `update_many`
+    (where status='queued'), matching the pattern used everywhere else in
+    this file — NOT an unconditional `update()` — so a concurrent cancel
+    that already flipped the row to 'canceled' can't be clobbered back to
+    'failed' by a stale enqueue error (see the dedicated race test below).
+    """
 
     async def _raise_enqueue(execution_id: str, *, kind: str) -> None:
         raise RuntimeError("Cloud Tasks unavailable")
@@ -135,16 +142,81 @@ def test_post_execution_marks_row_failed_when_enqueue_raises(
     monkeypatch.setattr("src.api.executions.enqueue_execution", _raise_enqueue)
 
     client, db = _client_with_mock_db()
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
 
     assert resp.status_code == 500
     assert "ex1" in resp.json()["detail"]
 
-    db.workflowexecution.update.assert_awaited_once()
-    _, kwargs = db.workflowexecution.update.call_args
-    assert kwargs["where"] == {"id": "ex1"}
+    db.workflowexecution.update_many.assert_awaited_once()
+    _, kwargs = db.workflowexecution.update_many.call_args
+    assert kwargs["where"] == {"id": "ex1", "status": "queued"}
     assert kwargs["data"]["status"] == "failed"
     assert "enqueue" in kwargs["data"]["error"]
+    db.workflowexecution.update.assert_not_awaited()
+
+
+def test_post_execution_enqueue_failure_does_not_clobber_concurrent_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue 2 regression: a client cancels the still-'queued' row (now
+    valid, P1-2-followup) while enqueue_execution is mid-flight/timing
+    out. cancel_execution's atomic update_many wins first (row ->
+    'canceled'). When the enqueue-failure handler then tries to mark the
+    row 'failed', its status-guarded update_many (where status='queued')
+    must affect zero rows — since the row is no longer 'queued' — so it
+    becomes a safe no-op instead of clobbering the legitimate
+    cancellation. The caller still gets an informative 500 for the
+    enqueue failure itself; the row's real status is left untouched."""
+
+    async def _raise_enqueue(execution_id: str, *, kind: str) -> None:
+        raise RuntimeError("Cloud Tasks unavailable")
+
+    monkeypatch.setattr("src.api.executions.enqueue_execution", _raise_enqueue)
+
+    client, db = _client_with_mock_db()
+    # 0 rows affected == exactly what Postgres would report if a
+    # concurrent cancel already flipped this row's status away from
+    # 'queued' before this update_many's WHERE clause evaluated.
+    db.workflowexecution.update_many = AsyncMock(return_value=0)
+    resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
+
+    assert resp.status_code == 500
+    assert "ex1" in resp.json()["detail"]
+
+    db.workflowexecution.update_many.assert_awaited_once()
+    _, kwargs = db.workflowexecution.update_many.call_args
+    # The guard is what makes this a no-op against an already-canceled
+    # row — asserting it's present is the actual regression check.
+    assert kwargs["where"] == {"id": "ex1", "status": "queued"}
+    db.workflowexecution.update.assert_not_awaited()
+
+
+def test_post_execution_enqueue_failure_survives_nested_mark_failed_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Issue 3 regression: if the mark-failed `update_many` call itself
+    raises (a DB blip right after the row's own successful create()), that
+    secondary exception must NOT propagate and mask the original,
+    informative enqueue-failure HTTPException with FastAPI's generic 500
+    handler. The client must still receive the same handled 500 response
+    referencing the execution id, proving the primary error survives the
+    nested failure."""
+
+    async def _raise_enqueue(execution_id: str, *, kind: str) -> None:
+        raise RuntimeError("Cloud Tasks unavailable")
+
+    monkeypatch.setattr("src.api.executions.enqueue_execution", _raise_enqueue)
+
+    client, db = _client_with_mock_db()
+    db.workflowexecution.update_many = AsyncMock(side_effect=RuntimeError("DB blip"))
+    resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
+
+    assert resp.status_code == 500
+    body = resp.json()
+    assert "ex1" in body["detail"]
+    assert "enqueued" in body["detail"]
+    db.workflowexecution.update_many.assert_awaited_once()
 
 
 def test_post_execution_404_when_workflow_missing() -> None:

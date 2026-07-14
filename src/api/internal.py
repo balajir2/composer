@@ -44,6 +44,7 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.api.execution_status import ACTIVE_EXECUTION_STATUSES_SORTED
 from src.config import get_settings
 from src.engine.langgraph_executor import LangGraphExecutor
 from src.maintenance.execution_sweeper import (
@@ -172,16 +173,26 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
     # reads) on that row. Matches the precedent set by the identical
     # FOR UPDATE SKIP LOCKED pattern in scripts/poc_persistence_row_lock.py.
     async with db.tx(timeout=10000) as tx:
+        # Status predicate is bound as a real parameter (Postgres
+        # `= ANY($N::text[])`), not interpolated into the SQL text, and is
+        # sourced from `ACTIVE_EXECUTION_STATUSES_SORTED`
+        # (src/api/execution_status.py) rather than a hardcoded
+        # `status IN (...)` literal — this was previously its own
+        # independent hardcoded list, completely out of sync with the
+        # identical set `executions.py`'s delete/cancel guards derive from
+        # the same shared constant. A future change to the active-status
+        # set now can't silently desync the claim query from those guards.
         rows = await tx.query_raw(
             """
             SELECT id FROM workflow_executions
             WHERE id = $1
-              AND status IN ('queued', 'running', 'waiting_approval')
+              AND status = ANY($2::text[])
               AND (lease_expires_at IS NULL OR lease_expires_at < now())
             FOR UPDATE SKIP LOCKED
             LIMIT 1
             """,
             payload.execution_id,
+            ACTIVE_EXECUTION_STATUSES_SORTED,
         )
         if not rows:
             # Already claimed by another delivery, or the lease hasn't

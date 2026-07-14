@@ -11,6 +11,10 @@ from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingI
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from src.api.execution_status import (
+    ACTIVE_EXECUTION_STATUSES,
+    ACTIVE_EXECUTION_STATUSES_SORTED,
+)
 from src.config import get_settings
 from src.engine.langgraph_executor import LangGraphExecutor
 from src.execution.cloud_tasks import enqueue_execution
@@ -38,12 +42,10 @@ router = APIRouter(tags=["executions"])
 # delete request's unlocked read observes it — there is no persisted status
 # between row-creation and terminal completion that is ever safe to delete
 # unconditionally.
-_ACTIVE_EXECUTION_STATUSES = frozenset({"queued", "running", "waiting_approval"})
-
-# Sorted, deterministic ordering for use in `{"in": [...]}` where-clauses
-# (dict/list equality in tests + stable SQL param ordering) — derived from
-# the frozenset above so the two can never drift apart.
-_ACTIVE_EXECUTION_STATUSES_SORTED = sorted(_ACTIVE_EXECUTION_STATUSES)
+#
+# Sourced from `src.api.execution_status` (not defined here) so
+# `internal.py`'s claim-query predicate can share the exact same set —
+# see that module's docstring for the drift bug this closes.
 
 
 class ExecutionCreate(BaseModel):
@@ -219,14 +221,42 @@ async def create_execution(
         # so the row reaches a terminal status right away and the caller
         # gets a real, actionable error instead of an unhandled 500.
         logger.exception("create_execution: failed to enqueue Cloud Task for execution %s", row.id)
-        await db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"id": row.id},
-            data={
-                "status": "failed",
-                "error": f"failed to enqueue execution for durable processing: {exc}",
-                "completedAt": datetime.now(UTC),
-            },
-        )
+        try:
+            # Guarded like every other status transition in this file
+            # (resume_execution, cancel_execution): fold the CURRENT status
+            # into the WHERE clause via update_many instead of an
+            # unconditional update(). 'queued' is now a cancellable status
+            # (P1-2-followup) — if a client cancels this still-'queued' row
+            # while enqueue_execution is mid-flight/timing out,
+            # cancel_execution's own atomic update_many could win first
+            # (row -> 'canceled'). Guarding on status='queued' here makes
+            # this write a safe no-op in that case instead of clobbering a
+            # legitimate cancellation with a stale 'failed'.
+            await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
+                where={"id": row.id, "status": "queued"},
+                data={
+                    "status": "failed",
+                    "error": f"failed to enqueue execution for durable processing: {exc}",
+                    "completedAt": datetime.now(UTC),
+                },
+            )
+        except Exception:
+            # Nested-failure path: if THIS write also raises (a DB blip
+            # right after row's own successful create()), we must not let
+            # it propagate — that would replace the informative
+            # HTTPException below with FastAPI's generic 500 handler AND
+            # leave the row stuck at 'queued' forever, reproducing the
+            # exact failure mode this whole handler exists to prevent, via
+            # a different path. Log distinctly so operators can find this
+            # rare double-failure via the sweeper's stuck-execution scan or
+            # manual intervention, then fall through to raise the primary,
+            # more informative error below — don't let a secondary DB
+            # error mask the original problem, and don't silently swallow
+            # it either.
+            logger.exception(
+                "create_execution: failed to mark execution %s as failed after enqueue error",
+                row.id,
+            )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Execution {row.id!r} could not be enqueued for processing.",
@@ -370,7 +400,7 @@ async def delete_executions_bulk(  # pyright: ignore[reportUnusedFunction]
     # Skip active executions (P1-6): deleting a running or waiting_approval
     # row's checkpoints out from under its in-flight background task leaves
     # that task unable to persist a final state against a row that's gone.
-    rows = [row for row in rows if row.status not in _ACTIVE_EXECUTION_STATUSES]
+    rows = [row for row in rows if row.status not in ACTIVE_EXECUTION_STATUSES]
     if not rows:
         return BulkDeleteResponse(
             deletedCount=0,
@@ -437,7 +467,7 @@ async def delete_execution(  # pyright: ignore[reportUnusedFunction]
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Execution {execution_id!r} not found.",
         )
-    if row.status in _ACTIVE_EXECUTION_STATUSES:
+    if row.status in ACTIVE_EXECUTION_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
@@ -493,7 +523,7 @@ async def cancel_execution(  # pyright: ignore[reportUnusedFunction]
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Execution {execution_id!r} not found.",
         )
-    if execution.status not in _ACTIVE_EXECUTION_STATUSES:
+    if execution.status not in ACTIVE_EXECUTION_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Execution is {execution.status!r}, not cancellable.",
@@ -503,7 +533,7 @@ async def cancel_execution(  # pyright: ignore[reportUnusedFunction]
     # — folds the status guard into the update itself so two concurrent
     # cancel calls (or a cancel racing a resume, or a cancel racing
     # claim-and-run's own claim) can't both succeed. Sourced from
-    # `_ACTIVE_EXECUTION_STATUSES_SORTED` (not a separately-hardcoded list)
+    # `ACTIVE_EXECUTION_STATUSES_SORTED` (not a separately-hardcoded list)
     # so this can never silently drift from the guard check above it —
     # this now includes 'queued', so canceling a not-yet-claimed execution
     # succeeds here instead of hitting the 409 above. Safe to cancel while
@@ -514,7 +544,7 @@ async def cancel_execution(  # pyright: ignore[reportUnusedFunction]
     # claim and returns 'already_claimed' — no separate task-cancellation
     # call is needed.
     updated_count = await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": execution_id, "status": {"in": _ACTIVE_EXECUTION_STATUSES_SORTED}},
+        where={"id": execution_id, "status": {"in": ACTIVE_EXECUTION_STATUSES_SORTED}},
         data={
             "status": "canceled",
             "error": _CANCEL_ERROR_MESSAGE,
