@@ -2018,6 +2018,25 @@ git commit -m "feat(execution): route POST /executions through Cloud Tasks, not 
 
 ---
 
+> **Fast-follow noted 2026-07-14 (not blocking, from Task 12's code review):**
+> `src/api/executions.py`'s `create_execution` has a rare nested-failure path (enqueue
+> raises, then the mark-failed write ALSO raises) whose log comment claims the
+> resulting stuck-at-`queued` row is discoverable via "the sweeper's stuck-execution
+> scan" — checked against `src/maintenance/execution_sweeper.py` and this is false:
+> none of the four sweep functions ever scan `status='queued'` rows (deliberately, per
+> the sweeper's own docstring, since a short `queued` window is normal). A row that
+> hits this exact double-fault is logged and effectively unrecoverable except by an
+> operator manually grepping logs and hand-writing a SQL UPDATE. Fix the comment to
+> stop claiming sweeper coverage (and document the actual manual recovery path), or
+> extend the sweeper to also reap very-old `queued` rows as a companion to
+> `sweep_stuck_executions`/`sweep_expired_leases`. Also noted: `internal.py`'s claim
+> query now binds `ACTIVE_EXECUTION_STATUSES_SORTED` via `status = ANY($2::text[])`
+> — Prisma's documented pattern for raw-query array binding, but this is the only
+> place in the codebase binding a Python list into `query_raw`, and it's only been
+> verified against mocked `query_raw`/`execute_raw`, not round-tripped through real
+> Postgres. Task 15 (integration tests) should add real-Postgres coverage for this
+> specific query shape. Neither item blocks Task 13+.
+
 ## Task 13: Wire resume (in-app + email-link) and external-invoke to Cloud Tasks
 
 **Files:**
