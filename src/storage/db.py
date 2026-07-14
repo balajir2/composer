@@ -18,7 +18,7 @@ from prisma.engine.errors import (  # pyright: ignore[reportMissingImports, repo
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 
 if TYPE_CHECKING:
-    from src.engine.events import ExecutionEventBus
+    from src.engine.events_pg import PostgresEventStore
     from src.storage.checkpointer import PrismaCheckpointSaver
 
 logger = logging.getLogger(__name__)
@@ -72,9 +72,9 @@ async def prisma_lifespan(  # pyright: ignore[reportUnknownParameterType]
     await _connect_with_retry(db)
     app.state.db = db
     app.state.checkpointer = PrismaCheckpointSaver(db)
-    from src.engine.events import ExecutionEventBus
+    from src.engine.events_pg import PostgresEventStore
 
-    app.state.event_bus = ExecutionEventBus()
+    app.state.event_bus = PostgresEventStore(db)
     from src.security.rate_limit_pg import PostgresRateLimiter
 
     app.state.rate_limiter = PostgresRateLimiter(db)
@@ -122,11 +122,11 @@ def get_checkpointer(request: Request) -> "PrismaCheckpointSaver":  # pyright: i
     return cp
 
 
-def get_event_bus(request: Request) -> "ExecutionEventBus":  # pyright: ignore[reportUnknownParameterType]
-    """FastAPI dependency — returns the app-wide ExecutionEventBus."""
+def get_event_bus(request: Request) -> "PostgresEventStore":  # pyright: ignore[reportUnknownParameterType]
+    """FastAPI dependency — returns the app-wide PostgresEventStore."""
     bus = getattr(request.app.state, "event_bus", None)
     if bus is None:
-        raise RuntimeError("ExecutionEventBus not attached to app.state — did lifespan run?")
+        raise RuntimeError("PostgresEventStore not attached to app.state — did lifespan run?")
     return bus  # pyright: ignore[reportReturnType]
 
 

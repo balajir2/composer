@@ -12,7 +12,32 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
+from src.engine.events import ExecutionEvent
 from src.engine.langgraph_executor import LangGraphExecutor
+
+
+class _FakeEventStore:
+    """In-memory stand-in for PostgresEventStore.append — no real Postgres
+    round-trip, just an append-only list with an assigned sequence number,
+    so these unit tests don't need a live database."""
+
+    def __init__(self) -> None:
+        self.events: list[ExecutionEvent] = []
+
+    async def append(self, event: ExecutionEvent) -> int:
+        seq = len(self.events) + 1
+        self.events.append(event)
+        return seq
+
+
+@pytest.fixture(autouse=True)
+def _patch_notify(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # pyright: ignore[reportUnusedFunction]
+    """LangGraphExecutor._emit calls notify_execution_event(execution_id, seq=seq)
+    after every append — patch it to a no-op so unit tests never attempt a
+    real asyncpg connection."""
+    mock = AsyncMock()
+    monkeypatch.setattr("src.engine.langgraph_executor.notify_execution_event", mock)
+    return mock
 
 
 def _workflow_row(workflow_dict: dict[str, Any]) -> SimpleNamespace:
@@ -309,17 +334,15 @@ async def test_run_emits_status_change_on_start_and_complete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """run() emits workflow_started(running) before ainvoke and workflow_completed(completed)
-    + close() after."""
+    after."""
     from types import SimpleNamespace
     from typing import Any as _Any
     from unittest.mock import AsyncMock, MagicMock
 
     from src.engine import langgraph_executor as lge_mod
-    from src.engine.events import ExecutionEventBus
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    bus = ExecutionEventBus()
-    queue = await bus.subscribe("e1")
+    store = _FakeEventStore()
 
     db = MagicMock()
     db.workflowexecution = MagicMock()
@@ -359,26 +382,18 @@ async def test_run_emits_status_change_on_start_and_complete(
 
     monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
 
-    orch = LangGraphExecutor(db, MagicMock(), event_bus=bus)
+    orch = LangGraphExecutor(db, MagicMock(), event_bus=store)  # pyright: ignore[reportArgumentType]
     await orch.run("e1")
 
-    events: list[_Any] = []
-    import asyncio as _aio
-
-    while True:
-        try:
-            ev = await _aio.wait_for(queue.get(), timeout=0.1)
-        except TimeoutError:
-            break
-        if ev is None:
-            break
-        events.append(ev)
-
-    types = [e.type for e in events]
+    types = [e.type for e in store.events]
     assert "workflow_started" in types
     assert "workflow_completed" in types
-    started_statuses = [e.payload.get("status") for e in events if e.type == "workflow_started"]
-    completed_statuses = [e.payload.get("status") for e in events if e.type == "workflow_completed"]
+    started_statuses = [
+        e.payload.get("status") for e in store.events if e.type == "workflow_started"
+    ]
+    completed_statuses = [
+        e.payload.get("status") for e in store.events if e.type == "workflow_completed"
+    ]
     assert "running" in started_statuses
     assert "completed" in completed_statuses
 
@@ -392,11 +407,9 @@ async def test_run_emits_approval_pending_on_pause(
     from unittest.mock import AsyncMock, MagicMock
 
     from src.engine import langgraph_executor as lge_mod
-    from src.engine.events import ExecutionEventBus
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    bus = ExecutionEventBus()
-    queue = await bus.subscribe("e1")
+    store = _FakeEventStore()
 
     db = MagicMock()
     db.workflowexecution = MagicMock()
@@ -453,24 +466,12 @@ async def test_run_emits_approval_pending_on_pause(
 
     monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
 
-    orch = LangGraphExecutor(db, MagicMock(), event_bus=bus)
+    orch = LangGraphExecutor(db, MagicMock(), event_bus=store)  # pyright: ignore[reportArgumentType]
     await orch.run("e1")
 
-    events: list[_Any] = []
-    import asyncio as _aio
-
-    while True:
-        try:
-            ev = await _aio.wait_for(queue.get(), timeout=0.1)
-        except TimeoutError:
-            break
-        if ev is None:
-            break
-        events.append(ev)
-
-    types = [e.type for e in events]
+    types = [e.type for e in store.events]
     assert "approval_required" in types
-    pending = next(e for e in events if e.type == "approval_required")
+    pending = next(e for e in store.events if e.type == "approval_required")
     assert pending.payload["node_id"] == "ua"
     assert pending.payload["prompt"] == "Approve?"
     assert pending.payload.get("status") == "waiting_approval"
@@ -480,14 +481,11 @@ async def test_run_emits_failed_on_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from types import SimpleNamespace
-    from typing import Any as _Any
     from unittest.mock import AsyncMock, MagicMock
 
-    from src.engine.events import ExecutionEventBus
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    bus = ExecutionEventBus()
-    queue = await bus.subscribe("e1")
+    store = _FakeEventStore()
 
     db = MagicMock()
     db.workflowexecution = MagicMock()
@@ -504,22 +502,10 @@ async def test_run_emits_failed_on_exception(
     db.workflow.find_unique = AsyncMock(side_effect=RuntimeError("boom"))
     db.workflowexecution.update = AsyncMock()
 
-    orch = LangGraphExecutor(db, MagicMock(), event_bus=bus)
+    orch = LangGraphExecutor(db, MagicMock(), event_bus=store)  # pyright: ignore[reportArgumentType]
     await orch.run("e1")
 
-    events: list[_Any] = []
-    import asyncio as _aio
-
-    while True:
-        try:
-            ev = await _aio.wait_for(queue.get(), timeout=0.1)
-        except TimeoutError:
-            break
-        if ev is None:
-            break
-        events.append(ev)
-
-    statuses = [e.payload.get("status") for e in events if e.type == "workflow_completed"]
+    statuses = [e.payload.get("status") for e in store.events if e.type == "workflow_completed"]
     assert "failed" in statuses
 
 

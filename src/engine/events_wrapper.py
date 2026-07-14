@@ -16,6 +16,7 @@ from langgraph.errors import GraphBubbleUp
 
 from src.engine.context import get_current_event_bus, get_current_execution_id
 from src.engine.events import ExecutionEvent
+from src.engine.events_notify import notify_execution_event
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -139,16 +140,16 @@ def wrap_executor_with_events(
 
     async def _arun(state: WorkflowStateDict) -> dict[str, Any]:
         execution_id = get_current_execution_id()
-        bus = get_current_event_bus()
+        event_store = get_current_event_bus()
 
-        if bus is not None and execution_id is not None:
-            await bus.emit(
-                ExecutionEvent(
-                    type="node_started",
-                    execution_id=execution_id,
-                    payload=dict(node_info),
-                )
+        if event_store is not None and execution_id is not None:
+            event = ExecutionEvent(
+                type="node_started",
+                execution_id=execution_id,
+                payload=dict(node_info),
             )
+            seq = await event_store.append(event)
+            await notify_execution_event(execution_id, seq=seq)
 
         # P1-5: start/end time + duration, captured once here rather than
         # per-executor — every node type already flows through this wrapper.
@@ -165,19 +166,19 @@ def wrap_executor_with_events(
             # intentional approval-gate pause as a crash.
             raise
         except Exception as exc:
-            if bus is not None and execution_id is not None:
+            if event_store is not None and execution_id is not None:
                 duration_ms = round((time.monotonic() - started_monotonic) * 1000)
-                await bus.emit(
-                    ExecutionEvent(
-                        type="node_failed",
-                        execution_id=execution_id,
-                        payload={
-                            **node_info,
-                            "error": f"{type(exc).__name__}: {exc}",
-                            "durationMs": duration_ms,
-                        },
-                    )
+                event = ExecutionEvent(
+                    type="node_failed",
+                    execution_id=execution_id,
+                    payload={
+                        **node_info,
+                        "error": f"{type(exc).__name__}: {exc}",
+                        "durationMs": duration_ms,
+                    },
                 )
+                seq = await event_store.append(event)
+                await notify_execution_event(execution_id, seq=seq)
             raise
 
         output = _extract_output(node.id, result)
@@ -217,19 +218,19 @@ def wrap_executor_with_events(
             "node_results": {**existing_node_results, node.id: node_rec},
         }
 
-        if bus is not None and execution_id is not None:
-            await bus.emit(
-                ExecutionEvent(
-                    type="node_completed",
-                    execution_id=execution_id,
-                    payload={
-                        **node_info,
-                        "input": node_input,
-                        "output": output,
-                        "durationMs": duration_ms,
-                    },
-                )
+        if event_store is not None and execution_id is not None:
+            event = ExecutionEvent(
+                type="node_completed",
+                execution_id=execution_id,
+                payload={
+                    **node_info,
+                    "input": node_input,
+                    "output": output,
+                    "durationMs": duration_ms,
+                },
             )
+            seq = await event_store.append(event)
+            await notify_execution_event(execution_id, seq=seq)
 
         return result
 

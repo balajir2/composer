@@ -14,12 +14,29 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.engine.events import ExecutionEvent
+
 # Canonical pending-since timestamp shared by the "matching" fixtures below --
 # the token and the stored execution row's variables must carry the same
 # value for the happy-path (and other non-mismatch) tests to succeed, since
 # the endpoint now binds a token to the specific pause *instance*, not just
 # the node_id.
 _PENDING_SINCE = "2026-07-11T10:00:00+00:00"
+
+
+class _FakeEventStore:
+    """In-memory stand-in for PostgresEventStore.append — the background
+    resume task calls event_bus.append(...); a real ExecutionEventBus has
+    no such method and NOTIFY needs a live Postgres connection, neither of
+    which this unit test has."""
+
+    def __init__(self) -> None:
+        self.events: list[ExecutionEvent] = []
+
+    async def append(self, event: ExecutionEvent) -> int:
+        seq = len(self.events) + 1
+        self.events.append(event)
+        return seq
 
 
 def _execution_row(**overrides: Any) -> SimpleNamespace:
@@ -73,9 +90,8 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MagicMock]:
     app.state.db = db
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
-    from src.engine.events import ExecutionEventBus
-
-    app.state.event_bus = ExecutionEventBus()
+    app.state.event_bus = _FakeEventStore()
+    monkeypatch.setattr("src.engine.langgraph_executor.notify_execution_event", AsyncMock())
     return TestClient(app), db
 
 

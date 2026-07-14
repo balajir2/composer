@@ -24,7 +24,9 @@ from src.engine.context import (
     set_current_execution_id,
     set_current_langsmith,
 )
-from src.engine.events import EventType, ExecutionEvent, ExecutionEventBus
+from src.engine.events import EventType, ExecutionEvent
+from src.engine.events_notify import notify_execution_event
+from src.engine.events_pg import PostgresEventStore
 from src.engine.graph_builder import build_graph
 from src.engine.state import initial_state
 from src.engine.workflow import Workflow
@@ -54,7 +56,7 @@ class LangGraphExecutor:
         self,
         db: Prisma,  # pyright: ignore[reportUnknownParameterType]
         checkpointer: BaseCheckpointSaver[Any],
-        event_bus: ExecutionEventBus | None = None,
+        event_bus: PostgresEventStore | None = None,
     ) -> None:
         self.db = db
         self.checkpointer = checkpointer
@@ -68,13 +70,9 @@ class LangGraphExecutor:
     ) -> None:
         if self.event_bus is None:
             return
-        await self.event_bus.emit(
-            ExecutionEvent(type=event_type, execution_id=execution_id, payload=payload)
-        )
-
-    async def _close_event_bus(self, execution_id: str) -> None:
-        if self.event_bus is not None:
-            await self.event_bus.close(execution_id)
+        event = ExecutionEvent(type=event_type, execution_id=execution_id, payload=payload)
+        seq = await self.event_bus.append(event)
+        await notify_execution_event(execution_id, seq=seq)
 
     async def start_execution(
         self,
@@ -268,7 +266,6 @@ class LangGraphExecutor:
                         "status": "waiting_approval",
                     },
                 )
-                await self._close_event_bus(execution_id)
                 return
 
             await self._mark_completed(execution_id, final_state)
@@ -277,7 +274,6 @@ class LangGraphExecutor:
                 execution_id,
                 {"status": "completed"},
             )
-            await self._close_event_bus(execution_id)
 
         except Exception as exc:
             logger.exception("Execution %s failed", execution_id)
@@ -288,7 +284,6 @@ class LangGraphExecutor:
                     execution_id,
                     {"status": "failed"},
                 )
-                await self._close_event_bus(execution_id)
             except Exception:
                 logger.exception("Failed to emit failure event for execution %s", execution_id)
 
@@ -347,7 +342,6 @@ class LangGraphExecutor:
                         "status": "waiting_approval",
                     },
                 )
-                await self._close_event_bus(execution_id)
                 return
 
             await self._mark_completed(execution_id, final_state)
@@ -356,7 +350,6 @@ class LangGraphExecutor:
                 execution_id,
                 {"status": "completed"},
             )
-            await self._close_event_bus(execution_id)
 
         except Exception as exc:
             logger.exception("Execution %s failed during resume", execution_id)
@@ -367,7 +360,6 @@ class LangGraphExecutor:
                     execution_id,
                     {"status": "failed"},
                 )
-                await self._close_event_bus(execution_id)
             except Exception:
                 logger.exception(
                     "Failed to emit failure event for execution %s during resume", execution_id

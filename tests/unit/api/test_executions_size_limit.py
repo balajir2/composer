@@ -7,8 +7,24 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.engine.events import ExecutionEvent
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
+
+
+class _FakeEventStore:
+    """In-memory stand-in for PostgresEventStore.append — the background
+    task that runs the execution calls event_bus.append(...); a real
+    ExecutionEventBus has no such method and NOTIFY needs a live Postgres
+    connection, neither of which this unit test has."""
+
+    def __init__(self) -> None:
+        self.events: list[ExecutionEvent] = []
+
+    async def append(self, event: ExecutionEvent) -> int:
+        seq = len(self.events) + 1
+        self.events.append(event)
+        return seq
 
 
 def _execution_row() -> SimpleNamespace:
@@ -51,10 +67,9 @@ def _client(
     )
     app.state.db = db
     app.state.checkpointer = MagicMock()
-    from src.engine.events import ExecutionEventBus
-
-    app.state.event_bus = ExecutionEventBus()
+    app.state.event_bus = _FakeEventStore()
     app.state.rate_limiter = RateLimiter()
+    monkeypatch.setattr("src.engine.langgraph_executor.notify_execution_event", AsyncMock())
     return TestClient(app), db
 
 

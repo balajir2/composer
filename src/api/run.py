@@ -32,7 +32,7 @@ from src.storage.db import get_db, get_event_bus
 
 if TYPE_CHECKING:
     from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
-    from src.engine.events import ExecutionEventBus
+    from src.engine.events_pg import PostgresEventStore
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +161,7 @@ async def run_external(
     payload: RunRequest,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    event_bus: ExecutionEventBus = Depends(get_event_bus),
+    event_bus: PostgresEventStore = Depends(get_event_bus),
     auth: ApiKeyAuthResult = Depends(get_current_api_key_user),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> Any:  # pyright: ignore[reportUnusedFunction]

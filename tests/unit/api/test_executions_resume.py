@@ -7,8 +7,24 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.engine.events import ExecutionEvent
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
+
+
+class _FakeEventStore:
+    """In-memory stand-in for PostgresEventStore.append — the background
+    resume task calls event_bus.append(...); a real ExecutionEventBus has
+    no such method and NOTIFY needs a live Postgres connection, neither of
+    which this unit test has."""
+
+    def __init__(self) -> None:
+        self.events: list[ExecutionEvent] = []
+
+    async def append(self, event: ExecutionEvent) -> int:
+        seq = len(self.events) + 1
+        self.events.append(event)
+        return seq
 
 
 def _execution_row(**overrides: Any) -> SimpleNamespace:
@@ -41,7 +57,6 @@ def _client_with_execution(
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", "development")
     from src.config import get_settings
-    from src.engine.events import ExecutionEventBus
 
     get_settings.cache_clear()
     app = create_app()
@@ -58,8 +73,9 @@ def _client_with_execution(
     db.user.find_unique = AsyncMock(return_value=None)
     app.state.db = db
     app.state.checkpointer = MagicMock()
-    app.state.event_bus = ExecutionEventBus()
+    app.state.event_bus = _FakeEventStore()
     app.state.rate_limiter = RateLimiter()
+    monkeypatch.setattr("src.engine.langgraph_executor.notify_execution_event", AsyncMock())
     return TestClient(app), db
 
 
@@ -205,35 +221,18 @@ def test_resume_does_not_emit_approval_resumed_event(monkeypatch: pytest.MonkeyP
     DES-007 covers the post-resume activity via the subsequent node_started event
     emitted by the LangGraphExecutor after resume() drives the graph.
     """
-    import asyncio
-
     client, _db = _client_with_execution(monkeypatch, _execution_row())
-    bus: Any = getattr(client.app, "state").event_bus  # noqa: B009
+    store: _FakeEventStore = getattr(client.app, "state").event_bus  # noqa: B009
 
-    async def _collect_after_post() -> list[Any]:
-        q = await bus.subscribe("e1")
-        events: list[Any] = []
-        client.post(
-            "/executions/e1/resume",
-            json={"decision": "approved", "note": "ok"},
-        )
-        try:
-            while True:
-                try:
-                    ev = await asyncio.wait_for(q.get(), timeout=0.2)
-                except TimeoutError:
-                    break
-                if ev is None:
-                    break
-                events.append(ev)
-        finally:
-            await bus.unsubscribe("e1", q)
-        return events
+    client.post(
+        "/executions/e1/resume",
+        json={"decision": "approved", "note": "ok"},
+    )
 
-    events = asyncio.run(_collect_after_post())
-    # approval-resumed is dropped in DES-007; the bus should have no events
-    # from the HTTP layer (only the executor emits workflow_started after resume).
-    approval_resumed = [e for e in events if getattr(e, "type", None) == "approval-resumed"]
+    # approval-resumed is dropped in DES-007; the persisted store should have
+    # no events of that type (only the executor's own workflow_started /
+    # node_started / etc. events land here after resume() drives the graph).
+    approval_resumed = [e for e in store.events if e.type == "approval-resumed"]  # pyright: ignore[reportUnnecessaryComparison]
     assert not approval_resumed, (
-        f"unexpected approval-resumed event; got {[(e.type, e.payload) for e in events]}"
+        f"unexpected approval-resumed event; got {[(e.type, e.payload) for e in store.events]}"
     )

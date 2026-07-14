@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from src.engine.events import ExecutionEventBus
+    from src.engine.events_pg import PostgresEventStore
 
 _current_db: ContextVar[Any | None] = ContextVar("_current_db", default=None)
 
@@ -55,7 +55,7 @@ def get_current_langsmith() -> LangSmithConfig | None:
 
 
 _current_execution_id: ContextVar[str | None] = ContextVar("_current_execution_id", default=None)
-_current_event_bus: ContextVar[ExecutionEventBus | None] = ContextVar(
+_current_event_bus: ContextVar[PostgresEventStore | None] = ContextVar(
     "_current_event_bus", default=None
 )
 
@@ -68,11 +68,11 @@ def get_current_execution_id() -> str | None:
     return _current_execution_id.get()
 
 
-def set_current_event_bus(bus: ExecutionEventBus | None) -> None:
+def set_current_event_bus(bus: PostgresEventStore | None) -> None:
     _current_event_bus.set(bus)
 
 
-def get_current_event_bus() -> ExecutionEventBus | None:
+def get_current_event_bus() -> PostgresEventStore | None:
     return _current_event_bus.get()
 
 
