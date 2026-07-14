@@ -1559,11 +1559,31 @@ git commit -m "feat(execution): add Cloud-Tasks-triggered claim-and-run endpoint
 
 ---
 
-## Task 11: Extend the sweeper for lease expiry recovery
+## Task 11: Extend the sweeper for lease expiry recovery + Cloud Scheduler endpoint
+
+> **Revised 2026-07-14 (ADR-0033 addendum, cost review).** The original version of
+> this task wired `sweep_expired_leases`/`sweep_old_execution_events` into the
+> existing in-process `_sweeper_loop`/`start_sweeper` background task. That loop
+> requires `--no-cpu-throttling` (CPU always allocated) to keep ticking between
+> requests — confirmed as the dominant ongoing Cloud Run cost driver, more than
+> Cloud Tasks itself. `--no-cpu-throttling` has already been removed from
+> `scripts/gcp-bootstrap.ps1` and the live service ahead of this task landing.
+> **Do not wire the new sweep functions into `_sweeper_loop`/`start_sweeper`.**
+> Instead, all four sweep functions (the two existing ones plus the two new ones
+> below) get called once per invocation from a new `POST /internal/sweep`
+> endpoint, triggered externally by Cloud Scheduler on a fixed interval — a real
+> inbound request, same auth pattern as Task 10's claim-and-run endpoint, no
+> background CPU needed between invocations. `start_sweeper`/`stop_sweeper`/
+> `_sweeper_loop` stay in the codebase unchanged (already designed to be
+> disabled via `EXECUTION_SWEEPER_INTERVAL_SECONDS<=0` — see its own
+> docstring, "useful for tests and for environments that prefer an external
+> cron") for local/dev convenience; production deployment relies on the new
+> endpoint + Cloud Scheduler instead.
 
 **Files:**
 - Modify: `src/maintenance/execution_sweeper.py`
-- Test: `tests/unit/maintenance/test_execution_sweeper.py`
+- Modify: `src/api/internal.py` (new `POST /internal/sweep` endpoint — this file already exists from Task 10's claim-and-run endpoint; reuse its OIDC verification helper)
+- Test: `tests/unit/maintenance/test_execution_sweeper.py`, `tests/unit/api/test_internal_sweep.py`
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1782,7 +1802,7 @@ async def sweep_expired_leases(
 
 Add `sweep_expired_leases` to `__all__`.
 
-Wire it into `_sweeper_loop` and `start_sweeper` alongside the existing two sweeps — add a `max_delivery_attempts` parameter threaded through both (reading from `settings.execution_max_delivery_attempts`, already added in Task 2 — do not add a second, duplicate setting here), then call `await sweep_expired_leases(db, max_delivery_attempts=max_delivery_attempts)` in the loop body and pass it through from `src/main.py`'s `lifespan()` call to `start_sweeper(...)`.
+**Do not wire it into `_sweeper_loop`/`start_sweeper`** (see the 2026-07-14 revision note at the top of this task). It gets called from the new `POST /internal/sweep` endpoint instead — see the new step below.
 
 **Note:** `sweep_stuck_executions` (the existing one) and `sweep_expired_leases` (this new one) now overlap in what they catch — both target `status='running'` rows past some deadline. Decide during implementation whether `sweep_stuck_executions`'s plain `startedAt`-based timeout becomes redundant once lease-based recovery exists, or whether it stays as a coarser secondary safety net (e.g., for rows that somehow never got a lease at all). Do not silently delete `sweep_stuck_executions` without confirming this — it's exercised by existing tests and its own docstring's three failure modes are still real.
 
@@ -1844,15 +1864,21 @@ async def sweep_old_execution_events(
     return count
 ```
 
-Add `sweep_old_execution_events` to `__all__`. Add a new `execution_events_retention_days: int = 30` setting to `src/config.py` (same section as the other `execution_*` settings from Task 2), wire it into `_sweeper_loop`/`start_sweeper` the same way as `sweep_expired_leases`, and thread it through from `src/main.py`.
+Add `sweep_old_execution_events` to `__all__`. Add a new `execution_events_retention_days: int = 30` setting to `src/config.py` (same section as the other `execution_*` settings from Task 2). **Do not** wire it into `_sweeper_loop`/`start_sweeper` — it gets called from the new endpoint below, same as `sweep_expired_leases`.
 
 Run the new test to verify it passes.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 6: Build the `POST /internal/sweep` endpoint**
+
+Read `src/api/internal.py` first (created in Task 10 for claim-and-run) to find its existing OIDC/service-identity verification helper (e.g. `_verify_cloud_tasks_oidc` or however Task 10 actually named it) — Cloud Scheduler, like Cloud Tasks, authenticates via a Google-signed OIDC token asserting a specific service-account identity, so the same verification logic should apply to both; confirm this against Task 10's actual implementation rather than assuming, and generalize/rename the helper only if genuinely needed (e.g. `_verify_internal_oidc`) rather than duplicating it.
+
+Write a failing test first in `tests/unit/api/test_internal_sweep.py` asserting: an authenticated `POST /internal/sweep` call runs all four sweep functions (`sweep_stuck_executions`, `sweep_expired_approvals`, `sweep_expired_leases`, `sweep_old_execution_events`) exactly once each, reading their thresholds from settings (`execution_stuck_after_seconds`, an existing approval-timeout setting — check `src/config.py` for its actual name, `execution_max_delivery_attempts`, `execution_events_retention_days`), and returns a JSON summary (e.g. `{"stuck": N, "approvals_expired": N, "leases_recovered": N, "events_deleted": N}`); an unauthenticated call returns 401/403 without running any sweep (mock all four functions and assert zero calls). Verify RED, then implement, then verify GREEN.
+
+- [ ] **Step 7: Commit**
 
 ```bash
-git add src/maintenance/execution_sweeper.py src/config.py src/main.py tests/unit/maintenance/test_execution_sweeper.py
-git commit -m "feat(execution): recover expired leases + retention cleanup for execution_events (P1-2/P1-4)"
+git add src/maintenance/execution_sweeper.py src/config.py src/api/internal.py tests/unit/maintenance/test_execution_sweeper.py tests/unit/api/test_internal_sweep.py
+git commit -m "feat(execution): recover expired leases + retention cleanup via Cloud Scheduler endpoint (P1-2/P1-4)"
 ```
 
 ---
@@ -2049,7 +2075,15 @@ git commit -m "feat(execution): route resume + external-invoke through Cloud Tas
 
 ---
 
-## Task 14: Cloud Tasks queue provisioning
+## Task 14: Cloud Tasks queue provisioning + Cloud Scheduler sweep job
+
+> **Revised 2026-07-14 (ADR-0033 addendum, cost review).** `--no-cpu-throttling`
+> was already removed from `scripts/gcp-bootstrap.ps1`'s backend deploy args
+> and applied live — **do not re-add it** as part of this task or any future
+> one; the in-process sweeper loop it existed for is being replaced by Task
+> 11's `POST /internal/sweep` endpoint. This task additionally provisions the
+> Cloud Scheduler job that triggers that endpoint (Step 1a below), alongside
+> the originally-planned Cloud Tasks queue provisioning.
 
 **Files:**
 - Modify: `scripts/gcp-bootstrap.ps1`
@@ -2076,7 +2110,33 @@ if (-not $queueExists) {
 
 Match the exact variable names (`$Region`, `$ProjectId` or whatever this script already uses — read the file first) rather than introducing new ones.
 
+- [ ] **Step 1a: Add the Cloud Scheduler sweep job (2026-07-14 addendum — replaces the in-process sweeper loop in production)**
+
+Following the same idempotent-creation style as the queue step above:
+
+```powershell
+# Cloud Scheduler job to trigger the sweep endpoint on a fixed interval,
+# replacing the in-process sweeper loop (which required --no-cpu-throttling —
+# see ADR-0033's 2026-07-14 addendum for why that was removed).
+$schedulerJobExists = gcloud scheduler jobs describe composer-sweep `
+    --location=$Region --project=$ProjectId 2>$null
+if (-not $schedulerJobExists) {
+    gcloud scheduler jobs create http composer-sweep `
+        --location=$Region `
+        --project=$ProjectId `
+        --schedule="*/5 * * * *" `
+        --uri="$backendRunUrl/internal/sweep" `
+        --http-method=POST `
+        --oidc-service-account-email="$cloudTasksServiceAccountEmail" `
+        --oidc-token-audience="$backendRunUrl"
+}
+```
+
+Place this after the backend service is deployed (so `$backendRunUrl` is known — reuse whatever variable the script already assigns from `gcloud run services describe`, matching Task 3's pattern) and after Step 2 below creates the service account this job authenticates as. Match the schedule to `EXECUTION_SWEEPER_INTERVAL_SECONDS`'s value (300s → `*/5 * * * *`) rather than hardcoding a different cadence. Also set `EXECUTION_SWEEPER_INTERVAL_SECONDS=0` in the backend's deploy env vars once this job is verified working, so the in-process loop (still present in code for local/dev use, per Task 11's note) doesn't also run redundantly in production.
+
 - [ ] **Step 2: Add a service account for Cloud Tasks OIDC, granting it `roles/run.invoker` on the Cloud Run service**
+
+The same service account should be usable for both Cloud Tasks (claim-and-run) and Cloud Scheduler (sweep) OIDC — both are just "a Google-signed token asserting this identity," and `/internal/claim-and-run` and `/internal/sweep` can share one `roles/run.invoker` grant. Don't provision two separate service accounts unless Task 10/11's actual auth implementation genuinely requires different identities (check before assuming).
 
 Follow whatever existing service-account-creation pattern this script uses for other components (there should be at least one, given the app already runs on Cloud Run with some identity). Grant it `roles/cloudtasks.enqueuer` (for the API to create tasks) and ensure the Cloud Run service's invoker policy allows this service account.
 
