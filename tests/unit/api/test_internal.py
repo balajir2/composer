@@ -1,5 +1,6 @@
 """Tests for POST /internal/claim-and-run (P1-2)."""
 
+import re
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -82,6 +83,64 @@ def test_claim_and_run_no_op_when_already_claimed(monkeypatch: pytest.MonkeyPatc
     resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "already_claimed"
+    db.execute_raw.assert_not_awaited()
+
+
+def test_claim_and_run_claim_query_filters_on_status(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test: the claim query MUST filter on status so a
+    redelivered Cloud Tasks request can never re-claim (and re-run) an
+    execution that already reached a terminal status ('completed',
+    'failed', 'canceled') — even once its lease has expired (or was
+    never set). Without a status predicate, the claim query only checks
+    lease_expires_at, which a redelivery after the (default 1h) lease
+    window would satisfy for an already-finished row, causing
+    `executor.run()`/`.resume()` to be invoked a second time on a
+    terminal execution.
+
+    `_mark_completed`/`_mark_failed` never clear lease_owner/
+    lease_expires_at, so this predicate is the only thing standing
+    between a late redelivery and a double-run.
+    """
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    client, db = _client_with_mock_db()
+    # Simulate what Postgres would actually do: a terminal-status row
+    # never matches, regardless of what query_raw is asked to return by
+    # a naive caller — the fake here proves the SQL text itself carries
+    # the predicate by parsing which statuses the query allows and
+    # applying it against a fake 'completed' row for execution_id.
+    fake_row_id = "exec-1"
+    fake_row_status = "completed"
+
+    async def _fake_query_raw(sql: str, *args: object) -> list[dict[str, str]]:
+        assert "status" in sql, "claim query must filter on status"
+        match = re.search(r"status\s+IN\s*\(([^)]+)\)", sql, re.IGNORECASE)
+        assert match, "claim query must have a `status IN (...)` predicate"
+        allowed = {s.strip().strip("'") for s in match.group(1).split(",")}
+        # Terminal statuses must never be claimable, whatever else changes.
+        assert "completed" not in allowed
+        assert "failed" not in allowed
+        assert "canceled" not in allowed
+        if fake_row_status not in allowed:
+            return []
+        return [{"id": fake_row_id}]
+
+    db.query_raw = AsyncMock(side_effect=_fake_query_raw)
+    db.execute_raw = AsyncMock()
+
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    ran: list[str] = []
+
+    async def _fake_run(self: LangGraphExecutor, execution_id: str) -> None:
+        ran.append(execution_id)
+
+    monkeypatch.setattr(LangGraphExecutor, "run", _fake_run)
+
+    resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
+    assert resp.status_code == 200, resp.text
+    # The completed row must NOT have been claimed/run.
+    assert resp.json()["status"] == "already_claimed"
+    assert ran == []
     db.execute_raw.assert_not_awaited()
 
 

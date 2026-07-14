@@ -124,11 +124,23 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
     lease_expires = now + timedelta(seconds=lease_seconds)
     worker_id = f"{request.client.host if request.client else 'unknown'}:{id(request)}"
 
-    async with db.tx(timeout=lease_seconds * 1000) as tx:
+    # Fixed, short timeout for the claim transaction — intentionally NOT
+    # scaled to `execution_lease_seconds`. The lease duration sizes the
+    # REQUEST's overall run time (the lease *is* the heartbeat; see
+    # src/config.py's design-decision comment on execution_lease_seconds),
+    # not this transaction, which does only one SELECT + one UPDATE and
+    # commits before `executor.run()`/`.resume()` is ever called. Sizing it
+    # to the lease (up to 1h by default) would mean an anomalous hang here
+    # holds the row lock and a pool connection for up to an hour instead of
+    # failing fast — blocking unrelated operations (cancel, delete, status
+    # reads) on that row. Matches the precedent set by the identical
+    # FOR UPDATE SKIP LOCKED pattern in scripts/poc_persistence_row_lock.py.
+    async with db.tx(timeout=10000) as tx:
         rows = await tx.query_raw(
             """
             SELECT id FROM workflow_executions
             WHERE id = $1
+              AND status IN ('running', 'waiting_approval')
               AND (lease_expires_at IS NULL OR lease_expires_at < now())
             FOR UPDATE SKIP LOCKED
             LIMIT 1
