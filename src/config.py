@@ -290,6 +290,13 @@ class Settings(BaseSettings):
     # Task for the same execution before giving up and dead-lettering it
     # (marking `failed` rather than retrying indefinitely).
     execution_max_delivery_attempts: int = 5
+    # P1-4 ("add bounded retention and cleanup"): sweep_old_execution_events
+    # deletes execution_events rows older than this. Event rows carry no
+    # operational state (only SSE/WebSocket replay history), so unbounded
+    # growth is pure Postgres storage/index bloat with no functional
+    # upside — 30 days comfortably covers any realistic "what happened on
+    # that run" investigation window.
+    execution_events_retention_days: int = 30
 
     # ─── Stuck-execution sweeper ─────────────────
     # Any WorkflowExecution row in 'running' for longer than this without a

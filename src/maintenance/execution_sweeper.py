@@ -24,14 +24,56 @@ This module provides:
   - `sweep_expired_approvals(db, ...)` — the equivalent one-shot function
     for `waiting_approval` rows.  See its docstring for why it's a separate
     function with a separate, much longer timeout.
-  - `start_sweeper(app, ...)` — schedules both functions on a recurring
-    background task tied to the FastAPI lifespan.  Idempotent if the
-    interval is 0 (sweeper disabled).
+  - `sweep_expired_leases(db, ...)` — recovers `running` rows whose
+    Cloud-Tasks-claim lease (`leaseExpiresAt`, P1-2) expired without the
+    worker completing: clears the lease and re-enqueues a fresh Cloud
+    Task (or dead-letters past `max_delivery_attempts`). See its own
+    docstring for why this does NOT make `sweep_stuck_executions`
+    redundant — the two are complementary, not overlapping. Not wired
+    into `_sweeper_loop`; called from `POST /internal/sweep` instead
+    (see src/api/internal.py) — the 2026-07-14 revision that dropped
+    `--no-cpu-throttling` means nothing may rely on in-process background
+    ticking between requests any more.
+  - `sweep_old_execution_events(db, ...)` — pure hygiene: deletes
+    `execution_events` rows past `execution_events_retention_days`
+    (P1-4). Also called only from `POST /internal/sweep`, not the
+    in-process loop.
+  - `start_sweeper(app, ...)` — schedules `sweep_stuck_executions` and
+    `sweep_expired_approvals` on a recurring background task tied to the
+    FastAPI lifespan.  Idempotent if the interval is 0 (sweeper
+    disabled) — useful for local/dev convenience or any environment that
+    prefers an external cron; production relies on `POST /internal/sweep`
+    + Cloud Scheduler for all four sweeps instead (interval <= 0 in
+    production).
 
 `sweep_stuck_executions` only touches rows in `status='running'`.
 `waiting_approval` rows are excluded from it — they're paused on purpose
 and may sit for days waiting for a human reviewer — but they are not
 unbounded: `sweep_expired_approvals` reaps them on its own, longer timeout.
+
+**Relationship between `sweep_stuck_executions` and `sweep_expired_leases`
+(P1-2 addition):** both ultimately target `status='running'` rows past a
+deadline, but they are deliberately kept as two separate functions rather
+than merged, because they cover different failure shapes:
+
+  - `sweep_expired_leases` is the precise, primary recovery path: it only
+    matches rows with a non-NULL `leaseExpiresAt` that has actually
+    passed — i.e. rows that WERE claimed by claim-and-run and then the
+    worker died. It knows how to *recover* (re-enqueue) as well as
+    dead-letter, and preserves run-vs-resume kind.
+  - `sweep_stuck_executions` is a coarser, second safety net: its
+    `startedAt`-based timeout also catches rows that somehow never got a
+    lease at all (e.g. a crash between `WorkflowExecution.create()` and
+    claim-and-run's lease UPDATE, or any future code path that flips a
+    row to `running` without going through claim-and-run). Those rows
+    have `leaseExpiresAt IS NULL`, which `sweep_expired_leases`'s
+    `{"lt": now}` filter never matches (SQL `NULL < x` is `NULL`, not
+    `true`) — so without `sweep_stuck_executions` they would say
+    `running` forever. It only marks failed (no re-enqueue), which is
+    the right, conservative behavior for a row whose provenance is
+    already uncertain.
+
+Both stay in the codebase; neither was deleted.
 """
 
 from __future__ import annotations
@@ -202,6 +244,128 @@ async def sweep_expired_approvals(
     return SweepResult(scanned=len(rows), marked_failed=marked)
 
 
+_LEASE_EXPIRY_ERROR_TEMPLATE = (
+    "Execution's lease expired {attempts} times without completing "
+    "(worker likely died mid-run each time). Dead-lettered by the "
+    "lease-expiry sweeper after exceeding max_delivery_attempts."
+)
+
+
+async def sweep_expired_leases(
+    db: Any,
+    *,
+    max_delivery_attempts: int,
+    now: datetime | None = None,
+) -> SweepResult:
+    """Recover `running` executions whose lease expired without completing.
+
+    A lease expiring means the worker that claimed the execution (via
+    the claim-and-run endpoint's FOR UPDATE SKIP LOCKED) died before
+    finishing — Cloud Run instance recycled, OOM, uncaught crash. Below
+    max_delivery_attempts, clear the lease AND re-enqueue a fresh Cloud
+    Task (clearing the lease alone is not enough — see the comment
+    below). At or above max_delivery_attempts, mark it failed
+    (dead-lettered) rather than retry indefinitely.
+
+    Only touches rows with a non-NULL, expired `leaseExpiresAt` — a
+    `running` row that never got a lease at all (e.g. crashed before
+    claim-and-run set one) is not this function's concern; that coarser
+    case is still covered by `sweep_stuck_executions`'s plain
+    `startedAt`-based timeout (see its docstring).
+    """
+    if max_delivery_attempts <= 0:
+        raise ValueError("max_delivery_attempts must be > 0")
+
+    current_time = now or datetime.now(UTC)
+
+    rows: list[Any] = await db.workflowexecution.find_many(
+        where={
+            "status": "running",
+            "leaseExpiresAt": {"lt": current_time},
+        },
+    )
+
+    marked_failed = 0
+    for row in rows:
+        try:
+            if row.deliveryAttempts >= max_delivery_attempts:
+                await db.workflowexecution.update(
+                    where={"id": row.id},
+                    data={
+                        "status": "failed",
+                        "error": _LEASE_EXPIRY_ERROR_TEMPLATE.format(attempts=row.deliveryAttempts),
+                        "completedAt": current_time,
+                        "leaseOwner": None,
+                        "leaseExpiresAt": None,
+                    },
+                )
+                marked_failed += 1
+            else:
+                # Clearing the lease alone is not sufficient: Cloud Tasks
+                # considers ITS OWN delivery attempts separately from this
+                # sweeper, and by the time a lease naturally expires (up to
+                # execution_lease_seconds later), Cloud Tasks' own queue
+                # retry policy (max-attempts, Task 14) may have already
+                # exhausted its retries and given up on this execution_id
+                # entirely — clearing the lease here without also
+                # re-enqueueing would leave the row orphaned with nothing
+                # left to ever pick it back up.
+                await db.workflowexecution.update(
+                    where={"id": row.id},
+                    data={"leaseOwner": None, "leaseExpiresAt": None},
+                )
+                from src.execution.cloud_tasks import enqueue_execution
+
+                # Preserve the original run vs. resume kind — a died
+                # mid-resume execution must be re-enqueued as a resume
+                # (so claim-and-run reads `_resume_decision` back out of
+                # variables, per Task 13), not restarted as a fresh run.
+                row_variables = getattr(row, "variables", None) or {}
+                kind = (
+                    "resume"
+                    if isinstance(row_variables, dict) and "_resume_decision" in row_variables
+                    else "run"
+                )
+                await enqueue_execution(row.id, kind=kind)
+        except Exception:
+            logger.exception(
+                "execution_sweeper: failed to recover expired-lease execution %s",
+                getattr(row, "id", "<unknown>"),
+            )
+
+    if rows:
+        logger.info(
+            "execution_sweeper: processed %d expired leases, %d dead-lettered",
+            len(rows),
+            marked_failed,
+        )
+
+    return SweepResult(scanned=len(rows), marked_failed=marked_failed)
+
+
+async def sweep_old_execution_events(
+    db: Any,
+    *,
+    retention_days: int,
+    now: datetime | None = None,
+) -> int:
+    """Delete execution_events rows older than retention_days (P1-4:
+    "add bounded retention and cleanup"). Unlike the other sweeps, this
+    one is pure hygiene — event rows carry no operational state, only
+    history — so a plain age-based bulk delete is sufficient; no
+    per-row error handling or partial-failure bookkeeping is needed.
+    """
+    if retention_days <= 0:
+        raise ValueError("retention_days must be > 0")
+    current_time = now or datetime.now(UTC)
+    cutoff = current_time - timedelta(days=retention_days)
+    result = await db.executionevent.delete_many(where={"createdAt": {"lt": cutoff}})
+    count = getattr(result, "count", result if isinstance(result, int) else 0)
+    if count:
+        logger.info("execution_sweeper: deleted %d execution_events past retention", count)
+    return count
+
+
 async def _sweeper_loop(
     db: Any,
     *,
@@ -276,5 +440,7 @@ __all__ = [
     "start_sweeper",
     "stop_sweeper",
     "sweep_expired_approvals",
+    "sweep_expired_leases",
+    "sweep_old_execution_events",
     "sweep_stuck_executions",
 ]

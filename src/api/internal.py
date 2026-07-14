@@ -1,16 +1,34 @@
-"""POST /internal/claim-and-run — Cloud Tasks delivery target (P1-2).
+"""Internal-only endpoints secured by Google-signed OIDC push auth (P1-2).
 
 Not part of the public API surface; secured by OIDC token verification
 (when CLOUD_TASKS_SERVICE_ACCOUNT is set) rather than user auth, since
-the caller is Cloud Tasks, not an end user. Claims the execution via
-SELECT ... FOR UPDATE SKIP LOCKED (the pattern validated in
-scripts/poc_persistence_row_lock.py, ADR-0031) before running it — this,
-not Cloud Tasks' delivery guarantee, is what prevents two concurrent
-deliveries of the same task from double-running an execution.
+the callers are Cloud Tasks and Cloud Scheduler, not end users:
 
-Because this is a real inbound HTTP request (not a BackgroundTasks
-callback), Cloud Run keeps the instance alive for its full duration,
-directly closing the scale-to-zero gap this endpoint exists to close.
+  - POST /internal/claim-and-run — Cloud Tasks delivery target. Claims
+    the execution via SELECT ... FOR UPDATE SKIP LOCKED (the pattern
+    validated in scripts/poc_persistence_row_lock.py, ADR-0031) before
+    running it — this, not Cloud Tasks' delivery guarantee, is what
+    prevents two concurrent deliveries of the same task from
+    double-running an execution.
+  - POST /internal/sweep — Cloud Scheduler target (P1-2/P1-4). Runs all
+    four maintenance sweeps (stuck executions, expired approvals,
+    expired leases, old execution_events) once per invocation. See the
+    2026-07-14 revision note in
+    docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md's
+    Task 11: this replaces relying on the in-process `_sweeper_loop`
+    background task for lease recovery + retention cleanup, since that
+    loop requires `--no-cpu-throttling` (removed as the dominant Cloud
+    Run cost driver) to keep ticking between requests. A real inbound
+    HTTP request needs no background CPU allocation.
+
+Both endpoints share `_verify_internal_oidc`: Cloud Tasks and Cloud
+Scheduler both authenticate push requests the same way (a Google-signed
+OIDC token asserting a specific service-account identity), so one
+verification function serves both rather than duplicating the logic.
+
+Because these are real inbound HTTP requests (not BackgroundTasks
+callbacks), Cloud Run keeps the instance alive for their full duration,
+directly closing the scale-to-zero gap this subsystem exists to close.
 """
 
 from __future__ import annotations
@@ -28,6 +46,12 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.config import get_settings
 from src.engine.langgraph_executor import LangGraphExecutor
+from src.maintenance.execution_sweeper import (
+    sweep_expired_approvals,
+    sweep_expired_leases,
+    sweep_old_execution_events,
+    sweep_stuck_executions,
+)
 from src.storage.db import get_checkpointer, get_db, get_event_bus
 
 if TYPE_CHECKING:
@@ -55,13 +79,20 @@ def _verify_oidc_token_sync(token: str, audience: str) -> Mapping[str, Any]:
     return id_token.verify_oauth2_token(token, GoogleAuthRequest(), audience=audience)
 
 
-async def _verify_cloud_tasks_oidc(authorization: str | None = Header(default=None)) -> None:
+async def _verify_internal_oidc(
+    request: Request, authorization: str | None = Header(default=None)
+) -> None:
     """Verify the OIDC token Cloud Tasks/Cloud Scheduler presents.
 
+    Shared by every endpoint in this router (claim-and-run, sweep) — Cloud
+    Tasks and Cloud Scheduler both push via a Google-signed OIDC token
+    asserting a service-account identity, so one verification function
+    covers both rather than duplicating the logic per endpoint.
+
     Skipped entirely when CLOUD_TASKS_SERVICE_ACCOUNT is unset (local dev,
-    or before the queue is provisioned) — mirrors the existing dev-mode
-    auth fallback pattern (src/main.py's ADR-0015 warning) rather than
-    introducing a second, differently-shaped bypass.
+    or before the queue/scheduler is provisioned) — mirrors the existing
+    dev-mode auth fallback pattern (src/main.py's ADR-0015 warning) rather
+    than introducing a second, differently-shaped bypass.
 
     Uses google-auth's verify_oauth2_token (JWKS fetch/cache, signature,
     issuer, expiry all handled internally) rather than hand-rolling JWT
@@ -75,7 +106,15 @@ async def _verify_cloud_tasks_oidc(authorization: str | None = Header(default=No
     exactly. Check (1) alone is not an authorization check: any Google
     service account (anyone's) can mint a validly-signed token; only (2)
     ties the request to the specific service account this app's Cloud
-    Tasks queue is configured to use.
+    Tasks queue / Cloud Scheduler job is configured to use.
+
+    The expected audience is derived from the current request's own path
+    (`{backend_public_url}{request.url.path}`) rather than a single
+    hardcoded endpoint, since each push target (claim-and-run, sweep) is
+    provisioned with its own audience matching its own URL — Cloud Tasks'
+    `enqueue_execution()` sets the OIDC token's audience to the task's
+    target URL (src/execution/cloud_tasks.py), and a Cloud Scheduler HTTP
+    target is configured the same way pointing at /internal/sweep.
 
     `verify_oauth2_token` is synchronous and may do a network round-trip
     to fetch/cache Google's JWKS on first use (subsequent calls hit the
@@ -89,21 +128,18 @@ async def _verify_cloud_tasks_oidc(authorization: str | None = Header(default=No
     if authorization is None or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing OIDC token")
     token = authorization.removeprefix("Bearer ")
-    # Must match exactly what src/execution/cloud_tasks.py's
-    # enqueue_execution() sets as the OIDC token's audience.
-    audience = f"{settings.backend_public_url}/internal/claim-and-run"
+    audience = f"{settings.backend_public_url}{request.url.path}"
     try:
         claims = await asyncio.to_thread(_verify_oidc_token_sync, token, audience)
     except (GoogleAuthError, ValueError) as exc:
-        logger.warning("internal.claim_and_run: OIDC verification failed: %s", exc)
+        logger.warning("internal: OIDC verification failed: %s", exc)
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid OIDC token"
         ) from exc
 
     if claims.get("email") != settings.cloud_tasks_service_account:
         logger.warning(
-            "internal.claim_and_run: OIDC token email %r does not match expected "
-            "service account %r",
+            "internal: OIDC token email %r does not match expected service account %r",
             claims.get("email"),
             settings.cloud_tasks_service_account,
         )
@@ -117,7 +153,7 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
     payload: ClaimAndRunRequest,
     request: Request,
     db: Any = Depends(get_db),
-    _oidc: None = Depends(_verify_cloud_tasks_oidc),
+    _oidc: None = Depends(_verify_internal_oidc),
 ) -> dict[str, str]:
     lease_seconds = get_settings().execution_lease_seconds
     now = datetime.now(UTC)
@@ -181,6 +217,45 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
         await executor.run(payload.execution_id)
 
     return {"status": "completed"}
+
+
+@router.post("/internal/sweep", status_code=status.HTTP_200_OK)
+async def sweep(  # pyright: ignore[reportUnusedFunction]
+    db: Any = Depends(get_db),
+    _oidc: None = Depends(_verify_internal_oidc),
+) -> dict[str, int]:
+    """Cloud-Scheduler-triggered maintenance sweep (P1-2/P1-4).
+
+    Runs all four sweep functions exactly once per invocation, reading
+    thresholds from settings. Intentionally NOT wired into the
+    in-process `_sweeper_loop` — see this module's docstring and the
+    2026-07-14 revision note in Task 11 of
+    docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md.
+    """
+    settings = get_settings()
+
+    stuck_result = await sweep_stuck_executions(
+        db, stuck_after_seconds=settings.execution_stuck_after_seconds
+    )
+    approvals_result = await sweep_expired_approvals(
+        db, timeout_hours=settings.approval_wait_timeout_hours
+    )
+    leases_result = await sweep_expired_leases(
+        db, max_delivery_attempts=settings.execution_max_delivery_attempts
+    )
+    events_deleted = await sweep_old_execution_events(
+        db, retention_days=settings.execution_events_retention_days
+    )
+
+    return {
+        "stuck": stuck_result.marked_failed,
+        "approvals_expired": approvals_result.marked_failed,
+        # sweep_expired_leases's `marked_failed` counts dead-lettered rows
+        # only; rows it scanned but did NOT dead-letter were recovered
+        # (lease cleared + re-enqueued) instead.
+        "leases_recovered": leases_result.scanned - leases_result.marked_failed,
+        "events_deleted": events_deleted,
+    }
 
 
 __all__ = ["router"]
