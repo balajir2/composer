@@ -250,17 +250,25 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
     # request — not an hour from now.
     #
     # This mirrors the deleted `_run_with_persistence` wrapper
-    # (src/api/run.py, removed in e50cb81) in spirit and in the exact
-    # error-message format (`f"{type(exc).__name__}: {exc}"`), adapted
-    # from a detached-task done-callback to a request handler: instead of
-    # re-raising for a task's done-callback to observe, we raise an
-    # `HTTPException` so Cloud Tasks' HTTP client sees a 5xx with a real
-    # body instead of an opaque, context-free 500. That 5xx may prompt
-    # Cloud Tasks to retry the delivery, but that retry is a harmless
-    # no-op: the claim query above only matches rows whose status is in
-    # `ACTIVE_EXECUTION_STATUSES_SORTED`, and this code path has already
-    # stamped the row 'failed' before raising, so the redelivered request
-    # finds nothing to claim and returns `{"status": "already_claimed"}`.
+    # (src/api/run.py, removed in e50cb81) in spirit — the *DB* `error`
+    # field keeps the exact `f"{type(exc).__name__}: {exc}"` format that
+    # wrapper used — adapted from a detached-task done-callback to a
+    # request handler: instead of re-raising for a task's done-callback to
+    # observe, we raise an `HTTPException` so Cloud Tasks' HTTP client
+    # sees a 5xx with a real body instead of an opaque, context-free 500.
+    # The client-facing `detail` is deliberately generic, NOT the raw
+    # exception text (P1-2 Task 13 follow-up, Issue 2) — that response
+    # body is a different retention/IAM surface than this app's own
+    # structured logs (Cloud Tasks receives and logs it), and a
+    # DB-driver exception's `__str__` can include query/parameter
+    # fragments with no functional need to appear there; the full detail
+    # is already captured in `logger.exception` above and the DB `error`
+    # field below. That 5xx may prompt Cloud Tasks to retry the
+    # delivery, but that retry is a harmless no-op: the claim query above
+    # only matches rows whose status is in `ACTIVE_EXECUTION_STATUSES_SORTED`,
+    # and this code path has already stamped the row 'failed' before
+    # raising, so the redelivered request finds nothing to claim and
+    # returns `{"status": "already_claimed"}`.
     #
     # Deliberately `except Exception`, not `except BaseException`:
     # `asyncio.CancelledError` inherits from `BaseException` (not
@@ -274,6 +282,22 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
     # generic handler below, so the existing "decision is required" 422
     # validation error is untouched by this guard — that's expected
     # application-level rejection, not a crash.
+    #
+    # The mark-failed write is guarded on `status = 'running'` (P1-2 Task
+    # 13 follow-up, Issue 1) via `update_many`, matching the exact
+    # pattern used everywhere else in this codebase a status transition
+    # is written (`create_execution`'s enqueue-failure handler,
+    # `cancel_execution`, `resume_execution` — all in src/api/executions.py):
+    # fold the CURRENT status into the WHERE clause instead of an
+    # unconditional `update()`. `cancel_execution`'s own docstring
+    # confirms cancellation does not preempt an in-flight claim-and-run —
+    # a still-running executor can crash into this handler *after* a
+    # concurrent cancel has already flipped the row to 'canceled'.
+    # Without the guard, this write would clobber that legitimate
+    # terminal state with a confusing, incorrect 'failed'. If the guarded
+    # write affects zero rows, something else already won the race and
+    # that transition is authoritative — this handler reports success
+    # rather than overwriting it or misreporting a crash.
     #
     # If persisting 'failed' itself fails (e.g. a DB error while writing
     # the failure), that inner exception is swallowed (logged, not
@@ -310,9 +334,10 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
             payload.execution_id,
             payload.kind,
         )
+        updated_count: int | None
         try:
-            await db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
-                where={"id": payload.execution_id},
+            updated_count = await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
+                where={"id": payload.execution_id, "status": "running"},
                 data={
                     "status": "failed",
                     "error": f"{type(exc).__name__}: {exc}",
@@ -325,11 +350,31 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
                 "(lease remains for sweep_expired_leases to recover)",
                 payload.execution_id,
             )
+            updated_count = None
+
+        if updated_count == 0:
+            # Lost the race: something else (most likely a concurrent
+            # cancel_execution) already transitioned this row out of
+            # 'running' before this write landed. That transition is
+            # legitimate and already correctly recorded — overwriting it
+            # with 'failed' would be the exact bug this guard exists to
+            # prevent, and re-raising the 500 below would misreport a
+            # crash on a row whose outcome is already correct. Report
+            # success instead, same spirit as the `already_claimed`
+            # response above.
+            logger.info(
+                "internal: claim_and_run crash handler for execution %s found the "
+                "row no longer 'running' — a concurrent transition already "
+                "completed; not overwriting it",
+                payload.execution_id,
+            )
+            return {"status": "already_terminal"}
+
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
                 f"execution {payload.execution_id} crashed during "
-                f"{payload.kind}: {type(exc).__name__}: {exc}"
+                f"{payload.kind}; see application logs for details"
             ),
         ) from exc
 

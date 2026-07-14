@@ -401,14 +401,18 @@ def test_claim_and_run_crash_in_run_marks_row_failed_and_returns_error(
 ) -> None:
     """P1-2 Task 13 follow-up: a genuine crash inside `executor.run()` must
     be caught synchronously, the row marked 'failed' with an informative
-    message (mirroring the deleted `_run_with_persistence` wrapper's
-    `f"{type(exc).__name__}: {exc}"` format), and the HTTP response must
-    reflect the failure with real context — not an opaque 500."""
+    message in the DB `error` field (mirroring the deleted
+    `_run_with_persistence` wrapper's `f"{type(exc).__name__}: {exc}"`
+    format), guarded on `status='running'` (Issue 1) so the write can't
+    clobber a concurrent transition, and the HTTP response must carry a
+    generic client-facing message (Issue 2) — the raw exception text is
+    deliberately NOT included in the response body, only in the DB `error`
+    field and the application logs."""
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
     client, db = _client_with_mock_db()
     db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
     db.execute_raw = AsyncMock()
-    db.workflowexecution.update = AsyncMock()
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
@@ -420,12 +424,17 @@ def test_claim_and_run_crash_in_run_marks_row_failed_and_returns_error(
     resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
 
     assert resp.status_code == 500
-    assert "RuntimeError" in resp.text
-    assert "simulated executor crash" in resp.text
+    # The raw exception text must NOT appear in the client-facing response
+    # body — that's a different retention/IAM surface (Cloud Tasks) than
+    # this app's own structured logs and DB.
+    assert "RuntimeError" not in resp.text
+    assert "simulated executor crash" not in resp.text
+    assert "exec-1" in resp.text
+    assert "see application logs" in resp.text
 
-    db.workflowexecution.update.assert_awaited_once()
-    call = db.workflowexecution.update.call_args
-    assert call.kwargs["where"] == {"id": "exec-1"}
+    db.workflowexecution.update_many.assert_awaited_once()
+    call = db.workflowexecution.update_many.call_args
+    assert call.kwargs["where"] == {"id": "exec-1", "status": "running"}
     data = call.kwargs["data"]
     assert data["status"] == "failed"
     assert "RuntimeError" in data["error"]
@@ -437,9 +446,10 @@ def test_claim_and_run_crash_in_resume_marks_row_failed_and_returns_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Same fast-fail guard, resume path: a crash inside `executor.resume()`
-    marks the row 'failed' immediately and surfaces an informative error
-    response, rather than silently leaving the row 'running' for the
-    sweeper to eventually notice."""
+    marks the row 'failed' immediately (guarded on status='running') and
+    surfaces a generic error response, rather than silently leaving the
+    row 'running' for the sweeper to eventually notice, or leaking raw
+    exception text into the client-facing response body."""
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
     client, db = _client_with_mock_db()
     db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
@@ -447,7 +457,7 @@ def test_claim_and_run_crash_in_resume_marks_row_failed_and_returns_error(
     db.workflowexecution.find_unique = AsyncMock(
         return_value=SimpleNamespace(variables={"_resume_decision": "approved"})
     )
-    db.workflowexecution.update = AsyncMock()
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
@@ -462,17 +472,60 @@ def test_claim_and_run_crash_in_resume_marks_row_failed_and_returns_error(
     )
 
     assert resp.status_code == 500
-    assert "RuntimeError" in resp.text
-    assert "simulated resume crash" in resp.text
+    assert "RuntimeError" not in resp.text
+    assert "simulated resume crash" not in resp.text
+    assert "exec-1" in resp.text
+    assert "see application logs" in resp.text
 
-    db.workflowexecution.update.assert_awaited_once()
-    call = db.workflowexecution.update.call_args
-    assert call.kwargs["where"] == {"id": "exec-1"}
+    db.workflowexecution.update_many.assert_awaited_once()
+    call = db.workflowexecution.update_many.call_args
+    assert call.kwargs["where"] == {"id": "exec-1", "status": "running"}
     data = call.kwargs["data"]
     assert data["status"] == "failed"
     assert "RuntimeError" in data["error"]
     assert "simulated resume crash" in data["error"]
     assert data["completedAt"] is not None
+
+
+def test_claim_and_run_crash_does_not_clobber_concurrent_cancel(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-2 Task 13 follow-up, Issue 1: if a concurrent `cancel_execution`
+    already flipped this row to 'canceled' by the time the crash handler's
+    guarded `update_many(where={..., "status": "running"})` runs, the guard
+    matches zero rows (Prisma's `update_many` returns the affected count).
+    The handler must NOT then report the crash as if the write had
+    succeeded in overwriting a live row — the row's 'canceled' status is
+    already the legitimate, correctly-recorded outcome. Matches
+    `create_execution`'s equivalent "lost the race" guard in
+    src/api/executions.py."""
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    client, db = _client_with_mock_db()
+    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
+    db.execute_raw = AsyncMock()
+    # Simulate Prisma's update_many finding no matching row: a concurrent
+    # cancel already moved status away from 'running'.
+    db.workflowexecution.update_many = AsyncMock(return_value=0)
+
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    async def _crashing_run(self: LangGraphExecutor, execution_id: str) -> None:
+        raise RuntimeError("simulated executor crash")
+
+    monkeypatch.setattr(LangGraphExecutor, "run", _crashing_run)
+
+    resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
+
+    # No 500 here: the row's outcome is already correctly recorded by
+    # whatever transition won the race, so this is not an application
+    # failure that needs to be reported (and re-reported to Cloud Tasks
+    # as a retry-worthy failure) — it's a benign race loss.
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "already_terminal"
+
+    db.workflowexecution.update_many.assert_awaited_once()
+    call = db.workflowexecution.update_many.call_args
+    assert call.kwargs["where"] == {"id": "exec-1", "status": "running"}
 
 
 def test_claim_and_run_cancelled_error_is_not_caught_by_fast_fail_guard(
@@ -491,7 +544,7 @@ def test_claim_and_run_cancelled_error_is_not_caught_by_fast_fail_guard(
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
     db = MagicMock()
     db.workflowexecution = MagicMock()
-    db.workflowexecution.update = AsyncMock()
+    db.workflowexecution.update_many = AsyncMock()
     db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
     db.execute_raw = AsyncMock()
 
@@ -535,7 +588,7 @@ def test_claim_and_run_cancelled_error_is_not_caught_by_fast_fail_guard(
     # The fast-fail guard must not have touched the row at all — this is
     # what proves CancelledError skipped `except Exception` entirely
     # rather than being caught and re-raised after a (wrong) DB write.
-    db.workflowexecution.update.assert_not_awaited()
+    db.workflowexecution.update_many.assert_not_awaited()
 
 
 def test_claim_and_run_accepts_valid_oidc_token(monkeypatch: pytest.MonkeyPatch) -> None:
