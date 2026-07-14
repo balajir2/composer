@@ -1559,6 +1559,18 @@ git commit -m "feat(execution): add Cloud-Tasks-triggered claim-and-run endpoint
 
 ---
 
+> **Fast-follow noted 2026-07-14 (not blocking, from Task 10's code review):** `src/api/internal.py`'s
+> claim query hardcodes `status IN ('running', 'waiting_approval')` as a third independent copy of
+> the active/terminal status split (`run.py`'s `TERMINAL_STATUSES`, `events_ws.py`'s
+> `_TERMINAL_STATUSES` are the other two) — correct today, but nothing forces it to stay in sync if a
+> new active status is ever added; getting it wrong fails silently (that status's executions become
+> permanently unclaimable once their lease expires by clock). Also, `test_claim_and_run_claim_query_filters_on_status`
+> verifies the SQL *text* via regex rather than actual Postgres behavior via a real
+> `tests/integration/`-style test — correct but wouldn't catch a semantically-equivalent rewrite
+> (`NOT IN`, parameterized values) breaking the guarantee. Both worth a small cleanup pass (extract a
+> shared `CLAIMABLE_STATUSES` constant; add a real integration test) — flag for Task 16 or a follow-up,
+> not urgent enough to block Task 11+.
+
 ## Task 11: Extend the sweeper for lease expiry recovery + Cloud Scheduler endpoint
 
 > **Revised 2026-07-14 (ADR-0033 addendum, cost review).** The original version of
