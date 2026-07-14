@@ -176,7 +176,7 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
             """
             SELECT id FROM workflow_executions
             WHERE id = $1
-              AND status IN ('running', 'waiting_approval')
+              AND status IN ('queued', 'running', 'waiting_approval')
               AND (lease_expires_at IS NULL OR lease_expires_at < now())
             FOR UPDATE SKIP LOCKED
             LIMIT 1
@@ -190,10 +190,21 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
             # a task that's genuinely already being handled.
             return {"status": "already_claimed"}
 
+        # P1-2: the claim itself is what transitions a freshly-enqueued
+        # `queued` row to `running` — start_execution (langgraph_executor.py)
+        # deliberately creates rows as `queued` since Cloud Run can scale to
+        # zero between "row created" and "Cloud Task delivered"; the row
+        # should only claim to be `running` once a worker has genuinely
+        # picked it up. Setting status unconditionally here is also
+        # idempotent for the already-`running`/`waiting_approval` claim
+        # cases (lease-recovery redelivery, resume) — sweep_expired_leases
+        # only ever looks at `status='running'` rows with an expired lease
+        # (src/maintenance/execution_sweeper.py), so this keeps that
+        # invariant true from the moment of claim.
         await tx.execute_raw(
             """
             UPDATE workflow_executions
-            SET lease_owner = $1, lease_expires_at = $2,
+            SET status = 'running', lease_owner = $1, lease_expires_at = $2,
                 delivery_attempts = delivery_attempts + 1
             WHERE id = $3
             """,

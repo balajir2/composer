@@ -98,12 +98,21 @@ class LangGraphExecutor:
         user_id: str | None,
         idempotency_key: str | None = None,
     ) -> Any:
-        """Create the execution row (status=running). Caller schedules `run()`."""
+        """Create the execution row (status=queued).
+
+        P1-2: the row starts life as `queued`, not `running` — the caller
+        (src/api/executions.py's create_execution) enqueues a Cloud Task
+        rather than running this execution inline, and the row only
+        becomes `running` once POST /internal/claim-and-run actually
+        claims it (src/api/internal.py). A row that never gets claimed
+        (e.g. the Cloud Tasks enqueue itself fails) stays visibly
+        `queued` rather than lying about being `running`.
+        """
         thread_id = str(uuid.uuid4())
         data: dict[str, Any] = {
             "workflowId": workflow_id,
             "userId": user_id,
-            "status": "running",
+            "status": "queued",
             "threadId": thread_id,
             "input": Json(input),
             "nodeResults": Json({}),

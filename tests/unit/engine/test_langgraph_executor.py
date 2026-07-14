@@ -64,27 +64,31 @@ def _start_to_end_workflow_dict() -> dict[str, Any]:
     }
 
 
-async def test_start_execution_creates_row_with_running_status() -> None:
+async def test_start_execution_creates_row_with_queued_status() -> None:
+    """P1-2: rows start life `queued`, not `running` — the row only
+    becomes `running` once POST /internal/claim-and-run actually claims
+    it (src/api/internal.py), since the caller now enqueues a Cloud Task
+    rather than running the execution inline."""
     db = MagicMock()
     db.workflowexecution = MagicMock()
     db.workflowexecution.create = AsyncMock(
         return_value=SimpleNamespace(
             id="ex1",
             workflowId="wf1",
-            status="running",
+            status="queued",
             threadId="t1",
         )
     )
     executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
     row = await executor.start_execution(workflow_id="wf1", input={"msg": "hi"}, user_id="dev")
     assert row.id == "ex1"
-    assert row.status == "running"
+    assert row.status == "queued"
     db.workflowexecution.create.assert_awaited_once()
     assert db.workflowexecution.create.await_args is not None
     create_kwargs = db.workflowexecution.create.await_args.kwargs["data"]
     assert create_kwargs["workflowId"] == "wf1"
     assert create_kwargs["userId"] == "dev"
-    assert create_kwargs["status"] == "running"
+    assert create_kwargs["status"] == "queued"
     assert isinstance(create_kwargs["threadId"], str) and len(create_kwargs["threadId"]) > 0
 
 

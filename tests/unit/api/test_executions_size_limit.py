@@ -70,6 +70,11 @@ def _client(
     app.state.event_bus = _FakeEventStore()
     app.state.rate_limiter = RateLimiter()
     monkeypatch.setattr("src.engine.langgraph_executor.notify_execution_event", AsyncMock())
+    # P1-2: POST /executions now enqueues a real Cloud Task instead of a
+    # BackgroundTask — patch it to a no-op so this test doesn't try to
+    # construct a real `tasks_v2.CloudTasksAsyncClient()` (which resolves
+    # ADC credentials this test environment doesn't have).
+    monkeypatch.setattr("src.api.executions.enqueue_execution", AsyncMock())
     return TestClient(app), db
 
 

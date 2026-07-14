@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
 from src.engine.langgraph_executor import LangGraphExecutor
+from src.execution.cloud_tasks import enqueue_execution
 from src.security.auth import get_current_role
 from src.security.rate_limit import (
     RateLimiterProtocol,
@@ -104,7 +105,6 @@ async def _find_execution_by_idempotency_key(
 @router.post("/executions", response_model=ExecutionRead, status_code=status.HTTP_202_ACCEPTED)
 async def create_execution(
     payload: ExecutionCreate,
-    background_tasks: BackgroundTasks,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     _role: tuple[str, str] = Depends(get_current_role),
@@ -180,9 +180,15 @@ async def create_execution(
             raise
         return ExecutionRead.model_validate(existing)
 
-    # Schedule the actual run in the background. The response returns with
-    # status='running' immediately; poll GET /executions/{id} for completion.
-    background_tasks.add_task(executor.run, row.id)
+    # P1-2: enqueue a Cloud Task instead of a request-bound BackgroundTask —
+    # Cloud Run can scale a request-bound background task's instance to
+    # zero mid-run (confirmed via --min-instances=0 in the deploy config,
+    # ADR-0033). Cloud Tasks' HTTP-push delivery to /internal/claim-and-run
+    # is a real inbound request, which Cloud Run won't recycle mid-flight.
+    # The response returns with status='queued' immediately; the row only
+    # becomes 'running' once claim-and-run actually claims it. Poll
+    # GET /executions/{id} for completion.
+    await enqueue_execution(row.id, kind="run")
     return ExecutionRead.model_validate(row)
 
 

@@ -3,10 +3,26 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
 from fastapi.testclient import TestClient
 
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
+
+
+@pytest.fixture(autouse=True)
+def _patch_enqueue_execution(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # pyright: ignore[reportUnusedFunction]
+    """POST /executions now enqueues a real Cloud Task (P1-2) instead of a
+    BackgroundTask. Default-patch it to a no-op for every test in this
+    module so tests that don't care about enqueueing (most of them) don't
+    trip over constructing a real `tasks_v2.CloudTasksAsyncClient()` (which
+    resolves ADC credentials this test environment doesn't have). Tests
+    that DO care about the enqueue call override this via their own
+    `monkeypatch.setattr` on the same fixture-provided monkeypatch
+    instance."""
+    mock = AsyncMock()
+    monkeypatch.setattr("src.api.executions.enqueue_execution", mock)
+    return mock
 
 
 def _execution_row(status: str = "running") -> SimpleNamespace:
@@ -48,7 +64,10 @@ def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     db.workflow = MagicMock()
     db.workflow.find_unique = AsyncMock(return_value=_workflow_row())
     db.workflowexecution = MagicMock()
-    db.workflowexecution.create = AsyncMock(return_value=_execution_row())
+    # P1-2: start_execution now creates rows with status='queued' — see
+    # LangGraphExecutor.start_execution's docstring; the row only becomes
+    # 'running' once /internal/claim-and-run actually claims it.
+    db.workflowexecution.create = AsyncMock(return_value=_execution_row(status="queued"))
     db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="completed"))
     db.workflowexecution.update = AsyncMock(return_value=_execution_row(status="completed"))
     db.executionevent = MagicMock()
@@ -62,14 +81,39 @@ def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     return TestClient(app), db
 
 
-def test_post_execution_returns_running() -> None:
+def test_post_execution_returns_queued() -> None:
+    """P1-2: the response now reflects the row's real initial status —
+    'queued' — rather than lying about being 'running' before any worker
+    has claimed it via /internal/claim-and-run."""
     client, db = _client_with_mock_db()
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 202
     body = resp.json()
     assert body["id"] == "ex1"
-    assert body["status"] == "running"
+    assert body["status"] == "queued"
     db.workflowexecution.create.assert_awaited_once()
+
+
+def test_post_execution_enqueues_cloud_task_instead_of_background_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-2 full replacement: POST /executions must enqueue a Cloud Task
+    (kind='run') rather than scheduling a request-bound BackgroundTask —
+    Cloud Run can scale a request-bound background task's instance to zero
+    mid-run, which Cloud Tasks' HTTP-push delivery to
+    /internal/claim-and-run is immune to (ADR-0033)."""
+    enqueued: list[tuple[str, str]] = []
+
+    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+        enqueued.append((execution_id, kind))
+
+    monkeypatch.setattr("src.api.executions.enqueue_execution", _fake_enqueue)
+
+    client, _db = _client_with_mock_db()
+    resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
+    assert resp.status_code == 202
+    assert resp.json()["status"] == "queued"
+    assert enqueued == [("ex1", "run")]
 
 
 def test_post_execution_404_when_workflow_missing() -> None:
@@ -133,9 +177,13 @@ def test_post_execution_with_idempotency_key_creates_when_no_existing_match() ->
 
 
 def test_post_execution_without_idempotency_key_skips_lookup() -> None:
-    """find_unique still fires once the background run loads the row by id
-    (unrelated to idempotency) — assert no call keyed on the composite
-    workflowId_idempotencyKey lookup, not "never called at all"."""
+    """Assert no find_unique call keyed on the composite
+    workflowId_idempotencyKey lookup — not "never called at all", since
+    other find_unique calls unrelated to idempotency (e.g. workflow
+    lookups) are legitimate. As of P1-2, the row is no longer run
+    in-process (Cloud Tasks enqueueing replaces the BackgroundTask), so
+    there is no longer a background `executor.run()` call in this test
+    to also trigger a lookup by id."""
     client, db = _client_with_mock_db()
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 202
