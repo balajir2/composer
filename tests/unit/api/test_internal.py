@@ -1,6 +1,7 @@
 """Tests for POST /internal/claim-and-run (P1-2)."""
 
 import re
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -261,10 +262,51 @@ def test_claim_and_run_update_sets_status_running(monkeypatch: pytest.MonkeyPatc
 
 
 def test_claim_and_run_resume_dispatches_resume(monkeypatch: pytest.MonkeyPatch) -> None:
+    """P1-2 Task 13: the resume decision travels via the claimed row's
+    `variables._resume_decision` (stamped by the enqueueing call site
+    BEFORE the Cloud Task fires), not via any request-body field —
+    enqueue_execution's Cloud Task body is hardcoded to
+    {"executionId": ..., "kind": ...} with no room for it."""
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
     client, db = _client_with_mock_db()
     db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
     db.execute_raw = AsyncMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(variables={"_resume_decision": "approved"})
+    )
+
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    resumed: list[tuple[str, str]] = []
+
+    async def _fake_resume(self: LangGraphExecutor, execution_id: str, decision: str) -> None:
+        resumed.append((execution_id, decision))
+
+    monkeypatch.setattr(LangGraphExecutor, "resume", _fake_resume)
+
+    resp = client.post(
+        "/internal/claim-and-run",
+        json={"executionId": "exec-1", "kind": "resume"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resumed == [("exec-1", "approved")]
+    db.workflowexecution.find_unique.assert_awaited_once_with(where={"id": "exec-1"})
+
+
+def test_claim_and_run_resume_ignores_legacy_decision_field_in_request_body(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ClaimAndRunRequest` dropped the `decision` field (P1-2 Task 13) --
+    a stray `decision` key in the request body (e.g. a stale caller) must
+    be ignored, not consulted; only `variables._resume_decision` on the
+    claimed row is authoritative."""
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    client, db = _client_with_mock_db()
+    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
+    db.execute_raw = AsyncMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(variables={"_resume_decision": "rejected"})
+    )
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
@@ -280,16 +322,20 @@ def test_claim_and_run_resume_dispatches_resume(monkeypatch: pytest.MonkeyPatch)
         json={"executionId": "exec-1", "kind": "resume", "decision": "approved"},
     )
     assert resp.status_code == 200, resp.text
-    assert resumed == [("exec-1", "approved")]
+    assert resumed == [("exec-1", "rejected")]
 
 
 def test_claim_and_run_resume_without_decision_is_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """No `_resume_decision` in the claimed row's variables (e.g. a stale
+    or malformed enqueue) is a 422, matching the pre-Task-13 "decision is
+    required" error shape."""
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
     client, db = _client_with_mock_db()
     db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
     db.execute_raw = AsyncMock()
+    db.workflowexecution.find_unique = AsyncMock(return_value=SimpleNamespace(variables={}))
 
     resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "resume"})
     assert resp.status_code == 422

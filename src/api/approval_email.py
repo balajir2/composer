@@ -21,12 +21,13 @@ both pass the check before either commits.
 from typing import Any
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
 from starlette import status
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.execution.cloud_tasks import enqueue_execution
 from src.security.jwt import (
     ApprovalEmailTokenPayload,
     TokenVerificationError,
@@ -126,7 +127,6 @@ async def resolve_approval_email(
 @router.post("/approvals/email/{token}/confirm")
 async def confirm_approval_email(
     token: str,
-    background_tasks: BackgroundTasks,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
@@ -152,7 +152,7 @@ async def confirm_approval_email(
     result = await _validate_token_and_execution(token, db)
     if result is None:
         return _redirect_result("invalid")
-    claims, _execution = result
+    claims, execution = result
 
     # Atomic conditional status transition -- closes the check-then-act race
     # a separate find_unique + update pair would leave open. update_many (not
@@ -182,14 +182,19 @@ async def confirm_approval_email(
         data=approval_data,  # pyright: ignore[reportArgumentType]
     )
 
-    checkpointer = getattr(request.app.state, "checkpointer", None)
-    if checkpointer is None:
-        raise RuntimeError("Checkpointer not attached to app.state")
-    event_bus = getattr(request.app.state, "event_bus", None)
-    from src.engine.langgraph_executor import LangGraphExecutor
-
-    executor = LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
-    background_tasks.add_task(executor.resume, claims.sub, claims.decision)
+    # P1-2 (Task 13): stamp the decision into `variables` BEFORE enqueueing
+    # the Cloud Task — same pattern as POST /executions/{id}/resume
+    # (src/api/executions.py). enqueue_execution's Cloud Task body is
+    # hardcoded to {"executionId": ..., "kind": ...}, so the decision
+    # travels as row state that claim-and-run reads back after claiming,
+    # not as a Cloud Task payload field.
+    await db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": claims.sub},
+        data={
+            "variables": Json({**(execution.variables or {}), "_resume_decision": claims.decision})
+        },
+    )
+    await enqueue_execution(claims.sub, kind="resume")
 
     return _redirect_result(claims.decision)
 

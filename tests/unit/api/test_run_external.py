@@ -132,6 +132,15 @@ def _build_client(
 
     monkeypatch.setattr(_run_module, "LangGraphExecutor", _FakeExec)
 
+    # POST /api/run/{slug} now enqueues a real Cloud Task (P1-2) instead
+    # of a fire-and-forget asyncio.create_task. Default-patch it to a
+    # no-op so tests that don't care about enqueueing don't trip over
+    # constructing a real `tasks_v2.CloudTasksAsyncClient()` (no ADC
+    # credentials in this test environment). Tests that DO care override
+    # this themselves via the same `monkeypatch` instance, AFTER calling
+    # `_build_client` (monkeypatch.setattr's last call wins).
+    monkeypatch.setattr(_run_module, "enqueue_execution", AsyncMock())
+
     return TestClient(app)
 
 
@@ -206,6 +215,34 @@ def test_async_run_returns_200_with_stream_url(monkeypatch: pytest.MonkeyPatch) 
     assert body["executionId"] == "exec1"
     assert body["workflowId"] == wf.id
     assert body["streamUrl"].endswith("/executions/exec1/ws")
+
+
+def test_async_run_enqueues_cloud_task_instead_of_background_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-2 full replacement: POST /api/run/{slug} must enqueue a Cloud
+    Task (kind='run') rather than a fire-and-forget asyncio.create_task —
+    Cloud Run can scale a request-bound background task's instance to
+    zero mid-run, which Cloud Tasks' HTTP-push delivery to
+    /internal/claim-and-run is immune to (ADR-0033, same fix as Task 12's
+    POST /executions replacement)."""
+    wf = _wf(isPublic=True)
+    client = _build_client(monkeypatch, wf)
+
+    enqueued: list[tuple[str, str]] = []
+
+    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+        enqueued.append((execution_id, kind))
+
+    monkeypatch.setattr("src.api.run.enqueue_execution", _fake_enqueue)
+
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {"x": 1}},
+    )
+    assert resp.status_code == 200, resp.text
+    assert enqueued == [("exec1", "run")]
 
 
 def test_missing_bearer_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:

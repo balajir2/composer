@@ -6,11 +6,11 @@ from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel, ConfigDict, Field
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.api.execution_status import (
     ACTIVE_EXECUTION_STATUSES,
     ACTIVE_EXECUTION_STATUSES_SORTED,
@@ -567,8 +567,6 @@ async def cancel_execution(  # pyright: ignore[reportUnusedFunction]
 async def resume_execution(
     execution_id: str,
     payload: ResumeRequest,
-    background_tasks: BackgroundTasks,
-    request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     _role: tuple[str, str] = Depends(get_current_role),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
@@ -642,8 +640,21 @@ async def resume_execution(
         data=approval_data,  # pyright: ignore[reportArgumentType]
     )
 
-    executor = _get_executor(request, db)
-    background_tasks.add_task(executor.resume, execution_id, payload.decision.value)
+    # P1-2 (Task 13): stamp the decision into `variables` BEFORE enqueueing
+    # the Cloud Task. enqueue_execution's Cloud Task body is hardcoded to
+    # {"executionId": ..., "kind": ...} — there is no room to carry the
+    # decision through the task payload itself — so it travels the same
+    # way `_pending_approval_node` already does: as row state that
+    # claim-and-run (src/api/internal.py) reads back AFTER claiming.
+    await db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": execution_id},
+        data={
+            "variables": Json(
+                {**(execution.variables or {}), "_resume_decision": payload.decision.value}
+            )
+        },
+    )
+    await enqueue_execution(execution_id, kind="resume")
 
     # Reflect the transition we just made atomically without a second
     # DB round-trip — `execution` is the row fetched above, still valid

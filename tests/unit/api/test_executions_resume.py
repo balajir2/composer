@@ -12,6 +12,24 @@ from src.main import create_app
 from src.security.rate_limit import RateLimiter
 
 
+@pytest.fixture(autouse=True)
+def _patch_enqueue_execution(  # pyright: ignore[reportUnusedFunction]
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncMock:
+    """POST /executions/{id}/resume now enqueues a real Cloud Task (P1-2)
+    instead of a BackgroundTask. Default-patch it to a no-op for every
+    test in this module so tests that don't care about enqueueing (most
+    of them) don't trip over constructing a real
+    `tasks_v2.CloudTasksAsyncClient()` (which resolves ADC credentials
+    this test environment doesn't have). Tests that DO care about the
+    enqueue call override this via their own `monkeypatch.setattr` on the
+    same fixture-provided monkeypatch instance — mirrors
+    tests/unit/api/test_executions.py's identical fixture."""
+    mock = AsyncMock()
+    monkeypatch.setattr("src.api.executions.enqueue_execution", mock)
+    return mock
+
+
 class _FakeEventStore:
     """In-memory stand-in for PostgresEventStore.append — the background
     resume task calls event_bus.append(...); a real ExecutionEventBus has
@@ -213,6 +231,38 @@ def test_admin_can_resume_other_users_execution(monkeypatch: pytest.MonkeyPatch)
         client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
     assert resp.status_code == 200
     db.approval.create.assert_awaited_once()
+
+
+def test_resume_enqueues_cloud_task_instead_of_background_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-2 full replacement: POST /executions/{id}/resume must enqueue a
+    Cloud Task (kind='resume') rather than scheduling a request-bound
+    BackgroundTask — mirrors POST /executions' own Task 12 replacement.
+    The decision is stamped into `variables._resume_decision` BEFORE
+    enqueueing since enqueue_execution's Cloud Task body is hardcoded to
+    {"executionId": ..., "kind": ...} with no room for the decision value;
+    claim-and-run reads it back from the claimed row's variables."""
+    enqueued: list[tuple[str, str]] = []
+
+    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+        enqueued.append((execution_id, kind))
+
+    monkeypatch.setattr("src.api.executions.enqueue_execution", _fake_enqueue)
+
+    client, db = _client_with_execution(monkeypatch, _execution_row())
+    resp = client.post("/executions/e1/resume", json={"decision": "approved"})
+    assert resp.status_code == 200, resp.text
+    assert enqueued == [("e1", "resume")]
+
+    db.workflowexecution.update.assert_awaited_once()
+    update_call = db.workflowexecution.update.await_args
+    assert update_call.kwargs["where"]["id"] == "e1"
+    stamped_variables = update_call.kwargs["data"]["variables"].data
+    assert stamped_variables["_resume_decision"] == "approved"
+    # Original variables (the pending-approval bookkeeping) must survive
+    # the stamp, not be clobbered.
+    assert stamped_variables["_pending_approval_node"] == "ua"
 
 
 def test_resume_does_not_emit_approval_resumed_event(monkeypatch: pytest.MonkeyPatch) -> None:

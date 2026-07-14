@@ -92,6 +92,13 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MagicMock]:
     app.state.rate_limiter = RateLimiter()
     app.state.event_bus = _FakeEventStore()
     monkeypatch.setattr("src.engine.langgraph_executor.notify_execution_event", AsyncMock())
+    # POST /confirm now enqueues a real Cloud Task (P1-2) instead of a
+    # BackgroundTask. Default-patch it to a no-op so tests that don't
+    # care about enqueueing don't trip over constructing a real
+    # `tasks_v2.CloudTasksAsyncClient()` (no ADC credentials in this test
+    # environment). Tests that DO care override this themselves via the
+    # same `monkeypatch` instance.
+    monkeypatch.setattr("src.api.approval_email.enqueue_execution", AsyncMock())
     return TestClient(app), db
 
 
@@ -305,6 +312,41 @@ def test_post_confirm_already_resolved_redirects_to_invalid(
     assert resp.status_code == 303
     assert "status=invalid" in resp.headers["location"]
     db.approval.create.assert_not_awaited()
+
+
+def test_post_confirm_enqueues_cloud_task_instead_of_background_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-2 full replacement: POST /approvals/email/{token}/confirm must
+    enqueue a Cloud Task (kind='resume') rather than scheduling a
+    request-bound BackgroundTask. The decision is stamped into
+    `variables._resume_decision` before enqueueing (same pattern as
+    POST /executions/{id}/resume) since enqueue_execution's Cloud Task
+    body has no room for the decision value."""
+    from src.security.jwt import create_approval_email_token
+
+    client, db = _client(monkeypatch)
+
+    enqueued: list[tuple[str, str]] = []
+
+    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+        enqueued.append((execution_id, kind))
+
+    monkeypatch.setattr("src.api.approval_email.enqueue_execution", _fake_enqueue)
+
+    token = create_approval_email_token(
+        "exec-1", "approval-1", "approved", "reviewer@example.com", _PENDING_SINCE
+    )
+    resp = client.post(f"/approvals/email/{token}/confirm", follow_redirects=False)
+    assert resp.status_code == 303
+    assert enqueued == [("exec-1", "resume")]
+
+    db.workflowexecution.update.assert_awaited_once()
+    update_call = db.workflowexecution.update.await_args
+    assert update_call.kwargs["where"]["id"] == "exec-1"
+    stamped_variables = update_call.kwargs["data"]["variables"].data
+    assert stamped_variables["_resume_decision"] == "approved"
+    assert stamped_variables["_pending_approval_node"] == "approval-1"
 
 
 async def test_post_confirm_rate_limited(monkeypatch: pytest.MonkeyPatch) -> None:

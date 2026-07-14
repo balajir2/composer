@@ -67,9 +67,19 @@ class ClaimAndRunRequest(BaseModel):
     # Field names follow this codebase's existing convention (see
     # src/api/run.py's RunRequest/RunAsyncResponse): snake_case in Python,
     # camelCase on the wire via alias, populate_by_name so either works.
+    #
+    # No `decision` field (P1-2 Task 13, supersedes the original draft):
+    # enqueue_execution's Cloud Task body is hardcoded to
+    # {"executionId": ..., "kind": ...} — there is no reliable way for a
+    # request-body field to carry the approval decision through Cloud
+    # Tasks' at-least-once, possibly-redelivered-later-by-a-sweeper
+    # dispatch. The call sites that enqueue a "resume" (POST
+    # /executions/{id}/resume, POST /approvals/email/{token}/confirm)
+    # stamp `_resume_decision` into the execution row's `variables`
+    # BEFORE enqueueing; `claim_and_run` reads it back from the row it
+    # just claimed instead.
     execution_id: str = Field(alias="executionId")
     kind: Literal["run", "resume"] = "run"
-    decision: str | None = None  # required when kind == "resume"
 
     model_config = ConfigDict(populate_by_name=True)
 
@@ -229,12 +239,20 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
     executor = LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
 
     if payload.kind == "resume":
-        if not payload.decision:
+        # P1-2 (Task 13): the decision travels via the claimed row's
+        # `variables._resume_decision`, stamped by the enqueueing call
+        # site BEFORE the Cloud Task fired (see ClaimAndRunRequest's
+        # docstring) — not via any request-body field.
+        row_data = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+            where={"id": payload.execution_id}
+        )
+        decision = (row_data.variables or {}).get("_resume_decision") if row_data else None
+        if not decision:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail="decision is required when kind='resume'",
             )
-        await executor.resume(payload.execution_id, payload.decision)
+        await executor.resume(payload.execution_id, decision)
     else:
         await executor.run(payload.execution_id)
 
