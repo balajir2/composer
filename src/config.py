@@ -272,7 +272,7 @@ class Settings(BaseSettings):
     cloud_tasks_queue: str = "composer-executions"
     # Service account Cloud Tasks uses to mint the OIDC token it presents
     # to the claim-and-run endpoint. Empty in dev (auth skipped when unset
-    # — see src/api/internal.py's _verify_cloud_tasks_oidc).
+    # — see src/api/internal.py's _verify_internal_oidc).
     cloud_tasks_service_account: str = ""
     # DESIGN DECISION (P1-2, "lease and heartbeat behavior"): rather than a
     # short lease with periodic mid-execution heartbeat renewal (the usual

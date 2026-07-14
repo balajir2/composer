@@ -79,6 +79,58 @@ def test_sweep_endpoint_runs_all_four_sweeps_and_returns_summary(
     }
 
 
+def test_sweep_endpoint_isolates_failing_sweep_from_others(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One sweep function raising must not prevent the other three from
+    running, and the endpoint must still return 200 with partial results
+    (null for the failed sweep's field) rather than propagating a 500 —
+    this endpoint is the SOLE production trigger for lease recovery and
+    retention cleanup, so a persistently-failing sweep must not silently
+    starve the other three on every Cloud Scheduler invocation."""
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")  # dev mode: OIDC check skipped
+    client, _db = _client_with_mock_db()
+
+    from src.maintenance.execution_sweeper import SweepResult
+
+    calls: list[str] = []
+
+    async def _fake_sweep_stuck_executions(db: object, *, stuck_after_seconds: int) -> SweepResult:
+        calls.append("stuck")
+        return SweepResult(scanned=3, marked_failed=2)
+
+    async def _fake_sweep_expired_approvals(db: object, *, timeout_hours: int) -> SweepResult:
+        calls.append("approvals")
+        return SweepResult(scanned=5, marked_failed=1)
+
+    async def _fake_sweep_expired_leases(db: object, *, max_delivery_attempts: int) -> SweepResult:
+        calls.append("leases")
+        raise RuntimeError("simulated transient DB error")
+
+    async def _fake_sweep_old_execution_events(db: object, *, retention_days: int) -> int:
+        calls.append("events")
+        return 42
+
+    monkeypatch.setattr("src.api.internal.sweep_stuck_executions", _fake_sweep_stuck_executions)
+    monkeypatch.setattr("src.api.internal.sweep_expired_approvals", _fake_sweep_expired_approvals)
+    monkeypatch.setattr("src.api.internal.sweep_expired_leases", _fake_sweep_expired_leases)
+    monkeypatch.setattr(
+        "src.api.internal.sweep_old_execution_events", _fake_sweep_old_execution_events
+    )
+
+    resp = client.post("/internal/sweep")
+
+    assert resp.status_code == 200, resp.text
+    # All four ran despite "leases" raising — none were skipped.
+    assert calls == ["stuck", "approvals", "leases", "events"]
+    assert resp.json() == {
+        "stuck": 2,
+        "approvals_expired": 1,
+        "leases_recovered": None,
+        "events_deleted": 42,
+    }
+
+
 def test_sweep_endpoint_rejects_unauthenticated_call_without_running_sweeps(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

@@ -93,10 +93,22 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class SweepResult:
-    """Outcome of a single sweeper run, for logging + tests."""
+    """Outcome of a single sweeper run, for logging + tests.
+
+    `errored` (default 0, added alongside the P1-2/P1-4 code-review fix
+    that reordered `sweep_expired_leases`'s enqueue-before-clear) counts
+    rows whose recovery attempt raised and was caught by the per-row
+    try/except — neither dead-lettered nor genuinely recovered. Only
+    `sweep_expired_leases` currently populates it with anything other
+    than 0; `sweep_stuck_executions` and `sweep_expired_approvals` don't
+    have a third outcome to track, so their callers/tests (which
+    construct `SweepResult(scanned=..., marked_failed=...)` without it)
+    are unaffected by the default.
+    """
 
     scanned: int
     marked_failed: int
+    errored: int = 0
 
 
 _TIMEOUT_ERROR_MESSAGE_TEMPLATE = (
@@ -286,6 +298,7 @@ async def sweep_expired_leases(
     )
 
     marked_failed = 0
+    errored = 0
     for row in rows:
         try:
             if row.deliveryAttempts >= max_delivery_attempts:
@@ -301,19 +314,6 @@ async def sweep_expired_leases(
                 )
                 marked_failed += 1
             else:
-                # Clearing the lease alone is not sufficient: Cloud Tasks
-                # considers ITS OWN delivery attempts separately from this
-                # sweeper, and by the time a lease naturally expires (up to
-                # execution_lease_seconds later), Cloud Tasks' own queue
-                # retry policy (max-attempts, Task 14) may have already
-                # exhausted its retries and given up on this execution_id
-                # entirely — clearing the lease here without also
-                # re-enqueueing would leave the row orphaned with nothing
-                # left to ever pick it back up.
-                await db.workflowexecution.update(
-                    where={"id": row.id},
-                    data={"leaseOwner": None, "leaseExpiresAt": None},
-                )
                 from src.execution.cloud_tasks import enqueue_execution
 
                 # Preserve the original run vs. resume kind — a died
@@ -326,8 +326,34 @@ async def sweep_expired_leases(
                     if isinstance(row_variables, dict) and "_resume_decision" in row_variables
                     else "run"
                 )
+
+                # Enqueue BEFORE clearing the lease — NOT the other way
+                # around. If enqueue_execution raises (Cloud Tasks API
+                # error, IAM blip, transient network failure), the
+                # exception is caught below and this row's lease must
+                # still be intact, because this function's own claim
+                # filter (`"leaseExpiresAt": {"lt": current_time}`) only
+                # ever matches a non-NULL, expired lease — SQL `NULL < x`
+                # is never true. Clear the lease first and have enqueue
+                # fail, and `leaseExpiresAt` becomes NULL forever: this
+                # row would silently drop out of lease-based recovery for
+                # good, even though max_delivery_attempts wasn't
+                # exhausted. Enqueuing first is safe even on the success
+                # path too: claim-and-run's own claim condition
+                # (`lease_expires_at IS NULL OR lease_expires_at < now()`)
+                # already tolerates an unexpired-but-stale lease, so a
+                # duplicate delivery from double-enqueueing (e.g. if the
+                # lease-clear below itself later fails) can never
+                # double-run the execution — SELECT ... FOR UPDATE SKIP
+                # LOCKED still arbitrates that.
                 await enqueue_execution(row.id, kind=kind)
+
+                await db.workflowexecution.update(
+                    where={"id": row.id},
+                    data={"leaseOwner": None, "leaseExpiresAt": None},
+                )
         except Exception:
+            errored += 1
             logger.exception(
                 "execution_sweeper: failed to recover expired-lease execution %s",
                 getattr(row, "id", "<unknown>"),
@@ -335,12 +361,13 @@ async def sweep_expired_leases(
 
     if rows:
         logger.info(
-            "execution_sweeper: processed %d expired leases, %d dead-lettered",
+            "execution_sweeper: processed %d expired leases, %d dead-lettered, %d errored",
             len(rows),
             marked_failed,
+            errored,
         )
 
-    return SweepResult(scanned=len(rows), marked_failed=marked_failed)
+    return SweepResult(scanned=len(rows), marked_failed=marked_failed, errored=errored)
 
 
 async def sweep_old_execution_events(

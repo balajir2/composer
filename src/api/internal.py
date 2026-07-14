@@ -74,7 +74,7 @@ class ClaimAndRunRequest(BaseModel):
 
 
 def _verify_oidc_token_sync(token: str, audience: str) -> Mapping[str, Any]:
-    """Blocking call — see docstring on `_verify_cloud_tasks_oidc` for why
+    """Blocking call — see docstring on `_verify_internal_oidc` for why
     this is wrapped in `asyncio.to_thread` at the call site."""
     return id_token.verify_oauth2_token(token, GoogleAuthRequest(), audience=audience)
 
@@ -223,7 +223,7 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
 async def sweep(  # pyright: ignore[reportUnusedFunction]
     db: Any = Depends(get_db),
     _oidc: None = Depends(_verify_internal_oidc),
-) -> dict[str, int]:
+) -> dict[str, int | None]:
     """Cloud-Scheduler-triggered maintenance sweep (P1-2/P1-4).
 
     Runs all four sweep functions exactly once per invocation, reading
@@ -231,29 +231,70 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
     in-process `_sweeper_loop` — see this module's docstring and the
     2026-07-14 revision note in Task 11 of
     docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md.
+
+    Each of the four sweeps is isolated in its own try/except: this
+    endpoint is now the SOLE production trigger for lease recovery and
+    retention cleanup (no in-process background loop to fall back on —
+    see the module docstring), so one sweep raising (e.g. a transient DB
+    error on its initial query) must not prevent the other three from
+    running, and must not turn the whole invocation into an unhandled
+    500 that Cloud Scheduler just retries wholesale. A failed sweep's
+    field is `null` in the response; every other field still reflects
+    real work done this invocation.
     """
     settings = get_settings()
 
-    stuck_result = await sweep_stuck_executions(
-        db, stuck_after_seconds=settings.execution_stuck_after_seconds
-    )
-    approvals_result = await sweep_expired_approvals(
-        db, timeout_hours=settings.approval_wait_timeout_hours
-    )
-    leases_result = await sweep_expired_leases(
-        db, max_delivery_attempts=settings.execution_max_delivery_attempts
-    )
-    events_deleted = await sweep_old_execution_events(
-        db, retention_days=settings.execution_events_retention_days
-    )
+    stuck: int | None
+    try:
+        stuck_result = await sweep_stuck_executions(
+            db, stuck_after_seconds=settings.execution_stuck_after_seconds
+        )
+        stuck = stuck_result.marked_failed
+    except Exception:
+        logger.exception("internal: sweep_stuck_executions failed")
+        stuck = None
+
+    approvals_expired: int | None
+    try:
+        approvals_result = await sweep_expired_approvals(
+            db, timeout_hours=settings.approval_wait_timeout_hours
+        )
+        approvals_expired = approvals_result.marked_failed
+    except Exception:
+        logger.exception("internal: sweep_expired_approvals failed")
+        approvals_expired = None
+
+    leases_recovered: int | None
+    try:
+        leases_result = await sweep_expired_leases(
+            db, max_delivery_attempts=settings.execution_max_delivery_attempts
+        )
+        # sweep_expired_leases's `marked_failed` counts dead-lettered rows;
+        # `errored` counts rows whose recovery attempt raised (caught by
+        # its own per-row try/except) — neither dead-lettered nor
+        # genuinely recovered. Subtracting both from `scanned` is what
+        # makes this an honest "actually recovered" count rather than
+        # silently folding errored rows into a healthy-looking total.
+        leases_recovered = (
+            leases_result.scanned - leases_result.marked_failed - leases_result.errored
+        )
+    except Exception:
+        logger.exception("internal: sweep_expired_leases failed")
+        leases_recovered = None
+
+    events_deleted: int | None
+    try:
+        events_deleted = await sweep_old_execution_events(
+            db, retention_days=settings.execution_events_retention_days
+        )
+    except Exception:
+        logger.exception("internal: sweep_old_execution_events failed")
+        events_deleted = None
 
     return {
-        "stuck": stuck_result.marked_failed,
-        "approvals_expired": approvals_result.marked_failed,
-        # sweep_expired_leases's `marked_failed` counts dead-lettered rows
-        # only; rows it scanned but did NOT dead-letter were recovered
-        # (lease cleared + re-enqueued) instead.
-        "leases_recovered": leases_result.scanned - leases_result.marked_failed,
+        "stuck": stuck,
+        "approvals_expired": approvals_expired,
+        "leases_recovered": leases_recovered,
         "events_deleted": events_deleted,
     }
 
