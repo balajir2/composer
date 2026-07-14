@@ -807,6 +807,180 @@ async def test_resume_chained_pause_stamps_consistent_pending_since(
     assert persisted_pending_since == emailed_pending_since
 
 
+async def test_run_completed_status_survives_emit_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-4 regression: a telemetry-path failure (event append or NOTIFY)
+    must not corrupt the already-persisted execution outcome. Before the
+    fix, `_emit` raising after `_mark_completed` had already written
+    status='completed' would propagate to run()'s outer except, which
+    unconditionally calls `_mark_failed` -- overwriting a correct
+    'completed' status with 'failed' purely because of a broken event
+    log/NOTIFY connection."""
+    from src.engine import langgraph_executor as lge_mod
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    class _RaisingEventStore:
+        async def append(self, event: ExecutionEvent) -> int:
+            raise RuntimeError("simulated Postgres event-log outage")
+
+    db = MagicMock()
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="e1",
+            workflowId="w1",
+            userId="dev",
+            threadId="t1",
+            input=None,
+        )
+    )
+    db.workflow = MagicMock()
+    db.workflow.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="w1",
+            name="t",
+            nodes=[
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
+            ],
+            edges=[{"id": "e1", "source": "s", "target": "e"}],
+        )
+    )
+
+    update_calls: list[dict[str, Any]] = []
+
+    async def _update(*, where: Any, data: Any) -> Any:
+        update_calls.append(data)
+        return None
+
+    db.workflowexecution.update = _update
+
+    class _FakeSnap:
+        next = ()
+        tasks = ()
+
+    class _FakeCompiled:
+        async def ainvoke(self, *a: Any, **kw: Any) -> dict[str, Any]:
+            return {"variables": {"lastOutput": "done"}, "node_results": {}}
+
+        async def aget_state(self, *a: Any, **kw: Any) -> Any:
+            return _FakeSnap()
+
+    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+
+    orch = LangGraphExecutor(db, MagicMock(), event_bus=_RaisingEventStore())  # pyright: ignore[reportArgumentType]
+    await orch.run("e1")
+
+    # Exactly one DB update -- _mark_completed. If the bug were present, a
+    # second update (from _mark_failed in the outer except) would follow,
+    # flipping status to 'failed'.
+    assert len(update_calls) == 1, update_calls
+    assert update_calls[0]["status"] == "completed"
+    assert not any(c.get("status") == "failed" for c in update_calls)
+
+
+async def test_resume_waiting_approval_status_survives_emit_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same guard as above, but for resume()'s waiting_approval path -- an
+    approver may already have a valid emailed token pointing at
+    status='waiting_approval'; a broken event emit must not flip that to
+    'failed' and strand the token."""
+    from typing import ClassVar
+
+    from src.engine import langgraph_executor as lge_mod
+
+    send_mock = AsyncMock()
+    monkeypatch.setattr(lge_mod, "send_approval_email", send_mock)
+
+    class _RaisingEventStore:
+        async def append(self, event: ExecutionEvent) -> int:
+            raise RuntimeError("simulated Postgres event-log outage")
+
+    db = MagicMock()
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="e1",
+            workflowId="w1",
+            userId="dev",
+            threadId="t1",
+            input=None,
+        )
+    )
+    db.workflow = MagicMock()
+    db.workflow.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="w1",
+            name="t",
+            nodes=[
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "ua",
+                    "type": "user-approval",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "UA",
+                        "approvalMessage": "Approve again?",
+                        "approverEmail": "reviewer@example.com",
+                    },
+                },
+                {"id": "a", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "A"}},
+                {"id": "b", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "B"}},
+            ],
+            edges=[
+                {"id": "e1", "source": "s", "target": "ua"},
+                {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
+                {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
+            ],
+        )
+    )
+
+    update_calls: list[dict[str, Any]] = []
+
+    async def _update(*, where: Any, data: Any) -> Any:
+        update_calls.append(data)
+        return None
+
+    db.workflowexecution.update = _update
+
+    class _FakeInterrupt:
+        value: ClassVar[dict[str, str]] = {
+            "node_id": "ua",
+            "prompt": "Approve again?",
+            "approver_email": "reviewer@example.com",
+            "approver_cc": "",
+        }
+
+    class _FakeTask:
+        interrupts: ClassVar[tuple[_FakeInterrupt, ...]] = (_FakeInterrupt(),)
+
+    class _FakeSnapPaused:
+        next: ClassVar[tuple[str, ...]] = ("ua",)
+        tasks: ClassVar[tuple[_FakeTask, ...]] = (_FakeTask(),)
+
+    class _FakeCompiled:
+        async def ainvoke(self, *a: Any, **kw: Any) -> dict[str, Any]:
+            return {"variables": {"lastOutput": "loop-iteration"}, "node_results": {}}
+
+        async def aget_state(self, *a: Any, **kw: Any) -> Any:
+            return _FakeSnapPaused()
+
+    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+
+    orchestrator = LangGraphExecutor(db, MagicMock(), event_bus=_RaisingEventStore())  # pyright: ignore[reportArgumentType]
+    await orchestrator.resume("e1", "approved")
+
+    # send_approval_email must still fire -- the approver gets a valid token --
+    # and the persisted status must remain waiting_approval, not be flipped to
+    # failed by the broken event store.
+    send_mock.assert_awaited_once()
+    assert len(update_calls) == 1, update_calls
+    assert update_calls[0]["status"] == "waiting_approval"
+    assert not any(c.get("status") == "failed" for c in update_calls)
+
+
 async def test_mark_waiting_approval_stamps_pending_since() -> None:
     db = MagicMock()
     db.workflowexecution = MagicMock()

@@ -236,6 +236,35 @@ async def test_wrapper_persists_events_and_notifies() -> None:
         set_current_event_bus(None)
 
 
+async def test_wrapper_node_completed_survives_event_store_failure() -> None:
+    """P1-4 regression: a telemetry-path failure (event append or NOTIFY)
+    must not abort the node. By the time node_completed would be emitted,
+    the executor has already produced its real, possibly expensive output
+    -- a broken event store must not discard that and raise past the
+    caller. _persist_and_notify's internal try/except is what protects
+    this."""
+    from src.engine.context import set_current_event_bus, set_current_execution_id
+
+    class _RaisingEventStore:
+        async def append(self, event: ExecutionEvent) -> int:
+            raise RuntimeError("simulated Postgres event-log outage")
+
+    set_current_execution_id("e1")
+    set_current_event_bus(_RaisingEventStore())  # pyright: ignore[reportArgumentType]
+
+    try:
+        arun = wrap_executor_with_events(_FakeExecutor(), _FakeNode("n1", "http"))  # pyright: ignore[reportArgumentType]
+        # Must not raise despite every append() call failing (node_started
+        # and node_completed both hit the broken store).
+        result = await arun(initial_state())
+    finally:
+        set_current_execution_id(None)
+        set_current_event_bus(None)
+
+    # The executor's actual output is still returned successfully.
+    assert result["variables"]["k"] == "v"
+
+
 async def test_build_graph_wraps_executors() -> None:
     """Integration: build_graph applies the wrapper and emits events through
     a real compiled graph."""
