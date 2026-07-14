@@ -1,11 +1,17 @@
 """Stuck-execution sweeper.
 
-A `WorkflowExecution` row is created with `status='running'` the moment the
-API accepts a request, and gets flipped to `completed`/`failed`/`waiting_approval`
-by `LangGraphExecutor.run()` once the graph finishes.  The flip is awaited so
-under normal conditions the row never lingers in `running`.
+A `WorkflowExecution` row is created with `status='queued'` the moment the
+API accepts a request (P1-2: `LangGraphExecutor.start_execution`) — the
+request handler enqueues a Cloud Task and returns immediately; it does NOT
+await the run. The row only flips to `running` once an independent,
+Cloud-Tasks-pushed request to `POST /internal/claim-and-run` actually claims
+it, and from there to `completed`/`failed`/`waiting_approval` once
+`LangGraphExecutor.run()`/`.resume()` finishes. So the row can legitimately
+linger in `queued` for a short window even under normal conditions (the gap
+between row creation and Cloud Tasks delivering the claim request) — that
+window is not, by itself, evidence of a stuck row.
 
-Three real-world failure modes still leave rows stuck:
+Three real-world failure modes still leave rows stuck in `running`:
 
   1. The worker process is killed mid-run (uvicorn reload, SIGKILL, OOM).
   2. The serverless runtime hits its function-duration ceiling

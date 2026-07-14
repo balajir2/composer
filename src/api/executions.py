@@ -1,6 +1,7 @@
 """POST /executions (start a run) + GET /executions/{id} (fetch state)."""
 
 import json as _json
+import logging
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
@@ -22,13 +23,27 @@ from src.security.rate_limit import (
 )
 from src.storage.db import get_db
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["executions"])
 
-# Deletion endpoints reject/skip rows in these statuses (P1-6) — deleting a
-# still-active execution's LangGraph checkpoints out from under its
-# in-flight background task leaves that task unable to persist a final
-# state against a row (and checkpoints) that no longer exist.
-_ACTIVE_EXECUTION_STATUSES = frozenset({"running", "waiting_approval"})
+# Deletion/cancellation endpoints reject/skip rows in these statuses (P1-6,
+# extended P1-2-followup) — deleting or racing a still-active execution's
+# LangGraph checkpoints out from under it leaves whichever worker eventually
+# claims and drives it (via POST /internal/claim-and-run, Cloud-Tasks-push)
+# unable to persist a final state against a row (and checkpoints) that no
+# longer exist. `queued` MUST be included here even though the row hasn't
+# been claimed yet: a `queued` row can be actively in flight to Cloud Tasks,
+# or already claimed by a concurrent claim-and-run delivery by the time a
+# delete request's unlocked read observes it — there is no persisted status
+# between row-creation and terminal completion that is ever safe to delete
+# unconditionally.
+_ACTIVE_EXECUTION_STATUSES = frozenset({"queued", "running", "waiting_approval"})
+
+# Sorted, deterministic ordering for use in `{"in": [...]}` where-clauses
+# (dict/list equality in tests + stable SQL param ordering) — derived from
+# the frozenset above so the two can never drift apart.
+_ACTIVE_EXECUTION_STATUSES_SORTED = sorted(_ACTIVE_EXECUTION_STATUSES)
 
 
 class ExecutionCreate(BaseModel):
@@ -188,7 +203,34 @@ async def create_execution(
     # The response returns with status='queued' immediately; the row only
     # becomes 'running' once claim-and-run actually claims it. Poll
     # GET /executions/{id} for completion.
-    await enqueue_execution(row.id, kind="run")
+    try:
+        await enqueue_execution(row.id, kind="run")
+    except Exception as exc:
+        # The row already committed as 'queued' above. If enqueueing raises
+        # here (un-retried gRPC error, transient network blip, IAM/ADC
+        # misconfiguration), the row would otherwise be stuck at 'queued'
+        # forever — invisible to both sweepers (sweep_stuck_executions and
+        # sweep_expired_leases both only scan status='running') and, if the
+        # caller supplied an idempotencyKey and retries per the documented
+        # pattern above, the idempotency short-circuit would keep returning
+        # this same stuck row without ever calling enqueue_execution again.
+        # Mark it failed immediately instead — mirrors
+        # LangGraphExecutor.run()'s own except-and-mark-failed handling —
+        # so the row reaches a terminal status right away and the caller
+        # gets a real, actionable error instead of an unhandled 500.
+        logger.exception("create_execution: failed to enqueue Cloud Task for execution %s", row.id)
+        await db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
+            where={"id": row.id},
+            data={
+                "status": "failed",
+                "error": f"failed to enqueue execution for durable processing: {exc}",
+                "completedAt": datetime.now(UTC),
+            },
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Execution {row.id!r} could not be enqueued for processing.",
+        ) from exc
     return ExecutionRead.model_validate(row)
 
 
@@ -428,9 +470,11 @@ async def cancel_execution(  # pyright: ignore[reportUnusedFunction]
     persisted `failed`, and there was no user-triggered cancel operation.
 
     Known limitation: this marks the row canceled but does not preempt an
-    in-flight background task — LangGraph has no cooperative-cancellation
-    hook wired through the executor today. Any side-effecting node
-    (Jira, email, HTTP) already in flight when cancel is called still
+    in-flight claim-and-run delivery (P1-2: execution is driven by
+    POST /internal/claim-and-run, not a request-bound background task) —
+    LangGraph has no cooperative-cancellation hook wired through the
+    executor today. Any side-effecting node (Jira, email, HTTP) already
+    in flight when cancel is called still
     completes; this stops the row from looking permanently stuck and gives
     callers a real terminal status to key off, which is the concrete gap
     this closes. True mid-node preemption is a separate, larger change.
@@ -457,9 +501,20 @@ async def cancel_execution(  # pyright: ignore[reportUnusedFunction]
 
     # Atomic conditional transition (same pattern as resume_execution, P1-1)
     # — folds the status guard into the update itself so two concurrent
-    # cancel calls (or a cancel racing a resume) can't both succeed.
+    # cancel calls (or a cancel racing a resume, or a cancel racing
+    # claim-and-run's own claim) can't both succeed. Sourced from
+    # `_ACTIVE_EXECUTION_STATUSES_SORTED` (not a separately-hardcoded list)
+    # so this can never silently drift from the guard check above it —
+    # this now includes 'queued', so canceling a not-yet-claimed execution
+    # succeeds here instead of hitting the 409 above. Safe to cancel while
+    # queued: claim-and-run's own claim query
+    # (`status IN ('queued', 'running', 'waiting_approval')`, see
+    # src/api/internal.py) no longer matches once this flips the row to
+    # 'canceled', so the eventual Cloud Task delivery finds nothing to
+    # claim and returns 'already_claimed' — no separate task-cancellation
+    # call is needed.
     updated_count = await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": execution_id, "status": {"in": ["running", "waiting_approval"]}},
+        where={"id": execution_id, "status": {"in": _ACTIVE_EXECUTION_STATUSES_SORTED}},
         data={
             "status": "canceled",
             "error": _CANCEL_ERROR_MESSAGE,

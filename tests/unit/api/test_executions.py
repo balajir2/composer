@@ -116,6 +116,37 @@ def test_post_execution_enqueues_cloud_task_instead_of_background_task(
     assert enqueued == [("ex1", "run")]
 
 
+def test_post_execution_marks_row_failed_when_enqueue_raises(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Important #2 (P1-2-followup): if enqueue_execution raises after the
+    row already committed as 'queued' (un-retried gRPC error, transient
+    network blip, IAM/ADC misconfiguration), the row must not be left
+    stuck at 'queued' forever — invisible to every sweeper (they only
+    scan status='running') and, if the caller retries with the same
+    idempotencyKey, permanently un-repairable (the idempotency
+    short-circuit would just keep returning the same stuck row without
+    ever calling enqueue_execution again). The endpoint must mark the row
+    'failed' and return a handled error, not an unhandled 500."""
+
+    async def _raise_enqueue(execution_id: str, *, kind: str) -> None:
+        raise RuntimeError("Cloud Tasks unavailable")
+
+    monkeypatch.setattr("src.api.executions.enqueue_execution", _raise_enqueue)
+
+    client, db = _client_with_mock_db()
+    resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
+
+    assert resp.status_code == 500
+    assert "ex1" in resp.json()["detail"]
+
+    db.workflowexecution.update.assert_awaited_once()
+    _, kwargs = db.workflowexecution.update.call_args
+    assert kwargs["where"] == {"id": "ex1"}
+    assert kwargs["data"]["status"] == "failed"
+    assert "enqueue" in kwargs["data"]["error"]
+
+
 def test_post_execution_404_when_workflow_missing() -> None:
     client, db = _client_with_mock_db()
     db.workflow.find_unique = AsyncMock(return_value=None)
@@ -257,6 +288,43 @@ def test_delete_execution_running_rejected_409() -> None:
     resp = client.delete("/executions/ex1")
     assert resp.status_code == 409
     db.workflowexecution.delete.assert_not_awaited()
+
+
+def test_delete_execution_queued_rejected_409() -> None:
+    """Critical regression (P1-2-followup): a 'queued' row may be actively
+    in flight to Cloud Tasks, or already claimed and running by a
+    concurrent /internal/claim-and-run delivery — it is never safe to
+    delete unconditionally. Must behave exactly like 'running': 409, no
+    delete call."""
+    client, db = _client_with_mock_db()
+    db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="queued"))
+    db.workflowexecution.delete = AsyncMock()
+    resp = client.delete("/executions/ex1")
+    assert resp.status_code == 409
+    db.workflowexecution.delete.assert_not_awaited()
+
+
+def test_bulk_delete_skips_queued_executions() -> None:
+    """Same guard as the single-delete 409 above, applied to the bulk path."""
+    client, db = _client_with_mock_db()
+    rows = [_execution_row(status="completed"), _execution_row(status="queued")]
+    rows[1].id, rows[1].threadId = "ex2", "t2"
+    db.workflowexecution.find_many = AsyncMock(return_value=rows)
+    db.workflowexecution.delete_many = AsyncMock()
+    db.langgraphcheckpointwrite = MagicMock()
+    db.langgraphcheckpointwrite.delete_many = AsyncMock()
+    db.langgraphcheckpoint = MagicMock()
+    db.langgraphcheckpoint.delete_many = AsyncMock()
+
+    resp = client.post(
+        "/executions/delete-bulk",
+        json={"executionIds": ["ex1", "ex2"]},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["deletedCount"] == 1
+    assert body["skippedCount"] == 1
+    db.workflowexecution.delete_many.assert_awaited_once_with(where={"id": {"in": ["ex1"]}})
 
 
 def test_delete_execution_waiting_approval_rejected_409() -> None:
@@ -429,7 +497,29 @@ def test_cancel_execution_running_succeeds() -> None:
     assert body["status"] == "canceled"
     where = db.workflowexecution.update_many.call_args.kwargs["where"]
     assert where["id"] == "ex1"
-    assert where["status"] == {"in": ["running", "waiting_approval"]}
+    # P1-2-followup: 'queued' is now a cancellable status too (see
+    # _ACTIVE_EXECUTION_STATUSES_SORTED) — the atomic update_many's
+    # allow-list is sourced from the same set as the guard check above it.
+    assert where["status"] == {"in": ["queued", "running", "waiting_approval"]}
+
+
+def test_cancel_execution_queued_succeeds() -> None:
+    """Important #1 (P1-2-followup): a user who cancels immediately after
+    starting an execution — before any worker has claimed it — must not
+    get an incorrect 409. Canceling a 'queued' row is safe on its own:
+    claim-and-run's claim query only matches
+    status IN ('queued', 'running', 'waiting_approval'), so once this
+    flips the row to 'canceled' the eventual Cloud Task delivery finds
+    nothing to claim (no separate task-cancellation call needed)."""
+    client, db = _client_with_mock_db()
+    db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="queued"))
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    resp = client.post("/executions/ex1/cancel")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "canceled"
+    where = db.workflowexecution.update_many.call_args.kwargs["where"]
+    assert where["status"] == {"in": ["queued", "running", "waiting_approval"]}
 
 
 def test_cancel_execution_waiting_approval_succeeds() -> None:

@@ -144,6 +144,75 @@ def test_claim_and_run_claim_query_filters_on_status(monkeypatch: pytest.MonkeyP
     db.execute_raw.assert_not_awaited()
 
 
+def test_claim_and_run_claim_query_includes_queued_status(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Important #3 regression: the claim query's allowed-status set MUST
+    include 'queued', not just 'running'/'waiting_approval' — a freshly
+    created row (P1-2: created 'queued', see LangGraphExecutor.
+    start_execution) is exactly the row a fresh Cloud Task delivery is
+    meant to claim. Without 'queued' in the predicate, every newly
+    created execution would sit unclaimable forever. Complements
+    test_claim_and_run_claim_query_filters_on_status, which only asserts
+    terminal statuses are EXCLUDED and would pass unchanged even if
+    'queued' had been left out of the allowed set entirely.
+    """
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    client, db = _client_with_mock_db()
+
+    async def _fake_query_raw(sql: str, *args: object) -> list[dict[str, str]]:
+        match = re.search(r"status\s+IN\s*\(([^)]+)\)", sql, re.IGNORECASE)
+        assert match, "claim query must have a `status IN (...)` predicate"
+        allowed = {s.strip().strip("'") for s in match.group(1).split(",")}
+        assert "queued" in allowed, "freshly created 'queued' rows must be claimable"
+        return [{"id": "exec-1"}]
+
+    db.query_raw = AsyncMock(side_effect=_fake_query_raw)
+    db.execute_raw = AsyncMock()
+
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    ran: list[str] = []
+
+    async def _fake_run(self: LangGraphExecutor, execution_id: str) -> None:
+        ran.append(execution_id)
+
+    monkeypatch.setattr(LangGraphExecutor, "run", _fake_run)
+
+    resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
+    assert resp.status_code == 200, resp.text
+    assert ran == ["exec-1"]
+
+
+def test_claim_and_run_update_sets_status_running(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Important #3 regression: the claim UPDATE must unconditionally
+    write status='running' — without it, a claimed 'queued' row would
+    stay 'queued' forever even though claim-and-run believes it owns the
+    row (see the P1-2 justification comment on the UPDATE statement in
+    src/api/internal.py)."""
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    client, db = _client_with_mock_db()
+    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
+    db.execute_raw = AsyncMock()
+
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    async def _fake_run(self: LangGraphExecutor, execution_id: str) -> None:
+        return None
+
+    monkeypatch.setattr(LangGraphExecutor, "run", _fake_run)
+
+    resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
+    assert resp.status_code == 200, resp.text
+
+    db.execute_raw.assert_awaited_once()
+    call = db.execute_raw.call_args
+    sql = call.args[0]
+    assert re.search(r"status\s*=\s*'running'", sql, re.IGNORECASE), (
+        "claim UPDATE must unconditionally set status='running'"
+    )
+
+
 def test_claim_and_run_resume_dispatches_resume(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
     client, db = _client_with_mock_db()
