@@ -25,7 +25,7 @@ import asyncpg
 
 from src.config import get_settings
 
-_NOTIFY_CHANNEL = "composer_execution_events"
+NOTIFY_CHANNEL = "composer_execution_events"
 
 _notify_connection: asyncpg.Connection | None = None
 _connection_lock = asyncio.Lock()
@@ -50,7 +50,7 @@ async def notify_execution_event(execution_id: str, *, seq: int) -> None:
     """Send a tiny wake-up pointer on the shared NOTIFY channel."""
     conn = await _get_notify_connection()
     payload = f"{execution_id}:{seq}"
-    await conn.execute("SELECT pg_notify($1, $2)", _NOTIFY_CHANNEL, payload)
+    await conn.execute("SELECT pg_notify($1, $2)", NOTIFY_CHANNEL, payload)
 
 
 async def close_notify_connection() -> None:
@@ -61,4 +61,4 @@ async def close_notify_connection() -> None:
     _notify_connection = None
 
 
-__all__ = ["close_notify_connection", "notify_execution_event"]
+__all__ = ["NOTIFY_CHANNEL", "close_notify_connection", "notify_execution_event"]

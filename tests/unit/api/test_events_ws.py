@@ -9,7 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
-from src.engine.events import ExecutionEventBus
+from src.engine.events_pg import PostgresEventStore
 from src.main import create_app
 from src.security.jwt import create_access_token, create_refresh_token
 from src.security.rate_limit import RateLimiter
@@ -40,9 +40,14 @@ def _build_app(execution: SimpleNamespace, user_role: str = "member") -> tuple[T
     db.user.find_unique = AsyncMock(
         return_value=SimpleNamespace(id=execution.userId, role=SimpleNamespace(value=user_role))
     )
+    # No persisted events by default — matches production wiring
+    # (app.state.event_bus is a PostgresEventStore, not the old in-process
+    # ExecutionEventBus) so the WS handler's replay-from-store logic has a
+    # real (mocked-at-the-db-layer) list_since to call.
+    db.executionevent.find_many = AsyncMock(return_value=[])
     app.state.db = db
     app.state.checkpointer = MagicMock()
-    app.state.event_bus = ExecutionEventBus()
+    app.state.event_bus = PostgresEventStore(db)
     app.state.rate_limiter = RateLimiter()
     return TestClient(app), app
 
@@ -116,3 +121,39 @@ def test_ws_terminal_snapshot_closes() -> None:
         data = json.loads(ws.receive_text())
         assert data["type"] == "workflow_completed"
         # server closes after terminal snapshot
+
+
+async def test_ws_replays_events_since_client_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A client reconnecting with ?after=1 must receive events with seq > 1
+    from the persisted store before subscribing to new live notifications —
+    the "recover missed terminal events" requirement (P1-4)."""
+    from src.engine.events import ExecutionEvent
+
+    execution = _execution_row(status="running", userId="u1")
+    client, app = _build_app(execution)
+
+    missed_event = ExecutionEvent(
+        type="node_completed", execution_id="exec-1", seq=2, payload={"nodeId": "n1"}
+    )
+    store = MagicMock()
+    store.list_since = AsyncMock(return_value=[missed_event])
+    app.state.event_bus = store
+
+    token = _token_for("u1")
+    with client.websocket_connect(
+        "/executions/exec-1/ws?after=1", subprotocols=["bearer", token]
+    ) as ws:
+        # First message: the existing terminal/started snapshot.
+        snapshot = json.loads(ws.receive_text())
+        assert snapshot["type"] == "workflow_started"
+        # Second message: the replayed missed event, from list_since, not
+        # from a live subscription (there is no live event queued here).
+        # ExecutionEvent.as_json() flattens payload into the top-level
+        # dict (see src/engine/events.py) — there is no nested "payload"
+        # key on the wire.
+        replayed = json.loads(ws.receive_text())
+        assert replayed["type"] == "node_completed"
+        assert replayed["seq"] == 2
+        assert replayed["nodeId"] == "n1"
+
+    store.list_since.assert_awaited_once_with("exec-1", after_seq=1)
