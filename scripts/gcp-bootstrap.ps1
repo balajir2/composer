@@ -183,7 +183,17 @@ $backendDeployArgs = @(
     "--min-instances=0",
     "--max-instances=3",
     "--cpu-boost",
-    "--no-cpu-throttling",          # CPU always allocated — needed for the background sweeper to tick
+    # CPU throttling left at Cloud Run's default (throttled outside of a live
+    # request) rather than --no-cpu-throttling. That flag was previously
+    # needed to keep the in-process stuck-execution sweeper's asyncio loop
+    # ticking between requests, but it bills continuously for as long as any
+    # instance is up — a real ongoing cost, not just a request-shaped one.
+    # Cost review 2026-07-14 (docs/decisions.md ADR-0033 addendum): the
+    # sweeper is being converted to a Cloud Scheduler-triggered HTTP endpoint
+    # (durable-execution plan Task 11), which needs no background CPU between
+    # requests. Until that lands, the in-process sweeper only actually runs
+    # when a live request happens to wake the instance — acceptable during
+    # POC/POV; revisit before production load.
     "--timeout=3600",               # 60-minute request timeout (Cloud Run max) — covers long workflows
     "--concurrency=80",
     "--port=8080",
