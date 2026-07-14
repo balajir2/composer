@@ -81,19 +81,44 @@ async def test_prisma_lifespan_closes_notify_connection_even_if_disconnect_raise
     mock_prisma.disconnect.assert_awaited_once()
 
 
-async def test_prisma_lifespan_disconnects_prisma_even_if_close_notify_raises(
+@pytest.mark.parametrize(
+    "failing", ["close_notify_connection", "close_cloud_tasks_client", "disconnect"]
+)
+async def test_prisma_lifespan_shutdown_cleanups_are_mutually_independent(
     mock_prisma: MagicMock,
     monkeypatch: pytest.MonkeyPatch,
+    failing: str,
 ) -> None:
-    """db.disconnect() must still run — and the raised error must not
-    propagate out of the context manager — if close_notify_connection() raises.
+    """Each of the three shutdown cleanups (`close_notify_connection`,
+    `close_cloud_tasks_client`, `db.disconnect()`, run in that order) is
+    independently guarded — a failure in any ONE must not raise out of the
+    context manager, AND must not skip either of the OTHER two.
 
-    This is the reverse-direction case: cleanup order must not matter, so a
-    failure in close_notify_connection() (called first) must not skip
-    db.disconnect() (called second)."""
-    close_notify_mock = AsyncMock(side_effect=RuntimeError("notify boom"))
+    Parametrized over which one raises rather than hand-picking pairs: the
+    earlier pairwise tests each only asserted that the LAST cleanup
+    (db.disconnect()) still ran when an EARLIER one failed, but never
+    asserted that the cleanup sitting BETWEEN the failing one and
+    db.disconnect() also ran (e.g. "close_notify raises" never asserted
+    close_cloud_tasks_client was still awaited). This form asserts all
+    three mocks were awaited exactly once for every failure case, which
+    proves true mutual independence regardless of which one fails.
+    """
+    close_notify_mock = AsyncMock(
+        side_effect=RuntimeError("notify boom") if failing == "close_notify_connection" else None
+    )
     monkeypatch.setattr("src.engine.events_notify.close_notify_connection", close_notify_mock)
-    monkeypatch.setattr("src.execution.cloud_tasks.close_cloud_tasks_client", AsyncMock())
+
+    close_cloud_tasks_mock = AsyncMock(
+        side_effect=RuntimeError("cloud tasks boom")
+        if failing == "close_cloud_tasks_client"
+        else None
+    )
+    monkeypatch.setattr(
+        "src.execution.cloud_tasks.close_cloud_tasks_client", close_cloud_tasks_mock
+    )
+
+    if failing == "disconnect":
+        mock_prisma.disconnect = AsyncMock(side_effect=RuntimeError("disconnect boom"))
 
     app = FastAPI()
 
@@ -101,27 +126,5 @@ async def test_prisma_lifespan_disconnects_prisma_even_if_close_notify_raises(
         pass
 
     close_notify_mock.assert_awaited_once()
-    mock_prisma.disconnect.assert_awaited_once()
-
-
-async def test_prisma_lifespan_disconnects_prisma_even_if_close_cloud_tasks_raises(
-    mock_prisma: MagicMock,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """db.disconnect() must still run — and the raised error must not
-    propagate out of the context manager — if close_cloud_tasks_client()
-    raises. Cleanup order must not matter: a failure in
-    close_cloud_tasks_client() must not skip db.disconnect()."""
-    monkeypatch.setattr("src.engine.events_notify.close_notify_connection", AsyncMock())
-    close_cloud_tasks_mock = AsyncMock(side_effect=RuntimeError("cloud tasks boom"))
-    monkeypatch.setattr(
-        "src.execution.cloud_tasks.close_cloud_tasks_client", close_cloud_tasks_mock
-    )
-
-    app = FastAPI()
-
-    async with prisma_lifespan(app):
-        pass
-
     close_cloud_tasks_mock.assert_awaited_once()
     mock_prisma.disconnect.assert_awaited_once()

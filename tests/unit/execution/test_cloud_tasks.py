@@ -93,23 +93,45 @@ async def test_enqueue_execution_reuses_cached_client_across_calls(
     get_settings.cache_clear()
 
 
-async def test_get_client_concurrent_callers_construct_once(
+async def test_get_client_second_caller_blocks_until_first_releases_lock(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Two callers racing to build the client while it's None must not both
-    construct a new CloudTasksAsyncClient — the asyncio.Lock + double-check
-    pattern must serialize them onto a single cached client."""
+    """A caller must genuinely block on `_client_lock` while another caller
+    holds it, and both must resolve to the same cached client once released.
 
-    def _slow_construct(*_args: object, **_kwargs: object) -> MagicMock:
-        return MagicMock()
+    `tasks_v2.CloudTasksAsyncClient()` is a fully synchronous constructor —
+    unlike `events_notify.py`'s `asyncpg.connect()`, it has no `await`
+    inside it. That means two `asyncio.gather()`-scheduled `_get_client()`
+    calls never actually interleave: the first runs to completion in a
+    single scheduler step before the second ever gets a turn, so
+    `construct_mock.assert_called_once()` would pass identically even with
+    `_client_lock` deleted entirely — that used to be exactly what this
+    test asserted, which was false confidence.
 
-    construct_mock = MagicMock(side_effect=_slow_construct)
+    To prove the lock actually serializes concurrent callers, this test
+    manually holds `_client_lock` open across a real await point (a
+    background task blocked on `asyncio.wait_for`) and asserts a second
+    caller is genuinely stuck behind it before releasing.
+    """
+    construct_mock = MagicMock(return_value=MagicMock())
     monkeypatch.setattr("src.execution.cloud_tasks.tasks_v2.CloudTasksAsyncClient", construct_mock)
 
-    results = await asyncio.gather(_get_client(), _get_client())
+    await cloud_tasks_module._client_lock.acquire()  # pyright: ignore[reportPrivateUsage]
+    try:
+        task = asyncio.create_task(_get_client())
+
+        with pytest.raises(TimeoutError):
+            await asyncio.wait_for(asyncio.shield(task), timeout=0.05)
+
+        # Still blocked on the lock -- the constructor must not have run yet.
+        construct_mock.assert_not_called()
+    finally:
+        cloud_tasks_module._client_lock.release()  # pyright: ignore[reportPrivateUsage]
+
+    result = await task
 
     construct_mock.assert_called_once()
-    assert results[0] is results[1]
+    assert result is cloud_tasks_module._client  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_close_cloud_tasks_client_closes_transport_and_resets_global() -> None:
