@@ -1895,6 +1895,18 @@ git commit -m "feat(execution): recover expired leases + retention cleanup via C
 
 ---
 
+> **Fast-follow noted 2026-07-14 (not blocking, from Task 11's code review):**
+> `leases_recovered = scanned - marked_failed - errored` is derived inline at its one
+> call site (`src/api/internal.py`) instead of being owned by `SweepResult` itself —
+> this is exactly the kind of formula a future second call site (a monitoring
+> endpoint, a dashboard query) could reintroduce incorrectly. Worth adding a
+> `recovered` property to `SweepResult` in `src/maintenance/execution_sweeper.py`
+> so the invariant lives in one place. Also: only `sweep_expired_leases` tracks an
+> `errored` count among the three per-row sweep functions — `sweep_stuck_executions`/
+> `sweep_expired_approvals` don't, an asymmetry that doesn't affect today's endpoint
+> output but could surprise a future addition. Flag for Task 16 or a follow-up, not
+> urgent enough to block Task 12+.
+
 ## Task 12: Wire `POST /executions` to Cloud Tasks (full replacement)
 
 **Files:**
