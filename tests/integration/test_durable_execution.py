@@ -184,3 +184,178 @@ async def test_two_concurrent_claims_only_one_succeeds(client: AsyncClient, app:
     finally:
         await db.workflowexecution.delete(where={"id": execution.id})
         await db.workflow.delete(where={"id": workflow.id})
+
+
+async def test_resume_clears_stale_lease_and_reclaim_succeeds(
+    client: AsyncClient, app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Reproduces the P1-2 fast-follow bug end-to-end against real Postgres
+    and proves the fix (2026-07-15 holistic branch-wide review finding):
+    claim_and_run sets a real lease (leaseOwner/leaseExpiresAt) on claim;
+    `_mark_waiting_approval` (src/engine/langgraph_executor.py) never
+    clears it when the execution pauses for approval, so the stale lease
+    survives the entire approval-pending window. Before the fix,
+    `resume_execution`'s waiting_approval -> running transition also left
+    the lease untouched, so the fresh Cloud Task delivery that follows
+    (claim_and_run again, kind='resume') found zero claimable rows --
+    `lease_expires_at` was still in the future -- and silently returned
+    {"status": "already_claimed"} without ever calling
+    `executor.resume()`. The row would sit at status='running' doing
+    nothing until `sweep_expired_leases` eventually noticed (up to
+    `execution_lease_seconds` later).
+
+    This test drives the real claim -> pause -> resume -> reclaim round
+    trip through the actual HTTP endpoints (not mocks) and asserts the
+    SECOND claim-and-run call actually claims the row (does NOT return
+    already_claimed) -- the only assertion that proves the lease was
+    genuinely cleared, not merely that no exception was raised.
+    """
+    db: Any = app.state.db
+
+    workflow = await db.workflow.create(
+        data={
+            "userId": "dev",
+            "name": "itest-stale-lease-resume",
+            "nodes": Json(
+                [
+                    {
+                        "id": "s",
+                        "type": "start",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "S"},
+                    },
+                    {
+                        "id": "ua",
+                        "type": "user-approval",
+                        "position": {"x": 100, "y": 0},
+                        "data": {"label": "UA", "approvalMessage": "Please approve"},
+                    },
+                    {
+                        "id": "ok",
+                        "type": "set-state",
+                        "position": {"x": 200, "y": 0},
+                        "data": {"label": "ok", "stateKey": "result", "stateValue": "approved"},
+                    },
+                    {
+                        "id": "no",
+                        "type": "set-state",
+                        "position": {"x": 200, "y": 100},
+                        "data": {"label": "no", "stateKey": "result", "stateValue": "rejected"},
+                    },
+                    {
+                        "id": "e",
+                        "type": "end",
+                        "position": {"x": 300, "y": 0},
+                        "data": {"label": "E"},
+                    },
+                ]
+            ),
+            "edges": Json(
+                [
+                    {"id": "e1", "source": "s", "target": "ua"},
+                    {"id": "e2", "source": "ua", "target": "ok", "branch": "approved"},
+                    {"id": "e3", "source": "ua", "target": "no", "branch": "rejected"},
+                    {"id": "e4", "source": "ok", "target": "e"},
+                    {"id": "e5", "source": "no", "target": "e"},
+                ]
+            ),
+        }
+    )
+    execution = await db.workflowexecution.create(
+        data={
+            "workflowId": workflow.id,
+            "userId": "dev",
+            "status": "queued",
+            "threadId": f"itest-stale-lease-{workflow.id}",
+            "nodeResults": Json({}),
+            "variables": Json({}),
+        }
+    )
+
+    try:
+        # Step 1: claim + run, synchronously, via the real endpoint --
+        # sets a real lease (leaseOwner/leaseExpiresAt) as a side effect
+        # of the claim UPDATE, then drives the graph to the user-approval
+        # interrupt, which persists status='waiting_approval' via
+        # `_mark_waiting_approval`. claim_and_run always responds
+        # {"status": "completed"} once its own try/except doesn't raise
+        # -- it does NOT reflect the execution's own resulting status, so
+        # we check the DB row directly below rather than trust this
+        # response body for that.
+        claim1 = await client.post(
+            "/internal/claim-and-run",
+            json={"executionId": execution.id, "kind": "run"},
+        )
+        assert claim1.status_code == 200, claim1.text
+        assert claim1.json()["status"] == "completed", claim1.json()
+
+        paused = await db.workflowexecution.find_unique(where={"id": execution.id})
+        assert paused is not None
+        assert paused.status == "waiting_approval", paused.status
+        # The bug precondition, reproduced against real Postgres: the
+        # lease from the original claim is still set on the row.
+        assert paused.leaseOwner is not None, "lease must survive the pause (bug precondition)"
+        assert paused.leaseExpiresAt is not None, "lease must survive the pause (bug precondition)"
+        assert paused.leaseExpiresAt > datetime.now(UTC), (
+            "lease must still be UNEXPIRED for this test to actually exercise the bug -- "
+            "an already-expired lease would let claim_and_run's own "
+            "`lease_expires_at < now()` clause reclaim the row regardless of the fix"
+        )
+
+        # Step 2: resolve the approval through the real, public resume
+        # endpoint. Cloud Tasks itself is monkeypatched (no ADC
+        # credentials in this test environment -- the established
+        # pattern in tests/unit/api/test_executions_resume.py); this does
+        # NOT touch the code under test, which is the `update_many` call
+        # immediately above the (patched-out) enqueue call.
+        mock_enqueue = AsyncMock()
+        monkeypatch.setattr("src.api.executions.enqueue_execution", mock_enqueue)
+
+        resume = await client.post(
+            f"/executions/{execution.id}/resume",
+            json={"decision": "approved"},
+        )
+        assert resume.status_code == 200, resume.text
+        mock_enqueue.assert_awaited_once_with(execution.id, kind="resume")
+
+        resumed_row = await db.workflowexecution.find_unique(where={"id": execution.id})
+        assert resumed_row is not None
+        assert resumed_row.status == "running"
+        # The actual fix, verified directly against real Postgres: the
+        # stale lease from the original claim must be gone.
+        assert resumed_row.leaseOwner is None, "fix did not clear leaseOwner"
+        assert resumed_row.leaseExpiresAt is None, "fix did not clear leaseExpiresAt"
+
+        # Step 3: the real proof -- a fresh Cloud Task delivery (what
+        # `mock_enqueue` above stood in for) must be able to claim the
+        # row NOW, not an hour from now. Before the fix, this call would
+        # return {"status": "already_claimed"} because the stale,
+        # still-unexpired lease from Step 1 excluded the row from
+        # claim_and_run's claim predicate.
+        claim2 = await client.post(
+            "/internal/claim-and-run",
+            json={"executionId": execution.id, "kind": "resume"},
+        )
+        assert claim2.status_code == 200, claim2.text
+        assert claim2.json()["status"] != "already_claimed", (
+            "reclaim failed -- the stale lease from the original claim "
+            "was not cleared by resume_execution; this is exactly the "
+            "bug the fix closes"
+        )
+
+        final_row = await db.workflowexecution.find_unique(where={"id": execution.id})
+        assert final_row is not None
+        assert final_row.status == "completed", final_row.status
+        final_vars = final_row.variables or {}
+        assert final_vars.get("result") == "approved"
+
+        approvals = await db.approval.find_many(where={"executionId": execution.id})
+        assert len(approvals) == 1
+        assert approvals[0].decision == "approved"
+    finally:
+        thread_id = execution.threadId
+        await db.langgraphcheckpointwrite.delete_many(where={"threadId": thread_id})
+        await db.langgraphcheckpoint.delete_many(where={"threadId": thread_id})
+        await db.executionevent.delete_many(where={"executionId": execution.id})
+        await db.workflowexecution.delete(where={"id": execution.id})
+        await db.workflow.delete(where={"id": workflow.id})

@@ -180,6 +180,31 @@ def test_resume_marks_execution_running_before_scheduling_task(
     assert resp.json()["status"] == "running"
 
 
+def test_resume_clears_stale_lease_in_same_update_many(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-2 fast-follow (2026-07-15 holistic review finding): the
+    waiting_approval -> running transition must clear leaseOwner/
+    leaseExpiresAt in the SAME atomic update_many that flips status --
+    otherwise the stale lease set by the original POST
+    /internal/claim-and-run claim survives the approval-pending window
+    and blocks the fresh Cloud Task delivery (enqueued right after this
+    call) from re-claiming the row until the old lease naturally expires.
+    Mocked-DB regression coverage only -- this does NOT prove the fix
+    against the real claim-query predicate; see
+    tests/integration/test_durable_execution.py's
+    test_resume_clears_stale_lease_and_reclaim_succeeds for that."""
+    client, db = _client_with_execution(monkeypatch, _execution_row())
+    resp = client.post("/executions/e1/resume", json={"decision": "approved"})
+    assert resp.status_code == 200, resp.text
+    db.workflowexecution.update_many.assert_awaited_once()
+    call = db.workflowexecution.update_many.await_args
+    assert call.kwargs["data"]["status"] == "running"
+    assert call.kwargs["data"]["leaseOwner"] is None
+    assert call.kwargs["data"]["leaseExpiresAt"] is None
+    assert call.kwargs["where"]["status"] == "waiting_approval"
+
+
 def test_resume_race_loses_when_update_many_affects_zero_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

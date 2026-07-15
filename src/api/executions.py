@@ -616,9 +616,26 @@ async def resume_execution(
     # statement that performs the transition — at most one request can
     # ever flip this row, matching the same pattern already used for the
     # emailed-link path (src/api/approval_email.py).
+    # Also clears the lease from the original claim: without this, the
+    # stale (still-unexpired) lease from when this execution was first
+    # claimed by POST /internal/claim-and-run blocks the fresh Cloud Task
+    # delivery (enqueued below) from re-claiming the row — claim_and_run's
+    # claim query requires `lease_expires_at IS NULL OR lease_expires_at <
+    # now()`, and the original claim's lease (default
+    # execution_lease_seconds=3600s) is typically still unexpired at
+    # resume time, since most approvals resolve well within an hour. Left
+    # unfixed, the row would silently stall at status='running' — the
+    # fresh delivery finds zero claimable rows and returns
+    # {"status": "already_claimed"} — until sweep_expired_leases notices
+    # the stale lease has expired (up to execution_lease_seconds later)
+    # and self-heals it. See 2026-07-15 holistic branch-wide review
+    # finding (P1-2 fast-follow): reproduced end-to-end against real
+    # Postgres, invisible to mocked-DB unit tests since they never
+    # enforce the real claim-query predicate against a genuinely-set
+    # lease.
     updated_count = await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": execution_id, "status": "waiting_approval"},
-        data={"status": "running"},
+        data={"status": "running", "leaseOwner": None, "leaseExpiresAt": None},
     )
     if updated_count != 1:
         raise HTTPException(

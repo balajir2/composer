@@ -266,6 +266,34 @@ def test_post_confirm_valid_token_records_approval_and_redirects(
     assert update_many_call.kwargs["data"]["status"] == "running"
 
 
+def test_post_confirm_clears_stale_lease_in_same_update_many(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-2 fast-follow (2026-07-15 holistic review finding): same fix as
+    POST /executions/{id}/resume (tests/unit/api/test_executions_resume.py)
+    applied to the emailed-link confirm path -- the waiting_approval ->
+    running transition must clear leaseOwner/leaseExpiresAt in the SAME
+    atomic update_many that flips status, or the stale lease from the
+    original claim-and-run claim blocks the fresh Cloud Task delivery
+    enqueued right after this call. Mocked-DB regression coverage only;
+    see tests/integration/test_durable_execution.py's
+    test_resume_clears_stale_lease_and_reclaim_succeeds for the real-
+    Postgres proof."""
+    from src.security.jwt import create_approval_email_token
+
+    client, db = _client(monkeypatch)
+    token = create_approval_email_token(
+        "exec-1", "approval-1", "approved", "reviewer@example.com", _PENDING_SINCE
+    )
+    resp = client.post(f"/approvals/email/{token}/confirm", follow_redirects=False)
+    assert resp.status_code == 303
+    db.workflowexecution.update_many.assert_awaited_once()
+    update_many_call = db.workflowexecution.update_many.await_args
+    assert update_many_call.kwargs["data"]["status"] == "running"
+    assert update_many_call.kwargs["data"]["leaseOwner"] is None
+    assert update_many_call.kwargs["data"]["leaseExpiresAt"] is None
+
+
 def test_post_confirm_race_loses_when_update_many_affects_zero_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
