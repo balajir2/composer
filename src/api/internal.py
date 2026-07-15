@@ -222,10 +222,27 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
         # only ever looks at `status='running'` rows with an expired lease
         # (src/maintenance/execution_sweeper.py), so this keeps that
         # invariant true from the moment of claim.
+        # $2 is explicitly cast to `timestamptz` — Prisma Python's raw-query
+        # binder tags a Python `datetime` parameter as `text` on the wire
+        # (verified directly against real Postgres while writing this
+        # code's integration test, tests/integration/test_durable_execution.py;
+        # neither unit test mocks the DB so this never executed against
+        # real Postgres before), and Postgres refuses to implicitly
+        # assign a `text`-typed bind parameter to a `timestamp without
+        # time zone` column ("column is of type timestamp without time
+        # zone but expression is of type text"). Casting to `timestamptz`
+        # first is safe regardless of session timezone: `lease_expires`
+        # is always a timezone-aware UTC `datetime`, so the `timestamptz`
+        # parse preserves the exact instant, and Postgres's implicit
+        # assignment cast from `timestamptz` to `timestamp` then truncates
+        # to the session's timezone (GMT on this project's Neon instances)
+        # — the same UTC wall-clock value every other `leaseExpiresAt`
+        # write in this codebase produces via the typed Prisma client
+        # (e.g. sweep_expired_leases's `db.workflowexecution.update`).
         await tx.execute_raw(
             """
             UPDATE workflow_executions
-            SET status = 'running', lease_owner = $1, lease_expires_at = $2,
+            SET status = 'running', lease_owner = $1, lease_expires_at = $2::timestamptz,
                 delivery_attempts = delivery_attempts + 1
             WHERE id = $3
             """,
