@@ -2349,6 +2349,22 @@ git commit -m "test(execution): add integration tests for lease recovery + concu
 
 ---
 
+> **Fast-follow noted 2026-07-15 (not blocking, from Task 15's integration testing):**
+> Writing a real-Postgres integration test caught a genuine production bug —
+> `claim_and_run`'s raw-SQL lease UPDATE sent a Python `datetime` as `text`,
+> which Postgres rejected against the `timestamp without time zone` column
+> (fixed in `a0bab20` via an explicit `$2::timestamptz` cast; no unit test could
+> have caught this since every unit test mocks the DB). Investigating the fix
+> surfaced a systemic fact worth tracking: **none** of `prisma/schema.prisma`'s
+> `DateTime` columns use `@db.Timestamptz` — every `DateTime` write anywhere in
+> the app (not just this lease column) is silently contingent on the Postgres
+> session timezone staying UTC/GMT (confirmed live: Neon's session timezone is
+> currently GMT, so this is correct today). If that session timezone setting
+> ever changed, timestamps would be silently stored with the wrong absolute
+> instant — no error, just wrong data. Worth a follow-up to either pin the
+> session timezone explicitly or migrate the schema's `DateTime` columns to
+> `@db.Timestamptz`. Not blocking Task 16 or merge — flagging so it isn't lost.
+
 ## Task 16: Documentation — ADR status, architecture doc, CHANGELOG
 
 **Files:**
