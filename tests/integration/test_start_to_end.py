@@ -41,7 +41,10 @@ async def test_start_to_end_completes_with_input_as_output(client: AsyncClient) 
     )
     assert start_resp.status_code == 202, start_resp.text
     execution_id: str = start_resp.json()["id"]
-    assert start_resp.json()["status"] == "running"
+    # POST /executions creates the row as 'queued' and enqueues a Cloud Task;
+    # it only becomes 'running' once /internal/claim-and-run actually claims
+    # it (ADR-0033) -- which happens asynchronously relative to this response.
+    assert start_resp.json()["status"] == "queued"
 
     # 3. Poll until terminal
     final = await _poll_until_terminal(client, execution_id)
