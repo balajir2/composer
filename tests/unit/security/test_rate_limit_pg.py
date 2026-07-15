@@ -28,6 +28,7 @@ async def test_first_request_creates_bucket_and_allows() -> None:
     assert allowed is True
     assert retry_after == 0.0
     db.ratelimitbucket.create.assert_awaited_once()
+    assert db.ratelimitbucket.create.await_args is not None
     created = db.ratelimitbucket.create.await_args.kwargs["data"]
     assert created["tokens"] == 4.0  # capacity(5) - 1 consumed
 
@@ -55,6 +56,7 @@ async def test_refill_over_elapsed_time_allows_again() -> None:
         "executions", "user1", BucketConfig(capacity=5, refill_per_second=1.0)
     )
     assert allowed is True
+    assert db.ratelimitbucket.update.await_args is not None
     updated = db.ratelimitbucket.update.await_args.kwargs["data"]
     assert updated["tokens"] == 4.0  # capped at capacity(5), minus 1 consumed
 
