@@ -11,6 +11,14 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 
+from tests._rate_limit_reset import reset_rate_limit_buckets
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _reset_rate_limit_buckets() -> None:  # pyright: ignore[reportUnusedFunction]
+    """Clear rate_limit_buckets before each test. See tests/_rate_limit_reset.py."""
+    await reset_rate_limit_buckets()
+
 
 @pytest_asyncio.fixture(autouse=True)
 async def _drive_cloud_tasks_synchronously(  # pyright: ignore[reportUnusedFunction]
