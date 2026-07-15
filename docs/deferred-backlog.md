@@ -48,43 +48,47 @@ it?) — orthogonal to closing the disclosure gap, which didn't need it.
 
 ---
 
-## 🟡 P1-2 — Move workflow execution to durable workers (ADR ACCEPTED, plan ready — not yet implemented)
+## 🟢 P1-2 — Move workflow execution to durable workers (RESOLVED)
 
-**ADR-0033 accepted 2026-07-13** (`docs/decisions.md`). User approved: Cloud Tasks as new
-infrastructure, full replacement of the in-process model, P1-2 + P1-4 together. Verified the risk
-is active today, not theoretical: Cloud Run deploys with `--min-instances=0`
-(`scripts/gcp-bootstrap.ps1`), and Google's own guidance for this exact FastAPI-`BackgroundTasks`-
-on-Cloud-Run pattern independently confirms scale-to-zero can kill a detached background task once
-its HTTP response has been sent, regardless of whether the task is still running.
+**Resolved 2026-07-15 — see ADR-0033 in `docs/decisions.md`.**
 
-**Approach:** Google Cloud Tasks (HTTP-push delivery keeps the Cloud Run instance alive for the
-task's duration, native retry/backoff/dead-letter) triggering a claim endpoint that still uses the
-row-locking pattern already validated in ADR-0031 (`SELECT ... FOR UPDATE SKIP LOCKED`) as the
-actual concurrency guard — Cloud Tasks' at-least-once delivery alone doesn't guarantee
-single-claim, Postgres does.
+**Outcome:** Implemented as designed. `POST /executions` now creates a `status='queued'` row and
+enqueues a Google Cloud Tasks task (`src/execution/cloud_tasks.py`) instead of calling
+`BackgroundTasks.add_task()`; Cloud Tasks delivers an OIDC-authenticated HTTP push to
+`POST /internal/claim-and-run` (`src/api/internal.py`), which claims the row via
+`SELECT ... FOR UPDATE SKIP LOCKED` (the pattern validated in ADR-0031) before running it — the
+actual single-claim guarantee, since Cloud Tasks' at-least-once delivery alone doesn't provide one.
+Approval resume and external-invoke route through the same mechanism. A lease/heartbeat on
+`WorkflowExecution` plus a new `POST /internal/sweep` endpoint (Cloud Scheduler-triggered, not an
+in-process loop — a mid-implementation redesign; see ADR-0033's 2026-07-14 addendum) recovers
+executions whose worker died mid-run.
 
-**Implementation plan ready:** `docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md`
-— 16 TDD tasks (schema, config, claim-and-run endpoint, lease/heartbeat recovery, dead-letter,
-integration tests, deployment provisioning, docs). Not yet executed — awaiting the user's choice
-of execution mode (subagent-driven vs. inline) and a start signal.
+**Implemented via:** all 16 tasks of
+`docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md`, 35 commits on
+`feat/durable-execution-cloud-tasks` (forked from `main` at `9f1b131`). See ADR-0033's
+"Implemented by" section for the full task-by-commit breakdown, including the real production bug
+Task 15's integration testing caught and the fast-follow items logged along the way.
 
 **Full spec:** `docs/claude-improvement-backlog.md` §P1-2.
 
 ---
 
-## 🟡 P1-4 — Replace process-local events and rate limits (ADR ACCEPTED, plan ready — not yet implemented)
+## 🟢 P1-4 — Replace process-local events and rate limits (RESOLVED)
 
-**ADR-0033 accepted 2026-07-13** (same ADR as P1-2 — the audit's own framing groups these as one
-shared-infra decision).
+**Resolved 2026-07-15 — see ADR-0033 in `docs/decisions.md`** (same ADR as P1-2 — the audit's own
+framing groups these as one shared-infra decision).
 
-**Approach:** no new infrastructure for this one — Postgres `LISTEN/NOTIFY` for low-latency event
-delivery (verified: 8000-byte payload cap, non-durable, transactional with commits) combined with
-a new persisted events table for reconnect-cursor/missed-event-recovery history `LISTEN/NOTIFY`
-alone can't provide; rate limiting via a Postgres table using the same atomic-conditional-update
-pattern already shipped three times this session (P1-1, P1-3, P1-6).
+**Outcome:** Implemented as designed, no new infrastructure. Events: every node emission is
+appended to a durable, sequence-numbered `execution_events` table (`src/engine/events_pg.py`'s
+`PostgresEventStore`), with Postgres `LISTEN/NOTIFY` (`src/engine/events_notify.py`) as a
+low-latency, non-durable wake-up pointer only; `GET /executions/{id}/ws`
+(`src/api/events_ws.py`) replays from a reconnect cursor then subscribes live, closing the
+missed-event/no-cross-instance-visibility gap the old in-process `ExecutionEventBus` had. Rate
+limits: `src/security/rate_limit_pg.py` replaces the in-memory token bucket with the same
+atomic-conditional-update pattern already used elsewhere (P1-1, P1-3, P1-6), correct across
+Cloud Run's multiple instances.
 
-**Implementation plan ready:** same plan as P1-2 —
-`docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md` (Tasks 3-8 cover this half).
+**Implemented via:** same plan and commit range as P1-2 above (Tasks 3-8 cover this half).
 
 **Full spec:** `docs/claude-improvement-backlog.md` §P1-4.
 
@@ -221,10 +225,11 @@ Dependencies between these argue for roughly this sequence, not strict P0→P3 p
 2. ~~**P0-5** (disclosure gap)~~ — **patched** 2026-07-13; the concrete security gap (plaintext
    secrets in public workflow/MCP reads) is closed. The `Credential`/`Connection` model decision
    (needed for P2-2's reuse/rotation UX) is still open — see the updated P0-5 entry above.
-3. **P1-2** + **P1-4** — ADR written (ADR-0033), **awaiting your approval to implement**. Not one
-   shared backend after all, per the evidence: Cloud Tasks for the execution queue (purpose-built,
-   solves the confirmed-active Cloud-Run-scale-to-zero risk directly), Postgres for events/rate
-   limits (no new infra, reuses this session's already-proven patterns). One new service total.
+3. ~~**P1-2** + **P1-4**~~ — **done**, see ADR-0033. Not one shared backend after all, per the
+   evidence: Cloud Tasks for the execution queue (purpose-built, solves the confirmed-active
+   Cloud-Run-scale-to-zero risk directly), Postgres for events/rate limits (no new infra, reuses
+   this session's already-proven patterns). One new service total; implemented on
+   `feat/durable-execution-cloud-tasks`, not yet merged to `main`.
 4. **P2-2** (connections UI) — needs P0-5's `Credential` model decision made first (still open).
 5. **P2-1** (dry-run mode) — independent of the above; blocked only on the control-flow semantics
    decision.

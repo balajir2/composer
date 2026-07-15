@@ -46,13 +46,18 @@ composer/
 │   │   ├── admin_*.py              users, LLM keys, models, MCP settings
 │   │   ├── mcp_servers.py          MCP CRUD + OAuth callback
 │   │   ├── llm_models*.py          live + DB-curated model catalog
-│   │   └── events_ws.py            /executions/{id}/ws WebSocket
+│   │   ├── events_ws.py            /executions/{id}/ws — reconnect cursor + LISTEN wake-up
+│   │   └── internal.py             /internal/claim-and-run + /internal/sweep (OIDC push auth)
+│   ├── execution/
+│   │   └── cloud_tasks.py          enqueue_execution_task() — Cloud Tasks push wrapper
 │   ├── engine/
 │   │   ├── langgraph_executor.py   build_graph() + run() + interrupts
 │   │   ├── workflow.py             Pydantic node + edge schemas
 │   │   ├── state.py                WorkflowStateDict, reducers
 │   │   ├── events_wrapper.py       per-node event emission + alias spread
-│   │   ├── events.py               ExecutionEventBus (in-process pub/sub)
+│   │   ├── events.py               ExecutionEvent / EventType definitions
+│   │   ├── events_pg.py            PostgresEventStore — durable, sequence-numbered
+│   │   ├── events_notify.py        Postgres LISTEN/NOTIFY wake-up signal
 │   │   └── graph_builder.py        validation + conditional routing
 │   ├── executors/                  # 20 Designer node-type implementations
 │   │   ├── base.py                    register_executor + dispatch
@@ -78,12 +83,17 @@ composer/
 │   │   ├── jwt.py                  Composer JWT mint + verify
 │   │   ├── api_key_auth.py         per-user API key auth
 │   │   ├── encryption.py           AES-256-GCM
-│   │   ├── rate_limit.py           in-memory token bucket
+│   │   ├── rate_limit.py           in-memory token bucket (protocol shared with the below)
+│   │   ├── rate_limit_pg.py        Postgres-backed atomic token bucket (cross-instance correct)
 │   │   ├── passwords.py            bcrypt
 │   │   └── sso_azure.py            Azure AD JWKS validation
 │   ├── storage/
 │   │   ├── db.py                   Prisma client lifecycle
 │   │   └── checkpointer.py         PrismaCheckpointSaver
+│   ├── maintenance/
+│   │   └── execution_sweeper.py    sweep_stuck_executions / sweep_expired_approvals /
+│   │                                sweep_expired_leases / sweep_old_execution_events —
+│   │                                invoked by POST /internal/sweep, not an in-process loop
 │   ├── migration/                  OAB → Composer one-shot importer
 │   └── integrations/               LangSmith config threading
 ├── frontend/
@@ -109,7 +119,7 @@ A workflow is a JSON pair of `nodes[]` + `edges[]`. The executor:
 2. **Compiles a LangGraph `StateGraph`** via [`graph_builder.build_graph`](../src/engine/graph_builder.py). Every node becomes a node in the StateGraph; every edge becomes either a plain edge or a conditional edge (for `if-else` / `while` / `user-approval`).
 3. **Runs `compiled.ainvoke(initial_state, config={"configurable": {"thread_id": …}})`**. Each node receives the current state and returns a delta; LangGraph's reducers (`merge_dict` for variables, `add` for chat history) merge deltas back.
 4. **Persists checkpoints** via the `PrismaCheckpointSaver` after every node — this is what makes interrupts (`user-approval`) and resumes work.
-5. **Emits events** to a shared `ExecutionEventBus` (in-process pub/sub). The WebSocket endpoint at `/executions/{id}/ws` subscribes and streams `node_started` / `node_completed` / `node_failed` / `execution_completed` events to the client.
+5. **Emits events** to `PostgresEventStore` (durable, sequence-numbered) plus a Postgres `NOTIFY` (low-latency wake-up). The WebSocket endpoint at `/executions/{id}/ws` replays from a reconnect cursor then subscribes live, streaming `node_started` / `node_completed` / `node_failed` / `execution_completed` events to the client. See "Durable execution, events, and rate limits" below for the full flow, including how `POST /executions` itself reaches step 1 (via Cloud Tasks, not a request-bound background task).
 
 ### State shape
 
@@ -156,6 +166,66 @@ Every executor is wrapped by [`events_wrapper`](../src/engine/events_wrapper.py)
 5. Emits `node_completed` (or `node_failed` on exception).
 
 This auto-aliasing is why "give the node a Name and reference it as `{{name.field}}`" works without any explicit configuration.
+
+## Durable execution, events, and rate limits (ADR-0033)
+
+Cloud Run runs `--min-instances=0`, so anything that keeps working *after* an HTTP response has been sent — a `BackgroundTasks.add_task()`, a bare `asyncio.create_task()`, an in-process polling loop — is liable to be killed mid-flight by scale-to-zero. This section covers the three subsystems ADR-0033 moved off that model: execution itself, execution events, and rate limiting. All three now route through Postgres and/or a real inbound HTTP request instead of detached in-process work.
+
+### Execution flow
+
+```
+POST /executions
+     │  creates WorkflowExecution row, status='queued'
+     ▼
+enqueue_execution_task()          src/execution/cloud_tasks.py
+     │  Cloud Tasks: OIDC-authenticated HTTP push
+     ▼
+POST /internal/claim-and-run      src/api/internal.py
+     │  SELECT ... FOR UPDATE SKIP LOCKED  (claims the row; the actual
+     │  single-claim guarantee — Cloud Tasks' at-least-once delivery
+     │  alone does not provide one)
+     │  status: queued → running
+     ▼
+LangGraphExecutor.run() / .resume()
+     │  compiled.ainvoke(state, config={"configurable": {"thread_id": ...}})
+     ▼
+status: completed / failed / waiting_approval / canceled
+```
+
+Because Cloud Tasks delivery is a genuine inbound HTTP request, Cloud Run keeps the instance alive for the full duration of the execution — this is the actual fix for the scale-to-zero risk, not Cloud Tasks' retry/backoff/dead-letter behavior (which is a secondary benefit). `POST /executions/{id}/resume` (approval decisions, in-app and via email) and `POST /api/run/{slug}` (external invoke) enqueue the same kind of task rather than calling `BackgroundTasks.add_task()`.
+
+**Recovery.** `WorkflowExecution.leaseOwner`/`leaseExpiresAt`/`deliveryAttempts` track which worker currently owns a `running` execution. `POST /internal/sweep` — a Cloud Scheduler-triggered endpoint, **not** an in-process loop — runs on a fixed interval and recovers executions whose worker died mid-run (lease expired with no heartbeat) by re-enqueueing them, up to a bounded retry count before dead-lettering. `src/maintenance/execution_sweeper.py`'s `sweep_expired_leases` does the recovery; the same endpoint also runs the pre-existing stuck-execution and expired-approval sweeps, plus `sweep_old_execution_events` retention cleanup. Because a re-enqueued execution resumes the *same* LangGraph `thread_id`, the checkpointer resumes from the last committed checkpoint rather than restarting the graph — nodes that already ran (and had side effects, e.g. a Jira create) are not re-executed, only the node in progress at the time of death and anything after it.
+
+This replaces the old model, which required Cloud Run's `--no-cpu-throttling` flag to keep an in-process `while True: ... await asyncio.sleep()` sweeper loop ticking between requests — the dominant cost driver before this ADR (see ADR-0033's 2026-07-14 addendum). A real inbound request needs no background CPU allocation, so the flag was removed.
+
+### Events
+
+```
+node executor              src/engine/events_wrapper.py
+     │  node_started / node_completed / node_failed
+     ▼
+PostgresEventStore.append()          src/engine/events_pg.py
+     │  durable, sequence-numbered row in `execution_events`
+     ▼
+pg_notify('composer_execution_events', '<execution_id>:<seq>')
+     │  src/engine/events_notify.py — LISTEN/NOTIFY, not durable,
+     │  8000-byte payload cap; carries only a pointer, never the event body
+     ▼
+GET /executions/{id}/ws              src/api/events_ws.py
+     │  on connect: replay from a client-supplied `after_seq` cursor via
+     │  PostgresEventStore, then subscribe live; a NOTIFY wakes the handler
+     │  to re-query for anything after its last-seen seq
+     ▼
+WebSocket client
+```
+
+`LISTEN/NOTIFY` is a low-latency wake-up signal only — a notification is lost if no one is listening at emit time, so it never carries the event payload itself. The durable record and the reconnect-cursor/missed-event recovery both come from `PostgresEventStore`; a missed `NOTIFY` is harmless because the next notification or keepalive poll catches the WebSocket handler back up. This replaces the Phase 5b in-process `ExecutionEventBus` (`src/engine/events.py`), which had no cross-instance visibility and lost history for any client not connected at emit time.
+
+### Rate limiting
+
+`src/security/rate_limit_pg.py` implements the same token-bucket algorithm as the original in-memory `RateLimiter`, but state lives in the `rate_limit_buckets` table (atomic conditional `UPDATE`, the same pattern used elsewhere for conditional status transitions) instead of a process-local dict. The in-memory version was only ever correct for a single instance; with `--max-instances=3`, multi-instance concurrency is a real, not theoretical, case.
+
+**Full design record:** ADR-0033 in [`decisions.md`](decisions.md); implementation plan: [`docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md`](superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md).
 
 ## Auth model
 
