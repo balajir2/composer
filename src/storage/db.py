@@ -18,7 +18,7 @@ from prisma.engine.errors import (  # pyright: ignore[reportMissingImports, repo
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 
 if TYPE_CHECKING:
-    from src.engine.events import ExecutionEventBus
+    from src.engine.events_pg import PostgresEventStore
     from src.storage.checkpointer import PrismaCheckpointSaver
 
 logger = logging.getLogger(__name__)
@@ -72,16 +72,45 @@ async def prisma_lifespan(  # pyright: ignore[reportUnknownParameterType]
     await _connect_with_retry(db)
     app.state.db = db
     app.state.checkpointer = PrismaCheckpointSaver(db)
-    from src.engine.events import ExecutionEventBus
+    from src.engine.events_pg import PostgresEventStore
 
-    app.state.event_bus = ExecutionEventBus()
-    from src.security.rate_limit import RateLimiter
+    app.state.event_bus = PostgresEventStore(db)
+    from src.security.rate_limit_pg import PostgresRateLimiter
 
-    app.state.rate_limiter = RateLimiter()
+    app.state.rate_limiter = PostgresRateLimiter(db)
     try:
         yield db
     finally:
-        await db.disconnect()
+        # The NOTIFY connection (src/engine/events_notify.py) is a separate
+        # dedicated asyncpg connection, independent of Prisma's pool — close
+        # it alongside Prisma's disconnect so nothing is left dangling at
+        # shutdown. Each cleanup is independently guarded: a failure in one
+        # (e.g. asyncpg.Connection.close() raising because the transport is
+        # already in a bad state) must never skip the other, so order truly
+        # doesn't matter. Errors are logged, not raised — shutdown must run
+        # to completion.
+        from src.engine.events_notify import close_notify_connection
+
+        try:
+            await close_notify_connection()
+        except Exception:
+            logger.exception("prisma_lifespan: close_notify_connection() failed during shutdown")
+
+        # The cached Cloud Tasks client (src/execution/cloud_tasks.py) holds
+        # its own grpc_asyncio transport, independent of Prisma's pool and
+        # the NOTIFY connection — close it too, independently guarded for the
+        # same reason as above.
+        from src.execution.cloud_tasks import close_cloud_tasks_client
+
+        try:
+            await close_cloud_tasks_client()
+        except Exception:
+            logger.exception("prisma_lifespan: close_cloud_tasks_client() failed during shutdown")
+
+        try:
+            await db.disconnect()
+        except Exception:
+            logger.exception("prisma_lifespan: db.disconnect() failed during shutdown")
 
 
 def get_db(request: Request) -> Prisma:  # pyright: ignore[reportUnknownParameterType]
@@ -104,11 +133,11 @@ def get_checkpointer(request: Request) -> "PrismaCheckpointSaver":  # pyright: i
     return cp
 
 
-def get_event_bus(request: Request) -> "ExecutionEventBus":  # pyright: ignore[reportUnknownParameterType]
-    """FastAPI dependency — returns the app-wide ExecutionEventBus."""
+def get_event_bus(request: Request) -> "PostgresEventStore":  # pyright: ignore[reportUnknownParameterType]
+    """FastAPI dependency — returns the app-wide PostgresEventStore."""
     bus = getattr(request.app.state, "event_bus", None)
     if bus is None:
-        raise RuntimeError("ExecutionEventBus not attached to app.state — did lifespan run?")
+        raise RuntimeError("PostgresEventStore not attached to app.state — did lifespan run?")
     return bus  # pyright: ignore[reportReturnType]
 
 

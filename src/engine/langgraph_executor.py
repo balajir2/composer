@@ -24,7 +24,9 @@ from src.engine.context import (
     set_current_execution_id,
     set_current_langsmith,
 )
-from src.engine.events import EventType, ExecutionEvent, ExecutionEventBus
+from src.engine.events import EventType, ExecutionEvent
+from src.engine.events_notify import notify_execution_event
+from src.engine.events_pg import PostgresEventStore
 from src.engine.graph_builder import build_graph
 from src.engine.state import initial_state
 from src.engine.workflow import Workflow
@@ -54,7 +56,7 @@ class LangGraphExecutor:
         self,
         db: Prisma,  # pyright: ignore[reportUnknownParameterType]
         checkpointer: BaseCheckpointSaver[Any],
-        event_bus: ExecutionEventBus | None = None,
+        event_bus: PostgresEventStore | None = None,
     ) -> None:
         self.db = db
         self.checkpointer = checkpointer
@@ -66,15 +68,27 @@ class LangGraphExecutor:
         execution_id: str,
         payload: dict[str, Any],
     ) -> None:
+        """Append + notify, but never raise.
+
+        `run()`/`resume()` call this AFTER state-mutating writes (e.g.
+        `_mark_completed`, `_mark_waiting_approval`) have already committed
+        the real outcome to Postgres. A network hiccup on the event-log
+        side (Prisma insert or the asyncpg NOTIFY call) must not propagate
+        into the outer `try/except`, which would overwrite an already-
+        correct "completed"/"waiting_approval" status with "failed" —
+        corrupting the real execution outcome over a telemetry failure.
+        Self-guarding here means every call site (including the
+        `workflow_started` emit, which sits outside the try block in both
+        `run()` and `resume()`) is safe by construction.
+        """
         if self.event_bus is None:
             return
-        await self.event_bus.emit(
-            ExecutionEvent(type=event_type, execution_id=execution_id, payload=payload)
-        )
-
-    async def _close_event_bus(self, execution_id: str) -> None:
-        if self.event_bus is not None:
-            await self.event_bus.close(execution_id)
+        try:
+            event = ExecutionEvent(type=event_type, execution_id=execution_id, payload=payload)
+            seq = await self.event_bus.append(event)
+            await notify_execution_event(execution_id, seq=seq)
+        except Exception:
+            logger.exception("Failed to emit %s event for execution %s", event_type, execution_id)
 
     async def start_execution(
         self,
@@ -84,12 +98,21 @@ class LangGraphExecutor:
         user_id: str | None,
         idempotency_key: str | None = None,
     ) -> Any:
-        """Create the execution row (status=running). Caller schedules `run()`."""
+        """Create the execution row (status=queued).
+
+        P1-2: the row starts life as `queued`, not `running` — the caller
+        (src/api/executions.py's create_execution) enqueues a Cloud Task
+        rather than running this execution inline, and the row only
+        becomes `running` once POST /internal/claim-and-run actually
+        claims it (src/api/internal.py). A row that never gets claimed
+        (e.g. the Cloud Tasks enqueue itself fails) stays visibly
+        `queued` rather than lying about being `running`.
+        """
         thread_id = str(uuid.uuid4())
         data: dict[str, Any] = {
             "workflowId": workflow_id,
             "userId": user_id,
-            "status": "running",
+            "status": "queued",
             "threadId": thread_id,
             "input": Json(input),
             "nodeResults": Json({}),
@@ -232,6 +255,9 @@ class LangGraphExecutor:
             logger.error("Execution %s not found at run time", execution_id)
             return
 
+        # Intentionally outside the try block: nothing has mutated execution
+        # state yet, and `_emit` is self-guarding (never raises), so there is
+        # no outcome here that a failed emit could corrupt.
         await self._emit("workflow_started", execution_id, {"status": "running"})
 
         try:
@@ -268,7 +294,6 @@ class LangGraphExecutor:
                         "status": "waiting_approval",
                     },
                 )
-                await self._close_event_bus(execution_id)
                 return
 
             await self._mark_completed(execution_id, final_state)
@@ -277,20 +302,16 @@ class LangGraphExecutor:
                 execution_id,
                 {"status": "completed"},
             )
-            await self._close_event_bus(execution_id)
 
         except Exception as exc:
             logger.exception("Execution %s failed", execution_id)
             await self._mark_failed(execution_id, exc)
-            try:
-                await self._emit(
-                    "workflow_completed",
-                    execution_id,
-                    {"status": "failed"},
-                )
-                await self._close_event_bus(execution_id)
-            except Exception:
-                logger.exception("Failed to emit failure event for execution %s", execution_id)
+            # _emit is self-guarding (never raises) — no outer try/except needed.
+            await self._emit(
+                "workflow_completed",
+                execution_id,
+                {"status": "failed"},
+            )
 
     async def resume(self, execution_id: str, decision: str) -> None:
         """Continue a paused execution with a user decision (approved/rejected).
@@ -304,6 +325,9 @@ class LangGraphExecutor:
             logger.error("Execution %s not found at resume time", execution_id)
             return
 
+        # Intentionally outside the try block: nothing has mutated execution
+        # state yet, and `_emit` is self-guarding (never raises), so there is
+        # no outcome here that a failed emit could corrupt.
         await self._emit(
             "workflow_started",
             execution_id,
@@ -347,7 +371,6 @@ class LangGraphExecutor:
                         "status": "waiting_approval",
                     },
                 )
-                await self._close_event_bus(execution_id)
                 return
 
             await self._mark_completed(execution_id, final_state)
@@ -356,22 +379,16 @@ class LangGraphExecutor:
                 execution_id,
                 {"status": "completed"},
             )
-            await self._close_event_bus(execution_id)
 
         except Exception as exc:
             logger.exception("Execution %s failed during resume", execution_id)
             await self._mark_failed(execution_id, exc)
-            try:
-                await self._emit(
-                    "workflow_completed",
-                    execution_id,
-                    {"status": "failed"},
-                )
-                await self._close_event_bus(execution_id)
-            except Exception:
-                logger.exception(
-                    "Failed to emit failure event for execution %s during resume", execution_id
-                )
+            # _emit is self-guarding (never raises) — no outer try/except needed.
+            await self._emit(
+                "workflow_completed",
+                execution_id,
+                {"status": "failed"},
+            )
 
 
 __all__ = ["LangGraphExecutor"]

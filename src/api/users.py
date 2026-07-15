@@ -12,7 +12,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
 from src.security.auth import get_current_user_id
-from src.security.rate_limit import RateLimiter, enforce, get_rate_limiter, per_minute_config
+from src.security.rate_limit import (
+    RateLimiterProtocol,
+    enforce,
+    get_rate_limiter,
+    per_minute_config,
+)
 from src.storage.db import get_db
 
 router = APIRouter(tags=["users"])
@@ -32,7 +37,7 @@ async def search_users(
     limit: int = Query(default=20, ge=1, le=20),
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     user_id: str = Depends(get_current_user_id),
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> list[UserSearchResult]:  # pyright: ignore[reportUnusedFunction]
     await enforce(
         limiter,

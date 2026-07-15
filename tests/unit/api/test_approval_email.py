@@ -14,12 +14,29 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.engine.events import ExecutionEvent
+
 # Canonical pending-since timestamp shared by the "matching" fixtures below --
 # the token and the stored execution row's variables must carry the same
 # value for the happy-path (and other non-mismatch) tests to succeed, since
 # the endpoint now binds a token to the specific pause *instance*, not just
 # the node_id.
 _PENDING_SINCE = "2026-07-11T10:00:00+00:00"
+
+
+class _FakeEventStore:
+    """In-memory stand-in for PostgresEventStore.append — the background
+    resume task calls event_bus.append(...); a real ExecutionEventBus has
+    no such method and NOTIFY needs a live Postgres connection, neither of
+    which this unit test has."""
+
+    def __init__(self) -> None:
+        self.events: list[ExecutionEvent] = []
+
+    async def append(self, event: ExecutionEvent) -> int:
+        seq = len(self.events) + 1
+        self.events.append(event)
+        return seq
 
 
 def _execution_row(**overrides: Any) -> SimpleNamespace:
@@ -73,9 +90,15 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MagicMock]:
     app.state.db = db
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
-    from src.engine.events import ExecutionEventBus
-
-    app.state.event_bus = ExecutionEventBus()
+    app.state.event_bus = _FakeEventStore()
+    monkeypatch.setattr("src.engine.langgraph_executor.notify_execution_event", AsyncMock())
+    # POST /confirm now enqueues a real Cloud Task (P1-2) instead of a
+    # BackgroundTask. Default-patch it to a no-op so tests that don't
+    # care about enqueueing don't trip over constructing a real
+    # `tasks_v2.CloudTasksAsyncClient()` (no ADC credentials in this test
+    # environment). Tests that DO care override this themselves via the
+    # same `monkeypatch` instance.
+    monkeypatch.setattr("src.api.approval_email.enqueue_execution", AsyncMock())
     return TestClient(app), db
 
 
@@ -243,6 +266,34 @@ def test_post_confirm_valid_token_records_approval_and_redirects(
     assert update_many_call.kwargs["data"]["status"] == "running"
 
 
+def test_post_confirm_clears_stale_lease_in_same_update_many(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-2 fast-follow (2026-07-15 holistic review finding): same fix as
+    POST /executions/{id}/resume (tests/unit/api/test_executions_resume.py)
+    applied to the emailed-link confirm path -- the waiting_approval ->
+    running transition must clear leaseOwner/leaseExpiresAt in the SAME
+    atomic update_many that flips status, or the stale lease from the
+    original claim-and-run claim blocks the fresh Cloud Task delivery
+    enqueued right after this call. Mocked-DB regression coverage only;
+    see tests/integration/test_durable_execution.py's
+    test_resume_clears_stale_lease_and_reclaim_succeeds for the real-
+    Postgres proof."""
+    from src.security.jwt import create_approval_email_token
+
+    client, db = _client(monkeypatch)
+    token = create_approval_email_token(
+        "exec-1", "approval-1", "approved", "reviewer@example.com", _PENDING_SINCE
+    )
+    resp = client.post(f"/approvals/email/{token}/confirm", follow_redirects=False)
+    assert resp.status_code == 303
+    db.workflowexecution.update_many.assert_awaited_once()
+    update_many_call = db.workflowexecution.update_many.await_args
+    assert update_many_call.kwargs["data"]["status"] == "running"
+    assert update_many_call.kwargs["data"]["leaseOwner"] is None
+    assert update_many_call.kwargs["data"]["leaseExpiresAt"] is None
+
+
 def test_post_confirm_race_loses_when_update_many_affects_zero_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -289,6 +340,41 @@ def test_post_confirm_already_resolved_redirects_to_invalid(
     assert resp.status_code == 303
     assert "status=invalid" in resp.headers["location"]
     db.approval.create.assert_not_awaited()
+
+
+def test_post_confirm_enqueues_cloud_task_instead_of_background_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-2 full replacement: POST /approvals/email/{token}/confirm must
+    enqueue a Cloud Task (kind='resume') rather than scheduling a
+    request-bound BackgroundTask. The decision is stamped into
+    `variables._resume_decision` before enqueueing (same pattern as
+    POST /executions/{id}/resume) since enqueue_execution's Cloud Task
+    body has no room for the decision value."""
+    from src.security.jwt import create_approval_email_token
+
+    client, db = _client(monkeypatch)
+
+    enqueued: list[tuple[str, str]] = []
+
+    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+        enqueued.append((execution_id, kind))
+
+    monkeypatch.setattr("src.api.approval_email.enqueue_execution", _fake_enqueue)
+
+    token = create_approval_email_token(
+        "exec-1", "approval-1", "approved", "reviewer@example.com", _PENDING_SINCE
+    )
+    resp = client.post(f"/approvals/email/{token}/confirm", follow_redirects=False)
+    assert resp.status_code == 303
+    assert enqueued == [("exec-1", "resume")]
+
+    db.workflowexecution.update.assert_awaited_once()
+    update_call = db.workflowexecution.update.await_args
+    assert update_call.kwargs["where"]["id"] == "exec-1"
+    stamped_variables = update_call.kwargs["data"]["variables"].data
+    assert stamped_variables["_resume_decision"] == "approved"
+    assert stamped_variables["_pending_approval_node"] == "approval-1"
 
 
 async def test_post_confirm_rate_limited(monkeypatch: pytest.MonkeyPatch) -> None:

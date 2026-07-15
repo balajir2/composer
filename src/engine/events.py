@@ -34,6 +34,12 @@ class ExecutionEvent:
     tenant_id: str | None = field(default=None, metadata={"alias": "tenantId"})
     timestamp: str = field(default_factory=_now_iso)
     payload: dict[str, Any] = field(default_factory=dict)
+    # P1-4: populated by PostgresEventStore.list_since when reconstructing
+    # a persisted event; None for a freshly-constructed event that hasn't
+    # been assigned a sequence number yet (PostgresEventStore.append
+    # returns the assigned seq separately rather than mutating the frozen
+    # dataclass in place).
+    seq: int | None = field(default=None)
 
     def as_json(self) -> dict[str, Any]:
         """Returns DES-007-shape dict with camelCase keys."""
@@ -42,6 +48,7 @@ class ExecutionEvent:
             "executionId": self.execution_id,
             "tenantId": self.tenant_id,
             "timestamp": self.timestamp,
+            "seq": self.seq,
         }
         out.update(self.payload)
         return out

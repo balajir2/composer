@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 from fastapi import HTTPException, Request, status
 
@@ -16,6 +17,15 @@ from fastapi import HTTPException, Request, status
 class BucketConfig:
     capacity: int  # max tokens
     refill_per_second: float  # tokens added per second
+
+
+@runtime_checkable
+class RateLimiterProtocol(Protocol):
+    """Structural type satisfied by any rate limiter exposing check()."""
+
+    async def check(
+        self, route_key: str, client_key: str, config: BucketConfig
+    ) -> tuple[bool, float]: ...
 
 
 class TokenBucket:
@@ -63,7 +73,7 @@ class RateLimiter:
             return bucket.try_consume()
 
 
-def get_rate_limiter(request: Request) -> RateLimiter:
+def get_rate_limiter(request: Request) -> RateLimiterProtocol:
     """FastAPI dependency."""
     limiter = getattr(request.app.state, "rate_limiter", None)
     if limiter is None:
@@ -80,7 +90,7 @@ def per_minute_config(max_per_minute: int) -> BucketConfig:
 
 
 async def enforce(
-    limiter: RateLimiter,
+    limiter: RateLimiterProtocol,
     route_key: str,
     client_key: str,
     config: BucketConfig,
@@ -98,6 +108,7 @@ async def enforce(
 __all__ = [
     "BucketConfig",
     "RateLimiter",
+    "RateLimiterProtocol",
     "TokenBucket",
     "enforce",
     "get_rate_limiter",

@@ -1,33 +1,51 @@
 """POST /executions (start a run) + GET /executions/{id} (fetch state)."""
 
 import json as _json
+import logging
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel, ConfigDict, Field
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from src.api.execution_status import (
+    ACTIVE_EXECUTION_STATUSES,
+    ACTIVE_EXECUTION_STATUSES_SORTED,
+)
 from src.config import get_settings
 from src.engine.langgraph_executor import LangGraphExecutor
+from src.execution.cloud_tasks import enqueue_execution
 from src.security.auth import get_current_role
 from src.security.rate_limit import (
-    RateLimiter,
+    RateLimiterProtocol,
     enforce,
     get_rate_limiter,
     per_minute_config,
 )
 from src.storage.db import get_db
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter(tags=["executions"])
 
-# Deletion endpoints reject/skip rows in these statuses (P1-6) — deleting a
-# still-active execution's LangGraph checkpoints out from under its
-# in-flight background task leaves that task unable to persist a final
-# state against a row (and checkpoints) that no longer exist.
-_ACTIVE_EXECUTION_STATUSES = frozenset({"running", "waiting_approval"})
+# Deletion/cancellation endpoints reject/skip rows in these statuses (P1-6,
+# extended P1-2-followup) — deleting or racing a still-active execution's
+# LangGraph checkpoints out from under it leaves whichever worker eventually
+# claims and drives it (via POST /internal/claim-and-run, Cloud-Tasks-push)
+# unable to persist a final state against a row (and checkpoints) that no
+# longer exist. `queued` MUST be included here even though the row hasn't
+# been claimed yet: a `queued` row can be actively in flight to Cloud Tasks,
+# or already claimed by a concurrent claim-and-run delivery by the time a
+# delete request's unlocked read observes it — there is no persisted status
+# between row-creation and terminal completion that is ever safe to delete
+# unconditionally.
+#
+# Sourced from `src.api.execution_status` (not defined here) so
+# `internal.py`'s claim-query predicate can share the exact same set —
+# see that module's docstring for the drift bug this closes.
 
 
 class ExecutionCreate(BaseModel):
@@ -104,11 +122,10 @@ async def _find_execution_by_idempotency_key(
 @router.post("/executions", response_model=ExecutionRead, status_code=status.HTTP_202_ACCEPTED)
 async def create_execution(
     payload: ExecutionCreate,
-    background_tasks: BackgroundTasks,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     _role: tuple[str, str] = Depends(get_current_role),
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
     await enforce(
@@ -180,9 +197,70 @@ async def create_execution(
             raise
         return ExecutionRead.model_validate(existing)
 
-    # Schedule the actual run in the background. The response returns with
-    # status='running' immediately; poll GET /executions/{id} for completion.
-    background_tasks.add_task(executor.run, row.id)
+    # P1-2: enqueue a Cloud Task instead of a request-bound BackgroundTask —
+    # Cloud Run can scale a request-bound background task's instance to
+    # zero mid-run (confirmed via --min-instances=0 in the deploy config,
+    # ADR-0033). Cloud Tasks' HTTP-push delivery to /internal/claim-and-run
+    # is a real inbound request, which Cloud Run won't recycle mid-flight.
+    # The response returns with status='queued' immediately; the row only
+    # becomes 'running' once claim-and-run actually claims it. Poll
+    # GET /executions/{id} for completion.
+    try:
+        await enqueue_execution(row.id, kind="run")
+    except Exception as exc:
+        # The row already committed as 'queued' above. If enqueueing raises
+        # here (un-retried gRPC error, transient network blip, IAM/ADC
+        # misconfiguration), the row would otherwise be stuck at 'queued'
+        # forever — invisible to both sweepers (sweep_stuck_executions and
+        # sweep_expired_leases both only scan status='running') and, if the
+        # caller supplied an idempotencyKey and retries per the documented
+        # pattern above, the idempotency short-circuit would keep returning
+        # this same stuck row without ever calling enqueue_execution again.
+        # Mark it failed immediately instead — mirrors
+        # LangGraphExecutor.run()'s own except-and-mark-failed handling —
+        # so the row reaches a terminal status right away and the caller
+        # gets a real, actionable error instead of an unhandled 500.
+        logger.exception("create_execution: failed to enqueue Cloud Task for execution %s", row.id)
+        try:
+            # Guarded like every other status transition in this file
+            # (resume_execution, cancel_execution): fold the CURRENT status
+            # into the WHERE clause via update_many instead of an
+            # unconditional update(). 'queued' is now a cancellable status
+            # (P1-2-followup) — if a client cancels this still-'queued' row
+            # while enqueue_execution is mid-flight/timing out,
+            # cancel_execution's own atomic update_many could win first
+            # (row -> 'canceled'). Guarding on status='queued' here makes
+            # this write a safe no-op in that case instead of clobbering a
+            # legitimate cancellation with a stale 'failed'.
+            await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
+                where={"id": row.id, "status": "queued"},
+                data={
+                    "status": "failed",
+                    "error": f"failed to enqueue execution for durable processing: {exc}",
+                    "completedAt": datetime.now(UTC),
+                },
+            )
+        except Exception:
+            # Nested-failure path: if THIS write also raises (a DB blip
+            # right after row's own successful create()), we must not let
+            # it propagate — that would replace the informative
+            # HTTPException below with FastAPI's generic 500 handler AND
+            # leave the row stuck at 'queued' forever, reproducing the
+            # exact failure mode this whole handler exists to prevent, via
+            # a different path. Log distinctly so operators can find this
+            # rare double-failure via the sweeper's stuck-execution scan or
+            # manual intervention, then fall through to raise the primary,
+            # more informative error below — don't let a secondary DB
+            # error mask the original problem, and don't silently swallow
+            # it either.
+            logger.exception(
+                "create_execution: failed to mark execution %s as failed after enqueue error",
+                row.id,
+            )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Execution {row.id!r} could not be enqueued for processing.",
+        ) from exc
     return ExecutionRead.model_validate(row)
 
 
@@ -322,7 +400,7 @@ async def delete_executions_bulk(  # pyright: ignore[reportUnusedFunction]
     # Skip active executions (P1-6): deleting a running or waiting_approval
     # row's checkpoints out from under its in-flight background task leaves
     # that task unable to persist a final state against a row that's gone.
-    rows = [row for row in rows if row.status not in _ACTIVE_EXECUTION_STATUSES]
+    rows = [row for row in rows if row.status not in ACTIVE_EXECUTION_STATUSES]
     if not rows:
         return BulkDeleteResponse(
             deletedCount=0,
@@ -341,6 +419,7 @@ async def delete_executions_bulk(  # pyright: ignore[reportUnusedFunction]
     await db.langgraphcheckpoint.delete_many(  # pyright: ignore[reportAttributeAccessIssue]
         where={"threadId": {"in": thread_ids}}
     )
+    await db.executionevent.delete_many(where={"executionId": {"in": target_ids}})  # pyright: ignore[reportAttributeAccessIssue]
     await db.workflowexecution.delete_many(where={"id": {"in": target_ids}})  # pyright: ignore[reportAttributeAccessIssue]
 
     skipped = max(0, len(requested_ids) - len(target_ids)) if requested_ids else 0
@@ -370,6 +449,9 @@ async def delete_execution(  # pyright: ignore[reportUnusedFunction]
         outlive the execution row in some scenarios).  We delete
         them explicitly here because once the execution is gone the
         checkpoints are unreachable garbage.
+      - `execution_events` — no FK to the execution either (same
+        rationale as checkpoints, P1-4).  Deleted explicitly so
+        events don't orphan permanently.
       - `workflow_executions` row itself.
     """
     user_id, role = _role
@@ -385,7 +467,7 @@ async def delete_execution(  # pyright: ignore[reportUnusedFunction]
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Execution {execution_id!r} not found.",
         )
-    if row.status in _ACTIVE_EXECUTION_STATUSES:
+    if row.status in ACTIVE_EXECUTION_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
@@ -400,6 +482,7 @@ async def delete_execution(  # pyright: ignore[reportUnusedFunction]
     # Approvals cascade through the execution FK.
     await db.langgraphcheckpointwrite.delete_many(where={"threadId": thread_id})  # pyright: ignore[reportAttributeAccessIssue]
     await db.langgraphcheckpoint.delete_many(where={"threadId": thread_id})  # pyright: ignore[reportAttributeAccessIssue]
+    await db.executionevent.delete_many(where={"executionId": execution_id})  # pyright: ignore[reportAttributeAccessIssue]
     await db.workflowexecution.delete(where={"id": execution_id})  # pyright: ignore[reportAttributeAccessIssue]
 
 
@@ -417,9 +500,11 @@ async def cancel_execution(  # pyright: ignore[reportUnusedFunction]
     persisted `failed`, and there was no user-triggered cancel operation.
 
     Known limitation: this marks the row canceled but does not preempt an
-    in-flight background task — LangGraph has no cooperative-cancellation
-    hook wired through the executor today. Any side-effecting node
-    (Jira, email, HTTP) already in flight when cancel is called still
+    in-flight claim-and-run delivery (P1-2: execution is driven by
+    POST /internal/claim-and-run, not a request-bound background task) —
+    LangGraph has no cooperative-cancellation hook wired through the
+    executor today. Any side-effecting node (Jira, email, HTTP) already
+    in flight when cancel is called still
     completes; this stops the row from looking permanently stuck and gives
     callers a real terminal status to key off, which is the concrete gap
     this closes. True mid-node preemption is a separate, larger change.
@@ -438,7 +523,7 @@ async def cancel_execution(  # pyright: ignore[reportUnusedFunction]
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Execution {execution_id!r} not found.",
         )
-    if execution.status not in _ACTIVE_EXECUTION_STATUSES:
+    if execution.status not in ACTIVE_EXECUTION_STATUSES:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Execution is {execution.status!r}, not cancellable.",
@@ -446,9 +531,20 @@ async def cancel_execution(  # pyright: ignore[reportUnusedFunction]
 
     # Atomic conditional transition (same pattern as resume_execution, P1-1)
     # — folds the status guard into the update itself so two concurrent
-    # cancel calls (or a cancel racing a resume) can't both succeed.
+    # cancel calls (or a cancel racing a resume, or a cancel racing
+    # claim-and-run's own claim) can't both succeed. Sourced from
+    # `ACTIVE_EXECUTION_STATUSES_SORTED` (not a separately-hardcoded list)
+    # so this can never silently drift from the guard check above it —
+    # this now includes 'queued', so canceling a not-yet-claimed execution
+    # succeeds here instead of hitting the 409 above. Safe to cancel while
+    # queued: claim-and-run's own claim query
+    # (`status IN ('queued', 'running', 'waiting_approval')`, see
+    # src/api/internal.py) no longer matches once this flips the row to
+    # 'canceled', so the eventual Cloud Task delivery finds nothing to
+    # claim and returns 'already_claimed' — no separate task-cancellation
+    # call is needed.
     updated_count = await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": execution_id, "status": {"in": ["running", "waiting_approval"]}},
+        where={"id": execution_id, "status": {"in": ACTIVE_EXECUTION_STATUSES_SORTED}},
         data={
             "status": "canceled",
             "error": _CANCEL_ERROR_MESSAGE,
@@ -471,11 +567,9 @@ async def cancel_execution(  # pyright: ignore[reportUnusedFunction]
 async def resume_execution(
     execution_id: str,
     payload: ResumeRequest,
-    background_tasks: BackgroundTasks,
-    request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     _role: tuple[str, str] = Depends(get_current_role),
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
     await enforce(
@@ -522,9 +616,26 @@ async def resume_execution(
     # statement that performs the transition — at most one request can
     # ever flip this row, matching the same pattern already used for the
     # emailed-link path (src/api/approval_email.py).
+    # Also clears the lease from the original claim: without this, the
+    # stale (still-unexpired) lease from when this execution was first
+    # claimed by POST /internal/claim-and-run blocks the fresh Cloud Task
+    # delivery (enqueued below) from re-claiming the row — claim_and_run's
+    # claim query requires `lease_expires_at IS NULL OR lease_expires_at <
+    # now()`, and the original claim's lease (default
+    # execution_lease_seconds=3600s) is typically still unexpired at
+    # resume time, since most approvals resolve well within an hour. Left
+    # unfixed, the row would silently stall at status='running' — the
+    # fresh delivery finds zero claimable rows and returns
+    # {"status": "already_claimed"} — until sweep_expired_leases notices
+    # the stale lease has expired (up to execution_lease_seconds later)
+    # and self-heals it. See 2026-07-15 holistic branch-wide review
+    # finding (P1-2 fast-follow): reproduced end-to-end against real
+    # Postgres, invisible to mocked-DB unit tests since they never
+    # enforce the real claim-query predicate against a genuinely-set
+    # lease.
     updated_count = await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": execution_id, "status": "waiting_approval"},
-        data={"status": "running"},
+        data={"status": "running", "leaseOwner": None, "leaseExpiresAt": None},
     )
     if updated_count != 1:
         raise HTTPException(
@@ -546,8 +657,21 @@ async def resume_execution(
         data=approval_data,  # pyright: ignore[reportArgumentType]
     )
 
-    executor = _get_executor(request, db)
-    background_tasks.add_task(executor.resume, execution_id, payload.decision.value)
+    # P1-2 (Task 13): stamp the decision into `variables` BEFORE enqueueing
+    # the Cloud Task. enqueue_execution's Cloud Task body is hardcoded to
+    # {"executionId": ..., "kind": ...} — there is no room to carry the
+    # decision through the task payload itself — so it travels the same
+    # way `_pending_approval_node` already does: as row state that
+    # claim-and-run (src/api/internal.py) reads back AFTER claiming.
+    await db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"id": execution_id},
+        data={
+            "variables": Json(
+                {**(execution.variables or {}), "_resume_decision": payload.decision.value}
+            )
+        },
+    )
+    await enqueue_execution(execution_id, kind="resume")
 
     # Reflect the transition we just made atomically without a second
     # DB round-trip — `execution` is the row fetched above, still valid

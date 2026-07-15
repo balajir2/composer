@@ -8,6 +8,7 @@ See Phase 5b spec §6.2 (event types updated to DES-007 in Phase 9a).
 
 from __future__ import annotations
 
+import logging
 import time
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
@@ -16,13 +17,45 @@ from langgraph.errors import GraphBubbleUp
 
 from src.engine.context import get_current_event_bus, get_current_execution_id
 from src.engine.events import ExecutionEvent
+from src.engine.events_notify import notify_execution_event
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
+    from src.engine.events_pg import PostgresEventStore
     from src.engine.state import WorkflowStateDict
     from src.engine.workflow import WorkflowNode
     from src.executors.base import Executor
+
+logger = logging.getLogger(__name__)
+
+
+async def _persist_and_notify(
+    event_store: PostgresEventStore | None,
+    execution_id: str | None,
+    event: ExecutionEvent,
+) -> None:
+    """Append `event` and send the NOTIFY wake-up pointer, but never raise.
+
+    By the time this is called, the executor has already produced its real
+    output (or the wrapper has already decided a node failed) — a telemetry
+    hiccup here (Prisma insert or the asyncpg NOTIFY call) must not abort
+    the node and discard real, possibly expensive work that actually
+    succeeded. Mirrors `LangGraphExecutor._emit`'s self-guarding contract.
+
+    No-ops when either ContextVar is unset (matches the previous inline
+    `if event_store is not None and execution_id is not None:` guards at
+    each call site).
+    """
+    if event_store is None or execution_id is None:
+        return
+    try:
+        seq = await event_store.append(event)
+        await notify_execution_event(execution_id, seq=seq)
+    except Exception:
+        logger.exception(
+            "Failed to persist/notify %s event for execution %s", event.type, execution_id
+        )
 
 
 def _extract_output(node_id: str, result: dict[str, Any]) -> Any:
@@ -139,15 +172,17 @@ def wrap_executor_with_events(
 
     async def _arun(state: WorkflowStateDict) -> dict[str, Any]:
         execution_id = get_current_execution_id()
-        bus = get_current_event_bus()
+        event_store = get_current_event_bus()
 
-        if bus is not None and execution_id is not None:
-            await bus.emit(
+        if execution_id is not None:
+            await _persist_and_notify(
+                event_store,
+                execution_id,
                 ExecutionEvent(
                     type="node_started",
                     execution_id=execution_id,
                     payload=dict(node_info),
-                )
+                ),
             )
 
         # P1-5: start/end time + duration, captured once here rather than
@@ -165,9 +200,11 @@ def wrap_executor_with_events(
             # intentional approval-gate pause as a crash.
             raise
         except Exception as exc:
-            if bus is not None and execution_id is not None:
+            if execution_id is not None:
                 duration_ms = round((time.monotonic() - started_monotonic) * 1000)
-                await bus.emit(
+                await _persist_and_notify(
+                    event_store,
+                    execution_id,
                     ExecutionEvent(
                         type="node_failed",
                         execution_id=execution_id,
@@ -176,7 +213,7 @@ def wrap_executor_with_events(
                             "error": f"{type(exc).__name__}: {exc}",
                             "durationMs": duration_ms,
                         },
-                    )
+                    ),
                 )
             raise
 
@@ -217,8 +254,10 @@ def wrap_executor_with_events(
             "node_results": {**existing_node_results, node.id: node_rec},
         }
 
-        if bus is not None and execution_id is not None:
-            await bus.emit(
+        if execution_id is not None:
+            await _persist_and_notify(
+                event_store,
+                execution_id,
                 ExecutionEvent(
                     type="node_completed",
                     execution_id=execution_id,
@@ -228,7 +267,7 @@ def wrap_executor_with_events(
                         "output": output,
                         "durationMs": duration_ms,
                     },
-                )
+                ),
             )
 
         return result

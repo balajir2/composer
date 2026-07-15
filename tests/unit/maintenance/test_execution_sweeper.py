@@ -285,3 +285,216 @@ async def test_approval_sweep_zero_timeout_rejected() -> None:
     db = _DbStub()
     with pytest.raises(ValueError, match="must be > 0"):
         await sweep_expired_approvals(db, timeout_hours=0)
+
+
+async def test_sweep_expired_leases_requeues_for_retry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A lease that expired without the worker completing the execution
+    means the worker likely died mid-run (Cloud Run instance recycled,
+    OOM, etc.) — recover by clearing the lease AND re-enqueueing a fresh
+    Cloud Task (clearing the lease alone doesn't guarantee anything will
+    ever look at this row again — see the code comment on this in
+    sweep_expired_leases), bounded by delivery_attempts so a poison task
+    doesn't retry forever."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.maintenance.execution_sweeper import sweep_expired_leases
+
+    enqueued: list[tuple[str, str]] = []
+
+    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+        enqueued.append((execution_id, kind))
+
+    monkeypatch.setattr("src.execution.cloud_tasks.enqueue_execution", _fake_enqueue)
+
+    db = MagicMock()
+    now = datetime.now(UTC)
+    stuck_row = MagicMock(
+        id="ex1",
+        leaseExpiresAt=now - timedelta(seconds=10),
+        deliveryAttempts=1,
+        status="running",
+        variables={},
+    )
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.find_many = AsyncMock(return_value=[stuck_row])
+    db.workflowexecution.update = AsyncMock()
+
+    result = await sweep_expired_leases(db, max_delivery_attempts=5, now=now)
+
+    assert result.marked_failed == 0
+    db.workflowexecution.update.assert_awaited_once()
+    assert db.workflowexecution.update.await_args is not None
+    update_data = db.workflowexecution.update.await_args.kwargs["data"]
+    assert update_data["leaseOwner"] is None
+    assert update_data["leaseExpiresAt"] is None
+    assert enqueued == [("ex1", "run")]
+
+
+async def test_sweep_expired_leases_requeues_resume_as_resume(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A died mid-resume execution (one with _resume_decision already
+    stamped into variables, per Task 13) must be re-enqueued as a resume,
+    not restarted as a fresh run."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.maintenance.execution_sweeper import sweep_expired_leases
+
+    enqueued: list[tuple[str, str]] = []
+
+    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+        enqueued.append((execution_id, kind))
+
+    monkeypatch.setattr("src.execution.cloud_tasks.enqueue_execution", _fake_enqueue)
+
+    db = MagicMock()
+    now = datetime.now(UTC)
+    stuck_row = MagicMock(
+        id="ex1",
+        leaseExpiresAt=now - timedelta(seconds=10),
+        deliveryAttempts=1,
+        status="running",
+        variables={"_resume_decision": "approved"},
+    )
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.find_many = AsyncMock(return_value=[stuck_row])
+    db.workflowexecution.update = AsyncMock()
+
+    await sweep_expired_leases(db, max_delivery_attempts=5, now=now)
+
+    assert enqueued == [("ex1", "resume")]
+
+
+async def test_sweep_expired_leases_fails_after_max_attempts() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.maintenance.execution_sweeper import sweep_expired_leases
+
+    db = MagicMock()
+    now = datetime.now(UTC)
+    poison_row = MagicMock(
+        id="ex1",
+        leaseExpiresAt=now - timedelta(seconds=10),
+        deliveryAttempts=5,
+        status="running",
+        variables={},
+    )
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.find_many = AsyncMock(return_value=[poison_row])
+    db.workflowexecution.update = AsyncMock()
+
+    result = await sweep_expired_leases(db, max_delivery_attempts=5, now=now)
+
+    assert result.marked_failed == 1
+    assert db.workflowexecution.update.await_args is not None
+    update_data = db.workflowexecution.update.await_args.kwargs["data"]
+    assert update_data["status"] == "failed"
+
+
+async def test_sweep_expired_leases_does_not_clear_lease_if_enqueue_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression test for the lease-clear-before-enqueue ordering bug: if
+    enqueue_execution raises (Cloud Tasks API error, IAM blip, transient
+    network failure), the lease must NOT already have been cleared —
+    otherwise leaseExpiresAt becomes NULL and sweep_expired_leases's own
+    `{"lt": now}` filter (SQL `NULL < x` is never true) would never match
+    this row again, permanently excluding it from lease-based recovery
+    even though max_delivery_attempts wasn't exhausted."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.maintenance.execution_sweeper import sweep_expired_leases
+
+    async def _fake_enqueue_fails(execution_id: str, *, kind: str) -> None:
+        raise RuntimeError("simulated Cloud Tasks API error")
+
+    monkeypatch.setattr("src.execution.cloud_tasks.enqueue_execution", _fake_enqueue_fails)
+
+    db = MagicMock()
+    now = datetime.now(UTC)
+    stuck_row = MagicMock(
+        id="ex1",
+        leaseExpiresAt=now - timedelta(seconds=10),
+        deliveryAttempts=1,
+        status="running",
+        variables={},
+    )
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.find_many = AsyncMock(return_value=[stuck_row])
+    db.workflowexecution.update = AsyncMock()
+
+    result = await sweep_expired_leases(db, max_delivery_attempts=5, now=now)
+
+    assert result.marked_failed == 0
+    assert result.errored == 1
+    # The lease-clear UPDATE must never have been reached — enqueue is
+    # called first and raised before we got there.
+    db.workflowexecution.update.assert_not_awaited()
+
+
+async def test_sweep_expired_leases_errored_row_not_counted_as_recovered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A row whose enqueue_execution raises must show up as neither
+    dead-lettered nor recovered — `errored` tracks it separately so
+    callers (src/api/internal.py's leases_recovered computation) don't
+    silently fold a failed recovery attempt into a healthy-looking
+    'recovered' count."""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.maintenance.execution_sweeper import sweep_expired_leases
+
+    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+        if execution_id == "ex-bad":
+            raise RuntimeError("simulated Cloud Tasks API error")
+
+    monkeypatch.setattr("src.execution.cloud_tasks.enqueue_execution", _fake_enqueue)
+
+    db = MagicMock()
+    now = datetime.now(UTC)
+    good_row = MagicMock(
+        id="ex-good",
+        leaseExpiresAt=now - timedelta(seconds=10),
+        deliveryAttempts=1,
+        status="running",
+        variables={},
+    )
+    bad_row = MagicMock(
+        id="ex-bad",
+        leaseExpiresAt=now - timedelta(seconds=10),
+        deliveryAttempts=1,
+        status="running",
+        variables={},
+    )
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.find_many = AsyncMock(return_value=[good_row, bad_row])
+    db.workflowexecution.update = AsyncMock()
+
+    result = await sweep_expired_leases(db, max_delivery_attempts=5, now=now)
+
+    assert result.scanned == 2
+    assert result.marked_failed == 0
+    assert result.errored == 1
+    # "actually recovered" = scanned - marked_failed - errored = 1
+    # (only ex-good); the naive `scanned - marked_failed` (the pre-fix
+    # formula) would have overcounted this as 2.
+    assert result.scanned - result.marked_failed - result.errored == 1
+
+
+async def test_sweep_old_execution_events_deletes_past_retention() -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from src.maintenance.execution_sweeper import sweep_old_execution_events
+
+    db = MagicMock()
+    db.executionevent = MagicMock()
+    db.executionevent.delete_many = AsyncMock(return_value=MagicMock(count=42))
+    now = datetime.now(UTC)
+
+    deleted = await sweep_old_execution_events(db, retention_days=30, now=now)
+
+    assert deleted == 42
+    db.executionevent.delete_many.assert_awaited_once()
+    assert db.executionevent.delete_many.await_args is not None
+    where = db.executionevent.delete_many.await_args.kwargs["where"]
+    assert where["createdAt"]["lt"] == now - timedelta(days=30)

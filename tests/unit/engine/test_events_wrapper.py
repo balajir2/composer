@@ -1,11 +1,11 @@
 """Tests for the event-emitting executor wrapper."""
 
-import asyncio
 from typing import Any
+from unittest.mock import AsyncMock
 
 import pytest
 
-from src.engine.events import ExecutionEventBus
+from src.engine.events import ExecutionEvent
 from src.engine.events_wrapper import wrap_executor_with_events
 from src.engine.state import initial_state
 from src.engine.workflow import Workflow
@@ -43,13 +43,36 @@ class _FakeNode:
         self.data = _FakeNodeData()
 
 
+class _FakeEventStore:
+    """In-memory stand-in for PostgresEventStore.append — no real Postgres
+    round-trip, just an append-only list with an assigned sequence number,
+    so these unit tests don't need a live database."""
+
+    def __init__(self) -> None:
+        self.events: list[ExecutionEvent] = []
+
+    async def append(self, event: ExecutionEvent) -> int:
+        seq = len(self.events) + 1
+        self.events.append(event)
+        return seq
+
+
+@pytest.fixture(autouse=True)
+def _patch_notify(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # pyright: ignore[reportUnusedFunction]
+    """The wrapper calls notify_execution_event(execution_id, seq=seq) after
+    every append — patch it to a no-op so unit tests never attempt a real
+    asyncpg connection."""
+    mock = AsyncMock()
+    monkeypatch.setattr("src.engine.events_wrapper.notify_execution_event", mock)
+    return mock
+
+
 async def test_wrapper_emits_start_and_complete_on_success() -> None:
     from src.engine.context import set_current_event_bus, set_current_execution_id
 
-    bus = ExecutionEventBus()
-    q = await bus.subscribe("e1")
+    store = _FakeEventStore()
     set_current_execution_id("e1")
-    set_current_event_bus(bus)
+    set_current_event_bus(store)  # pyright: ignore[reportArgumentType]
 
     try:
         arun = wrap_executor_with_events(_FakeExecutor(), _FakeNode("n1", "http"))  # pyright: ignore[reportArgumentType]
@@ -59,16 +82,7 @@ async def test_wrapper_emits_start_and_complete_on_success() -> None:
         set_current_execution_id(None)
         set_current_event_bus(None)
 
-    events: list[Any] = []
-    while True:
-        try:
-            ev = await asyncio.wait_for(q.get(), timeout=0.05)
-        except TimeoutError:
-            break
-        if ev is None:
-            break
-        events.append(ev)
-
+    events = store.events
     types = [e.type for e in events]
     assert types == ["node_started", "node_completed"]
     for e in events:
@@ -89,10 +103,9 @@ async def test_wrapper_adds_timing_to_node_results_and_completed_event() -> None
     node type already flows through it."""
     from src.engine.context import set_current_event_bus, set_current_execution_id
 
-    bus = ExecutionEventBus()
-    q = await bus.subscribe("e1")
+    store = _FakeEventStore()
     set_current_execution_id("e1")
-    set_current_event_bus(bus)
+    set_current_event_bus(store)  # pyright: ignore[reportArgumentType]
 
     try:
         arun = wrap_executor_with_events(_FakeExecutor(), _FakeNode("n1", "http"))  # pyright: ignore[reportArgumentType]
@@ -107,17 +120,7 @@ async def test_wrapper_adds_timing_to_node_results_and_completed_event() -> None
     assert isinstance(node_rec["durationMs"], int)
     assert node_rec["durationMs"] >= 0
 
-    events: list[Any] = []
-    while True:
-        try:
-            ev = await asyncio.wait_for(q.get(), timeout=0.05)
-        except TimeoutError:
-            break
-        if ev is None:
-            break
-        events.append(ev)
-
-    completed = next(e for e in events if e.type == "node_completed")
+    completed = next(e for e in store.events if e.type == "node_completed")
     assert "durationMs" in completed.payload
     assert completed.payload["durationMs"] >= 0
 
@@ -128,10 +131,9 @@ async def test_wrapper_adds_duration_to_node_failed_event() -> None:
     erroring (P1-5)."""
     from src.engine.context import set_current_event_bus, set_current_execution_id
 
-    bus = ExecutionEventBus()
-    q = await bus.subscribe("e1")
+    store = _FakeEventStore()
     set_current_execution_id("e1")
-    set_current_event_bus(bus)
+    set_current_event_bus(store)  # pyright: ignore[reportArgumentType]
 
     try:
         arun = wrap_executor_with_events(_RaisingExecutor(), _FakeNode("n1", "http"))  # pyright: ignore[reportArgumentType]
@@ -141,17 +143,7 @@ async def test_wrapper_adds_duration_to_node_failed_event() -> None:
         set_current_execution_id(None)
         set_current_event_bus(None)
 
-    events: list[Any] = []
-    while True:
-        try:
-            ev = await asyncio.wait_for(q.get(), timeout=0.05)
-        except TimeoutError:
-            break
-        if ev is None:
-            break
-        events.append(ev)
-
-    failed = next(e for e in events if e.type == "node_failed")
+    failed = next(e for e in store.events if e.type == "node_failed")
     assert "durationMs" in failed.payload
     assert failed.payload["durationMs"] >= 0
 
@@ -159,10 +151,9 @@ async def test_wrapper_adds_duration_to_node_failed_event() -> None:
 async def test_wrapper_emits_start_but_not_complete_on_exception() -> None:
     from src.engine.context import set_current_event_bus, set_current_execution_id
 
-    bus = ExecutionEventBus()
-    q = await bus.subscribe("e1")
+    store = _FakeEventStore()
     set_current_execution_id("e1")
-    set_current_event_bus(bus)
+    set_current_event_bus(store)  # pyright: ignore[reportArgumentType]
 
     try:
         arun = wrap_executor_with_events(_RaisingExecutor(), _FakeNode("n1", "http"))  # pyright: ignore[reportArgumentType]
@@ -172,21 +163,11 @@ async def test_wrapper_emits_start_but_not_complete_on_exception() -> None:
         set_current_execution_id(None)
         set_current_event_bus(None)
 
-    events: list[Any] = []
-    while True:
-        try:
-            ev = await asyncio.wait_for(q.get(), timeout=0.05)
-        except TimeoutError:
-            break
-        if ev is None:
-            break
-        events.append(ev)
-
     # The wrapper now emits node_failed on exception so the UI can surface
     # the actual error without the user having to dig through backend logs.
-    types = [e.type for e in events]
+    types = [e.type for e in store.events]
     assert types == ["node_started", "node_failed"]
-    failed = events[1]
+    failed = store.events[1]
     assert failed.payload["nodeId"] == "n1"
     assert "boom" in failed.payload["error"]
 
@@ -202,10 +183,9 @@ async def test_wrapper_does_not_emit_node_failed_on_graph_interrupt() -> None:
 
     from src.engine.context import set_current_event_bus, set_current_execution_id
 
-    bus = ExecutionEventBus()
-    q = await bus.subscribe("e1")
+    store = _FakeEventStore()
     set_current_execution_id("e1")
-    set_current_event_bus(bus)
+    set_current_event_bus(store)  # pyright: ignore[reportArgumentType]
 
     try:
         node = _FakeNode("approval-1", "user-approval")
@@ -216,19 +196,9 @@ async def test_wrapper_does_not_emit_node_failed_on_graph_interrupt() -> None:
         set_current_execution_id(None)
         set_current_event_bus(None)
 
-    events: list[Any] = []
-    while True:
-        try:
-            ev = await asyncio.wait_for(q.get(), timeout=0.05)
-        except TimeoutError:
-            break
-        if ev is None:
-            break
-        events.append(ev)
-
-    types = [e.type for e in events]
+    types = [e.type for e in store.events]
     assert types == ["node_started"]
-    assert not any(e.type == "node_failed" for e in events)
+    assert not any(e.type == "node_failed" for e in store.events)
 
 
 async def test_wrapper_noop_when_context_unset() -> None:
@@ -245,6 +215,56 @@ async def test_wrapper_noop_when_context_unset() -> None:
     assert result["variables"]["k"] == "v"
 
 
+async def test_wrapper_persists_events_and_notifies() -> None:
+    from unittest.mock import AsyncMock, patch
+
+    from src.engine.context import set_current_event_bus, set_current_execution_id
+
+    store = AsyncMock()
+    store.append = AsyncMock(return_value=1)
+    set_current_execution_id("e1")
+    set_current_event_bus(store)
+
+    try:
+        with patch("src.engine.events_wrapper.notify_execution_event", new=AsyncMock()) as notify:
+            arun = wrap_executor_with_events(_FakeExecutor(), _FakeNode("n1", "http"))  # pyright: ignore[reportArgumentType]
+            await arun(initial_state())
+            assert store.append.await_count == 2  # node_started + node_completed
+            notify.assert_awaited()
+    finally:
+        set_current_execution_id(None)
+        set_current_event_bus(None)
+
+
+async def test_wrapper_node_completed_survives_event_store_failure() -> None:
+    """P1-4 regression: a telemetry-path failure (event append or NOTIFY)
+    must not abort the node. By the time node_completed would be emitted,
+    the executor has already produced its real, possibly expensive output
+    -- a broken event store must not discard that and raise past the
+    caller. _persist_and_notify's internal try/except is what protects
+    this."""
+    from src.engine.context import set_current_event_bus, set_current_execution_id
+
+    class _RaisingEventStore:
+        async def append(self, event: ExecutionEvent) -> int:
+            raise RuntimeError("simulated Postgres event-log outage")
+
+    set_current_execution_id("e1")
+    set_current_event_bus(_RaisingEventStore())  # pyright: ignore[reportArgumentType]
+
+    try:
+        arun = wrap_executor_with_events(_FakeExecutor(), _FakeNode("n1", "http"))  # pyright: ignore[reportArgumentType]
+        # Must not raise despite every append() call failing (node_started
+        # and node_completed both hit the broken store).
+        result = await arun(initial_state())
+    finally:
+        set_current_execution_id(None)
+        set_current_event_bus(None)
+
+    # The executor's actual output is still returned successfully.
+    assert result["variables"]["k"] == "v"
+
+
 async def test_build_graph_wraps_executors() -> None:
     """Integration: build_graph applies the wrapper and emits events through
     a real compiled graph."""
@@ -253,10 +273,9 @@ async def test_build_graph_wraps_executors() -> None:
     from src.engine.context import set_current_event_bus, set_current_execution_id
     from src.engine.graph_builder import build_graph
 
-    bus = ExecutionEventBus()
-    q = await bus.subscribe("e1")
+    store = _FakeEventStore()
     set_current_execution_id("e1")
-    set_current_event_bus(bus)
+    set_current_event_bus(store)  # pyright: ignore[reportArgumentType]
 
     wf = Workflow.model_validate(
         {
@@ -276,18 +295,8 @@ async def test_build_graph_wraps_executors() -> None:
         set_current_execution_id(None)
         set_current_event_bus(None)
 
-    events: list[Any] = []
-    while True:
-        try:
-            ev = await asyncio.wait_for(q.get(), timeout=0.05)
-        except TimeoutError:
-            break
-        if ev is None:
-            break
-        events.append(ev)
-
     types_by_node: dict[str, list[str]] = {}
-    for ev in events:
+    for ev in store.events:
         types_by_node.setdefault(ev.payload["nodeId"], []).append(ev.type)
 
     assert types_by_node["s"] == ["node_started", "node_completed"]

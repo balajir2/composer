@@ -7,8 +7,42 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.engine.events import ExecutionEvent
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
+
+
+@pytest.fixture(autouse=True)
+def _patch_enqueue_execution(  # pyright: ignore[reportUnusedFunction]
+    monkeypatch: pytest.MonkeyPatch,
+) -> AsyncMock:
+    """POST /executions/{id}/resume now enqueues a real Cloud Task (P1-2)
+    instead of a BackgroundTask. Default-patch it to a no-op for every
+    test in this module so tests that don't care about enqueueing (most
+    of them) don't trip over constructing a real
+    `tasks_v2.CloudTasksAsyncClient()` (which resolves ADC credentials
+    this test environment doesn't have). Tests that DO care about the
+    enqueue call override this via their own `monkeypatch.setattr` on the
+    same fixture-provided monkeypatch instance — mirrors
+    tests/unit/api/test_executions.py's identical fixture."""
+    mock = AsyncMock()
+    monkeypatch.setattr("src.api.executions.enqueue_execution", mock)
+    return mock
+
+
+class _FakeEventStore:
+    """In-memory stand-in for PostgresEventStore.append — the background
+    resume task calls event_bus.append(...); a real ExecutionEventBus has
+    no such method and NOTIFY needs a live Postgres connection, neither of
+    which this unit test has."""
+
+    def __init__(self) -> None:
+        self.events: list[ExecutionEvent] = []
+
+    async def append(self, event: ExecutionEvent) -> int:
+        seq = len(self.events) + 1
+        self.events.append(event)
+        return seq
 
 
 def _execution_row(**overrides: Any) -> SimpleNamespace:
@@ -41,7 +75,6 @@ def _client_with_execution(
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", "development")
     from src.config import get_settings
-    from src.engine.events import ExecutionEventBus
 
     get_settings.cache_clear()
     app = create_app()
@@ -58,8 +91,9 @@ def _client_with_execution(
     db.user.find_unique = AsyncMock(return_value=None)
     app.state.db = db
     app.state.checkpointer = MagicMock()
-    app.state.event_bus = ExecutionEventBus()
+    app.state.event_bus = _FakeEventStore()
     app.state.rate_limiter = RateLimiter()
+    monkeypatch.setattr("src.engine.langgraph_executor.notify_execution_event", AsyncMock())
     return TestClient(app), db
 
 
@@ -146,6 +180,31 @@ def test_resume_marks_execution_running_before_scheduling_task(
     assert resp.json()["status"] == "running"
 
 
+def test_resume_clears_stale_lease_in_same_update_many(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-2 fast-follow (2026-07-15 holistic review finding): the
+    waiting_approval -> running transition must clear leaseOwner/
+    leaseExpiresAt in the SAME atomic update_many that flips status --
+    otherwise the stale lease set by the original POST
+    /internal/claim-and-run claim survives the approval-pending window
+    and blocks the fresh Cloud Task delivery (enqueued right after this
+    call) from re-claiming the row until the old lease naturally expires.
+    Mocked-DB regression coverage only -- this does NOT prove the fix
+    against the real claim-query predicate; see
+    tests/integration/test_durable_execution.py's
+    test_resume_clears_stale_lease_and_reclaim_succeeds for that."""
+    client, db = _client_with_execution(monkeypatch, _execution_row())
+    resp = client.post("/executions/e1/resume", json={"decision": "approved"})
+    assert resp.status_code == 200, resp.text
+    db.workflowexecution.update_many.assert_awaited_once()
+    call = db.workflowexecution.update_many.await_args
+    assert call.kwargs["data"]["status"] == "running"
+    assert call.kwargs["data"]["leaseOwner"] is None
+    assert call.kwargs["data"]["leaseExpiresAt"] is None
+    assert call.kwargs["where"]["status"] == "waiting_approval"
+
+
 def test_resume_race_loses_when_update_many_affects_zero_rows(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -199,41 +258,56 @@ def test_admin_can_resume_other_users_execution(monkeypatch: pytest.MonkeyPatch)
     db.approval.create.assert_awaited_once()
 
 
+def test_resume_enqueues_cloud_task_instead_of_background_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-2 full replacement: POST /executions/{id}/resume must enqueue a
+    Cloud Task (kind='resume') rather than scheduling a request-bound
+    BackgroundTask — mirrors POST /executions' own Task 12 replacement.
+    The decision is stamped into `variables._resume_decision` BEFORE
+    enqueueing since enqueue_execution's Cloud Task body is hardcoded to
+    {"executionId": ..., "kind": ...} with no room for the decision value;
+    claim-and-run reads it back from the claimed row's variables."""
+    enqueued: list[tuple[str, str]] = []
+
+    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+        enqueued.append((execution_id, kind))
+
+    monkeypatch.setattr("src.api.executions.enqueue_execution", _fake_enqueue)
+
+    client, db = _client_with_execution(monkeypatch, _execution_row())
+    resp = client.post("/executions/e1/resume", json={"decision": "approved"})
+    assert resp.status_code == 200, resp.text
+    assert enqueued == [("e1", "resume")]
+
+    db.workflowexecution.update.assert_awaited_once()
+    update_call = db.workflowexecution.update.await_args
+    assert update_call.kwargs["where"]["id"] == "e1"
+    stamped_variables = update_call.kwargs["data"]["variables"].data
+    assert stamped_variables["_resume_decision"] == "approved"
+    # Original variables (the pending-approval bookkeeping) must survive
+    # the stamp, not be clobbered.
+    assert stamped_variables["_pending_approval_node"] == "ua"
+
+
 def test_resume_does_not_emit_approval_resumed_event(monkeypatch: pytest.MonkeyPatch) -> None:
     """POST /resume no longer emits approval-resumed (dropped in DES-007 Phase 9a).
 
     DES-007 covers the post-resume activity via the subsequent node_started event
     emitted by the LangGraphExecutor after resume() drives the graph.
     """
-    import asyncio
-
     client, _db = _client_with_execution(monkeypatch, _execution_row())
-    bus: Any = getattr(client.app, "state").event_bus  # noqa: B009
+    store: _FakeEventStore = getattr(client.app, "state").event_bus  # noqa: B009
 
-    async def _collect_after_post() -> list[Any]:
-        q = await bus.subscribe("e1")
-        events: list[Any] = []
-        client.post(
-            "/executions/e1/resume",
-            json={"decision": "approved", "note": "ok"},
-        )
-        try:
-            while True:
-                try:
-                    ev = await asyncio.wait_for(q.get(), timeout=0.2)
-                except TimeoutError:
-                    break
-                if ev is None:
-                    break
-                events.append(ev)
-        finally:
-            await bus.unsubscribe("e1", q)
-        return events
+    client.post(
+        "/executions/e1/resume",
+        json={"decision": "approved", "note": "ok"},
+    )
 
-    events = asyncio.run(_collect_after_post())
-    # approval-resumed is dropped in DES-007; the bus should have no events
-    # from the HTTP layer (only the executor emits workflow_started after resume).
-    approval_resumed = [e for e in events if getattr(e, "type", None) == "approval-resumed"]
+    # approval-resumed is dropped in DES-007; the persisted store should have
+    # no events of that type (only the executor's own workflow_started /
+    # node_started / etc. events land here after resume() drives the graph).
+    approval_resumed = [e for e in store.events if e.type == "approval-resumed"]  # pyright: ignore[reportUnnecessaryComparison]
     assert not approval_resumed, (
-        f"unexpected approval-resumed event; got {[(e.type, e.payload) for e in events]}"
+        f"unexpected approval-resumed event; got {[(e.type, e.payload) for e in store.events]}"
     )

@@ -12,7 +12,32 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
+from src.engine.events import ExecutionEvent
 from src.engine.langgraph_executor import LangGraphExecutor
+
+
+class _FakeEventStore:
+    """In-memory stand-in for PostgresEventStore.append — no real Postgres
+    round-trip, just an append-only list with an assigned sequence number,
+    so these unit tests don't need a live database."""
+
+    def __init__(self) -> None:
+        self.events: list[ExecutionEvent] = []
+
+    async def append(self, event: ExecutionEvent) -> int:
+        seq = len(self.events) + 1
+        self.events.append(event)
+        return seq
+
+
+@pytest.fixture(autouse=True)
+def _patch_notify(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # pyright: ignore[reportUnusedFunction]
+    """LangGraphExecutor._emit calls notify_execution_event(execution_id, seq=seq)
+    after every append — patch it to a no-op so unit tests never attempt a
+    real asyncpg connection."""
+    mock = AsyncMock()
+    monkeypatch.setattr("src.engine.langgraph_executor.notify_execution_event", mock)
+    return mock
 
 
 def _workflow_row(workflow_dict: dict[str, Any]) -> SimpleNamespace:
@@ -39,27 +64,31 @@ def _start_to_end_workflow_dict() -> dict[str, Any]:
     }
 
 
-async def test_start_execution_creates_row_with_running_status() -> None:
+async def test_start_execution_creates_row_with_queued_status() -> None:
+    """P1-2: rows start life `queued`, not `running` — the row only
+    becomes `running` once POST /internal/claim-and-run actually claims
+    it (src/api/internal.py), since the caller now enqueues a Cloud Task
+    rather than running the execution inline."""
     db = MagicMock()
     db.workflowexecution = MagicMock()
     db.workflowexecution.create = AsyncMock(
         return_value=SimpleNamespace(
             id="ex1",
             workflowId="wf1",
-            status="running",
+            status="queued",
             threadId="t1",
         )
     )
     executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
     row = await executor.start_execution(workflow_id="wf1", input={"msg": "hi"}, user_id="dev")
     assert row.id == "ex1"
-    assert row.status == "running"
+    assert row.status == "queued"
     db.workflowexecution.create.assert_awaited_once()
     assert db.workflowexecution.create.await_args is not None
     create_kwargs = db.workflowexecution.create.await_args.kwargs["data"]
     assert create_kwargs["workflowId"] == "wf1"
     assert create_kwargs["userId"] == "dev"
-    assert create_kwargs["status"] == "running"
+    assert create_kwargs["status"] == "queued"
     assert isinstance(create_kwargs["threadId"], str) and len(create_kwargs["threadId"]) > 0
 
 
@@ -309,17 +338,15 @@ async def test_run_emits_status_change_on_start_and_complete(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """run() emits workflow_started(running) before ainvoke and workflow_completed(completed)
-    + close() after."""
+    after."""
     from types import SimpleNamespace
     from typing import Any as _Any
     from unittest.mock import AsyncMock, MagicMock
 
     from src.engine import langgraph_executor as lge_mod
-    from src.engine.events import ExecutionEventBus
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    bus = ExecutionEventBus()
-    queue = await bus.subscribe("e1")
+    store = _FakeEventStore()
 
     db = MagicMock()
     db.workflowexecution = MagicMock()
@@ -359,26 +386,18 @@ async def test_run_emits_status_change_on_start_and_complete(
 
     monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
 
-    orch = LangGraphExecutor(db, MagicMock(), event_bus=bus)
+    orch = LangGraphExecutor(db, MagicMock(), event_bus=store)  # pyright: ignore[reportArgumentType]
     await orch.run("e1")
 
-    events: list[_Any] = []
-    import asyncio as _aio
-
-    while True:
-        try:
-            ev = await _aio.wait_for(queue.get(), timeout=0.1)
-        except TimeoutError:
-            break
-        if ev is None:
-            break
-        events.append(ev)
-
-    types = [e.type for e in events]
+    types = [e.type for e in store.events]
     assert "workflow_started" in types
     assert "workflow_completed" in types
-    started_statuses = [e.payload.get("status") for e in events if e.type == "workflow_started"]
-    completed_statuses = [e.payload.get("status") for e in events if e.type == "workflow_completed"]
+    started_statuses = [
+        e.payload.get("status") for e in store.events if e.type == "workflow_started"
+    ]
+    completed_statuses = [
+        e.payload.get("status") for e in store.events if e.type == "workflow_completed"
+    ]
     assert "running" in started_statuses
     assert "completed" in completed_statuses
 
@@ -392,11 +411,9 @@ async def test_run_emits_approval_pending_on_pause(
     from unittest.mock import AsyncMock, MagicMock
 
     from src.engine import langgraph_executor as lge_mod
-    from src.engine.events import ExecutionEventBus
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    bus = ExecutionEventBus()
-    queue = await bus.subscribe("e1")
+    store = _FakeEventStore()
 
     db = MagicMock()
     db.workflowexecution = MagicMock()
@@ -453,24 +470,12 @@ async def test_run_emits_approval_pending_on_pause(
 
     monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
 
-    orch = LangGraphExecutor(db, MagicMock(), event_bus=bus)
+    orch = LangGraphExecutor(db, MagicMock(), event_bus=store)  # pyright: ignore[reportArgumentType]
     await orch.run("e1")
 
-    events: list[_Any] = []
-    import asyncio as _aio
-
-    while True:
-        try:
-            ev = await _aio.wait_for(queue.get(), timeout=0.1)
-        except TimeoutError:
-            break
-        if ev is None:
-            break
-        events.append(ev)
-
-    types = [e.type for e in events]
+    types = [e.type for e in store.events]
     assert "approval_required" in types
-    pending = next(e for e in events if e.type == "approval_required")
+    pending = next(e for e in store.events if e.type == "approval_required")
     assert pending.payload["node_id"] == "ua"
     assert pending.payload["prompt"] == "Approve?"
     assert pending.payload.get("status") == "waiting_approval"
@@ -480,14 +485,11 @@ async def test_run_emits_failed_on_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from types import SimpleNamespace
-    from typing import Any as _Any
     from unittest.mock import AsyncMock, MagicMock
 
-    from src.engine.events import ExecutionEventBus
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    bus = ExecutionEventBus()
-    queue = await bus.subscribe("e1")
+    store = _FakeEventStore()
 
     db = MagicMock()
     db.workflowexecution = MagicMock()
@@ -504,22 +506,10 @@ async def test_run_emits_failed_on_exception(
     db.workflow.find_unique = AsyncMock(side_effect=RuntimeError("boom"))
     db.workflowexecution.update = AsyncMock()
 
-    orch = LangGraphExecutor(db, MagicMock(), event_bus=bus)
+    orch = LangGraphExecutor(db, MagicMock(), event_bus=store)  # pyright: ignore[reportArgumentType]
     await orch.run("e1")
 
-    events: list[_Any] = []
-    import asyncio as _aio
-
-    while True:
-        try:
-            ev = await _aio.wait_for(queue.get(), timeout=0.1)
-        except TimeoutError:
-            break
-        if ev is None:
-            break
-        events.append(ev)
-
-    statuses = [e.payload.get("status") for e in events if e.type == "workflow_completed"]
+    statuses = [e.payload.get("status") for e in store.events if e.type == "workflow_completed"]
     assert "failed" in statuses
 
 
@@ -819,6 +809,180 @@ async def test_resume_chained_pause_stamps_consistent_pending_since(
 
     assert persisted_pending_since is not None
     assert persisted_pending_since == emailed_pending_since
+
+
+async def test_run_completed_status_survives_emit_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """P1-4 regression: a telemetry-path failure (event append or NOTIFY)
+    must not corrupt the already-persisted execution outcome. Before the
+    fix, `_emit` raising after `_mark_completed` had already written
+    status='completed' would propagate to run()'s outer except, which
+    unconditionally calls `_mark_failed` -- overwriting a correct
+    'completed' status with 'failed' purely because of a broken event
+    log/NOTIFY connection."""
+    from src.engine import langgraph_executor as lge_mod
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    class _RaisingEventStore:
+        async def append(self, event: ExecutionEvent) -> int:
+            raise RuntimeError("simulated Postgres event-log outage")
+
+    db = MagicMock()
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="e1",
+            workflowId="w1",
+            userId="dev",
+            threadId="t1",
+            input=None,
+        )
+    )
+    db.workflow = MagicMock()
+    db.workflow.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="w1",
+            name="t",
+            nodes=[
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
+            ],
+            edges=[{"id": "e1", "source": "s", "target": "e"}],
+        )
+    )
+
+    update_calls: list[dict[str, Any]] = []
+
+    async def _update(*, where: Any, data: Any) -> Any:
+        update_calls.append(data)
+        return None
+
+    db.workflowexecution.update = _update
+
+    class _FakeSnap:
+        next = ()
+        tasks = ()
+
+    class _FakeCompiled:
+        async def ainvoke(self, *a: Any, **kw: Any) -> dict[str, Any]:
+            return {"variables": {"lastOutput": "done"}, "node_results": {}}
+
+        async def aget_state(self, *a: Any, **kw: Any) -> Any:
+            return _FakeSnap()
+
+    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+
+    orch = LangGraphExecutor(db, MagicMock(), event_bus=_RaisingEventStore())  # pyright: ignore[reportArgumentType]
+    await orch.run("e1")
+
+    # Exactly one DB update -- _mark_completed. If the bug were present, a
+    # second update (from _mark_failed in the outer except) would follow,
+    # flipping status to 'failed'.
+    assert len(update_calls) == 1, update_calls
+    assert update_calls[0]["status"] == "completed"
+    assert not any(c.get("status") == "failed" for c in update_calls)
+
+
+async def test_resume_waiting_approval_status_survives_emit_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same guard as above, but for resume()'s waiting_approval path -- an
+    approver may already have a valid emailed token pointing at
+    status='waiting_approval'; a broken event emit must not flip that to
+    'failed' and strand the token."""
+    from typing import ClassVar
+
+    from src.engine import langgraph_executor as lge_mod
+
+    send_mock = AsyncMock()
+    monkeypatch.setattr(lge_mod, "send_approval_email", send_mock)
+
+    class _RaisingEventStore:
+        async def append(self, event: ExecutionEvent) -> int:
+            raise RuntimeError("simulated Postgres event-log outage")
+
+    db = MagicMock()
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="e1",
+            workflowId="w1",
+            userId="dev",
+            threadId="t1",
+            input=None,
+        )
+    )
+    db.workflow = MagicMock()
+    db.workflow.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="w1",
+            name="t",
+            nodes=[
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "ua",
+                    "type": "user-approval",
+                    "position": {"x": 0, "y": 0},
+                    "data": {
+                        "label": "UA",
+                        "approvalMessage": "Approve again?",
+                        "approverEmail": "reviewer@example.com",
+                    },
+                },
+                {"id": "a", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "A"}},
+                {"id": "b", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "B"}},
+            ],
+            edges=[
+                {"id": "e1", "source": "s", "target": "ua"},
+                {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
+                {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
+            ],
+        )
+    )
+
+    update_calls: list[dict[str, Any]] = []
+
+    async def _update(*, where: Any, data: Any) -> Any:
+        update_calls.append(data)
+        return None
+
+    db.workflowexecution.update = _update
+
+    class _FakeInterrupt:
+        value: ClassVar[dict[str, str]] = {
+            "node_id": "ua",
+            "prompt": "Approve again?",
+            "approver_email": "reviewer@example.com",
+            "approver_cc": "",
+        }
+
+    class _FakeTask:
+        interrupts: ClassVar[tuple[_FakeInterrupt, ...]] = (_FakeInterrupt(),)
+
+    class _FakeSnapPaused:
+        next: ClassVar[tuple[str, ...]] = ("ua",)
+        tasks: ClassVar[tuple[_FakeTask, ...]] = (_FakeTask(),)
+
+    class _FakeCompiled:
+        async def ainvoke(self, *a: Any, **kw: Any) -> dict[str, Any]:
+            return {"variables": {"lastOutput": "loop-iteration"}, "node_results": {}}
+
+        async def aget_state(self, *a: Any, **kw: Any) -> Any:
+            return _FakeSnapPaused()
+
+    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+
+    orchestrator = LangGraphExecutor(db, MagicMock(), event_bus=_RaisingEventStore())  # pyright: ignore[reportArgumentType]
+    await orchestrator.resume("e1", "approved")
+
+    # send_approval_email must still fire -- the approver gets a valid token --
+    # and the persisted status must remain waiting_approval, not be flipped to
+    # failed by the broken event store.
+    send_mock.assert_awaited_once()
+    assert len(update_calls) == 1, update_calls
+    assert update_calls[0]["status"] == "waiting_approval"
+    assert not any(c.get("status") == "failed" for c in update_calls)
 
 
 async def test_mark_waiting_approval_stamps_pending_since() -> None:

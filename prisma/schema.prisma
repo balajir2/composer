@@ -64,6 +64,9 @@ model WorkflowExecution {
   threadId      String    @unique         @map("thread_id")
   originalOwnerEmail String? @map("original_owner_email")
   idempotencyKey String?  @map("idempotency_key")
+  leaseOwner    String?   @map("lease_owner")
+  leaseExpiresAt DateTime? @map("lease_expires_at")
+  deliveryAttempts Int    @default(0) @map("delivery_attempts")
 
   workflow      Workflow  @relation(fields: [workflowId], references: [id], onDelete: Cascade)
   approvals     Approval[]
@@ -281,4 +284,28 @@ model LlmModel {
   @@unique([provider, modelId])
   @@map("llm_models")
   @@index([provider, enabled])
+}
+
+model ExecutionEvent {
+  id            String   @id @default(cuid())
+  executionId   String   @map("execution_id")
+  seq           Int
+  type          String
+  payload       Json
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@map("execution_events")
+  @@unique([executionId, seq])
+  @@index([executionId])
+}
+
+model RateLimitBucket {
+  id              String   @id @default(cuid())
+  routeKey        String   @map("route_key")
+  clientKey       String   @map("client_key")
+  tokens          Float
+  lastRefill      DateTime @map("last_refill")
+
+  @@map("rate_limit_buckets")
+  @@unique([routeKey, clientKey])
 }

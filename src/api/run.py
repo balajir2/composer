@@ -12,7 +12,6 @@ import asyncio
 import json as _json
 import logging
 import time
-from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -21,9 +20,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.config import get_settings
 from src.engine.langgraph_executor import LangGraphExecutor
+from src.execution.cloud_tasks import enqueue_execution
 from src.security.api_key_auth import ApiKeyAuthResult, get_current_api_key_user
 from src.security.rate_limit import (
-    RateLimiter,
+    RateLimiterProtocol,
     enforce,
     get_rate_limiter,
     per_minute_config,
@@ -32,70 +32,11 @@ from src.storage.db import get_db, get_event_bus
 
 if TYPE_CHECKING:
     from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
-    from src.engine.events import ExecutionEventBus
+    from src.engine.events_pg import PostgresEventStore
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["run"])
-
-
-async def _run_with_persistence(  # pyright: ignore[reportUnusedFunction]
-    executor: LangGraphExecutor, db: Any, execution_id: str
-) -> None:
-    """Wrap `executor.run()` so an uncaught crash still marks the row failed.
-
-    `LangGraphExecutor.run()` catches its own exceptions and persists 'failed'
-    inside its body — that's the happy-path safety net.  But if something goes
-    wrong *before* that try/except is reached (an import-time error, an
-    `await` cancelled by a worker shutdown, a bug in the executor's own
-    persistence call), the row stays 'running' indefinitely until the
-    background sweeper catches it.
-
-    This wrapper adds a second-line defence: a final try/except that reaches
-    directly for the `WorkflowExecution` table and stamps 'failed' before
-    re-raising.  Errors here are best-effort — we never want to mask the
-    original exception or block the executor's primary cleanup.
-    """
-    try:
-        await executor.run(execution_id)
-    except asyncio.CancelledError:
-        # Cancellation = worker shutdown.  Mark the row failed so it doesn't
-        # need to wait for the sweeper interval to be cleaned up.
-        try:
-            await db.workflowexecution.update(
-                where={"id": execution_id},
-                data={
-                    "status": "failed",
-                    "error": "Execution canceled by worker shutdown.",
-                    "completedAt": datetime.now(UTC),
-                },
-            )
-        except Exception:
-            logger.exception(
-                "run: failed to mark canceled execution %s as failed",
-                execution_id,
-            )
-        raise
-    except Exception as exc:
-        logger.exception("run: detached executor task crashed for %s", execution_id)
-        try:
-            await db.workflowexecution.update(
-                where={"id": execution_id},
-                data={
-                    "status": "failed",
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "completedAt": datetime.now(UTC),
-                },
-            )
-        except Exception:
-            logger.exception(
-                "run: failed to mark crashed execution %s as failed",
-                execution_id,
-            )
-        # Re-raise so the asyncio task carries the original exception —
-        # consumed by the done_callback so it doesn't print to stderr,
-        # but observable to anyone who awaits or inspects the task.
-        raise
 
 
 class RunRequest(BaseModel):
@@ -161,9 +102,9 @@ async def run_external(
     payload: RunRequest,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    event_bus: ExecutionEventBus = Depends(get_event_bus),
+    event_bus: PostgresEventStore = Depends(get_event_bus),
     auth: ApiKeyAuthResult = Depends(get_current_api_key_user),
-    limiter: RateLimiter = Depends(get_rate_limiter),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> Any:  # pyright: ignore[reportUnusedFunction]
     settings = get_settings()
     await enforce(
@@ -238,13 +179,19 @@ async def run_external(
     stream_url = base_url.replace("http", "ws", 1) + f"/executions/{execution.id}/ws"
 
     if not is_replay:
-        # Fire-and-forget run task.  We wrap the executor call so that any
-        # uncaught crash (or task cancellation on worker shutdown) still
-        # persists 'failed' to the row — without that wrapper the row would
-        # linger as 'running' until the maintenance sweeper notices.
-        _task = asyncio.create_task(_run_with_persistence(executor, db, execution.id))
-        # Suppress "task was destroyed but it is pending" on test teardown.
-        _task.add_done_callback(lambda t: t.exception() if not t.cancelled() else None)
+        # P1-2 (Task 13): enqueue a Cloud Task instead of a request-bound
+        # asyncio.create_task — Cloud Run can scale a request-bound
+        # background task's instance to zero mid-run (ADR-0033). Cloud
+        # Tasks' HTTP-push delivery to /internal/claim-and-run is a real
+        # inbound request, which Cloud Run won't recycle mid-flight.
+        # claim-and-run's lease + sweep_expired_leases (Task 11) is now
+        # the crash-safety net for a worker dying mid-run — see this
+        # module's removed `_run_with_persistence` in git history and the
+        # Task 13 investigation notes in the durable-execution plan for
+        # why that in-process wrapper became redundant once claim-and-run
+        # (a real, lease-tracked inbound request) replaced the detached
+        # asyncio task it used to wrap.
+        await enqueue_execution(execution.id, kind="run")
 
     if not payload.sync:
         return RunAsyncResponse(

@@ -4,8 +4,23 @@
 #   1. Creates Secret Manager entries for every runtime secret Composer
 #      needs.  Reads values from .env (repo root) by default; you can
 #      override per-secret with -SkipSecrets.
+#   1a. Provisions the composer-executions Cloud Tasks queue and a shared
+#      OIDC service account (P1-2/P1-4, ADR-0033) used by both Cloud
+#      Tasks (claim-and-run) and Cloud Scheduler (sweep) push auth.
 #   2. Builds + pushes the backend image to Artifact Registry.
 #   3. Deploys the backend Cloud Run service.
+#   3a. Grants the backend's own runtime service account (Cloud Run's
+#      default compute SA, since no --service-account is set on the
+#      backend deploy) roles/cloudtasks.enqueuer plus
+#      roles/iam.serviceAccountTokenCreator on the shared OIDC service
+#      account, so enqueue_execution() can actually call Cloud Tasks'
+#      CreateTask and mint the OIDC token embedded in the task body.
+#   3b. Grants the shared service account roles/run.invoker on the
+#      backend service.
+#   3c. Provisions the composer-sweep Cloud Scheduler job, which POSTs
+#      /internal/sweep every 5 minutes (replaces the in-process sweeper
+#      loop in production; EXECUTION_SWEEPER_INTERVAL_SECONDS=0 disables
+#      it on the deployed service).
 #   4. Builds + pushes the frontend image with NEXT_PUBLIC_COMPOSER_API_URL
 #      baked in (pointing at the backend URL — *.run.app for the first
 #      deploy, custom domain when provided).
@@ -137,6 +152,68 @@ if (-not $SkipSecrets) {
     Set-Secret -Name "composer-nextauth-secret"  -Value $env["NEXTAUTH_SECRET"]
 }
 
+# ─── 1a. Cloud Tasks queue + shared OIDC service account ────────────
+# P1-2/P1-4 durable execution (ADR-0033). One shared service account
+# authenticates BOTH Cloud Tasks push deliveries (claim-and-run) and
+# Cloud Scheduler push deliveries (sweep) — src/api/internal.py's
+# _verify_internal_oidc derives the expected audience from the
+# request's own path, specifically so one identity/verification
+# mechanism can serve both endpoints. Do not provision two accounts.
+Write-Step "1a. Cloud Tasks queue + shared OIDC service account"
+
+$queueExists = gcloud tasks queues describe composer-executions `
+    --location=$Region --project=$ProjectId 2>$null
+if (-not $queueExists) {
+    Write-Host "  [create] Cloud Tasks queue composer-executions"
+    gcloud tasks queues create composer-executions `
+        --location=$Region `
+        --project=$ProjectId `
+        --max-attempts=5 `
+        --max-retry-duration=3600s `
+        --min-backoff=10s `
+        --max-backoff=300s | Out-Null
+} else {
+    Write-Host "  [exists] Cloud Tasks queue composer-executions" -ForegroundColor DarkGray
+}
+
+$cloudTasksSvcAccountId = "composer-tasks"
+$cloudTasksServiceAccountEmail = "$cloudTasksSvcAccountId@$ProjectId.iam.gserviceaccount.com"
+$svcAccountExists = gcloud iam service-accounts describe $cloudTasksServiceAccountEmail `
+    --project=$ProjectId 2>$null
+if (-not $svcAccountExists) {
+    Write-Host "  [create] $cloudTasksServiceAccountEmail"
+    gcloud iam service-accounts create $cloudTasksSvcAccountId `
+        --project=$ProjectId `
+        --display-name="Composer Cloud Tasks / Scheduler" | Out-Null
+} else {
+    Write-Host "  [exists] $cloudTasksServiceAccountEmail" -ForegroundColor DarkGray
+}
+
+# add-iam-policy-binding is itself idempotent (no duplicate binding is
+# created on re-run), so this isn't wrapped in an existence check like
+# the create steps above.
+# --condition=None avoids an interactive IAM-conditions prompt when this
+# script is run non-interactively.
+Write-Host "  [grant] roles/cloudtasks.enqueuer -> $cloudTasksServiceAccountEmail"
+gcloud projects add-iam-policy-binding $ProjectId `
+    --member="serviceAccount:$cloudTasksServiceAccountEmail" `
+    --role="roles/cloudtasks.enqueuer" `
+    --condition=None | Out-Null
+
+# NOTE: granting roles/cloudtasks.enqueuer to $cloudTasksServiceAccountEmail
+# above does NOT, by itself, let enqueue_execution() work. The backend
+# Cloud Run service's OWN runtime identity (Cloud Run's default compute
+# SA — this script deliberately does not deploy the backend with
+# --service-account=$cloudTasksServiceAccountEmail) is what actually calls
+# CloudTasksAsyncClient.create_task() via Application Default Credentials.
+# That identity is granted its own roles/cloudtasks.enqueuer, plus
+# roles/iam.serviceAccountTokenCreator on $cloudTasksServiceAccountEmail
+# (to mint the OIDC token embedded in the task body), in section 3a below
+# — deferred until after the backend is deployed, since only then can its
+# runtime SA be queried. See section 3a's own comment for the full
+# rationale, including why the backend isn't just deployed with
+# --service-account=$cloudTasksServiceAccountEmail directly.
+
 # ─── 2. build + push backend image ──────────────────────────────────
 if (-not $SkipBuild) {
     Write-Step "2. Build + push backend image"
@@ -172,6 +249,16 @@ $setSecretsParts = $secretMappings |
     ForEach-Object { "$($_.env)=$($_.secret):latest" }
 $setSecrets = $setSecretsParts -join ","
 
+# CPU throttling is left at Cloud Run's default (throttled outside of a
+# live request) — deliberately NOT --no-cpu-throttling. That flag existed
+# solely to keep the in-process stuck-execution sweeper's asyncio loop
+# ticking between requests, but bills CPU continuously for as long as an
+# instance is up regardless of request activity — the dominant Cloud Run
+# cost driver per a 2026-07-14 cost review (ADR-0033 addendum). Task 11/14
+# replace the in-process loop with the Cloud Scheduler-triggered
+# composer-sweep job (section 3c below), which POSTs /internal/sweep on a
+# fixed interval as a real inbound request — no background CPU allocation
+# needed. Do not re-add --no-cpu-throttling.
 $backendDeployArgs = @(
     "run", "deploy", $BackendService,
     "--image=$backendImage",
@@ -183,21 +270,19 @@ $backendDeployArgs = @(
     "--min-instances=0",
     "--max-instances=3",
     "--cpu-boost",
-    # CPU throttling left at Cloud Run's default (throttled outside of a live
-    # request) rather than --no-cpu-throttling. That flag was previously
-    # needed to keep the in-process stuck-execution sweeper's asyncio loop
-    # ticking between requests, but it bills continuously for as long as any
-    # instance is up — a real ongoing cost, not just a request-shaped one.
-    # Cost review 2026-07-14 (docs/decisions.md ADR-0033 addendum): the
-    # sweeper is being converted to a Cloud Scheduler-triggered HTTP endpoint
-    # (durable-execution plan Task 11), which needs no background CPU between
-    # requests. Until that lands, the in-process sweeper only actually runs
-    # when a live request happens to wake the instance — acceptable during
-    # POC/POV; revisit before production load.
     "--timeout=3600",               # 60-minute request timeout (Cloud Run max) — covers long workflows
     "--concurrency=80",
     "--port=8080",
-    "--set-env-vars=ENVIRONMENT=production,COMPOSER_DEPLOYMENT_MODE=standalone,LOG_LEVEL=INFO,EXECUTION_STUCK_AFTER_SECONDS=900,EXECUTION_SWEEPER_INTERVAL_SECONDS=300",
+    # EXECUTION_SWEEPER_INTERVAL_SECONDS=0 disables the in-process sweeper
+    # loop in production (src/config.py: "Set 0 to disable") now that
+    # composer-sweep (section 3c below) covers lease/retention cleanup via
+    # a real inbound request. The loop itself stays in the codebase for
+    # local/dev use (Task 11) — this only turns it off in this deployment.
+    # GCP_PROJECT_ID/GCP_REGION/CLOUD_TASKS_QUEUE/CLOUD_TASKS_SERVICE_ACCOUNT
+    # are what enqueue_execution() (src/execution/cloud_tasks.py) and
+    # _verify_internal_oidc() (src/api/internal.py) need at runtime to
+    # enqueue tasks and verify push-auth tokens, respectively.
+    "--set-env-vars=ENVIRONMENT=production,COMPOSER_DEPLOYMENT_MODE=standalone,LOG_LEVEL=INFO,EXECUTION_STUCK_AFTER_SECONDS=900,EXECUTION_SWEEPER_INTERVAL_SECONDS=0,GCP_PROJECT_ID=$ProjectId,GCP_REGION=$Region,CLOUD_TASKS_QUEUE=composer-executions,CLOUD_TASKS_SERVICE_ACCOUNT=$cloudTasksServiceAccountEmail",
     "--set-secrets=$setSecrets"
 )
 if ($AllowUnauthenticated) { $backendDeployArgs += "--allow-unauthenticated" }
@@ -206,6 +291,80 @@ gcloud @backendDeployArgs
 $backendRunUrl = gcloud run services describe $BackendService --region=$Region --project=$ProjectId --format="value(status.url)"
 Write-Host ""
 Write-Host "Backend deployed: $backendRunUrl" -ForegroundColor Green
+
+# ─── 3a. grant backend runtime SA permission to enqueue Cloud Tasks ─
+# enqueue_execution() (src/execution/cloud_tasks.py) constructs
+# CloudTasksAsyncClient with no explicit credentials, so it resolves
+# Application Default Credentials — inside Cloud Run, that's whatever
+# identity THIS service actually runs as. Since section 3 above
+# deliberately does not deploy $BackendService with
+# --service-account=$cloudTasksServiceAccountEmail (doing so would also
+# change which identity reads the --set-secrets-mounted secrets, which
+# would need roles/secretmanager.secretAccessor granted before the
+# service could even start — an untested, high-blast-radius change out
+# of scope here), the backend runs as Cloud Run's default compute
+# service account instead. That identity — NOT
+# $cloudTasksServiceAccountEmail — is the one that calls
+# CreateTask(), and it was never granted permission to do so. It also
+# needs to mint the OIDC token embedded in the task body
+# (oidc_token.service_account_email = $cloudTasksServiceAccountEmail),
+# which requires the actAs permission on that service account
+# specifically, not a project-level role.
+#
+# Queried directly from the deployed service (rather than guessing the
+# "<PROJECT_NUMBER>-compute@developer.gserviceaccount.com" format) so
+# this is correct even if the default was ever overridden. Falls back to
+# the constructed default-compute-SA email only if the service
+# description doesn't echo an explicit value back (observed to happen
+# when --service-account was never passed at deploy time).
+Write-Step "3a. Grant backend runtime SA permission to enqueue Cloud Tasks"
+$backendRuntimeSa = gcloud run services describe $BackendService `
+    --region=$Region --project=$ProjectId `
+    --format="value(spec.template.spec.serviceAccountName)"
+if (-not $backendRuntimeSa) {
+    Write-Host "  Runtime SA not explicit on the service spec; falling back to the default compute SA." -ForegroundColor DarkGray
+    $projectNumber = gcloud projects describe $ProjectId --format="value(projectNumber)"
+    if (-not $projectNumber) {
+        Write-Host "ERROR: could not determine $BackendService's runtime service account (describe returned empty, and the project-number fallback lookup also failed)." -ForegroundColor Red
+        exit 1
+    }
+    $backendRuntimeSa = "$projectNumber-compute@developer.gserviceaccount.com"
+}
+Write-Host "  Backend runtime SA: $backendRuntimeSa"
+
+# add-iam-policy-binding is itself idempotent (safe to re-run; matches
+# the style used for $cloudTasksServiceAccountEmail's enqueuer grant
+# above in section 1a).
+Write-Host "  [grant] roles/cloudtasks.enqueuer -> $backendRuntimeSa"
+gcloud projects add-iam-policy-binding $ProjectId `
+    --member="serviceAccount:$backendRuntimeSa" `
+    --role="roles/cloudtasks.enqueuer" `
+    --condition=None | Out-Null
+
+# This is a binding ON $cloudTasksServiceAccountEmail's own IAM policy
+# (service-accounts add-iam-policy-binding), granting $backendRuntimeSa
+# the right to act as it — NOT a project-level role grant TO
+# $cloudTasksServiceAccountEmail. Those are different commands; this is
+# the one that lets the backend mint an OIDC token asserting the
+# composer-tasks identity.
+Write-Host "  [grant] roles/iam.serviceAccountTokenCreator -> $backendRuntimeSa on $cloudTasksServiceAccountEmail"
+gcloud iam service-accounts add-iam-policy-binding $cloudTasksServiceAccountEmail `
+    --member="serviceAccount:$backendRuntimeSa" `
+    --role="roles/iam.serviceAccountTokenCreator" `
+    --project=$ProjectId | Out-Null
+
+# ─── 3b. grant Cloud Run invoker to the shared service account ──────
+# Lets both Cloud Tasks (claim-and-run) and Cloud Scheduler (sweep) push
+# requests reach the backend under this identity. Cloud Run's own IAM
+# check is bypassed while -AllowUnauthenticated stays true (the default),
+# but this binding matters the moment that's flipped false, and costs
+# nothing to grant now.
+Write-Step "3b. Grant Cloud Run invoker to shared service account"
+gcloud run services add-iam-policy-binding $BackendService `
+    --region=$Region `
+    --project=$ProjectId `
+    --member="serviceAccount:$cloudTasksServiceAccountEmail" `
+    --role="roles/run.invoker" | Out-Null
 
 # ─── 4. build + push frontend image ─────────────────────────────────
 # The frontend needs NEXT_PUBLIC_COMPOSER_API_URL baked at build time.
@@ -224,6 +383,35 @@ gcloud run services update $BackendService `
     --region=$Region `
     --project=$ProjectId `
     --update-env-vars="BACKEND_PUBLIC_URL=$apiUrl" | Out-Null
+
+# ─── 3c. Cloud Scheduler sweep job ───────────────────────────────────
+# Triggers POST /internal/sweep on a fixed interval, replacing the
+# in-process sweeper loop (EXECUTION_SWEEPER_INTERVAL_SECONDS=0 above).
+# Schedule matches EXECUTION_SWEEPER_INTERVAL_SECONDS's un-disabled
+# default of 300s (src/config.py) — keep these in sync if that default
+# ever changes. Placed here (after BACKEND_PUBLIC_URL is set from $apiUrl,
+# not earlier from $backendRunUrl) so --oidc-token-audience exactly
+# matches what src/api/internal.py's _verify_internal_oidc computes at
+# request time: f"{settings.backend_public_url}{request.url.path}". Using
+# $backendRunUrl instead would silently break auth whenever -BackendDomain
+# is set, since backend_public_url would then be the custom domain, not
+# the *.run.app URL.
+Write-Step "3c. Cloud Scheduler sweep job"
+$schedulerJobExists = gcloud scheduler jobs describe composer-sweep `
+    --location=$Region --project=$ProjectId 2>$null
+if (-not $schedulerJobExists) {
+    Write-Host "  [create] Cloud Scheduler job composer-sweep"
+    gcloud scheduler jobs create http composer-sweep `
+        --location=$Region `
+        --project=$ProjectId `
+        --schedule="*/5 * * * *" `
+        --uri="$apiUrl/internal/sweep" `
+        --http-method=POST `
+        --oidc-service-account-email="$cloudTasksServiceAccountEmail" `
+        --oidc-token-audience="$apiUrl/internal/sweep" | Out-Null
+} else {
+    Write-Host "  [exists] Cloud Scheduler job composer-sweep" -ForegroundColor DarkGray
+}
 
 if (-not $SkipBuild) {
     Write-Step "4. Build + push frontend image"

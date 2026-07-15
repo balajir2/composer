@@ -102,7 +102,7 @@ async def test_context_vars_set_and_get() -> None:
     assert get_current_execution_id() == "e1"
 
     bus = ExecutionEventBus()
-    set_current_event_bus(bus)
+    set_current_event_bus(bus)  # pyright: ignore[reportArgumentType]
     assert get_current_event_bus() is bus
 
     set_current_execution_id(None)
