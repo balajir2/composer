@@ -6,7 +6,13 @@ uses for MCP OAuth tokens.
 
 State is a self-contained encrypted payload (user_id + expiry), not a DB
 row like McpOAuthState — AES-GCM already gives tamper-evidence and expiry
-without a separate table/cleanup sweep.
+without a separate table/cleanup sweep. Tradeoff: unlike McpOAuthState
+(deleted on first use), this state is TTL-bounded but not single-use — a
+captured state value could be replayed within the 10-minute window. This
+is accepted: the state is tamper-evident and identity-embedded, so an
+attacker still can't forge a state for someone else's user_id; only a
+literal MITM/log-leak of a specific state value would let it be replayed,
+and only within the TTL.
 
 See docs/archive/phase-history/specs/2026-07-15-google-drive-oauth-file-trigger-design.md §B.
 """
@@ -19,7 +25,7 @@ from urllib.parse import urlencode
 import httpx
 
 from src.config import get_settings
-from src.security.encryption import EncryptionError, decrypt, encrypt
+from src.security.encryption import EncryptionError, EncryptionKeyMissingError, decrypt, encrypt
 
 GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -60,9 +66,17 @@ def build_state(user_id: str) -> str:
 
 
 def consume_state(state: str) -> str:
-    """Decrypt state, verify not expired, return user_id."""
+    """Decrypt state, verify not expired, return user_id.
+
+    Note: this state is TTL-bounded but not single-use (see module
+    docstring) — a captured state value could be replayed within the TTL.
+    """
     try:
         payload = json.loads(decrypt(state))
+    except EncryptionKeyMissingError:
+        # Server misconfiguration, not a tampered/invalid state — let it
+        # propagate unchanged so it isn't mistaken for a client-side attack.
+        raise
     except EncryptionError as exc:
         raise InvalidStateError(f"OAuth state is invalid or tampered: {exc}") from exc
     expires_at = datetime.fromisoformat(payload["exp"])
@@ -100,20 +114,27 @@ async def exchange_code_for_tokens(code: str, redirect_uri: str) -> dict[str, An
         "client_id": settings.google_oauth_client_id,
         "client_secret": settings.google_oauth_client_secret,
     }
-    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-        resp = await client.post(
-            GOOGLE_TOKEN_URL, data=form, headers={"Accept": "application/json"}
-        )
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+            resp = await client.post(
+                GOOGLE_TOKEN_URL, data=form, headers={"Accept": "application/json"}
+            )
+    except httpx.HTTPError as exc:
+        raise TokenExchangeError(f"Google token exchange request failed: {exc}") from exc
     if resp.status_code >= 400:
         raise TokenExchangeError(
             f"Google token exchange failed (HTTP {resp.status_code}): {resp.text[:200]}"
         )
     payload: dict[str, Any] = resp.json()
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-        userinfo_resp = await client.get(
-            GOOGLE_USERINFO_URL, headers={"Authorization": f"Bearer {payload['access_token']}"}
-        )
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+            userinfo_resp = await client.get(
+                GOOGLE_USERINFO_URL,
+                headers={"Authorization": f"Bearer {payload['access_token']}"},
+            )
+    except httpx.HTTPError as exc:
+        raise TokenExchangeError(f"Google userinfo request failed: {exc}") from exc
     if userinfo_resp.status_code >= 400:
         raise TokenExchangeError(
             f"Google userinfo fetch failed (HTTP {userinfo_resp.status_code}): "
@@ -131,10 +152,13 @@ async def refresh_access_token(refresh_token_plaintext: str) -> dict[str, Any]:
         "client_id": settings.google_oauth_client_id,
         "client_secret": settings.google_oauth_client_secret,
     }
-    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-        resp = await client.post(
-            GOOGLE_TOKEN_URL, data=form, headers={"Accept": "application/json"}
-        )
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+            resp = await client.post(
+                GOOGLE_TOKEN_URL, data=form, headers={"Accept": "application/json"}
+            )
+    except httpx.HTTPError as exc:
+        raise TokenRefreshError(f"Google token refresh request failed: {exc}") from exc
     if resp.status_code >= 400:
         raise TokenRefreshError(
             f"Google token refresh failed (HTTP {resp.status_code}): {resp.text[:200]}"
@@ -161,12 +185,20 @@ async def get_valid_drive_access_token(
                     f"user must reconnect."
                 )
             refreshed = await refresh_access_token(decrypt(connection.encryptedRefreshToken))
+            update_data: dict[str, Any] = {
+                "encryptedAccessToken": encrypt(refreshed["access_token"]),
+                "expiresAt": expires_at_from_in(refreshed.get("expires_in")),
+            }
+            new_refresh_token = refreshed.get("refresh_token")
+            if new_refresh_token:
+                # Google doesn't always rotate the refresh token; only
+                # persist a new one when the response actually includes
+                # one (a partial Prisma update leaves the existing
+                # encryptedRefreshToken alone otherwise).
+                update_data["encryptedRefreshToken"] = encrypt(new_refresh_token)
             connection = await db.cloudstorageconnection.update(
                 where={"id": connection_id},
-                data={
-                    "encryptedAccessToken": encrypt(refreshed["access_token"]),
-                    "expiresAt": expires_at_from_in(refreshed.get("expires_in")),
-                },
+                data=update_data,
             )
 
     return decrypt(connection.encryptedAccessToken)  # type: ignore[no-any-return]

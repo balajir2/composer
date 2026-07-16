@@ -122,3 +122,181 @@ async def test_get_valid_drive_access_token_refreshes_when_near_expiry(
     token = await get_valid_drive_access_token("conn1", db)
     assert token == "new-at"
     db.cloudstorageconnection.update.assert_awaited_once()
+
+
+async def test_get_valid_drive_access_token_persists_rotated_refresh_token(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """Google's refresh response may include a new refresh_token (rotation);
+    it must be persisted, not silently dropped."""
+    _set_enc_key(monkeypatch)
+    _set_oauth_settings(monkeypatch)
+    from src.integrations.google_drive.oauth import get_valid_drive_access_token
+    from src.security.encryption import decrypt, encrypt
+
+    connection = SimpleNamespace(
+        id="conn1",
+        encryptedAccessToken=encrypt("old-at"),
+        encryptedRefreshToken=encrypt("rt-1"),
+        expiresAt=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    db = MagicMock()
+    db.cloudstorageconnection = MagicMock()
+    db.cloudstorageconnection.find_unique = AsyncMock(return_value=connection)
+    db.cloudstorageconnection.update = AsyncMock(
+        return_value=SimpleNamespace(id="conn1", encryptedAccessToken=encrypt("new-at"))
+    )
+    httpx_mock.add_response(
+        url="https://oauth2.googleapis.com/token",
+        method="POST",
+        json={"access_token": "new-at", "refresh_token": "rt-2", "expires_in": 3600},
+    )
+
+    await get_valid_drive_access_token("conn1", db)
+
+    db.cloudstorageconnection.update.assert_awaited_once()
+    _, kwargs = db.cloudstorageconnection.update.call_args
+    assert "encryptedRefreshToken" in kwargs["data"]
+    assert decrypt(kwargs["data"]["encryptedRefreshToken"]) == "rt-2"
+
+
+async def test_exchange_code_for_tokens_raises_on_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    _set_enc_key(monkeypatch)
+    _set_oauth_settings(monkeypatch)
+    from src.integrations.google_drive.oauth import TokenExchangeError, exchange_code_for_tokens
+
+    httpx_mock.add_response(
+        url="https://oauth2.googleapis.com/token",
+        method="POST",
+        status_code=400,
+        json={"error": "invalid_grant"},
+    )
+
+    with pytest.raises(TokenExchangeError):
+        await exchange_code_for_tokens("bad-code", "https://api.example.com/callback")
+
+
+async def test_refresh_access_token_raises_on_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    _set_enc_key(monkeypatch)
+    _set_oauth_settings(monkeypatch)
+    from src.integrations.google_drive.oauth import TokenRefreshError, refresh_access_token
+
+    httpx_mock.add_response(
+        url="https://oauth2.googleapis.com/token",
+        method="POST",
+        status_code=400,
+        json={"error": "invalid_grant"},
+    )
+
+    with pytest.raises(TokenRefreshError):
+        await refresh_access_token("stale-refresh-token")
+
+
+async def test_get_valid_drive_access_token_raises_on_refresh_http_error(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    _set_enc_key(monkeypatch)
+    _set_oauth_settings(monkeypatch)
+    from src.integrations.google_drive.oauth import TokenRefreshError, get_valid_drive_access_token
+    from src.security.encryption import encrypt
+
+    connection = SimpleNamespace(
+        id="conn1",
+        encryptedAccessToken=encrypt("old-at"),
+        encryptedRefreshToken=encrypt("rt-1"),
+        expiresAt=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    db = MagicMock()
+    db.cloudstorageconnection = MagicMock()
+    db.cloudstorageconnection.find_unique = AsyncMock(return_value=connection)
+    db.cloudstorageconnection.update = AsyncMock()
+    httpx_mock.add_response(
+        url="https://oauth2.googleapis.com/token",
+        method="POST",
+        status_code=500,
+        json={"error": "server_error"},
+    )
+
+    with pytest.raises(TokenRefreshError):
+        await get_valid_drive_access_token("conn1", db)
+    db.cloudstorageconnection.update.assert_not_awaited()
+
+
+async def test_get_valid_drive_access_token_raises_when_connection_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_enc_key(monkeypatch)
+    _set_oauth_settings(monkeypatch)
+    from src.integrations.google_drive.oauth import (
+        DriveConnectionMissingError,
+        get_valid_drive_access_token,
+    )
+
+    db = MagicMock()
+    db.cloudstorageconnection = MagicMock()
+    db.cloudstorageconnection.find_unique = AsyncMock(return_value=None)
+
+    with pytest.raises(DriveConnectionMissingError):
+        await get_valid_drive_access_token("missing-conn", db)
+
+
+async def test_get_valid_drive_access_token_raises_when_expired_with_no_refresh_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_enc_key(monkeypatch)
+    _set_oauth_settings(monkeypatch)
+    from src.integrations.google_drive.oauth import (
+        DriveTokenExpiredError,
+        get_valid_drive_access_token,
+    )
+    from src.security.encryption import encrypt
+
+    connection = SimpleNamespace(
+        id="conn1",
+        encryptedAccessToken=encrypt("old-at"),
+        encryptedRefreshToken=None,
+        expiresAt=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    db = MagicMock()
+    db.cloudstorageconnection = MagicMock()
+    db.cloudstorageconnection.find_unique = AsyncMock(return_value=connection)
+
+    with pytest.raises(DriveTokenExpiredError):
+        await get_valid_drive_access_token("conn1", db)
+
+
+def test_consume_state_rejects_garbled_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_enc_key(monkeypatch)
+    from src.integrations.google_drive.oauth import InvalidStateError, consume_state
+
+    with pytest.raises(InvalidStateError):
+        consume_state("not-a-valid-encrypted-state-value")
+
+
+def test_consume_state_propagates_missing_encryption_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A missing/misconfigured ENCRYPTION_KEY is a server misconfiguration,
+    not a tampered state — it must not be swallowed into InvalidStateError.
+
+    Set (rather than delete) the env var to an empty string: Settings also
+    reads from a `.env` file, so deleting the process env var alone would
+    leave a real dev key in effect via that fallback source.
+    """
+    monkeypatch.setenv("ENCRYPTION_KEY", "")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    from src.integrations.google_drive.oauth import consume_state
+    from src.security.encryption import EncryptionKeyMissingError
+
+    with pytest.raises(EncryptionKeyMissingError):
+        consume_state("anything")
