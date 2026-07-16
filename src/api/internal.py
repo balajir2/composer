@@ -47,6 +47,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.api.execution_status import ACTIVE_EXECUTION_STATUSES_SORTED
 from src.config import get_settings
 from src.engine.langgraph_executor import LangGraphExecutor
+from src.engine.workflow import FileTriggerNode
+from src.execution.cloud_tasks import enqueue_execution
+from src.integrations.google_drive.oauth import get_valid_drive_access_token
 from src.maintenance.execution_sweeper import (
     sweep_expired_approvals,
     sweep_expired_leases,
@@ -54,6 +57,8 @@ from src.maintenance.execution_sweeper import (
     sweep_stuck_executions,
 )
 from src.storage.db import get_checkpointer, get_db, get_event_bus
+from src.storage_providers.google_drive import GoogleDriveProvider
+from src.storage_providers.text_extraction import extract_text
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -476,6 +481,132 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
         "leases_recovered": leases_recovered,
         "events_deleted": events_deleted,
     }
+
+
+@router.post("/internal/poll-file-triggers", status_code=status.HTTP_200_OK)
+async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
+    request: Request,
+    db: Any = Depends(get_db),
+    _oidc: None = Depends(_verify_internal_oidc),
+) -> dict[str, int]:
+    """Cloud-Scheduler-triggered poll of every production workflow's
+    google-drive file-trigger node — the server-side replacement for
+    `composer watch`, which only works for locally-hosted folders. Fifth
+    sweep-style endpoint alongside claim-and-run/sweep: same OIDC auth,
+    same isolate-failures-per-item shape as `sweep`. See
+    docs/archive/phase-history/specs/2026-07-15-google-drive-oauth-file-trigger-design.md §D.
+    """
+    workflows = await db.workflow.find_many(where={"isProduction": True})  # pyright: ignore[reportAttributeAccessIssue]
+    checkpointer = get_checkpointer(request)
+    event_bus = get_event_bus(request)
+    executor = LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
+
+    triggered = 0
+    failed = 0
+    for wf in workflows:
+        for raw_node in wf.nodes or []:
+            if raw_node.get("type") != "file-trigger":
+                continue
+            data = raw_node.get("data", {})
+            if data.get("provider") != "google-drive":
+                continue
+            node = FileTriggerNode.model_validate(raw_node)
+            connection_id = node.data.connection_id
+            folder_id = node.data.drive_folder_id
+            target_var = node.data.target_input_variable
+            if not connection_id or not folder_id or not target_var:
+                continue
+
+            connection = await db.cloudstorageconnection.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+                where={"id": connection_id}
+            )
+            if connection is None:
+                logger.warning(
+                    "poll_file_triggers: workflow %s node %s references missing connection %s",
+                    wf.id,
+                    node.id,
+                    connection_id,
+                )
+                continue
+
+            try:
+                access_token = await get_valid_drive_access_token(connection_id, db)
+            except Exception:
+                logger.exception(
+                    "poll_file_triggers: failed to get access token for connection %s",
+                    connection_id,
+                )
+                continue
+
+            provider = GoogleDriveProvider(access_token)
+            try:
+                refs = await provider.list_new_files(folder_id)
+            except Exception:
+                logger.exception("poll_file_triggers: list_new_files failed for workflow %s", wf.id)
+                continue
+
+            for ref in refs:
+                try:
+                    raw = await provider.read_file(ref)
+                    text = extract_text(ref.name, raw)
+                    execution = await executor.start_execution(
+                        workflow_id=wf.id,
+                        input={target_var: text},
+                        user_id=connection.userId,
+                    )
+                    await enqueue_execution(execution.id, kind="run")
+                except Exception:
+                    logger.exception(
+                        "poll_file_triggers: failed to process file %s (workflow %s)",
+                        ref.identifier,
+                        wf.id,
+                    )
+                    # Isolate a move_file failure the same way as the
+                    # original processing failure: this is the error-path
+                    # marker write, and the original exception (logged
+                    # above) is what actually makes this a failed file —
+                    # that's true whether or not marking it 'error' in
+                    # Drive itself succeeds. If THIS also raises (Drive
+                    # rejects the PATCH, transport error, etc.), log it too
+                    # and fall through to `failed += 1` regardless, rather
+                    # than letting a second exception propagate out of this
+                    # request and abort every remaining workflow/file in
+                    # the batch.
+                    try:
+                        await provider.move_file(ref, "error")
+                    except Exception:
+                        logger.exception(
+                            "poll_file_triggers: failed to mark file %s as 'error' "
+                            "(workflow %s) after the original processing failure above",
+                            ref.identifier,
+                            wf.id,
+                        )
+                    failed += 1
+                    continue
+
+                # Success-path marker write is isolated the same way: the
+                # workflow execution already started successfully above,
+                # so a move_file failure here must not crash the batch or
+                # count as a processing failure. It also must not count as
+                # `triggered` — the file stays unmarked in Drive and will
+                # be picked up again (and re-executed) on the next poll
+                # tick, an understood, narrow duplicate-execution tradeoff
+                # already documented in the design doc's §G, not something
+                # to solve here.
+                try:
+                    await provider.move_file(ref, "processed")
+                except Exception:
+                    logger.exception(
+                        "poll_file_triggers: started execution %s for file %s (workflow %s) "
+                        "but failed to mark it 'processed' — it may be reprocessed next poll",
+                        execution.id,
+                        ref.identifier,
+                        wf.id,
+                    )
+                    continue
+                triggered += 1
+
+    return {"triggered": triggered, "failed": failed}
 
 
 __all__ = ["router"]
