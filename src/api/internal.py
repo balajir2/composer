@@ -34,6 +34,7 @@ directly closing the scale-to-zero gap this subsystem exists to close.
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
@@ -495,7 +496,15 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
     sweep-style endpoint alongside claim-and-run/sweep: same OIDC auth,
     same isolate-failures-per-item shape as `sweep`. See
     docs/archive/phase-history/specs/2026-07-15-google-drive-oauth-file-trigger-design.md §D.
+
+    Isolation is two-layered, both added in a post-implementation review
+    (P1-2): a malformed `nodes` field on a workflow skips just that
+    workflow (outer try/except below), and a malformed individual
+    file-trigger node skips just that node (inner try/except) — neither
+    aborts the rest of the poll, matching this endpoint's own
+    isolate-failures-per-item contract.
     """
+    settings = get_settings()
     workflows = await db.workflow.find_many(where={"isProduction": True})  # pyright: ignore[reportAttributeAccessIssue]
     checkpointer = get_checkpointer(request)
     event_bus = get_event_bus(request)
@@ -504,17 +513,44 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
     triggered = 0
     failed = 0
     for wf in workflows:
-        for raw_node in wf.nodes or []:
-            if raw_node.get("type") != "file-trigger":
-                continue
-            data = raw_node.get("data", {})
-            if data.get("provider") != "google-drive":
-                continue
-            node = FileTriggerNode.model_validate(raw_node)
-            connection_id = node.data.connection_id
-            folder_id = node.data.drive_folder_id
-            target_var = node.data.target_input_variable
-            if not connection_id or not folder_id or not target_var:
+        try:
+            raw_nodes = wf.nodes or []
+            if not isinstance(raw_nodes, list):
+                raise TypeError(f"workflow.nodes is not a list (got {type(raw_nodes).__name__})")
+        except Exception:
+            logger.exception(
+                "poll_file_triggers: workflow %s has a malformed nodes field; skipping", wf.id
+            )
+            continue
+
+        for raw_node in raw_nodes:
+            try:
+                if raw_node.get("type") != "file-trigger":
+                    continue
+                data = raw_node.get("data", {})
+                if data.get("provider") != "google-drive":
+                    continue
+                node = FileTriggerNode.model_validate(raw_node)
+                connection_id = node.data.connection_id
+                folder_id = node.data.drive_folder_id
+                target_var = node.data.target_input_variable
+                if not connection_id or not folder_id or not target_var:
+                    continue
+            except Exception:
+                # A single malformed node (bad field types, missing
+                # `data`, etc.) must not abort the rest of this
+                # workflow's nodes, let alone every other workflow — the
+                # same isolate-failures-per-item contract this endpoint
+                # documents everywhere else. Prisma Python decodes `nodes`
+                # Json as plain Python values, so a hand-edited/corrupted
+                # entry can legitimately not be a dict here.
+                node_id = raw_node.get("id") if isinstance(raw_node, dict) else raw_node
+                logger.exception(
+                    "poll_file_triggers: failed to parse file-trigger node %r in workflow %s; "
+                    "skipping",
+                    node_id,
+                    wf.id,
+                )
                 continue
 
             connection = await db.cloudstorageconnection.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
@@ -526,6 +562,34 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
                     wf.id,
                     node.id,
                     connection_id,
+                )
+                continue
+
+            # Confused-deputy guard (P1-2 review, Critical #1): a
+            # workflow's `nodes` JSON is owner-editable via the Workflow
+            # CRUD API, and `connectionId` is just a plain cuid — nothing
+            # ties it to that workflow's owner at write time. Without
+            # this check, workflow owner A could point a file-trigger
+            # node at a connection owned by user B, and this endpoint
+            # would use B's OAuth token to list/read B's Drive files and
+            # start an execution under B's identity. Same "private = 404
+            # for non-owner" ownership convention this codebase applies
+            # everywhere else (CLAUDE.md Phase 8) — applied here as
+            # skip-not-raise since this endpoint isolates failures per
+            # item rather than serving a single caller's request.
+            # get_picker_token (src/api/cloud_storage_oauth.py) is the
+            # 404-raising sibling of this same check for the interactive
+            # (user-facing) path.
+            if connection.userId != wf.userId:
+                logger.warning(
+                    "poll_file_triggers: workflow %s node %s references connection %s "
+                    "owned by %s, not the workflow's owner %s — skipping "
+                    "(confused-deputy guard)",
+                    wf.id,
+                    node.id,
+                    connection_id,
+                    connection.userId,
+                    wf.userId,
                 )
                 continue
 
@@ -549,9 +613,35 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
                 try:
                     raw = await provider.read_file(ref)
                     text = extract_text(ref.name, raw)
+
+                    # Input-size cap (P1-2 review, Important #3): every
+                    # other execution-creating entry point
+                    # (src/api/run.py, src/api/executions.py) enforces
+                    # settings.max_execution_input_bytes before calling
+                    # start_execution — LangGraphExecutor.start_execution
+                    # itself does not enforce it, that's a per-caller
+                    # responsibility. A large extracted PDF/DOCX must not
+                    # bypass that resource guard just because it arrived
+                    # via this trigger instead of a direct API call.
+                    # Measured the same way run.py does: true UTF-8 byte
+                    # size of the JSON-encoded input, not len() of the
+                    # raw text. Raising here (instead of a bespoke
+                    # branch) reuses the exact per-file failure handling
+                    # below — log, mark 'error', count it, move on.
+                    input_payload = {target_var: text}
+                    input_size = len(
+                        _json.dumps(input_payload, default=str, ensure_ascii=False).encode("utf-8")
+                    )
+                    if input_size > settings.max_execution_input_bytes:
+                        raise ValueError(
+                            f"extracted text for file {ref.identifier!r} exceeds "
+                            f"max_execution_input_bytes={settings.max_execution_input_bytes}; "
+                            f"got {input_size}"
+                        )
+
                     execution = await executor.start_execution(
                         workflow_id=wf.id,
-                        input={target_var: text},
+                        input=input_payload,
                         user_id=connection.userId,
                     )
                     await enqueue_execution(execution.id, kind="run")
