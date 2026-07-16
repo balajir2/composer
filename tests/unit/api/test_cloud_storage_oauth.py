@@ -1,0 +1,144 @@
+"""Tests for the Google Drive OAuth connect routes.
+
+Auth-bypass note: unlike the task scaffolding's draft (which proposed
+monkeypatching `src.security.auth.get_current_user_id`), this codebase's
+actual convention — confirmed against tests/unit/api/test_mcp_servers.py
+and tests/unit/api/test_workflow_assignments.py — does NOT monkeypatch that
+dependency. Two patterns are used instead:
+
+1. ADR-0015 dev-mode fallback: with no Authorization header and
+   ENVIRONMENT=development (the default), `get_current_user_id` returns
+   'dev' without any patching needed (see src/security/auth.py).
+2. For tests that need a *specific*, non-'dev' identity (e.g. to prove
+   ownership checks), issue a real JWT via
+   `src.security.jwt.create_access_token(user_id)` and send it as a Bearer
+   token — exactly as test_workflow_assignments.py does.
+
+Monkeypatching `src.security.auth.get_current_user_id` would not work here
+regardless: `src/api/cloud_storage_oauth.py` does
+`from src.security.auth import get_current_user_id` and binds it directly
+into `Depends(...)` at router-decoration time (module import, which already
+happened by the time `from src.main import create_app` runs at collection).
+Patching the attribute on `src.security.auth` afterward does not affect the
+already-bound reference the router's `Depends()` captured.
+"""
+
+import base64
+import os
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+from fastapi.testclient import TestClient
+
+from src.main import create_app
+
+
+def _set_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ENCRYPTION_KEY", base64.b64encode(os.urandom(32)).decode())
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+
+
+def _bearer_header(user_id: str) -> dict[str, str]:
+    from src.security.jwt import create_access_token
+
+    return {"Authorization": f"Bearer {create_access_token(user_id)}"}
+
+
+def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
+    app = create_app()
+    db = MagicMock()
+    db.cloudstorageconnection = MagicMock()
+    app.state.db = db
+    app.state.checkpointer = MagicMock()
+    from src.engine.events_pg import PostgresEventStore
+
+    app.state.event_bus = PostgresEventStore(db)
+    return TestClient(app), db
+
+
+def test_authorize_returns_google_url(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_encryption_key(monkeypatch)
+    monkeypatch.setenv("GOOGLE_OAUTH_CLIENT_ID", "client-abc")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    client, _db = _client_with_mock_db()
+
+    # No Authorization header: ADR-0015 dev-mode fallback authenticates as 'dev'.
+    resp = client.get("/cloud-storage/google-drive/authorize")
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["authorizeUrl"].startswith("https://accounts.google.com/o/oauth2/v2/auth?")
+
+
+def test_callback_rejects_invalid_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_encryption_key(monkeypatch)
+    client, _db = _client_with_mock_db()
+
+    resp = client.get(
+        "/cloud-storage/google-drive/callback",
+        params={"code": "auth-code", "state": "not-a-real-state"},
+    )
+    assert resp.status_code == 200  # popup-close HTML, not an HTTP error
+    assert "error" in resp.text
+
+
+def test_list_connections_filters_by_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_encryption_key(monkeypatch)
+    client, db = _client_with_mock_db()
+    db.cloudstorageconnection.find_many = AsyncMock(
+        return_value=[
+            SimpleNamespace(id="conn1", provider="google-drive", accountEmail="a@example.com")
+        ]
+    )
+
+    resp = client.get("/cloud-storage/connections", params={"provider": "google-drive"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == [
+        {"id": "conn1", "provider": "google-drive", "accountEmail": "a@example.com"}
+    ]
+
+
+def test_picker_token_returns_connections_access_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The Google Picker embed (frontend, Task 9) needs the connection's
+    current OAuth access token to open — this endpoint hands back the same
+    token get_valid_drive_access_token() already produces server-side, for
+    one-time client-side use by the Picker widget. Not a new/narrower
+    scope: the Picker uses the exact drive.file-scoped token already
+    granted by the OAuth flow."""
+    _set_encryption_key(monkeypatch)
+    client, db = _client_with_mock_db()
+    db.cloudstorageconnection.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="conn1", userId="user1", encryptedAccessToken="enc", expiresAt=None
+        )
+    )
+    monkeypatch.setattr(
+        "src.api.cloud_storage_oauth.get_valid_drive_access_token",
+        AsyncMock(return_value="at-1"),
+    )
+
+    resp = client.post(
+        "/cloud-storage/connections/conn1/picker-token", headers=_bearer_header("user1")
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"accessToken": "at-1"}
+
+
+def test_picker_token_rejects_other_users_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A connection belongs to the user who created it — another
+    authenticated user must not be able to mint a Picker token for it."""
+    _set_encryption_key(monkeypatch)
+    client, db = _client_with_mock_db()
+    db.cloudstorageconnection.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="conn1", userId="user1", encryptedAccessToken="enc", expiresAt=None
+        )
+    )
+
+    resp = client.post(
+        "/cloud-storage/connections/conn1/picker-token", headers=_bearer_header("user2")
+    )
+    assert resp.status_code == 404
