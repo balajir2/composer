@@ -48,6 +48,23 @@ def test_poll_endpoint_rejects_unauthenticated_call(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv(
         "CLOUD_TASKS_SERVICE_ACCOUNT", "scheduler@test-project.iam.gserviceaccount.com"
     )
+    # This is the first test in the file, so — unlike test_internal.py's and
+    # test_internal_sweep.py's equivalent OIDC-required tests, which happen
+    # to run after earlier tests in their own files have already exercised
+    # tests/unit/conftest.py's autouse cache-clearing teardown — nothing has
+    # cleared src.config.get_settings's lru_cache yet when this test runs
+    # standalone (or first in the whole session). Without an explicit clear
+    # here, a module imported at collection time that reads get_settings()
+    # eagerly (src/executors/http.py's module-level
+    # `_MAX_RESPONSE_BYTES = get_settings().http_node_max_response_bytes`)
+    # can leave a stale, service-account-less Settings cached, which would
+    # make `_verify_internal_oidc` silently skip the OIDC check below.
+    # Matches the precedent in test_cloud_storage_oauth.py's
+    # `_set_encryption_key` helper: setenv, then cache_clear, before the app
+    # is constructed.
+    from src.config import get_settings
+
+    get_settings.cache_clear()
     client, db = _client_with_mock_db()
     db.workflow.find_many = AsyncMock(side_effect=AssertionError("should not be called"))
 
