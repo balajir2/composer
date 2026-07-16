@@ -7,6 +7,7 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
 
@@ -122,6 +123,11 @@ async def test_get_valid_drive_access_token_refreshes_when_near_expiry(
     token = await get_valid_drive_access_token("conn1", db)
     assert token == "new-at"
     db.cloudstorageconnection.update.assert_awaited_once()
+    # Google's refresh response here omits refresh_token (no rotation) —
+    # the update must NOT touch encryptedRefreshToken, or a regression
+    # could silently overwrite the stored refresh token with garbage.
+    _, kwargs = db.cloudstorageconnection.update.call_args
+    assert "encryptedRefreshToken" not in kwargs["data"]
 
 
 async def test_get_valid_drive_access_token_persists_rotated_refresh_token(
@@ -193,6 +199,54 @@ async def test_refresh_access_token_raises_on_http_error(
         method="POST",
         status_code=400,
         json={"error": "invalid_grant"},
+    )
+
+    with pytest.raises(TokenRefreshError):
+        await refresh_access_token("stale-refresh-token")
+
+
+async def test_exchange_code_for_tokens_wraps_transport_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """A genuine transport failure (connection refused, DNS, timeout — not
+    an HTTP error status) must surface as the module's typed exception, not
+    a raw httpx.HTTPError, so callers catching GoogleDriveOAuthError don't
+    miss it."""
+    _set_enc_key(monkeypatch)
+    _set_oauth_settings(monkeypatch)
+    from src.integrations.google_drive.oauth import (
+        GOOGLE_TOKEN_URL,
+        TokenExchangeError,
+        exchange_code_for_tokens,
+    )
+
+    httpx_mock.add_exception(
+        method="POST",
+        url=GOOGLE_TOKEN_URL,
+        exception=httpx.ConnectError("connection refused"),
+    )
+
+    with pytest.raises(TokenExchangeError):
+        await exchange_code_for_tokens("auth-code", "https://api.example.com/callback")
+
+
+async def test_refresh_access_token_wraps_transport_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    _set_enc_key(monkeypatch)
+    _set_oauth_settings(monkeypatch)
+    from src.integrations.google_drive.oauth import (
+        GOOGLE_TOKEN_URL,
+        TokenRefreshError,
+        refresh_access_token,
+    )
+
+    httpx_mock.add_exception(
+        method="POST",
+        url=GOOGLE_TOKEN_URL,
+        exception=httpx.ConnectError("connection refused"),
     )
 
     with pytest.raises(TokenRefreshError):
