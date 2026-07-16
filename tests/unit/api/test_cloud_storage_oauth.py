@@ -85,6 +85,50 @@ def test_callback_rejects_invalid_state(monkeypatch: pytest.MonkeyPatch) -> None
     assert "error" in resp.text
 
 
+def test_callback_success_persists_connection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Drives google_drive_callback all the way through consume_state,
+    exchange_code_for_tokens, and the upsert to a 'success' popup-close
+    response — this is exactly the path a prior review found was only
+    partially covered by the try/except (the upsert sat outside it)."""
+    _set_encryption_key(monkeypatch)
+    client, db = _client_with_mock_db()
+
+    def _fake_consume_state(_state: str) -> str:
+        return "user1"
+
+    monkeypatch.setattr("src.api.cloud_storage_oauth.consume_state", _fake_consume_state)
+    monkeypatch.setattr(
+        "src.api.cloud_storage_oauth.exchange_code_for_tokens",
+        AsyncMock(
+            return_value={
+                "access_token": "at-1",
+                "refresh_token": "rt-1",
+                "expires_in": 3600,
+                "scope": "drive.file",
+                "email": "user@example.com",
+            }
+        ),
+    )
+    db.cloudstorageconnection.upsert = AsyncMock(
+        return_value=SimpleNamespace(id="conn1", userId="user1", accountEmail="user@example.com")
+    )
+
+    resp = client.get(
+        "/cloud-storage/google-drive/callback",
+        params={"code": "auth-code", "state": "irrelevant-because-mocked"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert "success" in resp.text
+
+    db.cloudstorageconnection.upsert.assert_awaited_once()
+    call_args = db.cloudstorageconnection.upsert.await_args
+    assert call_args is not None
+    where = call_args.kwargs["where"]["userId_provider_accountEmail"]
+    assert where["provider"] == "google-drive"
+    assert where["accountEmail"] == "user@example.com"
+    assert where["userId"] == "user1"
+
+
 def test_list_connections_filters_by_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_encryption_key(monkeypatch)
     client, db = _client_with_mock_db()

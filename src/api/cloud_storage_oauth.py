@@ -6,16 +6,20 @@ See docs/archive/phase-history/specs/2026-07-15-google-drive-oauth-file-trigger-
 """
 
 import json
+import logging
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
 from src.integrations.google_drive.oauth import (
     DriveConnectionMissingError,
+    DriveTokenExpiredError,
     GoogleDriveOAuthError,
+    TokenRefreshError,
     build_authorize_url,
     consume_state,
     exchange_code_for_tokens,
@@ -25,6 +29,8 @@ from src.integrations.google_drive.oauth import (
 from src.security.auth import get_current_user_id
 from src.security.encryption import encrypt
 from src.storage.db import get_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["cloud-storage"])
 
@@ -71,53 +77,65 @@ def _popup_close_html(oauth_status: str, detail: str = "") -> HTMLResponse:
 async def google_drive_callback(
     code: str = Query(...),
     state: str = Query(...),
-    db: Any = Depends(get_db),
+    db: Prisma = Depends(get_db),
 ) -> HTMLResponse:
+    # The whole exchange-and-persist sequence is wrapped in one try block —
+    # by the time we reach the upsert, the user has already successfully
+    # authorized with Google, so a failure here (DB drop, constraint race,
+    # malformed payload) must still resolve to a friendly popup-close page,
+    # never an unhandled 500 rendered inside the OAuth popup.
     try:
         user_id = consume_state(state)
         payload = await exchange_code_for_tokens(code, _callback_redirect_uri())
+        token_data = {
+            "encryptedAccessToken": encrypt(payload["access_token"]),
+            "encryptedRefreshToken": (
+                encrypt(payload["refresh_token"]) if payload.get("refresh_token") else None
+            ),
+            "expiresAt": expires_at_from_in(payload.get("expires_in")),
+            "scope": payload.get("scope"),
+        }
+        await db.cloudstorageconnection.upsert(  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
+            where={
+                "userId_provider_accountEmail": {
+                    "userId": user_id,
+                    "provider": "google-drive",
+                    "accountEmail": payload["email"],
+                }
+            },
+            data={
+                "create": {
+                    "userId": user_id,
+                    "provider": "google-drive",
+                    "accountEmail": payload["email"],
+                    **token_data,
+                },
+                "update": token_data,  # pyright: ignore[reportArgumentType]
+            },
+        )
     except GoogleDriveOAuthError as exc:
         return _popup_close_html("error", str(exc))
-
-    token_data = {
-        "encryptedAccessToken": encrypt(payload["access_token"]),
-        "encryptedRefreshToken": (
-            encrypt(payload["refresh_token"]) if payload.get("refresh_token") else None
-        ),
-        "expiresAt": expires_at_from_in(payload.get("expires_in")),
-        "scope": payload.get("scope"),
-    }
-    await db.cloudstorageconnection.upsert(  # pyright: ignore[reportAttributeAccessIssue]
-        where={
-            "userId_provider_accountEmail": {
-                "userId": user_id,
-                "provider": "google-drive",
-                "accountEmail": payload["email"],
-            }
-        },
-        data={
-            "create": {
-                "userId": user_id,
-                "provider": "google-drive",
-                "accountEmail": payload["email"],
-                **token_data,
-            },
-            "update": token_data,
-        },
-    )
+    except Exception:
+        # Unvetted exception type (DB error, malformed Google payload, etc.)
+        # — don't leak its message into a page rendered in the user's
+        # browser; log server-side instead.
+        logger.exception("google_drive_callback: failed to persist connection after OAuth grant")
+        return _popup_close_html("error", "Failed to save the connection. Please try again.")
     return _popup_close_html("success")
 
 
 @router.get("/cloud-storage/connections", response_model=list[CloudStorageConnectionRead])
 async def list_cloud_storage_connections(
     provider: str | None = None,
-    db: Any = Depends(get_db),
+    db: Prisma = Depends(get_db),
     user_id: str = Depends(get_current_user_id),
 ) -> list[CloudStorageConnectionRead]:
     where: dict[str, Any] = {"userId": user_id}
     if provider:
         where["provider"] = provider
-    rows = await db.cloudstorageconnection.find_many(where=where)  # pyright: ignore[reportAttributeAccessIssue]
+    rows = await db.cloudstorageconnection.find_many(  # pyright: ignore[reportAttributeAccessIssue]
+        where=where  # pyright: ignore[reportArgumentType]
+    )
     return [
         CloudStorageConnectionRead.model_validate(
             {"id": r.id, "provider": r.provider, "accountEmail": r.accountEmail}
@@ -138,7 +156,7 @@ class PickerTokenResponse(BaseModel):
 )
 async def get_picker_token(
     connection_id: str,
-    db: Any = Depends(get_db),
+    db: Prisma = Depends(get_db),
     user_id: str = Depends(get_current_user_id),
 ) -> PickerTokenResponse:
     """Hand back the connection's current OAuth access token for one-time
@@ -158,6 +176,10 @@ async def get_picker_token(
         token = await get_valid_drive_access_token(connection_id, db)
     except DriveConnectionMissingError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    except (DriveTokenExpiredError, TokenRefreshError) as exc:
+        # Distinguishable status (409) so the Task 9 frontend can show a
+        # "reconnect your Google Drive" prompt instead of a generic error.
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     return PickerTokenResponse.model_validate({"accessToken": token})
 
 
