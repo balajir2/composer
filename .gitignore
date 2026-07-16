@@ -96,3 +96,7 @@ service-account*.json
 # Local design / UX preview output (logo iteration, mockup screenshots,
 # scratch HTML).  Useful while iterating; not source of truth.
 .preview/
+
+# Git worktrees used for isolated feature-branch implementation
+# (superpowers:using-git-worktrees).
+.worktrees/
