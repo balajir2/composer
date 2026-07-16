@@ -352,7 +352,7 @@ async def sweep_expired_leases(
                 # lease-clear below itself later fails) can never
                 # double-run the execution — SELECT ... FOR UPDATE SKIP
                 # LOCKED still arbitrates that.
-                await enqueue_execution(row.id, kind=kind)
+                await enqueue_execution(row.id, kind=kind, db=db)
 
                 await db.workflowexecution.update(
                     where={"id": row.id},

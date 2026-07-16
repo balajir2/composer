@@ -231,7 +231,7 @@ def test_async_run_enqueues_cloud_task_instead_of_background_task(
 
     enqueued: list[tuple[str, str]] = []
 
-    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+    async def _fake_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
         enqueued.append((execution_id, kind))
 
     monkeypatch.setattr("src.api.run.enqueue_execution", _fake_enqueue)

@@ -211,7 +211,7 @@ async def confirm_approval_email(
             "variables": Json({**(execution.variables or {}), "_resume_decision": claims.decision})
         },
     )
-    await enqueue_execution(claims.sub, kind="resume")
+    await enqueue_execution(claims.sub, kind="resume", db=db)
 
     return _redirect_result(claims.decision)
 

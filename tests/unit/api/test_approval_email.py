@@ -357,7 +357,7 @@ def test_post_confirm_enqueues_cloud_task_instead_of_background_task(
 
     enqueued: list[tuple[str, str]] = []
 
-    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+    async def _fake_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
         enqueued.append((execution_id, kind))
 
     monkeypatch.setattr("src.api.approval_email.enqueue_execution", _fake_enqueue)

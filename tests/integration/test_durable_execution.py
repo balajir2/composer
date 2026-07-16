@@ -80,7 +80,7 @@ async def test_expired_lease_is_reclaimed_and_marked_running_again(
         assert refreshed is not None
         assert refreshed.leaseOwner is None
         assert refreshed.leaseExpiresAt is None
-        mock_enqueue.assert_awaited_once_with(execution.id, kind="run")
+        mock_enqueue.assert_awaited_once_with(execution.id, kind="run", db=db)
     finally:
         await db.workflowexecution.delete(where={"id": execution.id})
         await db.workflow.delete(where={"id": workflow.id})
@@ -316,7 +316,7 @@ async def test_resume_clears_stale_lease_and_reclaim_succeeds(
             json={"decision": "approved"},
         )
         assert resume.status_code == 200, resume.text
-        mock_enqueue.assert_awaited_once_with(execution.id, kind="resume")
+        mock_enqueue.assert_awaited_once_with(execution.id, kind="resume", db=db)
 
         resumed_row = await db.workflowexecution.find_unique(where={"id": execution.id})
         assert resumed_row is not None

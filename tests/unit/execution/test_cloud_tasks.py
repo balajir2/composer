@@ -46,7 +46,7 @@ async def test_enqueue_execution_builds_oidc_http_task(monkeypatch: pytest.Monke
             return_value="projects/test-project/locations/us-central1/queues/composer-executions"
         )
 
-        await enqueue_execution("exec-123", kind="run")
+        await enqueue_execution("exec-123", kind="run", db=MagicMock())
 
         mock_client.create_task.assert_called_once()
         call_kwargs = mock_client.create_task.call_args.kwargs
@@ -84,11 +84,123 @@ async def test_enqueue_execution_reuses_cached_client_across_calls(
         )
         mock_client_cls.return_value = mock_client
 
-        await enqueue_execution("exec-123", kind="run")
-        await enqueue_execution("exec-456", kind="resume")
+        await enqueue_execution("exec-123", kind="run", db=MagicMock())
+        await enqueue_execution("exec-456", kind="resume", db=MagicMock())
 
         mock_client_cls.assert_called_once()
         assert mock_client.create_task.await_count == 2
+
+    get_settings.cache_clear()
+
+
+async def test_enqueue_execution_dispatches_in_process_when_service_account_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Local dev (and anywhere GCP infra isn't provisioned yet) has no
+    CLOUD_TASKS_SERVICE_ACCOUNT configured. Building a real Cloud Task in
+    that state either 400s once it reaches Google's API ("service_account_
+    email must be set" -- the OIDC token block always includes the field,
+    empty or not) or fails outright with DefaultCredentialsError if there's
+    no ADC either. enqueue_execution must not attempt the real RPC at all
+    in that case -- it dispatches the same claim-and-run logic in-process
+    instead (fire-and-forget, matching Cloud Tasks' own "enqueue returns
+    immediately" semantics -- the caller must not block on the execution
+    actually finishing)."""
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+
+    with patch("src.execution.cloud_tasks.tasks_v2.CloudTasksAsyncClient") as mock_client_cls:
+        captured: dict[str, object] = {}
+
+        async def _fake_claim_and_run_execution(
+            execution_id: str,
+            kind: str,
+            db: object,
+            checkpointer: object,
+            event_bus: object,
+            *,
+            worker_id: str,
+        ) -> dict[str, str]:
+            captured["execution_id"] = execution_id
+            captured["kind"] = kind
+            captured["db"] = db
+            captured["worker_id"] = worker_id
+            return {"status": "completed"}
+
+        monkeypatch.setattr(
+            "src.api.internal.claim_and_run_execution", _fake_claim_and_run_execution
+        )
+
+        created: dict[str, object] = {}
+
+        def _fake_create_task(coro: object) -> MagicMock:
+            created["coro"] = coro
+            return MagicMock()
+
+        monkeypatch.setattr("src.execution.cloud_tasks.asyncio.create_task", _fake_create_task)
+
+        fake_db = MagicMock()
+        await enqueue_execution("exec-1", kind="run", db=fake_db)
+
+        # The real Cloud Tasks client must never be constructed -- there's
+        # no service account to mint an OIDC token for, and (in a real
+        # deployment, unlike this mocked test) likely no reachable queue
+        # either.
+        mock_client_cls.assert_not_called()
+
+        assert "coro" in created
+        await created["coro"]  # type: ignore[misc]
+
+        assert captured["execution_id"] == "exec-1"
+        assert captured["kind"] == "run"
+        assert captured["db"] is fake_db
+
+    get_settings.cache_clear()
+
+
+async def test_enqueue_execution_in_process_fallback_logs_but_does_not_raise(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The in-process fallback is fire-and-forget from enqueue_execution's
+    caller's point of view (same as a real Cloud Task's async delivery) --
+    a failure inside the dispatched claim-and-run must be logged, not left
+    to surface as an "asyncio: Task exception was never retrieved" warning
+    with no caller able to observe or handle it."""
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+
+    async def _raising_claim_and_run_execution(
+        execution_id: str,
+        kind: str,
+        db: object,
+        checkpointer: object,
+        event_bus: object,
+        *,
+        worker_id: str,
+    ) -> dict[str, str]:
+        raise RuntimeError("simulated in-process claim failure")
+
+    monkeypatch.setattr(
+        "src.api.internal.claim_and_run_execution", _raising_claim_and_run_execution
+    )
+
+    created: dict[str, object] = {}
+
+    def _fake_create_task(coro: object) -> MagicMock:
+        created["coro"] = coro
+        return MagicMock()
+
+    monkeypatch.setattr("src.execution.cloud_tasks.asyncio.create_task", _fake_create_task)
+
+    await enqueue_execution("exec-1", kind="run", db=MagicMock())
+
+    # Must not raise -- the exception is caught and logged inside the
+    # dispatched coroutine itself.
+    await created["coro"]  # type: ignore[misc]
 
     get_settings.cache_clear()
 

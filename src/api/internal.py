@@ -159,17 +159,29 @@ async def _verify_internal_oidc(
         )
 
 
-@router.post("/internal/claim-and-run", status_code=status.HTTP_200_OK)
-async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
-    payload: ClaimAndRunRequest,
-    request: Request,
-    db: Any = Depends(get_db),
-    _oidc: None = Depends(_verify_internal_oidc),
+async def claim_and_run_execution(
+    execution_id: str,
+    kind: Literal["run", "resume"],
+    db: Any,
+    checkpointer: Any,
+    event_bus: Any,
+    *,
+    worker_id: str,
 ) -> dict[str, str]:
+    """Claim `execution_id` (FOR UPDATE SKIP LOCKED) and run/resume it.
+
+    This is the actual claim-and-run logic, factored out of the
+    `claim_and_run` HTTP handler below so it can also be invoked
+    in-process — no `Request` required — by `enqueue_execution`'s
+    dev-mode fallback (src/execution/cloud_tasks.py) when
+    CLOUD_TASKS_SERVICE_ACCOUNT isn't configured. Production's Cloud
+    Tasks push and the local dev-mode fallback both end up running this
+    exact function, so there is exactly one claim implementation to keep
+    correct rather than two that could drift apart.
+    """
     lease_seconds = get_settings().execution_lease_seconds
     now = datetime.now(UTC)
     lease_expires = now + timedelta(seconds=lease_seconds)
-    worker_id = f"{request.client.host if request.client else 'unknown'}:{id(request)}"
 
     # Fixed, short timeout for the claim transaction — intentionally NOT
     # scaled to `execution_lease_seconds`. The lease duration sizes the
@@ -201,7 +213,7 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
             FOR UPDATE SKIP LOCKED
             LIMIT 1
             """,
-            payload.execution_id,
+            execution_id,
             ACTIVE_EXECUTION_STATUSES_SORTED,
         )
         if not rows:
@@ -248,7 +260,7 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
             """,
             worker_id,
             lease_expires,
-            payload.execution_id,
+            execution_id,
         )
 
     # By the time we reach this point, the lease UPDATE above has already
@@ -322,17 +334,15 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
     # committed above remains in place for `sweep_expired_leases` to
     # eventually recover. The safety net has its own safety net.
     try:
-        checkpointer = get_checkpointer(request)
-        event_bus = get_event_bus(request)
         executor = LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
 
-        if payload.kind == "resume":
+        if kind == "resume":
             # P1-2 (Task 13): the decision travels via the claimed row's
             # `variables._resume_decision`, stamped by the enqueueing call
             # site BEFORE the Cloud Task fired (see ClaimAndRunRequest's
             # docstring) — not via any request-body field.
             row_data = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-                where={"id": payload.execution_id}
+                where={"id": execution_id}
             )
             decision = (row_data.variables or {}).get("_resume_decision") if row_data else None
             if not decision:
@@ -340,21 +350,21 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                     detail="decision is required when kind='resume'",
                 )
-            await executor.resume(payload.execution_id, decision)
+            await executor.resume(execution_id, decision)
         else:
-            await executor.run(payload.execution_id)
+            await executor.run(execution_id)
     except HTTPException:
         raise
     except Exception as exc:
         logger.exception(
             "internal: claim_and_run crashed for execution %s (kind=%s)",
-            payload.execution_id,
-            payload.kind,
+            execution_id,
+            kind,
         )
         updated_count: int | None
         try:
             updated_count = await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
-                where={"id": payload.execution_id, "status": "running"},
+                where={"id": execution_id, "status": "running"},
                 data={
                     "status": "failed",
                     "error": f"{type(exc).__name__}: {exc}",
@@ -365,7 +375,7 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
             logger.exception(
                 "internal: failed to mark crashed execution %s as failed "
                 "(lease remains for sweep_expired_leases to recover)",
-                payload.execution_id,
+                execution_id,
             )
             updated_count = None
 
@@ -383,19 +393,36 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
                 "internal: claim_and_run crash handler for execution %s found the "
                 "row no longer 'running' — a concurrent transition already "
                 "completed; not overwriting it",
-                payload.execution_id,
+                execution_id,
             )
             return {"status": "already_terminal"}
 
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
-                f"execution {payload.execution_id} crashed during "
-                f"{payload.kind}; see application logs for details"
+                f"execution {execution_id} crashed during {kind}; see application logs for details"
             ),
         ) from exc
 
     return {"status": "completed"}
+
+
+@router.post("/internal/claim-and-run", status_code=status.HTTP_200_OK)
+async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
+    payload: ClaimAndRunRequest,
+    request: Request,
+    db: Any = Depends(get_db),
+    _oidc: None = Depends(_verify_internal_oidc),
+) -> dict[str, str]:
+    worker_id = f"{request.client.host if request.client else 'unknown'}:{id(request)}"
+    return await claim_and_run_execution(
+        payload.execution_id,
+        payload.kind,
+        db,
+        get_checkpointer(request),
+        get_event_bus(request),
+        worker_id=worker_id,
+    )
 
 
 @router.post("/internal/sweep", status_code=status.HTTP_200_OK)
@@ -478,4 +505,4 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
     }
 
 
-__all__ = ["router"]
+__all__ = ["claim_and_run_execution", "router"]

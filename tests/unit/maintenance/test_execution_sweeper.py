@@ -301,7 +301,7 @@ async def test_sweep_expired_leases_requeues_for_retry(monkeypatch: pytest.Monke
 
     enqueued: list[tuple[str, str]] = []
 
-    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+    async def _fake_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
         enqueued.append((execution_id, kind))
 
     monkeypatch.setattr("src.execution.cloud_tasks.enqueue_execution", _fake_enqueue)
@@ -342,7 +342,7 @@ async def test_sweep_expired_leases_requeues_resume_as_resume(
 
     enqueued: list[tuple[str, str]] = []
 
-    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+    async def _fake_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
         enqueued.append((execution_id, kind))
 
     monkeypatch.setattr("src.execution.cloud_tasks.enqueue_execution", _fake_enqueue)
@@ -405,7 +405,7 @@ async def test_sweep_expired_leases_does_not_clear_lease_if_enqueue_fails(
 
     from src.maintenance.execution_sweeper import sweep_expired_leases
 
-    async def _fake_enqueue_fails(execution_id: str, *, kind: str) -> None:
+    async def _fake_enqueue_fails(execution_id: str, *, kind: str, db: object = None) -> None:
         raise RuntimeError("simulated Cloud Tasks API error")
 
     monkeypatch.setattr("src.execution.cloud_tasks.enqueue_execution", _fake_enqueue_fails)
@@ -444,7 +444,7 @@ async def test_sweep_expired_leases_errored_row_not_counted_as_recovered(
 
     from src.maintenance.execution_sweeper import sweep_expired_leases
 
-    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+    async def _fake_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
         if execution_id == "ex-bad":
             raise RuntimeError("simulated Cloud Tasks API error")
 

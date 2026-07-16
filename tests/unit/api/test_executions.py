@@ -104,7 +104,7 @@ def test_post_execution_enqueues_cloud_task_instead_of_background_task(
     /internal/claim-and-run is immune to (ADR-0033)."""
     enqueued: list[tuple[str, str]] = []
 
-    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+    async def _fake_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
         enqueued.append((execution_id, kind))
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _fake_enqueue)
@@ -136,7 +136,7 @@ def test_post_execution_marks_row_failed_when_enqueue_raises(
     'failed' by a stale enqueue error (see the dedicated race test below).
     """
 
-    async def _raise_enqueue(execution_id: str, *, kind: str) -> None:
+    async def _raise_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
         raise RuntimeError("Cloud Tasks unavailable")
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _raise_enqueue)
@@ -169,7 +169,7 @@ def test_post_execution_enqueue_failure_does_not_clobber_concurrent_cancel(
     cancellation. The caller still gets an informative 500 for the
     enqueue failure itself; the row's real status is left untouched."""
 
-    async def _raise_enqueue(execution_id: str, *, kind: str) -> None:
+    async def _raise_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
         raise RuntimeError("Cloud Tasks unavailable")
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _raise_enqueue)
@@ -203,7 +203,7 @@ def test_post_execution_enqueue_failure_survives_nested_mark_failed_error(
     referencing the execution id, proving the primary error survives the
     nested failure."""
 
-    async def _raise_enqueue(execution_id: str, *, kind: str) -> None:
+    async def _raise_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
         raise RuntimeError("Cloud Tasks unavailable")
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _raise_enqueue)

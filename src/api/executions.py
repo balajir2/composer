@@ -206,7 +206,7 @@ async def create_execution(
     # becomes 'running' once claim-and-run actually claims it. Poll
     # GET /executions/{id} for completion.
     try:
-        await enqueue_execution(row.id, kind="run")
+        await enqueue_execution(row.id, kind="run", db=db)
     except Exception as exc:
         # The row already committed as 'queued' above. If enqueueing raises
         # here (un-retried gRPC error, transient network blip, IAM/ADC
@@ -671,7 +671,7 @@ async def resume_execution(
             )
         },
     )
-    await enqueue_execution(execution_id, kind="resume")
+    await enqueue_execution(execution_id, kind="resume", db=db)
 
     # Reflect the transition we just made atomically without a second
     # DB round-trip — `execution` is the row fetched above, still valid

@@ -191,7 +191,7 @@ async def run_external(
         # why that in-process wrapper became redundant once claim-and-run
         # (a real, lease-tracked inbound request) replaced the detached
         # asyncio task it used to wrap.
-        await enqueue_execution(execution.id, kind="run")
+        await enqueue_execution(execution.id, kind="run", db=db)
 
     if not payload.sync:
         return RunAsyncResponse(

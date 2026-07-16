@@ -270,7 +270,7 @@ def test_resume_enqueues_cloud_task_instead_of_background_task(
     claim-and-run reads it back from the claimed row's variables."""
     enqueued: list[tuple[str, str]] = []
 
-    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+    async def _fake_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
         enqueued.append((execution_id, kind))
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _fake_enqueue)

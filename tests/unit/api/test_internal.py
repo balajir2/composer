@@ -52,6 +52,54 @@ def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     return TestClient(app), db
 
 
+async def test_claim_and_run_execution_runs_directly_without_a_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`claim_and_run_execution` (the core claim+run logic factored out of
+    the `claim_and_run` HTTP handler) must be callable with plain
+    db/checkpointer/event_bus objects — no FastAPI `Request` involved.
+
+    This is what `src/execution/cloud_tasks.py`'s dev-mode fallback (no
+    CLOUD_TASKS_SERVICE_ACCOUNT configured) needs: it dispatches execution
+    in-process instead of enqueueing a real Cloud Task, and has no HTTP
+    request to hand `claim_and_run` — only whatever `db` its own caller
+    already has. If this function can only run behind the HTTP layer, that
+    fallback is impossible without inventing a fake `Request`."""
+    db = MagicMock()
+    db.workflowexecution = MagicMock()
+    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
+    db.execute_raw = AsyncMock()
+
+    def _make_tx(**_kwargs: object) -> _FakeTx:
+        return _FakeTx(db)
+
+    db.tx = MagicMock(side_effect=_make_tx)
+
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    ran: list[str] = []
+
+    async def _fake_run(self: LangGraphExecutor, execution_id: str) -> None:
+        ran.append(execution_id)
+
+    monkeypatch.setattr(LangGraphExecutor, "run", _fake_run)
+
+    from src.api.internal import claim_and_run_execution
+
+    result = await claim_and_run_execution(
+        "exec-1",
+        "run",
+        db=db,
+        checkpointer=MagicMock(),
+        event_bus=MagicMock(),
+        worker_id="in-process:exec-1",
+    )
+
+    assert result == {"status": "completed"}
+    assert ran == ["exec-1"]
+    db.execute_raw.assert_awaited_once()
+
+
 def test_claim_and_run_claims_and_dispatches_run(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")  # dev mode: OIDC check skipped
     client, db = _client_with_mock_db()

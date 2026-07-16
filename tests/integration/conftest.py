@@ -48,7 +48,7 @@ async def _drive_cloud_tasks_synchronously(  # pyright: ignore[reportUnusedFunct
     """
     from httpx import ASGITransport, AsyncClient
 
-    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
+    async def _fake_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://internal") as c:
             resp = await c.post(
                 "/internal/claim-and-run",

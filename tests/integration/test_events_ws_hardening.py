@@ -75,7 +75,9 @@ def test_ws_two_user_authz(monkeypatch: pytest.MonkeyPatch) -> None:
 
     from src.api.internal import ClaimAndRunRequest, claim_and_run
 
-    async def _fake_enqueue(execution_id: str, *, kind: Literal["run", "resume"]) -> None:
+    async def _fake_enqueue(
+        execution_id: str, *, kind: Literal["run", "resume"], db: object = None
+    ) -> None:
         db = app.state.db
         dummy_request = types.SimpleNamespace(client=None, app=app)
         await claim_and_run(
