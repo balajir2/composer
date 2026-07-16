@@ -80,3 +80,15 @@ def test_multiple_problems_all_reported_together() -> None:
     message = str(exc_info.value)
     assert "BACKEND_PUBLIC_URL" in message
     assert "FRONTEND_URL" in message
+
+
+def test_google_oauth_settings_default_to_empty_string(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.config import Settings
+
+    monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_ID", raising=False)
+    monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_SECRET", raising=False)
+    monkeypatch.delenv("GOOGLE_PICKER_API_KEY", raising=False)
+    settings = Settings(_env_file=None)
+    assert settings.google_oauth_client_id == ""
+    assert settings.google_oauth_client_secret == ""
+    assert settings.google_picker_api_key == ""
