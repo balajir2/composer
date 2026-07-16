@@ -3,6 +3,7 @@
 import re
 from datetime import UTC, datetime
 
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
 
@@ -94,3 +95,80 @@ async def test_write_file_raises_not_implemented() -> None:
     provider = GoogleDriveProvider("at-1")
     with pytest.raises(NotImplementedError):
         await provider.write_file("dest", "name.md", b"content")
+
+
+async def test_list_new_files_raises_on_http_error(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    from src.storage_providers.google_drive import GoogleDriveProvider, GoogleDriveProviderError
+
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.googleapis\.com/drive/v3/files\?"),
+        method="GET",
+        status_code=403,
+        text="permission denied",
+    )
+
+    provider = GoogleDriveProvider("at-1")
+    with pytest.raises(GoogleDriveProviderError):
+        await provider.list_new_files("folder123")
+
+
+async def test_read_file_raises_on_http_error(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    from src.storage_providers.base import FileRef
+    from src.storage_providers.google_drive import GoogleDriveProvider, GoogleDriveProviderError
+
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/drive/v3/files/f1?alt=media",
+        method="GET",
+        status_code=403,
+        text="permission denied",
+    )
+
+    provider = GoogleDriveProvider("at-1")
+    ref = FileRef(identifier="f1", name="report.pdf", size_bytes=10, modified_at=datetime.now(UTC))
+    with pytest.raises(GoogleDriveProviderError):
+        await provider.read_file(ref)
+
+
+async def test_move_file_raises_on_http_error(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    from src.storage_providers.base import FileRef
+    from src.storage_providers.google_drive import GoogleDriveProvider, GoogleDriveProviderError
+
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/drive/v3/files/f1",
+        method="PATCH",
+        status_code=403,
+        text="permission denied",
+    )
+
+    provider = GoogleDriveProvider("at-1")
+    ref = FileRef(identifier="f1", name="report.pdf", size_bytes=10, modified_at=datetime.now(UTC))
+    with pytest.raises(GoogleDriveProviderError):
+        await provider.move_file(ref, "processed")
+
+
+async def test_list_new_files_wraps_transport_failure(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """A genuine transport failure (connection refused, DNS, timeout — not
+    an HTTP error status) must surface as GoogleDriveProviderError, not a
+    raw httpx.ConnectError, so callers catching GoogleDriveProviderError
+    don't miss it. Mirrors the pattern in
+    tests/unit/integrations/test_google_drive_oauth.py and
+    tests/unit/executors/test_arcade.py."""
+    from src.storage_providers.google_drive import GoogleDriveProvider, GoogleDriveProviderError
+
+    httpx_mock.add_exception(
+        method="GET",
+        url=re.compile(r"^https://www\.googleapis\.com/drive/v3/files\?"),
+        exception=httpx.ConnectError("connection refused"),
+    )
+
+    provider = GoogleDriveProvider("at-1")
+    with pytest.raises(GoogleDriveProviderError):
+        await provider.list_new_files("folder123")

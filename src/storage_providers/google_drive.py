@@ -11,6 +11,7 @@ never-re-claim semantics.
 """
 
 from datetime import datetime
+from typing import Any
 
 import httpx
 
@@ -20,7 +21,13 @@ DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
 
 
 class GoogleDriveProviderError(RuntimeError):
-    """Raised when the Drive API rejects or cannot process a request."""
+    """Raised when the Drive API rejects or cannot process a request. Also
+    raised (instead of a raw httpx exception) when the request never made it
+    to Google at all — connection refused, DNS failure, timeout — so a
+    caller written to catch just this one type doesn't miss a network blip.
+    See src/integrations/google_drive/oauth.py's TokenExchangeError /
+    TokenRefreshError for the same pattern applied earlier in this feature.
+    """
 
 
 class GoogleDriveProvider(FileStorageProvider):
@@ -32,26 +39,69 @@ class GoogleDriveProvider(FileStorageProvider):
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.access_token}"}
 
+    async def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        error_prefix: str,
+        timeout: httpx.Timeout,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Single choke point for all Drive API calls. Owns AsyncClient
+        construction (one client per call — this provider is expected to be
+        short-lived, constructed per already-resolved access token by the
+        polling endpoint, so pooling a client across the provider's
+        lifetime would add lifecycle-management complexity for little
+        benefit here) and wraps both transport-level failures and
+        HTTP-error responses into GoogleDriveProviderError."""
+        try:
+            async with httpx.AsyncClient(
+                base_url=DRIVE_API_BASE, headers=self._headers(), timeout=timeout
+            ) as client:
+                resp = await client.request(method, path, **kwargs)
+        except httpx.HTTPError as exc:
+            raise GoogleDriveProviderError(f"{error_prefix} (request error): {exc}") from exc
+        if resp.status_code >= 400:
+            raise GoogleDriveProviderError(
+                f"{error_prefix} (HTTP {resp.status_code}): {resp.text[:300]}"
+            )
+        return resp
+
     async def list_new_files(self, source: str) -> list[FileRef]:
         # Drive query language requires both key AND value inside `has{}` —
         # there is no "key present regardless of value" predicate — so
         # unclaimed means neither status value is set.
+        #
+        # Escape stray `'` in source (the folder id) before interpolating —
+        # driveFolderId is stored as plain workflow JSON editable via the
+        # Workflow CRUD API (not exclusively set via the trusted Google
+        # Picker flow), so an unescaped quote could break out of the query
+        # string literal. Drive query language escapes `'` as `\'`.
+        escaped_source = source.replace("'", "\\'")
         query = (
-            f"'{source}' in parents and trashed = false "
+            f"'{escaped_source}' in parents and trashed = false "
             "and not appProperties has { key='composerStatus' and value='processed' } "
             "and not appProperties has { key='composerStatus' and value='error' }"
         )
-        params = {"q": query, "fields": "files(id,name,size,modifiedTime)", "pageSize": "20"}
-        async with httpx.AsyncClient(
-            base_url=DRIVE_API_BASE,
-            headers=self._headers(),
+        params = {
+            "q": query,
+            "fields": "files(id,name,size,modifiedTime)",
+            # Per-tick batch cap (design doc): bounds how many files a
+            # single poll can claim in one request. Pagination via
+            # nextPageToken is deliberately NOT followed — any files beyond
+            # this page simply remain unmarked and surface again on the
+            # next poll tick. That's the intended batching behavior, not
+            # silent data loss; don't "fix" this into full pagination.
+            "pageSize": "20",
+        }
+        resp = await self._request(
+            "GET",
+            "/files",
+            error_prefix="Drive list failed",
             timeout=httpx.Timeout(30.0, connect=5.0),
-        ) as client:
-            resp = await client.get("/files", params=params)
-        if resp.status_code >= 400:
-            raise GoogleDriveProviderError(
-                f"Drive list failed (HTTP {resp.status_code}): {resp.text[:300]}"
-            )
+            params=params,
+        )
         files = resp.json().get("files", [])
         return [
             FileRef(
@@ -64,16 +114,13 @@ class GoogleDriveProvider(FileStorageProvider):
         ]
 
     async def read_file(self, ref: FileRef) -> bytes:
-        async with httpx.AsyncClient(
-            base_url=DRIVE_API_BASE,
-            headers=self._headers(),
+        resp = await self._request(
+            "GET",
+            f"/files/{ref.identifier}",
+            error_prefix="Drive read failed",
             timeout=httpx.Timeout(60.0, connect=5.0),
-        ) as client:
-            resp = await client.get(f"/files/{ref.identifier}", params={"alt": "media"})
-        if resp.status_code >= 400:
-            raise GoogleDriveProviderError(
-                f"Drive read failed (HTTP {resp.status_code}): {resp.text[:300]}"
-            )
+            params={"alt": "media"},
+        )
         return resp.content
 
     async def move_file(self, ref: FileRef, dest: str) -> None:
@@ -83,18 +130,13 @@ class GoogleDriveProvider(FileStorageProvider):
         in-place marker, not a relocation. Task 8 (the polling endpoint)
         calls this with dest="processed" on success or dest="error" on
         failure; the file stays in its original Drive folder either way."""
-        async with httpx.AsyncClient(
-            base_url=DRIVE_API_BASE,
-            headers=self._headers(),
+        await self._request(
+            "PATCH",
+            f"/files/{ref.identifier}",
+            error_prefix="Drive mark-processed failed",
             timeout=httpx.Timeout(30.0, connect=5.0),
-        ) as client:
-            resp = await client.patch(
-                f"/files/{ref.identifier}", json={"appProperties": {"composerStatus": dest}}
-            )
-        if resp.status_code >= 400:
-            raise GoogleDriveProviderError(
-                f"Drive mark-processed failed (HTTP {resp.status_code}): {resp.text[:300]}"
-            )
+            json={"appProperties": {"composerStatus": dest}},
+        )
 
     async def write_file(self, dest: str, filename: str, content: bytes) -> None:
         raise NotImplementedError(
