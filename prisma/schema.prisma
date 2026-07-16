@@ -183,6 +183,23 @@ model McpOAuthState {
   @@index([expiresAt])
 }
 
+model CloudStorageConnection {
+  id                    String    @id @default(cuid())
+  userId                String    @map("user_id")
+  provider              String    // "google-drive" (widens later: "dropbox", "onedrive")
+  accountEmail          String    @map("account_email")
+  encryptedAccessToken  String    @map("encrypted_access_token")
+  encryptedRefreshToken String?   @map("encrypted_refresh_token")
+  expiresAt             DateTime? @map("expires_at")
+  scope                 String?
+  createdAt             DateTime  @default(now()) @map("created_at")
+  updatedAt             DateTime  @updatedAt       @map("updated_at")
+
+  @@unique([userId, provider, accountEmail])
+  @@map("cloud_storage_connections")
+  @@index([userId])
+}
+
 enum UserRole {
   admin
   member
