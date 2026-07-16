@@ -172,3 +172,40 @@ async def test_list_new_files_wraps_transport_failure(
     provider = GoogleDriveProvider("at-1")
     with pytest.raises(GoogleDriveProviderError):
         await provider.list_new_files("folder123")
+
+
+async def test_list_new_files_escapes_quotes_and_backslashes_in_source(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """source = "folder'with\\special" contains both a quote and a
+    trailing-adjacent backslash. Backslash must be escaped before quote
+    (classic ordering requirement — escaping quote first can't tell an
+    original backslash from one just inserted), otherwise a source ending
+    in an odd number of backslashes neutralizes the quote-escaping and
+    corrupts the query's trailing `not appProperties has {...}` exclusion
+    clauses that implement never-re-claim. Asserts the actual escaped
+    query string sent to Drive, so a future edit that drops the
+    .replace() calls entirely fails this test."""
+    from src.storage_providers.google_drive import GoogleDriveProvider
+
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.googleapis\.com/drive/v3/files\?"),
+        method="GET",
+        json={"files": []},
+    )
+
+    provider = GoogleDriveProvider("at-1")
+    await provider.list_new_files("folder'with\\special")
+
+    req = httpx_mock.get_request()
+    assert req is not None
+    q = req.url.params["q"]
+
+    # Escaped form: original `'` becomes `\'`, original single `\` becomes
+    # `\\` — written as a raw literal here (not derived via the same
+    # .replace() calls under test) so the assertion is a real oracle, not
+    # tautological with the implementation.
+    assert "'folder\\'with\\\\special' in parents" in q
+    # The raw, unescaped source must never appear on its own — if it does,
+    # escaping was skipped or applied in the wrong order.
+    assert "'folder'with\\special' in parents" not in q

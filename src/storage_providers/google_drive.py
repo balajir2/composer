@@ -78,7 +78,14 @@ class GoogleDriveProvider(FileStorageProvider):
         # Workflow CRUD API (not exclusively set via the trusted Google
         # Picker flow), so an unescaped quote could break out of the query
         # string literal. Drive query language escapes `'` as `\'`.
-        escaped_source = source.replace("'", "\\'")
+        #
+        # Backslash MUST be escaped before quote, not after: escaping quote
+        # first can't distinguish an original backslash from one just
+        # inserted by that same replace, so a source ending in an odd
+        # number of backslashes (e.g. "folder123\") would neutralize the
+        # quote-escaping and corrupt the trailing `not appProperties
+        # has {...}` exclusion clauses that implement never-re-claim.
+        escaped_source = source.replace("\\", "\\\\").replace("'", "\\'")
         query = (
             f"'{escaped_source}' in parents and trashed = false "
             "and not appProperties has { key='composerStatus' and value='processed' } "
