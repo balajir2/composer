@@ -4,6 +4,8 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import { NativeSelect } from "@/components/ui/native-select";
+import { ComposerApiError } from "@/lib/api/client";
 import {
   getGoogleDriveAuthorizeUrl,
   getPickerToken,
@@ -88,31 +90,53 @@ export default function GoogleDriveConnect({
   const [connecting, setConnecting] = useState(false);
   const [pickerBusy, setPickerBusy] = useState(false);
 
-  function refreshConnections() {
-    listCloudStorageConnections("google-drive")
-      .then(setConnections)
-      .catch((err) => {
-        toast.error(err instanceof Error ? err.message : "Failed to load Google Drive connections.");
-      });
+  // Returns the freshly-fetched list (not just setting state) so callers —
+  // notably the OAuth postMessage handler below — can act on the result
+  // immediately instead of waiting on a re-render to see the new
+  // connection show up in `connections`.
+  async function refreshConnections(): Promise<CloudStorageConnection[]> {
+    try {
+      const list = await listCloudStorageConnections("google-drive");
+      setConnections(list);
+      return list;
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to load Google Drive connections.");
+      return connections;
+    }
   }
 
   useEffect(() => {
     refreshConnections();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    function onMessage(event: MessageEvent) {
+    async function onMessage(event: MessageEvent) {
       if (event.data?.type !== "composer:google-drive-oauth") return;
       setConnecting(false);
       if (event.data.status === "success") {
-        refreshConnections();
+        const list = await refreshConnections();
+        // Don't clobber an already-selected connection (e.g. the user is
+        // re-authorizing an existing node's connection after it expired).
+        if (connectionId) return;
+        // First-time connect with exactly one Google Drive connection on
+        // the account — auto-select it so the user reaches "Select folder"
+        // with zero extra clicks. With zero or 2+ connections (e.g. the
+        // user already had other Drive accounts connected from other
+        // nodes), leave it unset and let them pick explicitly via the
+        // dropdown rendered below.
+        if (list.length === 1) {
+          const [only] = list;
+          if (only) onChange({ connectionId: only.id });
+        }
       } else {
         toast.error(event.data.detail || "Google Drive authorization failed.");
       }
     }
     window.addEventListener("message", onMessage);
     return () => window.removeEventListener("message", onMessage);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [connectionId]);
 
   const connected = connections.find((c) => c.id === connectionId);
 
@@ -157,7 +181,15 @@ export default function GoogleDriveConnect({
         .build();
       picker.setVisible(true);
     } catch (err) {
-      toast.error(err instanceof Error ? err.message : "Failed to open the Google Drive folder picker.");
+      if (err instanceof ComposerApiError && err.status === 409) {
+        // Backend's get_picker_token() returns 409 specifically when the
+        // stored token is expired/unrefreshable (see
+        // src/api/cloud_storage_oauth.py) — surface a reconnect prompt
+        // rather than a generic error.
+        toast.error("Your Google Drive connection expired — click Connect Google Drive to reconnect.");
+      } else {
+        toast.error(err instanceof Error ? err.message : "Failed to open the Google Drive folder picker.");
+      }
     } finally {
       setPickerBusy(false);
     }
@@ -166,18 +198,51 @@ export default function GoogleDriveConnect({
   return (
     <div className="space-y-2">
       {!connected ? (
-        <Button type="button" size="sm" disabled={connecting} onClick={handleConnect}>
-          {connecting ? "Connecting…" : "Connect Google Drive"}
-        </Button>
+        <div className="space-y-2">
+          <Button type="button" size="sm" disabled={connecting} onClick={handleConnect}>
+            {connecting ? "Connecting…" : "Connect Google Drive"}
+          </Button>
+          {connections.length > 0 && (
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">
+                Or use an already-connected Google account:
+              </div>
+              <NativeSelect
+                id="ft-drive-connection"
+                value=""
+                onValueChange={(v) => onChange({ connectionId: v })}
+                placeholder="Choose a connection…"
+                options={connections.map((c) => ({ value: c.id, label: c.accountEmail }))}
+              />
+            </div>
+          )}
+        </div>
       ) : (
         <div className="space-y-2">
           <div className="text-xs text-muted-foreground">
             Connected as {connected.accountEmail}
             {driveFolderId ? ` — watching folder ${driveFolderId}` : " — no folder selected yet"}
           </div>
-          <Button type="button" size="sm" variant="outline" disabled={pickerBusy} onClick={handlePickFolder}>
-            {pickerBusy ? "Opening…" : driveFolderId ? "Change folder" : "Select folder"}
-          </Button>
+          <div className="flex gap-2">
+            <Button type="button" size="sm" variant="outline" disabled={pickerBusy} onClick={handlePickFolder}>
+              {pickerBusy ? "Opening…" : driveFolderId ? "Change folder" : "Select folder"}
+            </Button>
+            {/* The connection row can exist (so `connected` is truthy) while
+                its stored token is expired/unrefreshable — the picker-token
+                fetch above then 409s with a "reconnect" toast. Keep a
+                reconnect path reachable even in the "connected" state so
+                that toast's instruction is actually actionable. */}
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              disabled={connecting}
+              onClick={handleConnect}
+              title="Re-run Google authorization for this account (use if the connection expired)"
+            >
+              {connecting ? "Connecting…" : "Reconnect"}
+            </Button>
+          </div>
         </div>
       )}
     </div>
