@@ -171,6 +171,33 @@ def test_picker_token_returns_connections_access_token(monkeypatch: pytest.Monke
     assert resp.json() == {"accessToken": "at-1"}
 
 
+def test_picker_token_returns_409_when_reconnect_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pins the fix for a prior review finding: get_picker_token must catch
+    DriveTokenExpiredError (raised by get_valid_drive_access_token when the
+    token has expired with no refresh token available) and surface it as a
+    409, not let it fall through to an unhandled 500 — 409 is what lets the
+    Task 9 frontend show a "reconnect your Google Drive" prompt instead of
+    a generic error."""
+    _set_encryption_key(monkeypatch)
+    from src.integrations.google_drive.oauth import DriveTokenExpiredError
+
+    client, db = _client_with_mock_db()
+    db.cloudstorageconnection.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="conn1", userId="user1", encryptedAccessToken="enc", expiresAt=None
+        )
+    )
+    monkeypatch.setattr(
+        "src.api.cloud_storage_oauth.get_valid_drive_access_token",
+        AsyncMock(side_effect=DriveTokenExpiredError("expired; user must reconnect")),
+    )
+
+    resp = client.post(
+        "/cloud-storage/connections/conn1/picker-token", headers=_bearer_header("user1")
+    )
+    assert resp.status_code == 409, resp.text
+
+
 def test_picker_token_rejects_other_users_connection(monkeypatch: pytest.MonkeyPatch) -> None:
     """A connection belongs to the user who created it — another
     authenticated user must not be able to mint a Picker token for it."""
