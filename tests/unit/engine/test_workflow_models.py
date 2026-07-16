@@ -1016,6 +1016,44 @@ def test_file_trigger_node_defaults() -> None:
     assert node.data.source_path is None
 
 
+def test_file_trigger_node_parses_google_drive_config() -> None:
+    from src.engine.workflow import FileTriggerNode
+
+    node = FileTriggerNode.model_validate(
+        {
+            "id": "ft1",
+            "type": "file-trigger",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "File Trigger",
+                "provider": "google-drive",
+                "connectionId": "conn_abc123",
+                "driveFolderId": "1a2b3c4d5e",
+                "targetInputVariable": "file_content",
+            },
+        }
+    )
+    assert node.data.provider == "google-drive"
+    assert node.data.connection_id == "conn_abc123"
+    assert node.data.drive_folder_id == "1a2b3c4d5e"
+
+
+def test_file_trigger_node_rejects_unknown_provider() -> None:
+    from pydantic import ValidationError
+
+    from src.engine.workflow import FileTriggerNode
+
+    with pytest.raises(ValidationError):
+        FileTriggerNode.model_validate(
+            {
+                "id": "ft1",
+                "type": "file-trigger",
+                "position": {"x": 0, "y": 0},
+                "data": {"label": "File Trigger", "provider": "dropbox"},
+            }
+        )
+
+
 def test_file_write_node_parses_full_config() -> None:
     from src.engine.workflow import FileWriteNode
 
