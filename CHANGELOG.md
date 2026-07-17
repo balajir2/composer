@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — Google Drive OAuth file-trigger (server-side polling, no local agent) (2026-07-16)
+
+Implements the design in `docs/archive/phase-history/specs/2026-07-15-google-drive-oauth-file-trigger-design.md`: a `file-trigger` node can now point at a Google Drive folder instead of a local one. New `CloudStorageConnection` model stores per-user OAuth tokens (mirrors `McpOAuthToken`'s encryption pattern); `src/integrations/google_drive/oauth.py` handles the OAuth dance via direct `httpx` calls (no SDK); `GoogleDriveProvider` implements the existing `FileStorageProvider` ABC, using a Drive `appProperties` marker as its claim mechanism instead of local's move-to-folder. `POST /internal/poll-file-triggers` — a fifth sibling to ADR-0033's `claim-and-run`/`sweep`, same OIDC auth — is the Cloud-Scheduler-triggered poll loop; a flat 5-minute cadence applies to all Drive triggers (per-node `pollIntervalSeconds` stays meaningful for the local/CLI case only). Frontend gains a "Connect Google Drive" + Google Picker folder-select flow in the `file-trigger` node's property panel. No new dependencies — OAuth and Drive API calls go through `httpx`, already a dependency, consistent with the MCP integration's manual-HTTP-over-SDK precedent.
+
+Deliberately out of scope for this pass (see design doc's Non-goals): shared/service-account connections, Dropbox/OneDrive/S3 providers, native Google Docs export, Drive Changes API cursoring, per-node custom poll cadence for cloud triggers.
+
 ### Added — Durable execution via Cloud Tasks, Postgres-backed events + rate limits (2026-07-15)
 
 Resolved P1-2 and P1-4 from `docs/deferred-backlog.md`. Root cause: Composer's execution model (`BackgroundTasks.add_task()`, bare `asyncio.create_task()`) and cross-cutting infrastructure (in-process event bus, in-memory rate limiter) were process-local, correct only for a single, continuously-running backend instance — verified against the live deploy config (`scripts/gcp-bootstrap.ps1`, `--min-instances=0`) that the execution risk was active today, not theoretical: Cloud Run can scale an instance to zero mid-flight the moment its HTTP response is sent, regardless of whether a detached background task is still running.
