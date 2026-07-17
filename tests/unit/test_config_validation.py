@@ -88,7 +88,7 @@ def test_google_oauth_settings_default_to_empty_string(monkeypatch: pytest.Monke
     monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_ID", raising=False)
     monkeypatch.delenv("GOOGLE_OAUTH_CLIENT_SECRET", raising=False)
     monkeypatch.delenv("GOOGLE_PICKER_API_KEY", raising=False)
-    settings = Settings(_env_file=None)
+    settings = Settings(_env_file=None)  # pyright: ignore[reportCallIssue]
     assert settings.google_oauth_client_id == ""
     assert settings.google_oauth_client_secret == ""
     assert settings.google_picker_api_key == ""
