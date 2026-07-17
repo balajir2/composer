@@ -34,6 +34,7 @@ directly closing the scale-to-zero gap this subsystem exists to close.
 from __future__ import annotations
 
 import asyncio
+import json as _json
 import logging
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal
@@ -47,6 +48,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.api.execution_status import ACTIVE_EXECUTION_STATUSES_SORTED
 from src.config import get_settings
 from src.engine.langgraph_executor import LangGraphExecutor
+from src.engine.workflow import FileTriggerNode
+from src.execution.cloud_tasks import enqueue_execution
+from src.integrations.google_drive.oauth import get_valid_drive_access_token
 from src.maintenance.execution_sweeper import (
     sweep_expired_approvals,
     sweep_expired_leases,
@@ -54,6 +58,8 @@ from src.maintenance.execution_sweeper import (
     sweep_stuck_executions,
 )
 from src.storage.db import get_checkpointer, get_db, get_event_bus
+from src.storage_providers.google_drive import GoogleDriveProvider
+from src.storage_providers.text_extraction import extract_text
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -503,6 +509,221 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
         "leases_recovered": leases_recovered,
         "events_deleted": events_deleted,
     }
+
+
+@router.post("/internal/poll-file-triggers", status_code=status.HTTP_200_OK)
+async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
+    request: Request,
+    db: Any = Depends(get_db),
+    _oidc: None = Depends(_verify_internal_oidc),
+) -> dict[str, int]:
+    """Cloud-Scheduler-triggered poll of every production workflow's
+    google-drive file-trigger node — the server-side replacement for
+    `composer watch`, which only works for locally-hosted folders. Fifth
+    sweep-style endpoint alongside claim-and-run/sweep: same OIDC auth,
+    same isolate-failures-per-item shape as `sweep`. See
+    docs/archive/phase-history/specs/2026-07-15-google-drive-oauth-file-trigger-design.md §D.
+
+    Isolation is two-layered, both added in a post-implementation review
+    (P1-2): a malformed `nodes` field on a workflow skips just that
+    workflow (outer try/except below), and a malformed individual
+    file-trigger node skips just that node (inner try/except) — neither
+    aborts the rest of the poll, matching this endpoint's own
+    isolate-failures-per-item contract.
+    """
+    settings = get_settings()
+    workflows = await db.workflow.find_many(where={"isProduction": True})  # pyright: ignore[reportAttributeAccessIssue]
+    checkpointer = get_checkpointer(request)
+    event_bus = get_event_bus(request)
+    executor = LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
+
+    triggered = 0
+    failed = 0
+    for wf in workflows:
+        try:
+            raw_nodes = wf.nodes or []
+            if not isinstance(raw_nodes, list):
+                raise TypeError(f"workflow.nodes is not a list (got {type(raw_nodes).__name__})")
+        except Exception:
+            logger.exception(
+                "poll_file_triggers: workflow %s has a malformed nodes field; skipping", wf.id
+            )
+            continue
+
+        for raw_node in raw_nodes:
+            try:
+                if raw_node.get("type") != "file-trigger":
+                    continue
+                data = raw_node.get("data", {})
+                if data.get("provider") != "google-drive":
+                    continue
+                node = FileTriggerNode.model_validate(raw_node)
+                connection_id = node.data.connection_id
+                folder_id = node.data.drive_folder_id
+                target_var = node.data.target_input_variable
+                if not connection_id or not folder_id or not target_var:
+                    continue
+            except Exception:
+                # A single malformed node (bad field types, missing
+                # `data`, etc.) must not abort the rest of this
+                # workflow's nodes, let alone every other workflow — the
+                # same isolate-failures-per-item contract this endpoint
+                # documents everywhere else. Prisma Python decodes `nodes`
+                # Json as plain Python values, so a hand-edited/corrupted
+                # entry can legitimately not be a dict here.
+                node_id = raw_node.get("id") if isinstance(raw_node, dict) else raw_node
+                logger.exception(
+                    "poll_file_triggers: failed to parse file-trigger node %r in workflow %s; "
+                    "skipping",
+                    node_id,
+                    wf.id,
+                )
+                continue
+
+            connection = await db.cloudstorageconnection.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+                where={"id": connection_id}
+            )
+            if connection is None:
+                logger.warning(
+                    "poll_file_triggers: workflow %s node %s references missing connection %s",
+                    wf.id,
+                    node.id,
+                    connection_id,
+                )
+                continue
+
+            # Confused-deputy guard (P1-2 review, Critical #1): a
+            # workflow's `nodes` JSON is owner-editable via the Workflow
+            # CRUD API, and `connectionId` is just a plain cuid — nothing
+            # ties it to that workflow's owner at write time. Without
+            # this check, workflow owner A could point a file-trigger
+            # node at a connection owned by user B, and this endpoint
+            # would use B's OAuth token to list/read B's Drive files and
+            # start an execution under B's identity. Same "private = 404
+            # for non-owner" ownership convention this codebase applies
+            # everywhere else (CLAUDE.md Phase 8) — applied here as
+            # skip-not-raise since this endpoint isolates failures per
+            # item rather than serving a single caller's request.
+            # get_picker_token (src/api/cloud_storage_oauth.py) is the
+            # 404-raising sibling of this same check for the interactive
+            # (user-facing) path.
+            if connection.userId != wf.userId:
+                logger.warning(
+                    "poll_file_triggers: workflow %s node %s references connection %s "
+                    "owned by %s, not the workflow's owner %s — skipping "
+                    "(confused-deputy guard)",
+                    wf.id,
+                    node.id,
+                    connection_id,
+                    connection.userId,
+                    wf.userId,
+                )
+                continue
+
+            try:
+                access_token = await get_valid_drive_access_token(connection_id, db)
+            except Exception:
+                logger.exception(
+                    "poll_file_triggers: failed to get access token for connection %s",
+                    connection_id,
+                )
+                continue
+
+            provider = GoogleDriveProvider(access_token)
+            try:
+                refs = await provider.list_new_files(folder_id)
+            except Exception:
+                logger.exception("poll_file_triggers: list_new_files failed for workflow %s", wf.id)
+                continue
+
+            for ref in refs:
+                try:
+                    raw = await provider.read_file(ref)
+                    text = extract_text(ref.name, raw)
+
+                    # Input-size cap (P1-2 review, Important #3): every
+                    # other execution-creating entry point
+                    # (src/api/run.py, src/api/executions.py) enforces
+                    # settings.max_execution_input_bytes before calling
+                    # start_execution — LangGraphExecutor.start_execution
+                    # itself does not enforce it, that's a per-caller
+                    # responsibility. A large extracted PDF/DOCX must not
+                    # bypass that resource guard just because it arrived
+                    # via this trigger instead of a direct API call.
+                    # Measured the same way run.py does: true UTF-8 byte
+                    # size of the JSON-encoded input, not len() of the
+                    # raw text. Raising here (instead of a bespoke
+                    # branch) reuses the exact per-file failure handling
+                    # below — log, mark 'error', count it, move on.
+                    input_payload = {target_var: text}
+                    input_size = len(
+                        _json.dumps(input_payload, default=str, ensure_ascii=False).encode("utf-8")
+                    )
+                    if input_size > settings.max_execution_input_bytes:
+                        raise ValueError(
+                            f"extracted text for file {ref.identifier!r} exceeds "
+                            f"max_execution_input_bytes={settings.max_execution_input_bytes}; "
+                            f"got {input_size}"
+                        )
+
+                    execution = await executor.start_execution(
+                        workflow_id=wf.id,
+                        input=input_payload,
+                        user_id=connection.userId,
+                    )
+                    await enqueue_execution(execution.id, kind="run", db=db)
+                except Exception:
+                    logger.exception(
+                        "poll_file_triggers: failed to process file %s (workflow %s)",
+                        ref.identifier,
+                        wf.id,
+                    )
+                    # Isolate a move_file failure the same way as the
+                    # original processing failure: this is the error-path
+                    # marker write, and the original exception (logged
+                    # above) is what actually makes this a failed file —
+                    # that's true whether or not marking it 'error' in
+                    # Drive itself succeeds. If THIS also raises (Drive
+                    # rejects the PATCH, transport error, etc.), log it too
+                    # and fall through to `failed += 1` regardless, rather
+                    # than letting a second exception propagate out of this
+                    # request and abort every remaining workflow/file in
+                    # the batch.
+                    try:
+                        await provider.move_file(ref, "error")
+                    except Exception:
+                        logger.exception(
+                            "poll_file_triggers: failed to mark file %s as 'error' "
+                            "(workflow %s) after the original processing failure above",
+                            ref.identifier,
+                            wf.id,
+                        )
+                    failed += 1
+                    continue
+
+                # Success-path marker write is isolated the same way: the
+                # workflow execution already started successfully above,
+                # so a move_file failure here must not crash the batch or
+                # count as a processing failure. It also must not count as
+                # `triggered` — the file stays unmarked in Drive and will
+                # be picked up again (and re-executed) on the next poll
+                # tick, an understood, narrow duplicate-execution tradeoff
+                # already documented in the design doc's §G, not something
+                # to solve here.
+                try:
+                    await provider.move_file(ref, "processed")
+                except Exception:
+                    logger.exception(
+                        "poll_file_triggers: started execution %s for file %s (workflow %s) "
+                        "but failed to mark it 'processed' — it may be reprocessed next poll",
+                        execution.id,
+                        ref.identifier,
+                        wf.id,
+                    )
+                    continue
+                triggered += 1
+
+    return {"triggered": triggered, "failed": failed}
 
 
 __all__ = ["claim_and_run_execution", "router"]

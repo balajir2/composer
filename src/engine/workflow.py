@@ -103,12 +103,14 @@ class NoteNode(BaseModel):
 
 
 class FileTriggerNodeData(BaseNodeData):
-    provider: Literal["local"] = "local"
-    source_path: str | None = Field(default=None, alias="sourcePath")
-    dest_path: str | None = Field(default=None, alias="destPath")
-    error_path: str | None = Field(default=None, alias="errorPath")
+    provider: Literal["local", "google-drive"] = "local"
+    source_path: str | None = Field(default=None, alias="sourcePath")  # local only
+    dest_path: str | None = Field(default=None, alias="destPath")  # local only
+    error_path: str | None = Field(default=None, alias="errorPath")  # local only
     target_input_variable: str | None = Field(default=None, alias="targetInputVariable")
-    poll_interval_seconds: int = Field(default=30, alias="pollIntervalSeconds")
+    poll_interval_seconds: int = Field(default=30, alias="pollIntervalSeconds")  # local (CLI) only
+    connection_id: str | None = Field(default=None, alias="connectionId")  # google-drive only
+    drive_folder_id: str | None = Field(default=None, alias="driveFolderId")  # google-drive only
 
 
 class FileTriggerNode(BaseModel):

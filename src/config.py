@@ -91,6 +91,20 @@ class Settings(BaseSettings):
         description="Verified Resend sender address for transactional emails (password reset, etc).",
     )
 
+    # ─── Google Drive OAuth (file-trigger cloud storage, 2026-07-15) ──
+    google_oauth_client_id: str = Field(
+        default="", description="Google Cloud OAuth 2.0 Client ID (Web application type)."
+    )
+    google_oauth_client_secret: str = Field(
+        default="",
+        description="Google Cloud OAuth 2.0 Client Secret, paired with google_oauth_client_id.",
+    )
+    google_picker_api_key: str = Field(
+        default="",
+        description="Google Cloud API key restricted to the Picker API, used by the frontend "
+        "to embed the Drive folder picker (separate from the OAuth client credentials).",
+    )
+
     # ─── Jira (Phase 6f) ──────────────────────────
     jira_domain: str = Field(
         default="", description="Jira Cloud domain (e.g. your-org.atlassian.net)."
@@ -258,6 +272,7 @@ class Settings(BaseSettings):
     rate_limit_change_password_per_minute: int = 10
     rate_limit_resume_per_minute: int = 60
     rate_limit_mcp_test_per_minute: int = 10
+    rate_limit_picker_token_per_minute: int = 10
     rate_limit_api_run_per_minute: int = 60
     rate_limit_users_search_per_minute: int = 30
     rate_limit_forgot_password_per_minute: int = 5

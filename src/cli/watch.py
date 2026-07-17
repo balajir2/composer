@@ -11,7 +11,6 @@ docs/archive/phase-history/specs/2026-07-11-file-storage-provider-framework-desi
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -19,6 +18,7 @@ from typing import TYPE_CHECKING
 import httpx
 
 from src.storage_providers.local import LocalFilesystemProvider
+from src.storage_providers.text_extraction import extract_text
 
 if TYPE_CHECKING:
     from src.storage_providers.base import FileRef, FileStorageProvider
@@ -43,30 +43,6 @@ class WatchConfig:
     poll_interval_seconds: int
 
 
-class UnsupportedFileTypeError(ValueError):
-    """Raised when a claimed file's extension has no known text-extraction path."""
-
-
-def _extract_text(filename: str, raw: bytes) -> str:
-    lower = filename.lower()
-    if lower.endswith((".txt", ".md", ".markdown")):
-        try:
-            return raw.decode("utf-8")
-        except UnicodeDecodeError:
-            return raw.decode("utf-8-sig")
-    if lower.endswith(".pdf"):
-        from pypdf import PdfReader
-
-        reader = PdfReader(io.BytesIO(raw))
-        return "\n".join(page.extract_text() or "" for page in reader.pages)
-    if lower.endswith(".docx"):
-        from docx import Document
-
-        doc = Document(io.BytesIO(raw))
-        return "\n".join(p.text for p in doc.paragraphs)
-    raise UnsupportedFileTypeError(f"no extraction path for {filename!r}")
-
-
 async def _trigger_workflow(*, config: WatchConfig, input_payload: dict[str, str]) -> None:
     url = f"{config.workflow_api_url}/api/run/{config.external_slug}"
     headers = {"Authorization": f"Bearer {config.api_key}"}
@@ -82,7 +58,7 @@ async def claim_file(provider: FileStorageProvider, ref: FileRef, config: WatchC
     failure never raises — it's logged and the file lands in error_path."""
     try:
         raw = await provider.read_file(ref)
-        text = _extract_text(ref.name, raw)
+        text = extract_text(ref.name, raw)
         await _trigger_workflow(config=config, input_payload={config.target_input_variable: text})
     except Exception:
         logger.exception("composer watch: failed to claim %s", ref.name)

@@ -34,7 +34,10 @@ class FileStorageProvider(ABC):
     async def read_file(self, ref: FileRef) -> bytes: ...
 
     @abstractmethod
-    async def move_file(self, ref: FileRef, dest: str) -> None: ...
+    async def move_file(self, ref: FileRef, dest: str) -> None:
+        """dest semantics are provider-specific: local treats it as a
+        destination directory path; google-drive treats it as a claim-status
+        marker ("processed"/"error"), not a path."""
 
     @abstractmethod
     async def write_file(self, dest: str, filename: str, content: bytes) -> None: ...
