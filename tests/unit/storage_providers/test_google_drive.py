@@ -46,6 +46,34 @@ async def test_list_new_files_excludes_marked_files(
     assert req.headers.get("authorization") == "Bearer at-1"
 
 
+async def test_list_new_files_excludes_folders(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """Without a mimeType exclusion, a subfolder inside the watched Drive
+    folder gets listed as a "new file", then fails at read_file() (folders
+    don't support alt=media) and gets PERMANENTLY marked composerStatus=error
+    by the poller's generic per-file error handling — silently poisoning an
+    unrelated Drive folder object forever, since this provider's claim
+    marker is permanent. Asserts the outgoing query excludes Drive's folder
+    mimeType; the existing per-file error-isolation logic (Task 8) already
+    handles whatever non-folder items come back."""
+    from src.storage_providers.google_drive import GoogleDriveProvider
+
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.googleapis\.com/drive/v3/files\?"),
+        method="GET",
+        json={"files": []},
+    )
+
+    provider = GoogleDriveProvider("at-1")
+    await provider.list_new_files("folder123")
+
+    req = httpx_mock.get_request()
+    assert req is not None
+    q = req.url.params["q"]
+    assert "mimeType != 'application/vnd.google-apps.folder'" in q
+
+
 async def test_read_file_downloads_media(
     httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
 ) -> None:

@@ -88,6 +88,7 @@ class GoogleDriveProvider(FileStorageProvider):
         escaped_source = source.replace("\\", "\\\\").replace("'", "\\'")
         query = (
             f"'{escaped_source}' in parents and trashed = false "
+            "and mimeType != 'application/vnd.google-apps.folder' "
             "and not appProperties has { key='composerStatus' and value='processed' } "
             "and not appProperties has { key='composerStatus' and value='error' }"
         )
