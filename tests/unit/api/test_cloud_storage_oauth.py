@@ -32,6 +32,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from src.main import create_app
+from src.security.rate_limit import RateLimiter
 
 
 def _set_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -56,6 +57,7 @@ def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     from src.engine.events_pg import PostgresEventStore
 
     app.state.event_bus = PostgresEventStore(db)
+    app.state.rate_limiter = RateLimiter()
     return TestClient(app), db
 
 
@@ -196,6 +198,40 @@ def test_picker_token_returns_409_when_reconnect_required(monkeypatch: pytest.Mo
         "/cloud-storage/connections/conn1/picker-token", headers=_bearer_header("user1")
     )
     assert resp.status_code == 409, resp.text
+
+
+async def test_picker_token_rate_limited(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-caller bucket for this route is pre-exhausted -> 429, keyed on
+    user id — mirrors mcp_servers.py's test_mcp_connection precedent
+    (tests/unit/api/test_mcp_servers.py has no route-level 429 test of its
+    own, but tests/unit/api/test_users_search.py's test_search_users_rate_limited
+    exercises the same enforce()/per_minute_config() call shape)."""
+    _set_encryption_key(monkeypatch)
+    client, db = _client_with_mock_db()
+    db.cloudstorageconnection.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            id="conn1", userId="user1", encryptedAccessToken="enc", expiresAt=None
+        )
+    )
+    monkeypatch.setattr(
+        "src.api.cloud_storage_oauth.get_valid_drive_access_token",
+        AsyncMock(return_value="at-1"),
+    )
+
+    from src.config import get_settings
+    from src.security.rate_limit import per_minute_config
+
+    limiter: RateLimiter = client.app.state.rate_limiter  # type: ignore[attr-defined]
+    config = per_minute_config(get_settings().rate_limit_picker_token_per_minute)
+    # Drain the bucket for this route+user key before the real request lands.
+    for _ in range(config.capacity):
+        await limiter.check("picker_token", "user1", config)
+
+    resp = client.post(
+        "/cloud-storage/connections/conn1/picker-token", headers=_bearer_header("user1")
+    )
+    assert resp.status_code == 429, resp.text
+    assert "Retry-After" in resp.headers
 
 
 def test_picker_token_rejects_other_users_connection(monkeypatch: pytest.MonkeyPatch) -> None:

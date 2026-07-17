@@ -28,6 +28,12 @@ from src.integrations.google_drive.oauth import (
 )
 from src.security.auth import get_current_user_id
 from src.security.encryption import encrypt
+from src.security.rate_limit import (
+    RateLimiterProtocol,
+    enforce,
+    get_rate_limiter,
+    per_minute_config,
+)
 from src.storage.db import get_db
 
 logger = logging.getLogger(__name__)
@@ -158,6 +164,7 @@ async def get_picker_token(
     connection_id: str,
     db: Prisma = Depends(get_db),
     user_id: str = Depends(get_current_user_id),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> PickerTokenResponse:
     """Hand back the connection's current OAuth access token for one-time
     client-side use by the Google Picker embed (Task 9's frontend
@@ -166,7 +173,18 @@ async def get_picker_token(
     exposed for the one call the Picker widget itself requires
     (setOAuthToken). 404s (not 403) for a connection owned by another
     user, matching this codebase's private-resource convention (CLAUDE.md
-    Phase 8: private = 404 for non-owner)."""
+    Phase 8: private = 404 for non-owner).
+
+    Rate-limited like mcp_servers.py's test_mcp_connection: this route can
+    trigger a live Google OAuth token-refresh call on every invocation via
+    get_valid_drive_access_token(), so an unbounded caller could hammer
+    Google's token endpoint."""
+    await enforce(
+        limiter,
+        route_key="picker_token",
+        client_key=user_id,
+        config=per_minute_config(get_settings().rate_limit_picker_token_per_minute),
+    )
     connection = await db.cloudstorageconnection.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": connection_id}
     )
