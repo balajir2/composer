@@ -2631,6 +2631,142 @@ def _arcade_tool_call_demo() -> dict[str, Any]:
     }
 
 
+# ─── Template 20 — File Watch → Summarize → Email ────────────────────────
+
+
+def _file_watch_summarizer() -> dict[str, Any]:
+    """Drop a file into a watched folder; the `composer watch` CLI extracts
+    its text and triggers this workflow, which summarises it and emails the
+    result. Demonstrates the `file-trigger` node (visual-only — it documents
+    the watch config, it doesn't execute) alongside the `composer watch`
+    local agent, which is today's only supported watcher: it's a process
+    that must run on whatever machine can see the folder, since a hosted
+    backend has no visibility into a user's local disk. Cloud-storage
+    triggers (Drive/Dropbox/S3, polled server-side — no local process
+    required) are a planned follow-on, tracked separately; this template
+    works unchanged once that lands, since the workflow only ever sees
+    `file_content` — it doesn't know or care which watcher produced it.
+    """
+    return {
+        "name": "Example 20: File Watch to Summarize and Email",
+        "description": (
+            "Point `composer watch` at a local folder; when a file lands "
+            "there, its text is extracted and sent to this workflow, which "
+            "summarises it and emails the summary to a recipient. "
+            "Reference for the file-trigger node + composer watch CLI. "
+            "Note: composer watch is a local process — run it on the "
+            "machine that has access to the folder (see the file-trigger "
+            "node's tooltip for the exact command), pointed at this "
+            "workflow's production URL and API key. You can also run this "
+            "workflow directly with pasted text, no watcher required."
+        ),
+        "category": "examples",
+        "tags": ["example", "intermediate", "file-trigger", "automation", "summarization", "email"],
+        "difficulty": "intermediate",
+        "estimatedTime": "2-3 minutes (plus one-time composer watch setup)",
+        "externalSlug": "template-20-file-watch-summarizer",
+        "nodes": [
+            {
+                "id": "file-trigger-1",
+                "type": "file-trigger",
+                "position": {"x": -180, "y": 200},
+                "data": {
+                    "label": "Watch Folder",
+                    "nodeName": "Watch Folder",
+                    "provider": "local",
+                    "sourcePath": "/watch/in",
+                    "destPath": "/watch/done",
+                    "errorPath": "/watch/error",
+                    "targetInputVariable": "file_content",
+                    "pollIntervalSeconds": 30,
+                },
+            },
+            _start_node(
+                label="Start",
+                inputs=[
+                    {
+                        "name": "file_content",
+                        "type": "string",
+                        "required": True,
+                        "description": (
+                            "Extracted text of the claimed file — populated "
+                            "automatically by composer watch (matches the "
+                            "file-trigger node's target input variable). "
+                            "Paste text here to test without running the "
+                            "watcher."
+                        ),
+                        "defaultValue": (
+                            "Paste or drop file text here to test the "
+                            "summarizer without running composer watch."
+                        ),
+                    },
+                    {
+                        "name": "recipient_email",
+                        "type": "string",
+                        "required": True,
+                        "description": "Who should receive the summary",
+                        "defaultValue": "recipient@example.com",
+                    },
+                    {
+                        "name": "from_email",
+                        "type": "string",
+                        "required": True,
+                        "description": "Verified Resend sender address",
+                        "defaultValue": "Composer <reports@example.com>",
+                    },
+                ],
+                pos_x=100,
+            ),
+            {
+                "id": "agent-summarize",
+                "type": "agent",
+                "position": {"x": 380, "y": 200},
+                "data": {
+                    "label": "Summarize File",
+                    "nodeName": "Summarize File",
+                    "instructions": (
+                        "Summarise the following document for someone who "
+                        "doesn't have time to read it in full:\n\n"
+                        "{{file_content}}\n\n"
+                        "Structure:\n"
+                        "1. One-sentence takeaway\n"
+                        "2. Key points (bullet list, max 5)\n"
+                        "3. Anything that needs action or follow-up (say "
+                        "'None' if there isn't anything)\n\n"
+                        "Keep the whole thing under 200 words."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            {
+                "id": "email-1",
+                "type": "email",
+                "position": {"x": 660, "y": 200},
+                "data": {
+                    "label": "Email Summary",
+                    "nodeName": "Email Summary",
+                    "emailProvider": "resend",
+                    "emailFrom": "{{from_email}}",
+                    "emailTo": "{{recipient_email}}",
+                    "emailSubject": "Auto-summary from composer watch",
+                    "emailBodyType": "text",
+                    "emailBody": "{{lastOutput}}",
+                },
+            },
+            _end_node(pos_x=940, pos_y=200),
+        ],
+        "edges": [
+            {"id": "e1", "source": "file-trigger-1", "target": "start-1"},
+            {"id": "e2", "source": "start-1", "target": "agent-summarize"},
+            {"id": "e3", "source": "agent-summarize", "target": "email-1"},
+            {"id": "e4", "source": "email-1", "target": "end-1"},
+        ],
+    }
+
+
 _TEMPLATES: list[dict[str, Any]] = [
     _simple_agent(),
     _web_research_agent(),
@@ -2651,6 +2787,7 @@ _TEMPLATES: list[dict[str, Any]] = [
     _lead_enrichment(),
     _approved_email_distribution(),
     _arcade_tool_call_demo(),
+    _file_watch_summarizer(),
 ]
 
 
