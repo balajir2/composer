@@ -90,6 +90,7 @@ frontend/.env.local
 *-key*.json
 *credentials*.json
 service-account*.json
+client_secret*.json
 *.pem
 *.p12
 
