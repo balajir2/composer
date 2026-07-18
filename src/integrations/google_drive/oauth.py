@@ -30,14 +30,36 @@ from src.security.encryption import EncryptionError, EncryptionKeyMissingError, 
 GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
-DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+# drive.file (originally used here) only grants durable access to files the
+# app created or the user explicitly opened through a drive.file-scoped
+# Picker session -- confirmed in production (2026-07-18) that a folder
+# picked via Picker becomes unreachable (404) to the token minutes later
+# for server-side polling, even though the Picker UI itself could browse
+# it live. Replaced with two narrower non-drive.file scopes instead of the
+# unrestricted `drive` scope:
+#   - drive.readonly: list_new_files' metadata query + read_file's
+#     alt=media content download. Durable, not tied to a Picker session.
+#   - drive.metadata: move_file's PATCH to set the composerStatus
+#     appProperty (the claim marker) -- drive.readonly alone is read-only
+#     and can't write it; drive.metadata covers metadata read/write across
+#     Drive without granting file *content* write access, which this
+#     provider never needs (write_file raises NotImplementedError).
+# Both are Google "restricted" scopes requiring a CASA security assessment
+# to verify for public production use beyond 100 test users -- same tier
+# drive.file was meant to avoid needing that for. Since this app stays in
+# OAuth consent-screen Testing status (small number of known test users,
+# not seeking public verification), that requirement doesn't apply either
+# way, so there's no added cost to using the correctly-scoped combination
+# here over the single drive.file scope that didn't actually work.
+DRIVE_READONLY_SCOPE = "https://www.googleapis.com/auth/drive.readonly"
+DRIVE_METADATA_SCOPE = "https://www.googleapis.com/auth/drive.metadata"
 # drive.file alone grants no access to the userinfo endpoint this module
 # calls to look up the connected account's email (CloudStorageConnection.
 # accountEmail) -- without it Google's userinfo endpoint returns 401
 # ("missing required authentication credential") even though the token
 # exchange itself succeeded, since the token simply isn't scoped for it.
 USERINFO_EMAIL_SCOPE = "https://www.googleapis.com/auth/userinfo.email"
-OAUTH_SCOPES = f"{DRIVE_FILE_SCOPE} {USERINFO_EMAIL_SCOPE}"
+OAUTH_SCOPES = f"{DRIVE_READONLY_SCOPE} {DRIVE_METADATA_SCOPE} {USERINFO_EMAIL_SCOPE}"
 
 _STATE_TTL = timedelta(minutes=10)
 _EXPIRY_BUFFER_SECONDS = 60
@@ -212,7 +234,10 @@ async def get_valid_drive_access_token(
 
 
 __all__ = [
-    "DRIVE_FILE_SCOPE",
+    "DRIVE_METADATA_SCOPE",
+    "DRIVE_READONLY_SCOPE",
+    "OAUTH_SCOPES",
+    "USERINFO_EMAIL_SCOPE",
     "DriveConnectionMissingError",
     "DriveTokenExpiredError",
     "GoogleDriveOAuthError",

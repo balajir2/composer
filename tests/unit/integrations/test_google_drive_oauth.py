@@ -37,11 +37,16 @@ def test_build_authorize_url_includes_expected_params(monkeypatch: pytest.Monkey
     )
     assert url.startswith("https://accounts.google.com/o/oauth2/v2/auth?")
     assert "client_id=client-abc" in url
-    assert "scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file" in url
-    # userinfo.email must be requested alongside drive.file, or the
-    # userinfo lookup in exchange_code_for_tokens() gets a 401 from
-    # Google even though the token exchange itself succeeded -- a real
-    # bug this exact gap caused in production (2026-07-18).
+    assert "scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.readonly" in url
+    # drive.metadata must be requested alongside drive.readonly, or
+    # move_file()'s appProperties PATCH (the claim marker) gets rejected --
+    # drive.readonly is read-only. userinfo.email must be requested too, or
+    # the userinfo lookup in exchange_code_for_tokens() gets a 401 from
+    # Google even though the token exchange itself succeeded. Both gaps
+    # were real bugs hit in production (2026-07-18): drive.file alone
+    # looked sufficient but its Picker-granted access didn't survive to
+    # server-side polling minutes later.
+    assert "drive.metadata" in url
     assert "userinfo.email" in url
     assert "access_type=offline" in url
     assert "state=" in url
@@ -84,7 +89,7 @@ async def test_exchange_code_for_tokens_fetches_email(
             "access_token": "at-1",
             "refresh_token": "rt-1",
             "expires_in": 3600,
-            "scope": "drive.file",
+            "scope": "drive.readonly drive.metadata",
         },
     )
     httpx_mock.add_response(

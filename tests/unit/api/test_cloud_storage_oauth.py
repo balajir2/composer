@@ -106,7 +106,7 @@ def test_callback_success_persists_connection(monkeypatch: pytest.MonkeyPatch) -
                 "access_token": "at-1",
                 "refresh_token": "rt-1",
                 "expires_in": 3600,
-                "scope": "drive.file",
+                "scope": "drive.readonly drive.metadata",
                 "email": "user@example.com",
             }
         ),
@@ -152,8 +152,8 @@ def test_picker_token_returns_connections_access_token(monkeypatch: pytest.Monke
     current OAuth access token to open — this endpoint hands back the same
     token get_valid_drive_access_token() already produces server-side, for
     one-time client-side use by the Picker widget. Not a new/narrower
-    scope: the Picker uses the exact drive.file-scoped token already
-    granted by the OAuth flow."""
+    scope: the Picker uses the exact drive.readonly+drive.metadata-scoped
+    token already granted by the OAuth flow."""
     _set_encryption_key(monkeypatch)
     client, db = _client_with_mock_db()
     db.cloudstorageconnection.find_unique = AsyncMock(
