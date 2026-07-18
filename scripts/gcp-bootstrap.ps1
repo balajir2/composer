@@ -150,6 +150,12 @@ if (-not $SkipSecrets) {
     Set-Secret -Name "composer-firecrawl-key"    -Value $env["FIRECRAWL_API_KEY"]
     Set-Secret -Name "composer-langchain-key"    -Value $env["LANGCHAIN_API_KEY"]
     Set-Secret -Name "composer-nextauth-secret"  -Value $env["NEXTAUTH_SECRET"]
+    # Google Drive OAuth file-trigger (2026-07-16/17) — see Task 10 of
+    # docs/archive/phase-history/plans/2026-07-16-google-drive-oauth-file-trigger-plan.md
+    # for the manual Console steps that produce these three values.
+    Set-Secret -Name "composer-google-oauth-client-id"     -Value $env["GOOGLE_OAUTH_CLIENT_ID"]
+    Set-Secret -Name "composer-google-oauth-client-secret" -Value $env["GOOGLE_OAUTH_CLIENT_SECRET"]
+    Set-Secret -Name "composer-google-picker-key"          -Value $env["GOOGLE_PICKER_API_KEY"]
 }
 
 # ─── 1a. Cloud Tasks queue + shared OIDC service account ────────────
@@ -242,7 +248,10 @@ $secretMappings = @(
     @{ env = "GROQ_API_KEY";      secret = "composer-groq-key" },
     @{ env = "TAVILY_API_KEY";    secret = "composer-tavily-key" },
     @{ env = "FIRECRAWL_API_KEY"; secret = "composer-firecrawl-key" },
-    @{ env = "LANGCHAIN_API_KEY"; secret = "composer-langchain-key" }
+    @{ env = "LANGCHAIN_API_KEY"; secret = "composer-langchain-key" },
+    @{ env = "GOOGLE_OAUTH_CLIENT_ID";     secret = "composer-google-oauth-client-id" },
+    @{ env = "GOOGLE_OAUTH_CLIENT_SECRET"; secret = "composer-google-oauth-client-secret" },
+    @{ env = "GOOGLE_PICKER_API_KEY";      secret = "composer-google-picker-key" }
 )
 $setSecretsParts = $secretMappings |
     Where-Object { $availableSecrets -contains $_.secret } |

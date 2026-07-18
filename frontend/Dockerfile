@@ -40,6 +40,13 @@ COPY . .
 ARG NEXT_PUBLIC_COMPOSER_API_URL
 ENV NEXT_PUBLIC_COMPOSER_API_URL=${NEXT_PUBLIC_COMPOSER_API_URL}
 
+# Google Picker API key for the Drive folder-picker embed (Google Drive
+# OAuth file-trigger, 2026-07-16) — restricted server-side to the Picker
+# API + this frontend's own origin, so embedding it here is safe by
+# design (see docs/archive/phase-history/specs/2026-07-15-google-drive-oauth-file-trigger-design.md §F).
+ARG NEXT_PUBLIC_GOOGLE_PICKER_API_KEY
+ENV NEXT_PUBLIC_GOOGLE_PICKER_API_KEY=${NEXT_PUBLIC_GOOGLE_PICKER_API_KEY}
+
 # Disable Next.js telemetry in builds (no phone-home from our images).
 ENV NEXT_TELEMETRY_DISABLED=1
 

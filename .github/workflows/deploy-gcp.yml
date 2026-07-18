@@ -254,6 +254,7 @@ jobs:
           push: true
           build-args: |
             NEXT_PUBLIC_COMPOSER_API_URL=${{ steps.api.outputs.url }}
+            NEXT_PUBLIC_GOOGLE_PICKER_API_KEY=${{ secrets.GOOGLE_PICKER_API_KEY }}
           tags: |
             ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/frontend:${{ github.sha }}
             ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/frontend:latest
