@@ -53,7 +53,15 @@ beforeEach(() => {
 
 describe("GoogleDriveConnect", () => {
   it("shows the Connect button with no connections and no connectionId", async () => {
-    render(<GoogleDriveConnect connectionId={undefined} driveFolderId={undefined} onChange={vi.fn()} />);
+    render(
+      <GoogleDriveConnect
+        connectionId={undefined}
+        driveFolderId={undefined}
+        driveProcessedFolderId={undefined}
+        driveErrorFolderId={undefined}
+        onChange={vi.fn()}
+      />
+    );
     expect(await screen.findByText("Connect Google Drive")).toBeInTheDocument();
     expect(screen.queryByText(/Select folder/)).not.toBeInTheDocument();
   });
@@ -66,7 +74,7 @@ describe("GoogleDriveConnect", () => {
         { id: "conn-1", provider: "google-drive", accountEmail: "user@gmail.com" },
       ]);
       const onChange = vi.fn();
-      render(<GoogleDriveConnect connectionId={undefined} driveFolderId={undefined} onChange={onChange} />);
+      render(<GoogleDriveConnect connectionId={undefined} driveFolderId={undefined} driveProcessedFolderId={undefined} driveErrorFolderId={undefined} onChange={onChange} />);
 
       // Initial mount fetch resolves to the same single connection — but
       // connectionId is still undefined, so the component must NOT have
@@ -86,7 +94,7 @@ describe("GoogleDriveConnect", () => {
       { id: "conn-2", provider: "google-drive", accountEmail: "b@gmail.com" },
     ]);
     const onChange = vi.fn();
-    render(<GoogleDriveConnect connectionId={undefined} driveFolderId={undefined} onChange={onChange} />);
+    render(<GoogleDriveConnect connectionId={undefined} driveFolderId={undefined} driveProcessedFolderId={undefined} driveErrorFolderId={undefined} onChange={onChange} />);
 
     await waitFor(() => expect(listCloudStorageConnections).toHaveBeenCalled());
 
@@ -109,7 +117,7 @@ describe("GoogleDriveConnect", () => {
       { id: "conn-1", provider: "google-drive", accountEmail: "user@gmail.com" },
     ]);
     const onChange = vi.fn();
-    render(<GoogleDriveConnect connectionId="conn-1" driveFolderId={undefined} onChange={onChange} />);
+    render(<GoogleDriveConnect connectionId="conn-1" driveFolderId={undefined} driveProcessedFolderId={undefined} driveErrorFolderId={undefined} onChange={onChange} />);
 
     await waitFor(() => expect(listCloudStorageConnections).toHaveBeenCalled());
     expect(await screen.findByText(/Connected as user@gmail.com/)).toBeInTheDocument();
@@ -127,10 +135,12 @@ describe("GoogleDriveConnect", () => {
     ]);
     getPickerToken.mockRejectedValue(new MockComposerApiError(409, "expired"));
     const onChange = vi.fn();
-    render(<GoogleDriveConnect connectionId="conn-1" driveFolderId={undefined} onChange={onChange} />);
+    render(<GoogleDriveConnect connectionId="conn-1" driveFolderId={undefined} driveProcessedFolderId={undefined} driveErrorFolderId={undefined} onChange={onChange} />);
 
-    const pickButton = await screen.findByText("Select folder");
-    fireEvent.click(pickButton);
+    // Three "Select folder" buttons now render once connected (watch,
+    // processed, error) — the watch-folder one is first in DOM order.
+    const buttons = await screen.findAllByText("Select folder");
+    fireEvent.click(buttons[0]!);
 
     await waitFor(() =>
       expect(toastError).toHaveBeenCalledWith(expect.stringMatching(/reconnect/i))
@@ -141,7 +151,91 @@ describe("GoogleDriveConnect", () => {
     listCloudStorageConnections.mockResolvedValue([
       { id: "conn-1", provider: "google-drive", accountEmail: "user@gmail.com" },
     ]);
-    render(<GoogleDriveConnect connectionId="conn-1" driveFolderId={undefined} onChange={vi.fn()} />);
+    render(<GoogleDriveConnect connectionId="conn-1" driveFolderId={undefined} driveProcessedFolderId={undefined} driveErrorFolderId={undefined} onChange={vi.fn()} />);
     expect(await screen.findByText("Reconnect")).toBeInTheDocument();
+  });
+
+  it("shows Processed/Error folder pickers once connected and displays configured ids", async () => {
+    listCloudStorageConnections.mockResolvedValue([
+      { id: "conn-1", provider: "google-drive", accountEmail: "user@gmail.com" },
+    ]);
+    render(
+      <GoogleDriveConnect
+        connectionId="conn-1"
+        driveFolderId="watch-folder"
+        driveProcessedFolderId="done-folder"
+        driveErrorFolderId="err-folder"
+        onChange={vi.fn()}
+      />
+    );
+    expect(await screen.findByText(/Processed folder.*done-folder/)).toBeInTheDocument();
+    expect(await screen.findByText(/Error folder.*err-folder/)).toBeInTheDocument();
+  });
+
+  it("writes driveProcessedFolderId when a folder is picked via the Processed folder button", async () => {
+    listCloudStorageConnections.mockResolvedValue([
+      { id: "conn-1", provider: "google-drive", accountEmail: "user@gmail.com" },
+    ]);
+    getPickerToken.mockResolvedValue("picker-access-token");
+    window.gapi = { load: (_api: string, opts: { callback: () => void }) => opts.callback() };
+
+    class FakeDocsView {
+      setSelectFolderEnabled() {
+        return this;
+      }
+      setIncludeFolders() {
+        return this;
+      }
+    }
+    class FakePickerBuilder {
+      cb: ((data: { action: string; docs?: { id: string }[] }) => void) | null = null;
+      addView() {
+        return this;
+      }
+      setOAuthToken() {
+        return this;
+      }
+      setDeveloperKey() {
+        return this;
+      }
+      setCallback(cb: (data: { action: string; docs?: { id: string }[] }) => void) {
+        this.cb = cb;
+        return this;
+      }
+      build() {
+        const cb = this.cb;
+        return { setVisible: () => cb?.({ action: "picked", docs: [{ id: "new-done-folder" }] }) };
+      }
+    }
+    window.google = {
+      picker: {
+        DocsView: FakeDocsView,
+        ViewId: { FOLDERS: "folders" },
+        Action: { PICKED: "picked" },
+        PickerBuilder: FakePickerBuilder,
+      },
+    } as unknown as Window["google"];
+    const onChange = vi.fn();
+    render(
+      <GoogleDriveConnect
+        connectionId="conn-1"
+        driveFolderId="watch-folder"
+        driveProcessedFolderId={undefined}
+        driveErrorFolderId={undefined}
+        onChange={onChange}
+      />
+    );
+
+    const processedButton = await screen.findByText("Processed folder (optional) — successfully-handled files are moved here");
+    const button = processedButton.parentElement?.querySelector("button");
+    expect(button).not.toBeNull();
+    if (button) fireEvent.click(button);
+
+    await waitFor(() =>
+      expect(onChange).toHaveBeenCalledWith({ connectionId: "conn-1", driveProcessedFolderId: "new-done-folder" })
+    );
+
+    delete (window as { google?: unknown }).google;
+    delete (window as { gapi?: unknown }).gapi;
   });
 });

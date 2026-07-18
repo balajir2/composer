@@ -105,6 +105,8 @@ export default function FileTriggerPanel({
             <GoogleDriveConnect
               connectionId={data.connectionId as string | undefined}
               driveFolderId={data.driveFolderId as string | undefined}
+              driveProcessedFolderId={data.driveProcessedFolderId as string | undefined}
+              driveErrorFolderId={data.driveErrorFolderId as string | undefined}
               onChange={onChange}
             />
           )}

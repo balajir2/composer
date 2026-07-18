@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — Visible Processed/Error folder moves for the Google Drive file-trigger (2026-07-18)
+
+Follow-up to the Google Drive OAuth file-trigger feature (below). A user reported that, unlike the local provider (which visibly moves files into `destPath`/`errorPath`), successfully-processed Drive files stayed put in the watched folder with no visible sign they'd been handled — the `appProperties` claim marker (§C of the design doc) is invisible in the Drive UI. Verified the underlying claim/never-reprocess mechanism was working correctly (direct Drive API check confirmed the marker was being set); the gap was purely a lack of user-visible feedback.
+
+`FileTriggerNodeData` gains two new optional fields, `driveProcessedFolderId`/`driveErrorFolderId`, mirroring the local provider's `destPath`/`errorPath` semantics as Drive folder IDs. `GoogleDriveProvider.__init__` accepts them as keyword-only `processed_folder_id`/`error_folder_id`; `move_file()` still sets the `appProperties` marker first (unchanged, still the permanent claim mechanism), then — only if the matching folder ID is configured — additionally relocates the file there via `GET .../parents` + `PATCH ...addParents/removeParents`. Both fields are optional and independent; leaving either unset preserves the original marker-only behavior for existing node configs. `POST /internal/poll-file-triggers` now reads both fields off the node and passes them into the provider constructor. Frontend's `GoogleDriveConnect` gains two more Picker-backed folder selectors ("Processed folder", "Error folder") alongside the existing watch-folder picker.
+
+Full TDD; `GoogleDriveProvider` unit tests, `FileTriggerNodeData` model tests, `poll_file_triggers` wiring test, and frontend component tests all added/passing.
+
 ### Fixed — Local dev/CI no longer requires real Cloud Tasks infra to run a workflow (2026-07-16)
 
 Root cause of `500: Execution ... could not be enqueued for processing` / `400 service_account_email must be set`: ADR-0033's Cloud Tasks migration (previous entry) made `enqueue_execution()` unconditionally build a real Cloud Tasks task with an OIDC token, even when `CLOUD_TASKS_SERVICE_ACCOUNT`/`GCP_PROJECT_ID` aren't configured — true for any machine where the GCP infra (`scripts/gcp-bootstrap.ps1`) hasn't been provisioned, which was deliberately deferred (deploy paused pending go-ahead). Every execution/resume path (`POST /executions`, resume, external-invoke, approval-email confirm, lease-expiry re-enqueue) hit this with no fallback — unlike `_verify_internal_oidc` (src/api/internal.py), which already no-ops in this exact state (ADR-0015 pattern), `enqueue_execution` had no equivalent.

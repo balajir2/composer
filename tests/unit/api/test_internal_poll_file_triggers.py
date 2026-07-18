@@ -142,6 +142,54 @@ def test_poll_endpoint_processes_new_file_and_marks_it(monkeypatch: pytest.Monke
     )
 
 
+def test_poll_endpoint_passes_processed_and_error_folder_ids_to_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A node configured with driveProcessedFolderId/driveErrorFolderId must
+    have both forwarded into GoogleDriveProvider's constructor so move_file
+    can visibly relocate files, not just set the appProperties marker."""
+    client, db = _client_with_mock_db()
+    workflow = _workflow_with_drive_trigger()
+    workflow.nodes[0]["data"]["driveProcessedFolderId"] = "done-folder"
+    workflow.nodes[0]["data"]["driveErrorFolderId"] = "err-folder"
+    db.workflow.find_many = AsyncMock(return_value=[workflow])
+    db.cloudstorageconnection.find_unique = AsyncMock(
+        return_value=SimpleNamespace(id="conn1", userId="user1")
+    )
+
+    from datetime import UTC, datetime
+
+    from src.storage_providers.base import FileRef
+
+    fake_provider = MagicMock()
+    fake_provider.list_new_files = AsyncMock(
+        return_value=[
+            FileRef(identifier="f1", name="notes.txt", size_bytes=5, modified_at=datetime.now(UTC))
+        ]
+    )
+    fake_provider.read_file = AsyncMock(return_value=b"hello")
+    fake_provider.move_file = AsyncMock(return_value=None)
+    provider_cls = MagicMock(return_value=fake_provider)
+    monkeypatch.setattr("src.api.internal.GoogleDriveProvider", provider_cls)
+    monkeypatch.setattr(
+        "src.api.internal.get_valid_drive_access_token", AsyncMock(return_value="at-1")
+    )
+
+    fake_execution = SimpleNamespace(id="exec1")
+    monkeypatch.setattr(
+        "src.engine.langgraph_executor.LangGraphExecutor.start_execution",
+        AsyncMock(return_value=fake_execution),
+    )
+    monkeypatch.setattr("src.api.internal.enqueue_execution", AsyncMock(return_value=None))
+
+    resp = client.post("/internal/poll-file-triggers")
+
+    assert resp.status_code == 200, resp.text
+    provider_cls.assert_called_once_with(
+        "at-1", processed_folder_id="done-folder", error_folder_id="err-folder"
+    )
+
+
 def test_poll_endpoint_isolates_per_file_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """One file's extraction/trigger failure marks it 'error' and continues
     — mirrors composer watch's per-file try/except (design doc §D.4)."""

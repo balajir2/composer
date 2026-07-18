@@ -561,6 +561,8 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
                 connection_id = node.data.connection_id
                 folder_id = node.data.drive_folder_id
                 target_var = node.data.target_input_variable
+                processed_folder_id = node.data.drive_processed_folder_id
+                error_folder_id = node.data.drive_error_folder_id
                 if not connection_id or not folder_id or not target_var:
                     continue
             except Exception:
@@ -629,7 +631,11 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
                 )
                 continue
 
-            provider = GoogleDriveProvider(access_token)
+            provider = GoogleDriveProvider(
+                access_token,
+                processed_folder_id=processed_folder_id,
+                error_folder_id=error_folder_id,
+            )
             try:
                 refs = await provider.list_new_files(folder_id)
             except Exception:

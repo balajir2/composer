@@ -51,9 +51,13 @@ class FileTriggerNodeData(BaseNodeData):
     poll_interval_seconds: int = Field(default=30, alias="pollIntervalSeconds")  # local (CLI) only, see §D
     connection_id: str | None = Field(default=None, alias="connectionId")   # google-drive only
     drive_folder_id: str | None = Field(default=None, alias="driveFolderId")  # google-drive only
+    drive_processed_folder_id: str | None = Field(default=None, alias="driveProcessedFolderId")  # google-drive only, added 2026-07-18
+    drive_error_folder_id: str | None = Field(default=None, alias="driveErrorFolderId")  # google-drive only, added 2026-07-18
 ```
 
 `source_path`/`dest_path`/`error_path` keep their existing local-only meaning (no move/error-folder concept for Drive — see §C's claim mechanism instead). Still visual-only; no `graph_builder` change needed.
+
+**`drive_processed_folder_id`/`drive_error_folder_id` (added 2026-07-18):** optional visible-move destinations, mirroring `dest_path`/`error_path`'s local semantics but expressed as Drive folder IDs rather than filesystem paths. Added after a user reported that, unlike the local provider, successfully-processed Drive files stayed in the watched folder with no visible sign they'd been handled — the `appProperties` marker (§C) is invisible in the Drive UI. Both fields are optional and independent of each other; leaving either (or both) unset preserves the original marker-only behavior for existing node configs. See §C's revised `move_file` description below.
 
 ## B. OAuth connect flow
 
@@ -69,7 +73,7 @@ Implements `FileStorageProvider` via direct `httpx` calls to the Drive v3 REST A
 
 - **`list_new_files(folder_id)`** — `GET /files?q='{folder_id}' in parents and trashed=false and not appProperties has {key='composerStatus'}` (Drive query language supports `appProperties` filters directly), capped at 20 results per call; remainder is naturally picked up on the next poll since unmarked files stay in the query.
 - **`read_file(ref)`** — `GET /files/{id}?alt=media` downloads raw bytes, then reuses `composer watch`'s `_extract_text()` unchanged. **MVP scope: plain text/PDF/DOCX only** — native Google Docs/Sheets/Slides need a separate `files.export` call with a MIME-type map (Drive doesn't serve raw bytes for its own document types); explicitly deferred (§ Non-goals).
-- **`move_file(ref, status)`** — `PATCH /files/{id}` with `appProperties={"composerStatus": status}` (`"processed"` or `"error"`). This *is* the claim mechanism, replacing the local provider's move-to-folder semantics: once marked, the file is permanently excluded from `list_new_files`'s query regardless of outcome — identical "never re-claim a claimed file" behavior to local's dest-or-error move, just expressed as a property instead of a location.
+- **`move_file(ref, status)`** — `PATCH /files/{id}` with `appProperties={"composerStatus": status}` (`"processed"` or `"error"`). This *is* the claim mechanism, replacing the local provider's move-to-folder semantics: once marked, the file is permanently excluded from `list_new_files`'s query regardless of outcome — identical "never re-claim a claimed file" behavior to local's dest-or-error move, just expressed as a property instead of a location. **Revised 2026-07-18:** the appProperties marker is always set first and remains the permanent claim mechanism on its own — but if `processed_folder_id`/`error_folder_id` was passed to the provider's constructor (from the node's new `drive_processed_folder_id`/`drive_error_folder_id` fields) for the matching outcome, `move_file` additionally fetches the file's current `parents` (`GET /files/{id}?fields=parents`) and relocates it there via `PATCH /files/{id}?addParents=...&removeParents=...`, mirroring the local provider's visible dest-path/error-path move. This addresses a real usability gap: `appProperties` isn't visible anywhere in the Drive UI, so a user watching the folder had no way to see that a file had actually been claimed. The visible move is best-effort and additive — if the folder ID isn't configured, behavior is unchanged from the original marker-only design.
 - **`write_file`** — raises `NotImplementedError`. This provider is trigger-only; unrelated to the separate `file-write` node, which stays local-only for now.
 
 **OAuth scope note (revised 2026-07-18 — supersedes the original `drive.file` design):** The original design used `drive.file`, reasoning that Google Picker's folder-select mode would grant durable, ongoing access to a folder's current and future contents per Google's general documentation. **Confirmed false in production**: a folder picked via Picker became unreachable (`404 File not found` on the folder object itself, not just its contents) to the server-side token within minutes — the Picker session's live access to browse the folder did not persist for later polling. Root-caused via direct Drive API calls using the stored connection's own token, repeated over 20+ minutes to rule out a transient issue.
@@ -82,7 +86,7 @@ New `POST /internal/poll-file-triggers` (`src/api/internal.py`), OIDC-verified b
 
 Logic per invocation:
 1. Query production workflows (`isProduction=true`) whose `nodes` JSON contains a `file-trigger` node with `data.provider = "google-drive"`.
-2. For each: resolve `CloudStorageConnection` via `connection_id`, call `get_valid_drive_access_token()`, `list_new_files(drive_folder_id)`.
+2. For each: resolve `CloudStorageConnection` via `connection_id`, call `get_valid_drive_access_token()`, construct `GoogleDriveProvider(access_token, processed_folder_id=drive_processed_folder_id, error_folder_id=drive_error_folder_id)` (both `None` if unset on the node), `list_new_files(drive_folder_id)`.
 3. For each new file: `read_file()` → extract text → `LangGraphExecutor.start_execution(workflow_id=, input={target_input_variable: text}, user_id=<connection owner>)` → `enqueue_execution(execution.id, kind="run")` (§ "What already exists," third bullet) → `move_file(ref, "processed")`.
 4. On extraction or start_execution failure for a given file: `move_file(ref, "error")`, log, continue — one file's failure never blocks the rest of the batch (mirrors `composer watch`'s per-file try/except).
 
@@ -93,6 +97,7 @@ Logic per invocation:
 `node-panels/file-trigger.tsx` gains a provider picker (`Local` / `Google Drive`) in the existing "Watch configuration" panel. Selecting `Google Drive` shows:
 1. A **"Connect Google Drive"** button — opens `GET /cloud-storage/google-drive/authorize` in a popup, same pattern as the existing MCP server connect flow. On success, shows the connected account's email (`CloudStorageConnection.accountEmail`).
 2. Once connected, an embedded **Google Picker** (folder-select mode, using the connection's access token + the new `GOOGLE_PICKER_API_KEY`) to choose the watched folder, storing `driveFolderId` and `connectionId` on the node.
+3. **(Added 2026-07-18)** Two further optional Picker-backed pickers, **"Processed folder"** and **"Error folder"**, storing `driveProcessedFolderId`/`driveErrorFolderId` — the visible-move destinations described in §A/§C. Both render only once a connection exists; leaving either unset keeps the original marker-only behavior.
 
 No changes to `graph_builder.py`, `COMPOSER_NODE_TYPES`, or the palette — `file-trigger` is already fully registered; this only extends its property panel.
 

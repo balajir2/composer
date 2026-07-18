@@ -61,6 +61,17 @@ function loadGooglePicker(): Promise<void> {
   });
 }
 
+/** Which folder field a picker invocation is selecting for. Each maps to
+ * its own node-data key so the three pickers (watch/processed/error) can
+ * share the same Picker-opening logic below. */
+type FolderKind = "watch" | "processed" | "error";
+
+const FOLDER_KEY: Record<FolderKind, string> = {
+  watch: "driveFolderId",
+  processed: "driveProcessedFolderId",
+  error: "driveErrorFolderId",
+};
+
 /**
  * Google Drive connect + folder-picker UI for the file-trigger node panel.
  *
@@ -76,19 +87,29 @@ function loadGooglePicker(): Promise<void> {
  *      token from the backend (token never otherwise leaves the server)
  *      and opens the Google Picker UI scoped to folders only.
  *   3. Picking a folder writes {connectionId, driveFolderId} onto the node.
+ *      The same picker also drives the optional Processed/Error folder
+ *      fields (written to driveProcessedFolderId/driveErrorFolderId) —
+ *      mirroring the local provider's destPath/errorPath, but as visible
+ *      Drive folder moves rather than filesystem moves. Both are optional;
+ *      leaving them unset keeps the original appProperties-marker-only
+ *      behavior (see src/storage_providers/google_drive.py's move_file).
  */
 export default function GoogleDriveConnect({
   connectionId,
   driveFolderId,
+  driveProcessedFolderId,
+  driveErrorFolderId,
   onChange,
 }: {
   connectionId: string | undefined;
   driveFolderId: string | undefined;
+  driveProcessedFolderId: string | undefined;
+  driveErrorFolderId: string | undefined;
   onChange: (patch: Record<string, unknown>) => void;
 }) {
   const [connections, setConnections] = useState<CloudStorageConnection[]>([]);
   const [connecting, setConnecting] = useState(false);
-  const [pickerBusy, setPickerBusy] = useState(false);
+  const [pickerBusy, setPickerBusy] = useState<FolderKind | null>(null);
 
   // Returns the freshly-fetched list (not just setting state) so callers —
   // notably the OAuth postMessage handler below — can act on the result
@@ -155,9 +176,9 @@ export default function GoogleDriveConnect({
     }
   }
 
-  async function handlePickFolder() {
+  async function handlePickFolder(kind: FolderKind) {
     if (!connected) return;
-    setPickerBusy(true);
+    setPickerBusy(kind);
     try {
       const accessToken = await getPickerToken(connected.id);
       await loadGooglePicker();
@@ -175,7 +196,7 @@ export default function GoogleDriveConnect({
         .setDeveloperKey(process.env.NEXT_PUBLIC_GOOGLE_PICKER_API_KEY ?? "")
         .setCallback((data) => {
           if (data.action === google.picker.Action.PICKED && data.docs?.[0]) {
-            onChange({ connectionId: connected.id, driveFolderId: data.docs[0].id });
+            onChange({ connectionId: connected.id, [FOLDER_KEY[kind]]: data.docs[0].id });
           }
         })
         .build();
@@ -191,7 +212,7 @@ export default function GoogleDriveConnect({
         toast.error(err instanceof Error ? err.message : "Failed to open the Google Drive folder picker.");
       }
     } finally {
-      setPickerBusy(false);
+      setPickerBusy(null);
     }
   }
 
@@ -218,29 +239,73 @@ export default function GoogleDriveConnect({
           )}
         </div>
       ) : (
-        <div className="space-y-2">
-          <div className="text-xs text-muted-foreground">
-            Connected as {connected.accountEmail}
-            {driveFolderId ? ` — watching folder ${driveFolderId}` : " — no folder selected yet"}
+        <div className="space-y-3">
+          <div>
+            <div className="text-xs text-muted-foreground">
+              Connected as {connected.accountEmail}
+              {driveFolderId ? ` — watching folder ${driveFolderId}` : " — no folder selected yet"}
+            </div>
+            <div className="mt-1 flex gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={pickerBusy !== null}
+                onClick={() => handlePickFolder("watch")}
+              >
+                {pickerBusy === "watch" ? "Opening…" : driveFolderId ? "Change folder" : "Select folder"}
+              </Button>
+              {/* The connection row can exist (so `connected` is truthy) while
+                  its stored token is expired/unrefreshable — the picker-token
+                  fetch above then 409s with a "reconnect" toast. Keep a
+                  reconnect path reachable even in the "connected" state so
+                  that toast's instruction is actually actionable. */}
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                disabled={connecting}
+                onClick={handleConnect}
+                title="Re-run Google authorization for this account (use if the connection expired)"
+              >
+                {connecting ? "Connecting…" : "Reconnect"}
+              </Button>
+            </div>
           </div>
-          <div className="flex gap-2">
-            <Button type="button" size="sm" variant="outline" disabled={pickerBusy} onClick={handlePickFolder}>
-              {pickerBusy ? "Opening…" : driveFolderId ? "Change folder" : "Select folder"}
-            </Button>
-            {/* The connection row can exist (so `connected` is truthy) while
-                its stored token is expired/unrefreshable — the picker-token
-                fetch above then 409s with a "reconnect" toast. Keep a
-                reconnect path reachable even in the "connected" state so
-                that toast's instruction is actually actionable. */}
+
+          <div className="space-y-1 border-t pt-2">
+            <div className="text-xs text-muted-foreground">
+              Processed folder (optional) — successfully-handled files are moved here
+              {driveProcessedFolderId ? `: ${driveProcessedFolderId}` : ""}
+            </div>
             <Button
               type="button"
               size="sm"
-              variant="ghost"
-              disabled={connecting}
-              onClick={handleConnect}
-              title="Re-run Google authorization for this account (use if the connection expired)"
+              variant="outline"
+              disabled={pickerBusy !== null}
+              onClick={() => handlePickFolder("processed")}
             >
-              {connecting ? "Connecting…" : "Reconnect"}
+              {pickerBusy === "processed"
+                ? "Opening…"
+                : driveProcessedFolderId
+                  ? "Change folder"
+                  : "Select folder"}
+            </Button>
+          </div>
+
+          <div className="space-y-1">
+            <div className="text-xs text-muted-foreground">
+              Error folder (optional) — files that fail to process are moved here
+              {driveErrorFolderId ? `: ${driveErrorFolderId}` : ""}
+            </div>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              disabled={pickerBusy !== null}
+              onClick={() => handlePickFolder("error")}
+            >
+              {pickerBusy === "error" ? "Opening…" : driveErrorFolderId ? "Change folder" : "Select folder"}
             </Button>
           </div>
         </div>

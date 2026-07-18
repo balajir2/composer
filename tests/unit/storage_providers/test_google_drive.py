@@ -117,6 +117,96 @@ async def test_move_file_sets_app_properties(
     assert body == {"appProperties": {"composerStatus": "processed"}}
 
 
+async def test_move_file_relocates_to_processed_folder_when_configured(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """When processed_folder_id is configured, a successful claim both sets
+    the appProperties marker (kept as the permanent backup claim mechanism)
+    AND visibly relocates the file via Drive's addParents/removeParents --
+    mirroring the local provider's dest_path move, unlike the marker-only
+    behavior when no folder is configured."""
+    from src.storage_providers.base import FileRef
+    from src.storage_providers.google_drive import GoogleDriveProvider
+
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/drive/v3/files/f1",
+        method="PATCH",
+        json={"id": "f1"},
+    )
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/drive/v3/files/f1?fields=parents",
+        method="GET",
+        json={"parents": ["old-parent-1"]},
+    )
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/drive/v3/files/f1?addParents=processed-folder-id&removeParents=old-parent-1",
+        method="PATCH",
+        json={"id": "f1"},
+    )
+
+    provider = GoogleDriveProvider("at-1", processed_folder_id="processed-folder-id")
+    ref = FileRef(identifier="f1", name="report.pdf", size_bytes=10, modified_at=datetime.now(UTC))
+    await provider.move_file(ref, "processed")
+
+    requests = httpx_mock.get_requests()
+    assert len(requests) == 3
+    import json as _json
+
+    assert _json.loads(requests[0].content) == {"appProperties": {"composerStatus": "processed"}}
+    assert str(requests[1].url) == "https://www.googleapis.com/drive/v3/files/f1?fields=parents"
+    assert "addParents=processed-folder-id" in str(requests[2].url)
+    assert "removeParents=old-parent-1" in str(requests[2].url)
+
+
+async def test_move_file_relocates_to_error_folder_when_configured(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    from src.storage_providers.base import FileRef
+    from src.storage_providers.google_drive import GoogleDriveProvider
+
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/drive/v3/files/f1", method="PATCH", json={"id": "f1"}
+    )
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/drive/v3/files/f1?fields=parents",
+        method="GET",
+        json={"parents": ["old-parent-1"]},
+    )
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/drive/v3/files/f1?addParents=error-folder-id&removeParents=old-parent-1",
+        method="PATCH",
+        json={"id": "f1"},
+    )
+
+    provider = GoogleDriveProvider("at-1", error_folder_id="error-folder-id")
+    ref = FileRef(identifier="f1", name="report.pdf", size_bytes=10, modified_at=datetime.now(UTC))
+    await provider.move_file(ref, "error")
+
+    requests = httpx_mock.get_requests()
+    assert len(requests) == 3
+    assert "addParents=error-folder-id" in str(requests[2].url)
+
+
+async def test_move_file_does_not_move_wrong_outcome_folder(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """Only error_folder_id is configured; a successful ("processed") claim
+    must not try to move into it -- the marker is set, but no move happens
+    since processed_folder_id is unset."""
+    from src.storage_providers.base import FileRef
+    from src.storage_providers.google_drive import GoogleDriveProvider
+
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/drive/v3/files/f1", method="PATCH", json={"id": "f1"}
+    )
+
+    provider = GoogleDriveProvider("at-1", error_folder_id="error-folder-id")
+    ref = FileRef(identifier="f1", name="report.pdf", size_bytes=10, modified_at=datetime.now(UTC))
+    await provider.move_file(ref, "processed")
+
+    assert len(httpx_mock.get_requests()) == 1
+
+
 async def test_write_file_raises_not_implemented() -> None:
     from src.storage_providers.google_drive import GoogleDriveProvider
 

@@ -1038,6 +1038,50 @@ def test_file_trigger_node_parses_google_drive_config() -> None:
     assert node.data.drive_folder_id == "1a2b3c4d5e"
 
 
+def test_file_trigger_node_parses_google_drive_move_folders() -> None:
+    from src.engine.workflow import FileTriggerNode
+
+    node = FileTriggerNode.model_validate(
+        {
+            "id": "ft1",
+            "type": "file-trigger",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "File Trigger",
+                "provider": "google-drive",
+                "connectionId": "conn_abc123",
+                "driveFolderId": "1a2b3c4d5e",
+                "driveProcessedFolderId": "done-folder-id",
+                "driveErrorFolderId": "error-folder-id",
+                "targetInputVariable": "file_content",
+            },
+        }
+    )
+    assert node.data.drive_processed_folder_id == "done-folder-id"
+    assert node.data.drive_error_folder_id == "error-folder-id"
+
+
+def test_file_trigger_node_google_drive_move_folders_default_none() -> None:
+    from src.engine.workflow import FileTriggerNode
+
+    node = FileTriggerNode.model_validate(
+        {
+            "id": "ft1",
+            "type": "file-trigger",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "File Trigger",
+                "provider": "google-drive",
+                "connectionId": "conn_abc123",
+                "driveFolderId": "1a2b3c4d5e",
+                "targetInputVariable": "file_content",
+            },
+        }
+    )
+    assert node.data.drive_processed_folder_id is None
+    assert node.data.drive_error_folder_id is None
+
+
 def test_file_trigger_node_rejects_unknown_provider() -> None:
     from pydantic import ValidationError
 

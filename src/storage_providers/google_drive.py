@@ -33,8 +33,20 @@ class GoogleDriveProviderError(RuntimeError):
 class GoogleDriveProvider(FileStorageProvider):
     name = "google-drive"
 
-    def __init__(self, access_token: str) -> None:
+    def __init__(
+        self,
+        access_token: str,
+        *,
+        processed_folder_id: str | None = None,
+        error_folder_id: str | None = None,
+    ) -> None:
         self.access_token = access_token
+        # Optional visible-move destinations (mirrors the local provider's
+        # dest_path/error_path) -- both None by default, matching the
+        # original marker-only behavior for existing node configs that
+        # never set these fields.
+        self.processed_folder_id = processed_folder_id
+        self.error_folder_id = error_folder_id
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"Bearer {self.access_token}"}
@@ -132,18 +144,52 @@ class GoogleDriveProvider(FileStorageProvider):
         return resp.content
 
     async def move_file(self, ref: FileRef, dest: str) -> None:
-        """Repurposed for this provider: `dest` is NOT a path/folder to move
-        the file into. It is the `composerStatus` appProperty value to set
-        ("processed" or "error") — this provider's claim mechanism is an
-        in-place marker, not a relocation. Task 8 (the polling endpoint)
-        calls this with dest="processed" on success or dest="error" on
-        failure; the file stays in its original Drive folder either way."""
+        """`dest` is the `composerStatus` appProperty value to set
+        ("processed" or "error") — NOT a path, unlike the local provider.
+        This marker is always set first and is the permanent claim
+        mechanism (list_new_files excludes marked files regardless of
+        whether a visible move below succeeds) — this provider's
+        never-re-claim guarantee does not depend on the move working.
+
+        If processed_folder_id/error_folder_id is configured for this
+        outcome, the file is ALSO visibly relocated there via Drive's
+        addParents/removeParents, mirroring the local provider's
+        dest_path/error_path move. Both are optional and independent —
+        older node configs (or a deliberate choice to keep the invisible
+        marker-only behavior) leave one or both unset, in which case only
+        the marker is set and the file stays in its original folder."""
         await self._request(
             "PATCH",
             f"/files/{ref.identifier}",
             error_prefix="Drive mark-processed failed",
             timeout=httpx.Timeout(30.0, connect=5.0),
             json={"appProperties": {"composerStatus": dest}},
+        )
+
+        target_folder_id = self.processed_folder_id if dest == "processed" else self.error_folder_id
+        if not target_folder_id:
+            return
+
+        # Drive's move semantics require explicitly removing the file's
+        # current parent(s), not just adding the new one -- a file can
+        # otherwise end up listed under both folders.
+        parents_resp = await self._request(
+            "GET",
+            f"/files/{ref.identifier}",
+            error_prefix="Drive parent lookup failed",
+            timeout=httpx.Timeout(30.0, connect=5.0),
+            params={"fields": "parents"},
+        )
+        current_parents = parents_resp.json().get("parents", [])
+        await self._request(
+            "PATCH",
+            f"/files/{ref.identifier}",
+            error_prefix="Drive move failed",
+            timeout=httpx.Timeout(30.0, connect=5.0),
+            params={
+                "addParents": target_folder_id,
+                "removeParents": ",".join(current_parents),
+            },
         )
 
     async def write_file(self, dest: str, filename: str, content: bytes) -> None:

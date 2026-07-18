@@ -111,6 +111,15 @@ class FileTriggerNodeData(BaseNodeData):
     poll_interval_seconds: int = Field(default=30, alias="pollIntervalSeconds")  # local (CLI) only
     connection_id: str | None = Field(default=None, alias="connectionId")  # google-drive only
     drive_folder_id: str | None = Field(default=None, alias="driveFolderId")  # google-drive only
+    # Optional visible-move destinations, mirroring dest_path/error_path
+    # above -- both None by default (marker-only claim behavior, unchanged
+    # for existing configs). See GoogleDriveProvider.move_file.
+    drive_processed_folder_id: str | None = Field(
+        default=None, alias="driveProcessedFolderId"
+    )  # google-drive only
+    drive_error_folder_id: str | None = Field(
+        default=None, alias="driveErrorFolderId"
+    )  # google-drive only
 
 
 class FileTriggerNode(BaseModel):
