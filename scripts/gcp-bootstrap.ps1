@@ -422,8 +422,8 @@ if (-not $schedulerJobExists) {
     Write-Host "  [exists] Cloud Scheduler job composer-sweep" -ForegroundColor DarkGray
 }
 
-# ─── 3d. Google Drive file-trigger poll job (NOT yet provisioned) ───
-# Google Drive OAuth + file-trigger polling (2026-07-16, Task 10 of the
+# ─── 3d. Google Drive file-trigger poll job ──────────────────────────
+# Google Drive OAuth + file-trigger polling (2026-07-16/17, Task 10 of the
 # google-drive-oauth-file-trigger plan). Mirrors the composer-sweep job
 # immediately above (section 3c): same shared OIDC service account
 # ($cloudTasksServiceAccountEmail), same push-auth verification path
@@ -431,32 +431,26 @@ if (-not $schedulerJobExists) {
 # request's own path — src/api/internal.py — so no new identity or
 # verification mechanism is needed here, same rationale as section 1a's
 # comment on why Cloud Tasks and Cloud Scheduler share one account).
-#
-# This script does NOT create this job. It is intentionally left
-# commented out below and must be run manually, once:
-#   1. GOOGLE_OAUTH_CLIENT_ID / GOOGLE_OAUTH_CLIENT_SECRET /
-#      GOOGLE_PICKER_API_KEY are set in the deployed backend's env
-#      (add them to Secret Manager + the $secretMappings /
-#      --set-secrets wiring in section 3 above, the same way the other
-#      composer-* secrets are handled, then redeploy the backend so the
-#      OAuth callback route has real credentials).
-#   2. Task 10's manual GCP Console steps are done: Drive API enabled,
-#      OAuth consent screen configured (External, Testing, test users
-#      added), OAuth 2.0 Client ID created (redirect URI
-#      "$apiUrl/cloud-storage/google-drive/callback"), and a
-#      Picker-API-restricted API key created.
-#
-# Do not uncomment and run this as part of an unattended script pass —
-# treat it as a standalone manual step requiring its own confirmation:
-#
-# gcloud scheduler jobs create http composer-poll-file-triggers `
-#     --location=$Region `
-#     --project=$ProjectId `
-#     --schedule="*/5 * * * *" `
-#     --uri="$apiUrl/internal/poll-file-triggers" `
-#     --http-method=POST `
-#     --oidc-service-account-email="$cloudTasksServiceAccountEmail" `
-#     --oidc-token-audience="$apiUrl/internal/poll-file-triggers"
+# Provisioned manually on 2026-07-18 (GOOGLE_OAUTH_CLIENT_ID/SECRET and
+# GOOGLE_PICKER_API_KEY already in Secret Manager + wired into the
+# backend's --set-secrets by that point) — this block just makes a
+# from-scratch bootstrap idempotently reproduce that state.
+Write-Step "3d. Cloud Scheduler Google Drive poll job"
+$driveSchedulerJobExists = gcloud scheduler jobs describe composer-poll-file-triggers `
+    --location=$Region --project=$ProjectId 2>$null
+if (-not $driveSchedulerJobExists) {
+    Write-Host "  [create] Cloud Scheduler job composer-poll-file-triggers"
+    gcloud scheduler jobs create http composer-poll-file-triggers `
+        --location=$Region `
+        --project=$ProjectId `
+        --schedule="*/5 * * * *" `
+        --uri="$apiUrl/internal/poll-file-triggers" `
+        --http-method=POST `
+        --oidc-service-account-email="$cloudTasksServiceAccountEmail" `
+        --oidc-token-audience="$apiUrl/internal/poll-file-triggers" | Out-Null
+} else {
+    Write-Host "  [exists] Cloud Scheduler job composer-poll-file-triggers" -ForegroundColor DarkGray
+}
 
 if (-not $SkipBuild) {
     Write-Step "4. Build + push frontend image"
