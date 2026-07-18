@@ -38,6 +38,11 @@ def test_build_authorize_url_includes_expected_params(monkeypatch: pytest.Monkey
     assert url.startswith("https://accounts.google.com/o/oauth2/v2/auth?")
     assert "client_id=client-abc" in url
     assert "scope=https%3A%2F%2Fwww.googleapis.com%2Fauth%2Fdrive.file" in url
+    # userinfo.email must be requested alongside drive.file, or the
+    # userinfo lookup in exchange_code_for_tokens() gets a 401 from
+    # Google even though the token exchange itself succeeded -- a real
+    # bug this exact gap caused in production (2026-07-18).
+    assert "userinfo.email" in url
     assert "access_type=offline" in url
     assert "state=" in url
 

@@ -31,6 +31,13 @@ GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
 GOOGLE_USERINFO_URL = "https://www.googleapis.com/oauth2/v2/userinfo"
 DRIVE_FILE_SCOPE = "https://www.googleapis.com/auth/drive.file"
+# drive.file alone grants no access to the userinfo endpoint this module
+# calls to look up the connected account's email (CloudStorageConnection.
+# accountEmail) -- without it Google's userinfo endpoint returns 401
+# ("missing required authentication credential") even though the token
+# exchange itself succeeded, since the token simply isn't scoped for it.
+USERINFO_EMAIL_SCOPE = "https://www.googleapis.com/auth/userinfo.email"
+OAUTH_SCOPES = f"{DRIVE_FILE_SCOPE} {USERINFO_EMAIL_SCOPE}"
 
 _STATE_TTL = timedelta(minutes=10)
 _EXPIRY_BUFFER_SECONDS = 60
@@ -91,7 +98,7 @@ def build_authorize_url(user_id: str, redirect_uri: str) -> str:
         "client_id": settings.google_oauth_client_id,
         "redirect_uri": redirect_uri,
         "response_type": "code",
-        "scope": DRIVE_FILE_SCOPE,
+        "scope": OAUTH_SCOPES,
         "access_type": "offline",
         "prompt": "consent",
         "state": build_state(user_id),
