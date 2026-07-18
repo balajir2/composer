@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — Agent node's Provider dropdown showed empty for already-configured nodes (2026-07-18)
+
+User-reported: "I did not select a provider and yet it worked." Traced to `AgentNodeData` (`src/engine/workflow.py`) having no `provider` field at all — only a combined `model` string (e.g. `"anthropic/claude-haiku-4-5-20251001"`) that the executor (`src/executors/agent.py`) reads directly. The frontend's Provider dropdown (`agent.tsx`) is a UI-only convenience for filtering the Model dropdown, initialized from `data.provider` alone. Every seeded template (`scripts/seed_templates.py`) pre-populates `model` but never `provider`, so opening an already-configured Agent node showed a misleading blank "Select provider" placeholder — the node was fully valid and ran correctly (the backend never reads `provider`), but the UI looked unconfigured.
+
+`agent.tsx` now derives its initial provider from the stored `model` string's `"<provider>/<modelId>"` prefix (`providerFromModel()`) whenever `data.provider` itself is unset, so opening a template-seeded or previously-saved node shows the correct Provider *and* Model selected instead of appearing empty. An explicitly-stored `provider` (only ever written by the dropdown's own `onChange`) still takes precedence. 4 new unit tests added.
+
 ### Added — Visible Processed/Error folder moves for the Google Drive file-trigger (2026-07-18)
 
 Follow-up to the Google Drive OAuth file-trigger feature (below). A user reported that, unlike the local provider (which visibly moves files into `destPath`/`errorPath`), successfully-processed Drive files stayed put in the watched folder with no visible sign they'd been handled — the `appProperties` claim marker (§C of the design doc) is invisible in the Drive UI. Verified the underlying claim/never-reprocess mechanism was working correctly (direct Drive API check confirmed the marker was being set); the gap was purely a lack of user-visible feedback.

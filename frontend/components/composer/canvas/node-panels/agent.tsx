@@ -53,6 +53,22 @@ function qualifiedFor(tool: CatalogTool): string | null {
   return null; // MCP tools are selected via mcpServerIds, not selectedTools
 }
 
+// `data.provider` is frontend-only UI state — it's never persisted on
+// AgentNodeData (src/engine/workflow.py has no `provider` field, only the
+// combined `model` string the executor reads directly). Templates and
+// pre-Provider-dropdown saves set `model` (e.g.
+// "anthropic/claude-haiku-4-5-20251001") without ever setting `provider`,
+// so a freshly-opened node with a perfectly valid, already-configured model
+// showed an empty "Select provider" placeholder — nothing was actually
+// wrong, but it looked unconfigured. Derive the initial provider from the
+// stored model's "<provider>/<modelId>" prefix so the dropdown reflects
+// what will actually run.
+function providerFromModel(model: string | undefined): string {
+  if (!model) return "";
+  const idx = model.indexOf("/");
+  return idx === -1 ? "" : model.slice(0, idx);
+}
+
 export default function AgentPanel({
   data,
   onChange,
@@ -64,7 +80,8 @@ export default function AgentPanel({
   allNodes?: RFNode[];
   currentNodeId?: string;
 }) {
-  const provider = (data.provider as string) ?? "";
+  const provider =
+    (data.provider as string) || providerFromModel(data.model as string | undefined);
 
   const { data: catalog = [] } = useQuery({
     queryKey: ["catalog"],
