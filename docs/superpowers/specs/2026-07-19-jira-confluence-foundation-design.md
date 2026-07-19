@@ -91,11 +91,16 @@ this executor.
 **Story Points field, confirmed:** despite `MB` being a Jira Core / Work Management project
 (where a points field is not a given), the Factspan Jira instance does have one:
 `customfield_10026` ("Story Points", type `float`), confirmed via
-`GET /rest/api/3/search?jql=project=MB&fields=*all` against the real instance. Feature 1/2's
-"planned vs. completed points" sections (BR-01–BR-03) can use it directly. The `fields` default
-list on the `extract` operation stays a designer-editable field (not hardcoded to this one
-instance's field ID) so other projects/customers can supply their own field ID, but for `MB`
-specifically the default list should include `customfield_10026`.
+`GET /rest/api/3/search?jql=project=MB&fields=*all` against the real instance. This closes the
+open question raised earlier in this spec (whether `MB` has a points-equivalent field at all —
+it does) and unblocks BR-01–BR-03 for the Macy's flow.
+
+This is strictly **customer-flow configuration, not a platform default.** The `extract`
+operation's `fields` list has no built-in default at all — every workflow (Macy's or otherwise)
+supplies its own field list explicitly. `customfield_10026` belongs only in the Feature 1/2
+workflow's node configuration (a future sub-project), never in this executor's code or schema
+defaults — a different customer's Jira instance will have a different (or no) points field ID,
+and the platform node must not encode assumptions about any one tenant's field layout.
 
 ## Component 2 — new `confluence` node
 
