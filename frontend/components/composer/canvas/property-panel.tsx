@@ -25,6 +25,7 @@ import EmailPanel from "./node-panels/email";
 import ArcadePanel from "./node-panels/arcade";
 import VectorDbPanel from "./node-panels/vector-db";
 import JiraPanel from "./node-panels/jira";
+import ConfluencePanel from "./node-panels/confluence";
 import FileTriggerPanel from "./node-panels/file-trigger";
 import FileWritePanel from "./node-panels/file-write";
 
@@ -66,6 +67,7 @@ const PANEL_MAP: Record<string, PanelComponent> = {
   arcade: ArcadePanel,
   "vector-db": VectorDbPanel,
   jira: JiraPanel,
+  confluence: ConfluencePanel,
   "file-trigger": FileTriggerPanel,
   "file-write": FileWritePanel,
 };
@@ -91,6 +93,7 @@ const TYPE_LABELS: Record<string, string> = {
   arcade: "Arcade",
   "vector-db": "Vector DB",
   jira: "Jira",
+  confluence: "Confluence",
   "file-trigger": "File Trigger",
   "file-write": "File Write",
 };

@@ -34,6 +34,10 @@ from src.variable_validation import find_unknown_variable_references
 # on every read.
 _VECTOR_DB_SECRET_FIELDS = ("vectorDbApiKey", "vectorDbEmbeddingApiKey")
 
+# Confluence node's apiToken field: same encryption-at-rest,
+# redaction-on-read pattern (Phase 2, confluence-node feature).
+_CONFLUENCE_SECRET_FIELDS = ("apiToken",)
+
 _SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 
 
@@ -124,6 +128,21 @@ def _redact_vector_db_keys(nodes: list[Any]) -> list[Any]:
     return redacted
 
 
+def _redact_confluence_tokens(nodes: list[Any]) -> list[Any]:
+    """Never let a confluence node's encrypted apiToken leave the server —
+    same treatment as _redact_vector_db_keys above."""
+    redacted: list[Any] = []
+    for node in nodes:
+        if isinstance(node, dict) and node.get("type") == "confluence":
+            data = dict(node.get("data") or {})
+            for field in _CONFLUENCE_SECRET_FIELDS:
+                if data.get(field):
+                    data[field] = REDACTED_MARKER
+            node = {**node, "data": data}
+        redacted.append(node)
+    return redacted
+
+
 def _redact_http_headers(nodes: list[Any]) -> list[Any]:
     """Never let an http node's encrypted sensitive header values (e.g.
     Authorization) leave the server (P0-5) — same treatment as
@@ -146,6 +165,7 @@ def _to_workflow_read(row: Any) -> "WorkflowRead":
     read.nodes = _redact_jira_tokens(read.nodes)
     read.nodes = _redact_vector_db_keys(read.nodes)
     read.nodes = _redact_http_headers(read.nodes)
+    read.nodes = _redact_confluence_tokens(read.nodes)
     return read
 
 
@@ -181,6 +201,26 @@ def _encrypt_vector_db_keys(nodes_json: list[dict[str, Any]], existing_nodes: li
             continue
         data = node.get("data") or {}
         for field in _VECTOR_DB_SECRET_FIELDS:
+            value = data.get(field)
+            if not value:
+                continue
+            if value == REDACTED_MARKER:
+                prior = existing_by_id.get(node.get("id")) or {}
+                data[field] = (prior.get("data") or {}).get(field)
+            elif not is_marked_encrypted(value):
+                data[field] = encrypt_marked(value)
+
+
+def _encrypt_confluence_tokens(nodes_json: list[dict[str, Any]], existing_nodes: list[Any]) -> None:
+    """Encrypt plaintext confluence apiToken values in-place before
+    persisting — same preserve-on-redacted-marker treatment as
+    _encrypt_vector_db_keys above."""
+    existing_by_id = {node.get("id"): node for node in existing_nodes if isinstance(node, dict)}
+    for node in nodes_json:
+        if node.get("type") != "confluence":
+            continue
+        data = node.get("data") or {}
+        for field in _CONFLUENCE_SECRET_FIELDS:
             value = data.get(field)
             if not value:
                 continue
@@ -303,6 +343,7 @@ async def create_workflow(
     _encrypt_jira_tokens(nodes_json, existing_nodes=[])
     _encrypt_vector_db_keys(nodes_json, existing_nodes=[])
     _encrypt_http_headers(nodes_json, existing_nodes=[])
+    _encrypt_confluence_tokens(nodes_json, existing_nodes=[])
     edges_json = [edge.model_dump(by_alias=True) for edge in workflow.edges]
     row = await db.workflow.create(
         data={  # pyright: ignore[reportArgumentType]
@@ -486,6 +527,7 @@ async def update_workflow(
     _encrypt_jira_tokens(nodes_json, existing_nodes=existing_nodes)
     _encrypt_vector_db_keys(nodes_json, existing_nodes=existing_nodes)
     _encrypt_http_headers(nodes_json, existing_nodes=existing_nodes)
+    _encrypt_confluence_tokens(nodes_json, existing_nodes=existing_nodes)
     edges_json = [edge.model_dump(by_alias=True) for edge in workflow.edges]
 
     # Publish / unpublish handling

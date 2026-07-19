@@ -39,6 +39,7 @@ export const COMPOSER_NODE_PALETTE: { nodeType: string; label: string }[] = [
   { nodeType: "file-trigger", label: "File Trigger" },
   { nodeType: "file-write", label: "File Write" },
   { nodeType: "jira", label: "Jira" },
+  { nodeType: "confluence", label: "Confluence" },
 ];
 
 // ---------------------------------------------------------------------------

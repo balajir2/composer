@@ -12,6 +12,7 @@
  */
 
 import {
+  BookOpen,
   Bot,
   CheckCircle2,
   Combine,
@@ -179,6 +180,12 @@ export const NODE_VISUALS: Record<string, NodeVisual> = {
     iconWrapClass: "bg-blue-100 text-blue-700",
     accent: "text-blue-700",
     label: "Jira",
+  },
+  confluence: {
+    icon: BookOpen,
+    iconWrapClass: "bg-sky-100 text-sky-700",
+    accent: "text-sky-700",
+    label: "Confluence",
   },
   "file-trigger": {
     icon: FolderInput,

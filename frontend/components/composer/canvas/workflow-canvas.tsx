@@ -224,6 +224,7 @@ export const COMPOSER_NODE_TYPES: NodeTypes = {
   arcade: InnerNode,
   "vector-db": InnerNode,
   jira: InnerNode,
+  confluence: InnerNode,
   "file-trigger": InnerNode,
   "file-write": InnerNode,
 };
