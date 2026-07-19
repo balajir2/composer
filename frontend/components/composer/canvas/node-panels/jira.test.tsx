@@ -130,4 +130,41 @@ describe("JiraPanel — operation toggle", () => {
 
     expect(onChange).toHaveBeenLastCalledWith({ fields: ["summary", "status"] });
   });
+
+  it("resyncs the Fields text when switching to a different node, not just on operation change", () => {
+    // JiraPanel stays mounted across node selection (no key={node.id} in
+    // property-panel.tsx), so switching from one extract-mode Jira node to
+    // another with the same operation must still re-seed the Fields text
+    // from the newly-selected node's data — otherwise the previous node's
+    // stale text lingers and corrupts the new node's fields on the next edit.
+    const onChange = vi.fn();
+    const { rerender } = render(
+      wrap(
+        <JiraPanel
+          data={{ operation: "extract", fields: ["summary", "status"] }}
+          onChange={onChange}
+          currentNodeId="node-a"
+        />
+      )
+    );
+    expect((screen.getByLabelText("Fields") as HTMLInputElement).value).toBe(
+      "summary, status"
+    );
+
+    // Simulate the Designer selecting a different Jira node — same
+    // operation, different underlying data, panel stays mounted in place.
+    rerender(
+      wrap(
+        <JiraPanel
+          data={{ operation: "extract", fields: ["priority"] }}
+          onChange={onChange}
+          currentNodeId="node-b"
+        />
+      )
+    );
+
+    expect((screen.getByLabelText("Fields") as HTMLInputElement).value).toBe(
+      "priority"
+    );
+  });
 });

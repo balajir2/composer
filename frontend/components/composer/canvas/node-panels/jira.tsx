@@ -54,12 +54,18 @@ export default function JiraPanel({
   // (e.g. the trailing comma while typing "summary, "), which would snap
   // the controlled value back and silently merge the next character into
   // the previous entry. Only re-seed from the prop when the mode actually
-  // changes externally (e.g. switching away from extract and back).
+  // changes externally (e.g. switching away from extract and back) OR when
+  // the selected node changes — JiraPanel stays mounted across node
+  // selection (no key={node.id}), so a plain [operation] dependency would
+  // leave the previous node's stale Fields text on screen when switching to
+  // another extract-mode Jira node, corrupting the new node's fields on
+  // the next edit. Matches the [currentNodeId] convention already used by
+  // extract.tsx/http.tsx/arcade.tsx for this same class of bug.
   const [fieldsText, setFieldsText] = useState(() => fieldsList.join(", "));
   useEffect(() => {
     setFieldsText(((data.fields as string[] | undefined) ?? []).join(", "));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [operation]);
+  }, [operation, currentNodeId]);
 
   const provider = (data.provider as string) ?? "";
   const storedModel = (data.model as string) ?? "";
