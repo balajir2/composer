@@ -1,4 +1,6 @@
-"""Tests for the Jira executor — node parsing, credential decryption, LangSmith threading."""
+"""Tests for the Jira executor — node parsing, credential decryption, LangSmith threading,
+and the deterministic `extract` operation (pagination, max-issues truncation, expand-changelog
+toggling, retry-on-429/5xx, non-retryable-4xx, and config validation)."""
 
 import json
 from typing import Any
@@ -550,6 +552,28 @@ async def test_extract_raises_after_exhausting_retries(
     )
     with pytest.raises(JiraExtractHttpError):
         await JiraExecutor(node).arun(initial_state())
+
+
+async def test_extract_raises_immediately_on_non_retryable_4xx(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """A 400 (e.g. malformed JQL) is not retryable — it must raise on the
+    first attempt with no retry/backoff, unlike 429/5xx."""
+    from src.executors.jira import JiraExtractHttpError
+
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        url="https://test.atlassian.net/rest/api/3/search",
+        method="POST",
+        status_code=400,
+        text="Error in the JQL Query: 'foo' is a reserved word.",
+    )
+    node = JiraNode.model_validate(
+        _jira_node_json(operation="extract", jql="project = MB", fields=["summary"])
+    )
+    with pytest.raises(JiraExtractHttpError):
+        await JiraExecutor(node).arun(initial_state())
+    requests = httpx_mock.get_requests()  # pyright: ignore[reportUnknownMemberType]
+    assert len(requests) == 1
 
 
 async def test_extract_requires_jql() -> None:

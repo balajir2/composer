@@ -1,11 +1,20 @@
 """JiraExecutor — the `jira` node type.
 
-Agent-mode only: the node reads domain/email/api_token from its own data,
-injects them into state, then runs an agentic loop against Jira's REST API
-tools via the JiraProvider.
+Two operation modes, selected by `node.data.operation`:
 
-Credentials flow: node data → state.variables → JiraProvider.build_tool().
-No env vars required (but accepted as fallback).
+- `"agent"` (default, `_run_agent`) — the node reads domain/email/api_token
+  from its own data, injects them into state, then runs an agentic tool-
+  calling loop against Jira's REST API tools via the JiraProvider. The LLM
+  decides which tool(s) to call and when to stop.
+- `"extract"` (`_run_extract`) — deterministic, no LLM involved. Runs the
+  node's configured JQL through Jira's search endpoint, paginating until
+  `max_issues` is reached or all matching issues are fetched, with bounded
+  retry on 429/5xx responses. Output is raw per-issue field JSON.
+
+Credentials flow (agent mode): node data → state.variables →
+JiraProvider.build_tool(). No env vars required (but accepted as fallback).
+Extract mode talks to the Jira REST API directly via build_headers/build_url
+and does not go through JiraProvider or state.variables.
 
 Structured action outcomes (P0-2): the Jira tools in
 src/tools/providers/jira.py signal failure by returning a string prefixed
@@ -101,10 +110,12 @@ class JiraExecutor:
         email = self.node.data.email or ""
         api_token = decrypt_jira_api_token(self.node.data.api_token or "")
         jql = substitute(self.node.data.jql or "", state)
-        if not all([domain, email, api_token, jql]):
+        required = [("domain", domain), ("email", email), ("apiToken", api_token), ("jql", jql)]
+        missing = [name for name, val in required if not val]
+        if missing:
             raise JiraExtractConfigError(
-                f"jira node {self.node.id!r}: operation='extract' requires domain, email, "
-                "apiToken, and jql to all be set."
+                f"jira node {self.node.id!r}: operation='extract' is missing required "
+                f"config: {', '.join(missing)}."
             )
         fields = self.node.data.fields or []
         expand_changelog = self.node.data.expand_changelog
