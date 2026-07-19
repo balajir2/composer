@@ -546,6 +546,16 @@ class JiraNodeData(BaseNodeData):
         Field(default="best_effort", alias="actionPolicy")
     )
     minimum_successful_calls: int = Field(default=1, alias="minimumSuccessfulCalls")
+    # operation="agent" (default) is the original LLM tool-calling loop,
+    # unchanged. operation="extract" is deterministic, paginated JQL search
+    # with no LLM call at all — see src/executors/jira.py's _run_extract.
+    # Every existing saved workflow has no `operation` key at all and must
+    # keep behaving exactly as before.
+    operation: Literal["agent", "extract"] = "agent"
+    jql: str | None = None
+    fields: list[str] | None = None
+    expand_changelog: bool = Field(default=True, alias="expandChangelog")
+    max_issues: int = Field(default=1000, alias="maxIssues")
 
 
 class JiraNode(BaseModel):

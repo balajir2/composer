@@ -387,3 +387,34 @@ async def test_encrypt_jira_api_token_round_trips() -> None:
     assert decrypt(encrypted.split(":", 2)[2]) == "hello"
     # Legacy/plaintext values pass through unchanged.
     assert decrypt_jira_api_token("hello") == "hello"
+
+
+def test_operation_defaults_to_agent_for_existing_workflows() -> None:
+    """Every workflow saved before this field existed has no `operation` key
+    at all — it must keep behaving exactly as before (agentic tool loop)."""
+    node = JiraNode.model_validate(_jira_node_json())
+    assert node.data.operation == "agent"
+
+
+def test_extract_operation_fields_parse_with_camelcase_aliases() -> None:
+    node = JiraNode.model_validate(
+        _jira_node_json(
+            operation="extract",
+            jql="project = MB",
+            fields=["summary", "status"],
+            expandChangelog=False,
+            maxIssues=250,
+        )
+    )
+    assert node.data.operation == "extract"
+    assert node.data.jql == "project = MB"
+    assert node.data.fields == ["summary", "status"]
+    assert node.data.expand_changelog is False
+    assert node.data.max_issues == 250
+
+
+def test_extract_mode_field_defaults() -> None:
+    node = JiraNode.model_validate(_jira_node_json(operation="extract", jql="project = MB"))
+    assert node.data.fields is None
+    assert node.data.expand_changelog is True
+    assert node.data.max_issues == 1000
