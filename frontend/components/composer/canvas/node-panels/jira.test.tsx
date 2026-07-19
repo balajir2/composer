@@ -79,4 +79,55 @@ describe("JiraPanel — operation toggle", () => {
     });
     expect(onChange).toHaveBeenCalledWith({ maxIssues: 2000 });
   });
+
+  it("clamps max issues below 1 up to 1, and above 5000 down to 5000", () => {
+    const onChange = vi.fn();
+    render(wrap(<JiraPanel data={{ operation: "extract" }} onChange={onChange} />));
+    const input = screen.getByLabelText("Max issues");
+
+    fireEvent.change(input, { target: { value: "0" } });
+    expect(onChange).toHaveBeenLastCalledWith({ maxIssues: 1 });
+
+    fireEvent.change(input, { target: { value: "9999" } });
+    expect(onChange).toHaveBeenLastCalledWith({ maxIssues: 5000 });
+  });
+
+  it("clearing max issues to an empty string emits undefined (not coerced to 1)", () => {
+    const onChange = vi.fn();
+    render(
+      wrap(<JiraPanel data={{ operation: "extract", maxIssues: 2000 }} onChange={onChange} />)
+    );
+    fireEvent.change(screen.getByLabelText("Max issues"), {
+      target: { value: "" },
+    });
+    expect(onChange).toHaveBeenCalledWith({ maxIssues: undefined });
+  });
+
+  it("typing a comma-separated field list character-by-character does not corrupt entries", () => {
+    // Simulates a real controlled-input round trip: the parent (this test)
+    // applies each onChange patch back onto `data` and re-renders, exactly
+    // like the real NodePanel wrapper does. Each keystroke reads the
+    // *currently displayed* input value (which would reflect any bogus
+    // snap-back from a re-derived-from-parsed-array bug) and appends the
+    // next intended character — not a single change with the whole final
+    // string, which would never exercise the trailing-comma drop.
+    let data: Record<string, unknown> = { operation: "extract" };
+    const onChange = vi.fn((patch: Record<string, unknown>) => {
+      data = { ...data, ...patch };
+    });
+
+    const { rerender } = render(wrap(<JiraPanel data={data} onChange={onChange} />));
+    const rerenderWithLatestData = () =>
+      rerender(wrap(<JiraPanel data={data} onChange={onChange} />));
+
+    const keystrokes = "summary,status".split("");
+    for (const ch of keystrokes) {
+      const input = screen.getByLabelText("Fields") as HTMLInputElement;
+      const next = input.value + ch;
+      fireEvent.change(input, { target: { value: next } });
+      rerenderWithLatestData();
+    }
+
+    expect(onChange).toHaveBeenLastCalledWith({ fields: ["summary", "status"] });
+  });
 });

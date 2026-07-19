@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { Node as RFNode } from "reactflow";
 
@@ -46,7 +47,19 @@ export default function JiraPanel({
   const jql = (data.jql as string) ?? "";
   const fieldsList = (data.fields as string[] | undefined) ?? [];
   const expandChangelog = (data.expandChangelog as boolean | undefined) ?? true;
-  const maxIssues = (data.maxIssues as number | undefined) ?? 1000;
+
+  // Fields is a free-typed comma-separated list. Its displayed text must be
+  // kept in local state — NOT re-derived from the parsed `fields` array on
+  // every keystroke — because the parsed array drops empty tail tokens
+  // (e.g. the trailing comma while typing "summary, "), which would snap
+  // the controlled value back and silently merge the next character into
+  // the previous entry. Only re-seed from the prop when the mode actually
+  // changes externally (e.g. switching away from extract and back).
+  const [fieldsText, setFieldsText] = useState(() => fieldsList.join(", "));
+  useEffect(() => {
+    setFieldsText(((data.fields as string[] | undefined) ?? []).join(", "));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [operation]);
 
   const provider = (data.provider as string) ?? "";
   const storedModel = (data.model as string) ?? "";
@@ -237,15 +250,17 @@ export default function JiraPanel({
             <Label htmlFor="jira-fields">Fields</Label>
             <Input
               id="jira-fields"
-              value={fieldsList.join(", ")}
-              onChange={(e) =>
+              value={fieldsText}
+              onChange={(e) => {
+                const text = e.target.value;
+                setFieldsText(text);
                 onChange({
-                  fields: e.target.value
+                  fields: text
                     .split(",")
                     .map((s) => s.trim())
                     .filter(Boolean),
-                })
-              }
+                });
+              }}
               placeholder="summary, status, assignee, duedate"
               className="font-mono text-xs"
             />
@@ -280,12 +295,21 @@ export default function JiraPanel({
               type="number"
               min={1}
               max={5000}
-              value={maxIssues}
-              onChange={(e) =>
-                onChange({
-                  maxIssues: Math.min(Math.max(parseInt(e.target.value, 10) || 1, 1), 5000),
-                })
+              placeholder="1000 (default)"
+              value={
+                typeof data.maxIssues === "number"
+                  ? String(data.maxIssues)
+                  : ""
               }
+              onChange={(e) => {
+                const v = e.target.value;
+                if (v === "") {
+                  onChange({ maxIssues: undefined });
+                  return;
+                }
+                const n = Math.min(Math.max(parseInt(v, 10) || 1, 1), 5000);
+                onChange({ maxIssues: n });
+              }}
             />
             <p className="text-xs text-muted-foreground">
               Hard cap on issues fetched. Default 1000, ceiling 5000.
