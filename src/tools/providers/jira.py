@@ -63,7 +63,7 @@ def _resolve_creds(
     return domain, email, api_token
 
 
-def _build_headers(email: str, api_token: str) -> dict[str, str]:
+def build_headers(email: str, api_token: str) -> dict[str, str]:
     encoded = base64.b64encode(f"{email}:{api_token}".encode()).decode()
     return {
         "Authorization": f"Basic {encoded}",
@@ -72,7 +72,7 @@ def _build_headers(email: str, api_token: str) -> dict[str, str]:
     }
 
 
-def _build_url(domain: str, path: str) -> str:
+def build_url(domain: str, path: str) -> str:
     return f"https://{domain}/rest/api/3/{path}"
 
 
@@ -178,8 +178,8 @@ class _JiraCreateIssueTool(BaseTool):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
                 resp = await client.post(
-                    _build_url(domain, "issue"),
-                    headers=_build_headers(email, api_token),
+                    build_url(domain, "issue"),
+                    headers=build_headers(email, api_token),
                     json={"fields": fields},
                 )
         except httpx.HTTPError as exc:
@@ -220,8 +220,8 @@ class _JiraGetIssueTool(BaseTool):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
                 resp = await client.get(
-                    _build_url(domain, f"issue/{issue_key}?{params}"),
-                    headers=_build_headers(email, api_token),
+                    build_url(domain, f"issue/{issue_key}?{params}"),
+                    headers=build_headers(email, api_token),
                 )
         except httpx.HTTPError as exc:
             return f"Error: Jira get issue failed ({type(exc).__name__}): {exc}"
@@ -291,8 +291,8 @@ class _JiraSearchIssuesTool(BaseTool):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
                 resp = await client.post(
-                    _build_url(domain, "search"),
-                    headers=_build_headers(email, api_token),
+                    build_url(domain, "search"),
+                    headers=build_headers(email, api_token),
                     json=body,
                 )
         except httpx.HTTPError as exc:
@@ -355,14 +355,14 @@ class _JiraTransitionIssueTool(BaseTool):
             async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
                 if transition_id:
                     resp = await client.post(
-                        _build_url(domain, f"issue/{issue_key}/transitions"),
-                        headers=_build_headers(email, api_token),
+                        build_url(domain, f"issue/{issue_key}/transitions"),
+                        headers=build_headers(email, api_token),
                         json={"transition": {"id": transition_id}},
                     )
                 else:
                     trans_resp = await client.get(
-                        _build_url(domain, f"issue/{issue_key}/transitions"),
-                        headers=_build_headers(email, api_token),
+                        build_url(domain, f"issue/{issue_key}/transitions"),
+                        headers=build_headers(email, api_token),
                     )
                     if trans_resp.status_code >= 400:
                         return f"Error: Failed to fetch transitions (HTTP {trans_resp.status_code})"
@@ -386,8 +386,8 @@ class _JiraTransitionIssueTool(BaseTool):
                         )
 
                     resp = await client.post(
-                        _build_url(domain, f"issue/{issue_key}/transitions"),
-                        headers=_build_headers(email, api_token),
+                        build_url(domain, f"issue/{issue_key}/transitions"),
+                        headers=build_headers(email, api_token),
                         json={"transition": {"id": match["id"]}},
                     )
         except httpx.HTTPError as exc:
@@ -423,8 +423,8 @@ class _JiraAddCommentTool(BaseTool):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
                 resp = await client.post(
-                    _build_url(domain, f"issue/{issue_key}/comment"),
-                    headers=_build_headers(email, api_token),
+                    build_url(domain, f"issue/{issue_key}/comment"),
+                    headers=build_headers(email, api_token),
                     json={"body": body},
                 )
         except httpx.HTTPError as exc:
@@ -467,8 +467,8 @@ class _JiraUpdateIssueTool(BaseTool):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
                 resp = await client.put(
-                    _build_url(domain, f"issue/{issue_key}"),
-                    headers=_build_headers(email, api_token),
+                    build_url(domain, f"issue/{issue_key}"),
+                    headers=build_headers(email, api_token),
                     json={"fields": fields_dict},
                 )
         except httpx.HTTPError as exc:
@@ -543,8 +543,8 @@ class JiraProvider(ToolProvider):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=5.0)) as client:
                 resp = await client.get(
-                    _build_url(domain, "myself"),
-                    headers=_build_headers(email, api_token),
+                    build_url(domain, "myself"),
+                    headers=build_headers(email, api_token),
                 )
             if resp.status_code == 200:
                 return HealthStatus(ok=True, message=f"Jira reachable ({domain})")
