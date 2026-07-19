@@ -468,9 +468,7 @@ async def test_extract_stops_at_max_issues_and_flags_truncated(httpx_mock: HTTPX
         json={"total": 500, "issues": [{"key": f"MB-{i}", "fields": {}} for i in range(100)]},
     )
     node = JiraNode.model_validate(
-        _jira_node_json(
-            operation="extract", jql="project = MB", fields=["summary"], maxIssues=100
-        )
+        _jira_node_json(operation="extract", jql="project = MB", fields=["summary"], maxIssues=100)
     )
     delta = await JiraExecutor(node).arun(initial_state())
     output = delta["variables"]["lastOutput"]
@@ -480,10 +478,14 @@ async def test_extract_stops_at_max_issues_and_flags_truncated(httpx_mock: HTTPX
 
 async def test_extract_passes_expand_changelog_when_enabled(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
     httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
-        url="https://test.atlassian.net/rest/api/3/search", method="POST", json={"total": 0, "issues": []}
+        url="https://test.atlassian.net/rest/api/3/search",
+        method="POST",
+        json={"total": 0, "issues": []},
     )
     node = JiraNode.model_validate(
-        _jira_node_json(operation="extract", jql="project = MB", fields=["summary"], expandChangelog=True)
+        _jira_node_json(
+            operation="extract", jql="project = MB", fields=["summary"], expandChangelog=True
+        )
     )
     await JiraExecutor(node).arun(initial_state())
     req = httpx_mock.get_request()  # pyright: ignore[reportUnknownMemberType]
@@ -494,7 +496,9 @@ async def test_extract_passes_expand_changelog_when_enabled(httpx_mock: HTTPXMoc
 
 async def test_extract_omits_expand_when_changelog_disabled(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
     httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
-        url="https://test.atlassian.net/rest/api/3/search", method="POST", json={"total": 0, "issues": []}
+        url="https://test.atlassian.net/rest/api/3/search",
+        method="POST",
+        json={"total": 0, "issues": []},
     )
     node = JiraNode.model_validate(
         _jira_node_json(
