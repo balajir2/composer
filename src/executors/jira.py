@@ -16,11 +16,13 @@ complete the node without having done anything. `action_policy` makes
 that distinction explicit and enforceable.
 """
 
+import asyncio
 import logging
 import re
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
@@ -31,7 +33,7 @@ from src.engine.workflow import AgentNode, JiraNode, decrypt_jira_api_token
 from src.executors.base import register_executor
 from src.llm import providers as _providers
 from src.tools.base import BuildContext
-from src.tools.providers.jira import JiraProvider
+from src.tools.providers.jira import JiraProvider, build_headers, build_url
 from src.variable_substitution import substitute
 
 logger = logging.getLogger(__name__)
@@ -46,6 +48,18 @@ ABSOLUTE_MAX_ITERATIONS = 100
 _ERROR_PREFIX = "Error:"
 # jira_create_issue's success string: "Created Jira issue PROJ-42: https://..."
 _CREATED_ISSUE_PATTERN = re.compile(r"^Created Jira issue (\S+):")
+
+_EXTRACT_PAGE_SIZE = 100
+_EXTRACT_MAX_RETRY_ATTEMPTS = 3
+
+
+class JiraExtractConfigError(RuntimeError):
+    """Raised when operation='extract' is missing required config (domain/email/apiToken/jql)."""
+
+
+class JiraExtractHttpError(RuntimeError):
+    """Raised when the Jira search REST call fails after exhausting retries, or fails
+    with a non-retryable 4xx status."""
 
 
 class JiraMaxIterationsError(RuntimeError):
@@ -78,6 +92,80 @@ class JiraExecutor:
         self.node = node
 
     async def arun(self, state: WorkflowStateDict) -> dict[str, Any]:
+        if self.node.data.operation == "extract":
+            return await self._run_extract(state)
+        return await self._run_agent(state)
+
+    async def _run_extract(self, state: WorkflowStateDict) -> dict[str, Any]:
+        domain = self.node.data.domain or ""
+        email = self.node.data.email or ""
+        api_token = decrypt_jira_api_token(self.node.data.api_token or "")
+        jql = substitute(self.node.data.jql or "", state)
+        if not all([domain, email, api_token, jql]):
+            raise JiraExtractConfigError(
+                f"jira node {self.node.id!r}: operation='extract' requires domain, email, "
+                "apiToken, and jql to all be set."
+            )
+        fields = self.node.data.fields or []
+        expand_changelog = self.node.data.expand_changelog
+        max_issues = self.node.data.max_issues
+
+        issues: list[dict[str, Any]] = []
+        start_at = 0
+        total: int | None = None
+        headers = build_headers(email, api_token)
+        url = build_url(domain, "search")
+
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+            while True:
+                remaining = max_issues - len(issues)
+                if remaining <= 0:
+                    break
+                body: dict[str, Any] = {
+                    "jql": jql,
+                    "startAt": start_at,
+                    "maxResults": min(_EXTRACT_PAGE_SIZE, remaining),
+                    "fields": fields,
+                }
+                if expand_changelog:
+                    body["expand"] = ["changelog"]
+                resp = await _post_search_with_retry(client, url, headers, body)
+                data = resp.json()
+                page_issues = data.get("issues", [])
+                total = data.get("total", len(page_issues))
+                for iss in page_issues:
+                    entry: dict[str, Any] = {
+                        "key": iss.get("key"),
+                        "fields": iss.get("fields", {}),
+                    }
+                    if expand_changelog:
+                        entry["changelog"] = iss.get("changelog", {})
+                    issues.append(entry)
+                start_at += len(page_issues)
+                if not page_issues or (total is not None and start_at >= total):
+                    break
+
+        truncated = total is not None and len(issues) < total
+        output = {
+            "issues": issues,
+            "total": total if total is not None else len(issues),
+            "fetched": len(issues),
+            "truncated": truncated,
+        }
+        return {
+            "variables": {"lastOutput": output},
+            "current_node_id": self.node.id,
+            "node_results": {
+                self.node.id: {
+                    "node_id": self.node.id,
+                    "status": "completed",
+                    "input": {"jql": jql, "fields": fields},
+                    "output": output,
+                }
+            },
+        }
+
+    async def _run_agent(self, state: WorkflowStateDict) -> dict[str, Any]:
         instructions = substitute(self.node.data.instructions or "", state)
 
         # Inject per-node credentials into state so the JiraProvider can
@@ -202,6 +290,34 @@ async def _agentic_loop(
     )
 
 
+async def _post_search_with_retry(
+    client: httpx.AsyncClient, url: str, headers: dict[str, str], body: dict[str, Any]
+) -> httpx.Response:
+    last_error: JiraExtractHttpError | None = None
+    for attempt in range(_EXTRACT_MAX_RETRY_ATTEMPTS):
+        try:
+            resp = await client.post(url, headers=headers, json=body)
+        except httpx.HTTPError as exc:
+            last_error = JiraExtractHttpError(f"Jira search request failed: {exc}")
+            if attempt < _EXTRACT_MAX_RETRY_ATTEMPTS - 1:
+                await asyncio.sleep(2**attempt)
+            continue
+        if resp.status_code == 429 or resp.status_code >= 500:
+            last_error = JiraExtractHttpError(
+                f"Jira search failed (HTTP {resp.status_code}): {resp.text[:500]}"
+            )
+            if attempt < _EXTRACT_MAX_RETRY_ATTEMPTS - 1:
+                await asyncio.sleep(2**attempt)
+            continue
+        if resp.status_code >= 400:
+            raise JiraExtractHttpError(
+                f"Jira search failed (HTTP {resp.status_code}): {resp.text[:500]}"
+            )
+        return resp
+    assert last_error is not None
+    raise last_error
+
+
 async def _run_tool(
     tools_by_name: dict[str, BaseTool], tool_call: dict[str, Any]
 ) -> tuple[ToolMessage, ToolCallRecord]:
@@ -238,4 +354,10 @@ async def _run_tool(
     )
 
 
-__all__ = ["JiraActionPolicyError", "JiraExecutor", "JiraMaxIterationsError"]
+__all__ = [
+    "JiraActionPolicyError",
+    "JiraExecutor",
+    "JiraExtractConfigError",
+    "JiraExtractHttpError",
+    "JiraMaxIterationsError",
+]

@@ -1,9 +1,11 @@
 """Tests for the Jira executor — node parsing, credential decryption, LangSmith threading."""
 
+import json
 from typing import Any
 
 import pytest
 from langchain_core.messages import AIMessage
+from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
 
 from src.engine.context import LangSmithConfig, set_current_langsmith
 from src.engine.state import initial_state
@@ -418,3 +420,141 @@ def test_extract_mode_field_defaults() -> None:
     assert node.data.fields is None
     assert node.data.expand_changelog is True
     assert node.data.max_issues == 1000
+
+
+async def test_extract_paginates_across_multiple_pages(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        url="https://test.atlassian.net/rest/api/3/search",
+        method="POST",
+        json={
+            "total": 3,
+            "issues": [
+                {"key": "MB-1", "fields": {"summary": "One"}},
+                {"key": "MB-2", "fields": {"summary": "Two"}},
+            ],
+        },
+    )
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        url="https://test.atlassian.net/rest/api/3/search",
+        method="POST",
+        json={"total": 3, "issues": [{"key": "MB-3", "fields": {"summary": "Three"}}]},
+    )
+    node = JiraNode.model_validate(
+        _jira_node_json(operation="extract", jql="project = MB", fields=["summary"])
+    )
+    delta = await JiraExecutor(node).arun(initial_state())
+    output = delta["variables"]["lastOutput"]
+    assert [i["key"] for i in output["issues"]] == ["MB-1", "MB-2", "MB-3"]
+    assert output["total"] == 3
+    assert output["fetched"] == 3
+    assert output["truncated"] is False
+
+
+async def test_extract_stops_at_max_issues_and_flags_truncated(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        url="https://test.atlassian.net/rest/api/3/search",
+        method="POST",
+        json={"total": 500, "issues": [{"key": f"MB-{i}", "fields": {}} for i in range(100)]},
+    )
+    node = JiraNode.model_validate(
+        _jira_node_json(
+            operation="extract", jql="project = MB", fields=["summary"], maxIssues=100
+        )
+    )
+    delta = await JiraExecutor(node).arun(initial_state())
+    output = delta["variables"]["lastOutput"]
+    assert output["fetched"] == 100
+    assert output["truncated"] is True
+
+
+async def test_extract_passes_expand_changelog_when_enabled(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        url="https://test.atlassian.net/rest/api/3/search", method="POST", json={"total": 0, "issues": []}
+    )
+    node = JiraNode.model_validate(
+        _jira_node_json(operation="extract", jql="project = MB", fields=["summary"], expandChangelog=True)
+    )
+    await JiraExecutor(node).arun(initial_state())
+    req = httpx_mock.get_request()  # pyright: ignore[reportUnknownMemberType]
+    assert req is not None
+    body = json.loads(req.content)
+    assert body["expand"] == ["changelog"]
+
+
+async def test_extract_omits_expand_when_changelog_disabled(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        url="https://test.atlassian.net/rest/api/3/search", method="POST", json={"total": 0, "issues": []}
+    )
+    node = JiraNode.model_validate(
+        _jira_node_json(
+            operation="extract", jql="project = MB", fields=["summary"], expandChangelog=False
+        )
+    )
+    await JiraExecutor(node).arun(initial_state())
+    req = httpx_mock.get_request()  # pyright: ignore[reportUnknownMemberType]
+    assert req is not None
+    body = json.loads(req.content)
+    assert "expand" not in body
+
+
+async def test_extract_retries_on_429_then_succeeds(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.executors import jira as jira_executor_module
+
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(jira_executor_module.asyncio, "sleep", _no_sleep)
+
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        url="https://test.atlassian.net/rest/api/3/search",
+        method="POST",
+        status_code=429,
+        text="rate limited",
+    )
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        url="https://test.atlassian.net/rest/api/3/search",
+        method="POST",
+        json={"total": 1, "issues": [{"key": "MB-1", "fields": {}}]},
+    )
+    node = JiraNode.model_validate(
+        _jira_node_json(operation="extract", jql="project = MB", fields=["summary"])
+    )
+    delta = await JiraExecutor(node).arun(initial_state())
+    assert delta["variables"]["lastOutput"]["fetched"] == 1
+
+
+async def test_extract_raises_after_exhausting_retries(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.executors import jira as jira_executor_module
+    from src.executors.jira import JiraExtractHttpError
+
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(jira_executor_module.asyncio, "sleep", _no_sleep)
+
+    for _ in range(3):
+        httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+            url="https://test.atlassian.net/rest/api/3/search",
+            method="POST",
+            status_code=503,
+            text="unavailable",
+        )
+    node = JiraNode.model_validate(
+        _jira_node_json(operation="extract", jql="project = MB", fields=["summary"])
+    )
+    with pytest.raises(JiraExtractHttpError):
+        await JiraExecutor(node).arun(initial_state())
+
+
+async def test_extract_requires_jql() -> None:
+    from src.executors.jira import JiraExtractConfigError
+
+    node = JiraNode.model_validate(_jira_node_json(operation="extract", jql=""))
+    with pytest.raises(JiraExtractConfigError):
+        await JiraExecutor(node).arun(initial_state())
