@@ -30,6 +30,11 @@ def _confluence_node_json(**data_overrides: Any) -> dict[str, Any]:
 async def test_create_or_update_page_creates_when_no_existing_page(
     httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
 ) -> None:
+    # Only 2 responses registered: find-by-title (none) + create POST. A
+    # freshly created page cannot already have labels, so the create path
+    # must NOT issue a GET to the labels endpoint before deciding what to
+    # add — pytest_httpx raises if a request has no matching registered
+    # response, so an extra unwanted GET would fail this test.
     httpx_mock.add_response(
         method="GET", json={"results": []}
     )  # find-by-title: none  # pyright: ignore[reportUnknownMemberType]
@@ -38,9 +43,6 @@ async def test_create_or_update_page_creates_when_no_existing_page(
         url="https://test.atlassian.net/wiki/rest/api/content",
         json={"id": "123", "version": {"number": 1}},
     )
-    httpx_mock.add_response(
-        method="GET", json={"results": []}
-    )  # existing labels: none  # pyright: ignore[reportUnknownMemberType]
 
     node = ConfluenceNode.model_validate(
         _confluence_node_json(
@@ -56,6 +58,45 @@ async def test_create_or_update_page_creates_when_no_existing_page(
     assert output["version"] == 1
     assert output["created"] is True
     assert "123" in output["url"]
+
+
+async def test_create_page_with_labels_adds_without_a_preceding_get(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """Create path with a non-empty labels list: still no GET to the labels
+    endpoint (known_current=set() short-circuits it), straight to POST."""
+    httpx_mock.add_response(
+        method="GET", json={"results": []}
+    )  # find-by-title: none  # pyright: ignore[reportUnknownMemberType]
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        method="POST",
+        url="https://test.atlassian.net/wiki/rest/api/content",
+        json={"id": "123", "version": {"number": 1}},
+    )
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        method="POST",
+        url="https://test.atlassian.net/wiki/rest/api/content/123/label",
+        json={"results": []},
+    )
+
+    node = ConfluenceNode.model_validate(
+        _confluence_node_json(
+            spaceKey="MB",
+            title="MB - Weekly Delivery Report - 2026-07-19",
+            bodyStorageHtml="<p>hello</p>",
+            labels=["weekly-report"],
+        )
+    )
+    delta = await ConfluenceExecutor(node).arun(initial_state())
+    output = delta["variables"]["lastOutput"]
+    assert output["pageId"] == "123"
+    assert output["created"] is True
+
+    requests = httpx_mock.get_requests()  # pyright: ignore[reportUnknownMemberType]
+    label_requests = [
+        r for r in requests if r.url.path.endswith("/label") or "/label" in str(r.url)
+    ]
+    assert all(r.method != "GET" for r in label_requests)
 
 
 async def test_create_or_update_page_updates_and_reconciles_labels(

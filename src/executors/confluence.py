@@ -127,40 +127,39 @@ class ConfluenceExecutor:
             )
 
         existing = await self._find_page(client, domain, headers, space_key, title)
+        base_body: dict[str, Any] = {
+            "type": "page",
+            "title": title,
+            "space": {"key": space_key},
+            "body": {"storage": {"value": body_html, "representation": "storage"}},
+        }
         if existing is None:
-            body: dict[str, Any] = {
-                "type": "page",
-                "title": title,
-                "space": {"key": space_key},
-                "body": {"storage": {"value": body_html, "representation": "storage"}},
+            body = {
+                **base_body,
+                **({"ancestors": [{"id": parent_page_id}]} if parent_page_id else {}),
             }
-            if parent_page_id:
-                body["ancestors"] = [{"id": parent_page_id}]
             resp = await client.post(_content_url(domain), headers=headers, json=body)
-            _raise_for_unexpected_status(resp)
-            created = resp.json()
-            page_id = created["id"]
-            version = created["version"]["number"]
             was_created = True
         else:
             page_id = existing["id"]
-            next_version = existing["version"]["number"] + 1
             body = {
+                **base_body,
                 "id": page_id,
-                "type": "page",
-                "title": title,
-                "space": {"key": space_key},
-                "version": {"number": next_version},
-                "body": {"storage": {"value": body_html, "representation": "storage"}},
+                "version": {"number": existing["version"]["number"] + 1},
             }
             resp = await client.put(_content_url(domain, page_id), headers=headers, json=body)
-            _raise_for_unexpected_status(resp)
-            updated = resp.json()
-            page_id = updated["id"]
-            version = updated["version"]["number"]
             was_created = False
+        _raise_for_unexpected_status(resp)
+        result = resp.json()
+        page_id, version = result["id"], result["version"]["number"]
 
-        await self._reconcile_labels(client, domain, headers, page_id, labels)
+        # A newly created page cannot already have labels — skip the
+        # avoidable GET round-trip and go straight to adding the desired
+        # set. The update branch doesn't know the current set, so it
+        # still fetches before diffing.
+        await self._reconcile_labels(
+            client, domain, headers, page_id, labels, known_current=set() if was_created else None
+        )
 
         return {
             "pageId": page_id,
@@ -176,10 +175,14 @@ class ConfluenceExecutor:
         headers: dict[str, str],
         page_id: str,
         labels: list[str],
+        known_current: set[str] | None = None,
     ) -> None:
-        resp = await client.get(_content_url(domain, f"{page_id}/label"), headers=headers)
-        _raise_for_unexpected_status(resp)
-        current = {entry["name"] for entry in resp.json().get("results", [])}
+        if known_current is not None:
+            current = known_current
+        else:
+            resp = await client.get(_content_url(domain, f"{page_id}/label"), headers=headers)
+            _raise_for_unexpected_status(resp)
+            current = {entry["name"] for entry in resp.json().get("results", [])}
         desired = set(labels)
 
         for name in current - desired:
