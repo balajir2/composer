@@ -141,6 +141,44 @@ async def test_create_or_update_page_updates_and_reconciles_labels(
     assert output["created"] is False
 
 
+async def test_create_page_substitutes_templated_labels(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    httpx_mock.add_response(
+        method="GET", json={"results": []}
+    )  # find-by-title: none  # pyright: ignore[reportUnknownMemberType]
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        method="POST",
+        url="https://test.atlassian.net/wiki/rest/api/content",
+        json={"id": "123", "version": {"number": 1}},
+    )
+    httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
+        method="POST",
+        url="https://test.atlassian.net/wiki/rest/api/content/123/label",
+        json={"results": []},
+    )
+
+    node = ConfluenceNode.model_validate(
+        _confluence_node_json(
+            spaceKey="MB",
+            title="Weekly Report",
+            bodyStorageHtml="<p>hi</p>",
+            labels=["{{status}}", "weekly-report"],
+        )
+    )
+    state = initial_state()
+    state["variables"]["status"] = "on-track"
+    delta = await ConfluenceExecutor(node).arun(state)
+    assert delta["variables"]["lastOutput"]["created"] is True
+
+    requests = httpx_mock.get_requests()  # pyright: ignore[reportUnknownMemberType]
+    label_post = next(r for r in requests if r.method == "POST" and str(r.url).endswith("/label"))
+    import json as json_module
+
+    posted_labels = {entry["name"] for entry in json_module.loads(label_post.content)}
+    assert posted_labels == {"on-track", "weekly-report"}
+
+
 async def test_get_page_returns_found_false_when_no_match(
     httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
 ) -> None:

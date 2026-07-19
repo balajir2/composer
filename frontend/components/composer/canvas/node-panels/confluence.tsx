@@ -206,7 +206,7 @@ export default function ConfluencePanel({
               id="confluence-space-key"
               value={spaceKey}
               onChange={(e) => onChange({ spaceKey: e.target.value })}
-              placeholder="MB"
+              placeholder="ABC"
               className="font-mono text-xs"
             />
           </div>
@@ -267,7 +267,7 @@ export default function ConfluencePanel({
                     .filter(Boolean),
                 });
               }}
-              placeholder="weekly-report, adobe-target"
+              placeholder="reviewed, needs-follow-up"
               className="font-mono text-xs"
             />
             <p className="text-xs text-amber-700">

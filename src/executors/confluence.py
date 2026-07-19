@@ -119,7 +119,7 @@ class ConfluenceExecutor:
         title = substitute(data.title or "", state)
         body_html = substitute(data.body_storage_html or "", state)
         parent_page_id = substitute(data.parent_page_id, state) if data.parent_page_id else None
-        labels = data.labels or []
+        labels = [substitute(label, state) for label in (data.labels or [])]
         if not all([space_key, title]):
             raise ConfluenceConfigError(
                 f"confluence node {self.node.id!r}: create_or_update_page requires "
