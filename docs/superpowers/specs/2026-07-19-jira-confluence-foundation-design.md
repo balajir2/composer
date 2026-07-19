@@ -114,12 +114,33 @@ execution time). Reuses the existing encryption helper rather than a parallel im
 |---|---|---|
 | `create_or_update_page` | `spaceKey`, `parentPageId`, `title`, `bodyStorageHtml`, `labels[]` | Looks up an existing page by `spaceKey` + exact `title` first (Confluence CQL search). If found: `PUT` with the version number incremented by 1 (idempotent reruns — same input/run-week updates the same page rather than creating a duplicate, per FR-017). If not found: `POST` to create as a child of `parentPageId`. Reconciles labels to exactly the requested set. Returns `{pageId, version, url, created: bool}`. |
 | `get_page` | `spaceKey`, `title` | Returns `{pageId, bodyStorageHtml, version, found: bool}`. `found: false` (not an error) when no match — the calling workflow decides what "no prior page" means (e.g. first-ever run). |
-| `get_property` | `pageId`, `propertyKey` | Confluence v2 content-properties API (`GET /wiki/api/v2/pages/{id}/properties`). Returns `{value, found: bool}`. |
+| `get_property` | `pageId`, `propertyKey` | Confluence's content-properties API. Returns `{value, found: bool}`. |
 | `set_property` | `pageId`, `propertyKey`, `value` | `PUT`/`POST` to the same content-properties API. `value` is arbitrary JSON, substituted from workflow state like any other node field. |
+
+**Implementation note (as-built, differs from an earlier draft of this spec):** the shipped
+executor uses the v1 content-properties endpoints (`/wiki/rest/api/content/{pageId}/property[/...]`)
+throughout, not the v2 `/wiki/api/v2/pages/{id}/properties` endpoint an earlier draft named — v1
+is used consistently for `create_or_update_page`/`get_page` too (CQL-free `spaceKey`+`title`
+lookup via `/wiki/rest/api/content`), so keeping the whole node on one API family was judged
+cleaner than mixing v1 page CRUD with v2 properties. Both are real, supported Confluence Cloud
+APIs; this is a documentation correction, not a functional gap.
 
 Content properties are invisible in the rendered page — they don't clutter the human-readable
 report and don't require parsing rendered HTML back into data, which is the reason this
 mechanism was chosen for baseline storage (see Component 3) over scraping page bodies.
+
+**Known limitation for Component 3's actual consumer:** `substitute()` (`src/variable_substitution.py`)
+always returns a `str` — a whole-value template reference like `propertyValue: "{{compute_metrics.output}}"`
+resolves to a JSON-*encoded string* of the upstream object, not the native dict/list. This is a
+pre-existing, engine-wide behavior (also affects `set-state`), not something this node introduces,
+but it directly affects Component 3's intended usage: a Feature 1/2 workflow populating
+`set_property`'s value via a whole-value template reference to an upstream metrics-computation
+node will store a stringified JSON blob, and the following week's `get_property` will need to
+`json.loads()` it manually rather than dot-accessing it as an object (`{{get_baseline.value.total}}`
+will not resolve). Flag this explicitly when designing the actual Feature 1/2 workflow — either
+account for the stringify/parse round-trip in the workflow's `transform` steps, or revisit
+`substitute()`'s single-placeholder-resolves-to-native-type behavior as a small, separate,
+engine-level fix before building on this.
 
 ## Component 3 — baseline pattern (no new platform code)
 
