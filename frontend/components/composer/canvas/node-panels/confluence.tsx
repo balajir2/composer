@@ -10,6 +10,46 @@ import { NativeSelect } from "@/components/ui/native-select";
 // never returns the real token once it's saved, only this marker.
 const TOKEN_REDACTED_MARKER = "••••••••";
 
+// propertyValue is typed `Any` on the backend (src/engine/workflow.py) — it
+// holds arbitrary structured data (get_property/set_property exist to
+// store/retrieve JSON baseline snapshots on a Confluence page property, per
+// the design spec's Component 3), not just plain text. Display must
+// stringify an already-structured value for the textarea, and edits must be
+// parsed back to real JSON when they look like JSON — otherwise the value
+// only ever round-trips as a literal string, defeating the whole point of
+// the operation and corrupting any already-structured value the moment the
+// node is reopened in the Designer. Mirrors arcade.tsx's
+// stringifyInput/parseInput pattern for its `args` field.
+function stringifyPropertyValue(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  return JSON.stringify(value, null, 2);
+}
+
+// Double-brace text ("{{node.output}}") is this codebase's templating
+// syntax, not JSON, even though it starts with "{" — never flag it as
+// broken JSON. Single-brace/bracket text that fails to parse is presumed to
+// be an attempted JSON object/array with a typo, so it gets a visible error;
+// anything else that fails to parse (a bare word, a literal, a template
+// reference) is treated as an intentional plain string.
+function looksLikeIntendedJson(text: string): boolean {
+  const trimmed = text.trim();
+  if (trimmed.startsWith("{{")) return false;
+  return trimmed.startsWith("{") || trimmed.startsWith("[");
+}
+
+function parsePropertyValue(text: string): { value: unknown; error?: string } {
+  if (!text.trim()) return { value: "" };
+  try {
+    return { value: JSON.parse(text) };
+  } catch {
+    if (looksLikeIntendedJson(text)) {
+      return { value: text, error: "Invalid JSON — will be saved as plain text." };
+    }
+    return { value: text };
+  }
+}
+
 const OPERATION_OPTIONS = [
   { value: "create_or_update_page", label: "Create or update page" },
   { value: "get_page", label: "Get page" },
@@ -36,7 +76,6 @@ export default function ConfluencePanel({
   const bodyStorageHtml = (data.bodyStorageHtml as string) ?? "";
   const pageId = (data.pageId as string) ?? "";
   const propertyKey = (data.propertyKey as string) ?? "";
-  const propertyValue = (data.propertyValue as string) ?? "";
 
   // Labels is a free-typed comma-separated list. Its displayed text must be
   // kept in local state — NOT re-derived from the parsed `labels` array on
@@ -58,6 +97,29 @@ export default function ConfluencePanel({
     setLabelsText(((data.labels as string[] | undefined) ?? []).join(", "));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [operation, currentNodeId]);
+
+  // Same local-buffer-plus-resync treatment as Labels above, but for a
+  // value that can be either a JSON-parsed object/array/number/boolean or a
+  // plain string/template reference. See stringifyPropertyValue/
+  // parsePropertyValue above for the round-trip rules.
+  const [propertyValueText, setPropertyValueText] = useState(() =>
+    stringifyPropertyValue(data.propertyValue)
+  );
+  const [propertyValueError, setPropertyValueError] = useState<string | null>(
+    null
+  );
+  useEffect(() => {
+    setPropertyValueText(stringifyPropertyValue(data.propertyValue));
+    setPropertyValueError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [operation, currentNodeId]);
+
+  function handlePropertyValueChange(text: string) {
+    setPropertyValueText(text);
+    const { value, error } = parsePropertyValue(text);
+    setPropertyValueError(error ?? null);
+    onChange({ propertyValue: value });
+  }
 
   const needsSpaceAndTitle =
     operation === "create_or_update_page" || operation === "get_page";
@@ -208,7 +270,7 @@ export default function ConfluencePanel({
               placeholder="weekly-report, adobe-target"
               className="font-mono text-xs"
             />
-            <p className="text-xs text-muted-foreground">
+            <p className="text-xs text-amber-700">
               Comma-separated. Reconciled exactly to this set on every run —
               labels not listed here are removed.
             </p>
@@ -217,29 +279,29 @@ export default function ConfluencePanel({
       )}
 
       {needsPageId && (
-        <div className="space-y-2">
-          <Label htmlFor="confluence-page-id">Page ID</Label>
-          <Input
-            id="confluence-page-id"
-            value={pageId}
-            onChange={(e) => onChange({ pageId: e.target.value })}
-            placeholder="{{find_last_week.pageId}}"
-            className="font-mono text-xs"
-          />
-        </div>
-      )}
+        <>
+          <div className="space-y-2">
+            <Label htmlFor="confluence-page-id">Page ID</Label>
+            <Input
+              id="confluence-page-id"
+              value={pageId}
+              onChange={(e) => onChange({ pageId: e.target.value })}
+              placeholder="{{find_last_week.pageId}}"
+              className="font-mono text-xs"
+            />
+          </div>
 
-      {needsPageId && (
-        <div className="space-y-2">
-          <Label htmlFor="confluence-property-key">Property key</Label>
-          <Input
-            id="confluence-property-key"
-            value={propertyKey}
-            onChange={(e) => onChange({ propertyKey: e.target.value })}
-            placeholder="metrics_snapshot"
-            className="font-mono text-xs"
-          />
-        </div>
+          <div className="space-y-2">
+            <Label htmlFor="confluence-property-key">Property key</Label>
+            <Input
+              id="confluence-property-key"
+              value={propertyKey}
+              onChange={(e) => onChange({ propertyKey: e.target.value })}
+              placeholder="metrics_snapshot"
+              className="font-mono text-xs"
+            />
+          </div>
+        </>
       )}
 
       {operation === "set_property" && (
@@ -249,12 +311,21 @@ export default function ConfluencePanel({
           </Label>
           <Textarea
             id="confluence-property-value"
-            value={propertyValue}
-            onChange={(e) => onChange({ propertyValue: e.target.value })}
+            value={propertyValueText}
+            onChange={(e) => handlePropertyValueChange(e.target.value)}
             rows={4}
             placeholder='{{compute_metrics.output}}  or  {"total": 42}'
             className="font-mono text-xs"
+            aria-invalid={propertyValueError !== null}
           />
+          {propertyValueError && (
+            <p className="text-xs text-destructive">{propertyValueError}</p>
+          )}
+          <p className="text-xs text-muted-foreground">
+            JSON objects/arrays are stored as structured data; anything else
+            (including <code className="font-mono">{"{{template}}"}</code>{" "}
+            references) is stored as plain text.
+          </p>
         </div>
       )}
     </div>
