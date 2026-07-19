@@ -555,7 +555,7 @@ class JiraNodeData(BaseNodeData):
     jql: str | None = None
     fields: list[str] | None = None
     expand_changelog: bool = Field(default=True, alias="expandChangelog")
-    max_issues: int = Field(default=1000, alias="maxIssues")
+    max_issues: int = Field(default=1000, ge=1, le=5000, alias="maxIssues")
 
 
 class JiraNode(BaseModel):

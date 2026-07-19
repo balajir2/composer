@@ -424,6 +424,15 @@ def test_extract_mode_field_defaults() -> None:
     assert node.data.max_issues == 1000
 
 
+def test_max_issues_rejects_values_above_ceiling() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        JiraNode.model_validate(
+            _jira_node_json(operation="extract", jql="project = X", maxIssues=10000)
+        )
+
+
 async def test_extract_paginates_across_multiple_pages(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
     httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
         url="https://test.atlassian.net/rest/api/3/search",

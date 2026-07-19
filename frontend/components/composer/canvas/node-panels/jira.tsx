@@ -246,7 +246,7 @@ export default function JiraPanel({
               id="jira-jql"
               value={jql}
               onChange={(e) => onChange({ jql: e.target.value })}
-              placeholder="project = MB AND updated >= -7d"
+              placeholder="project = ABC AND status = &quot;In Progress&quot;"
               rows={2}
               className="font-mono text-xs"
             />
