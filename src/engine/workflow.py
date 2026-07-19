@@ -630,6 +630,35 @@ class JoinChunksNode(BaseModel):
     data: JoinChunksNodeData
 
 
+# ─── confluence (foundation) ─────────────────────────────────────────────
+
+
+class ConfluenceNodeData(BaseNodeData):
+    domain: str | None = None
+    email: str | None = None
+    api_token: str | None = Field(default=None, alias="apiToken")
+    operation: Literal["create_or_update_page", "get_page", "get_property", "set_property"] = (
+        "create_or_update_page"
+    )
+    # create_or_update_page / get_page
+    space_key: str | None = Field(default=None, alias="spaceKey")
+    parent_page_id: str | None = Field(default=None, alias="parentPageId")
+    title: str | None = None
+    body_storage_html: str | None = Field(default=None, alias="bodyStorageHtml")
+    labels: list[str] | None = None
+    # get_property / set_property
+    page_id: str | None = Field(default=None, alias="pageId")
+    property_key: str | None = Field(default=None, alias="propertyKey")
+    property_value: Any | None = Field(default=None, alias="propertyValue")
+
+
+class ConfluenceNode(BaseModel):
+    id: str
+    type: Literal["confluence"]
+    position: Position
+    data: ConfluenceNodeData
+
+
 # ─── edges ───────────────────────────────────────────────────────────────
 
 
@@ -676,6 +705,7 @@ WorkflowNode = Annotated[
     | EmailNode
     | ArcadeNode
     | JoinChunksNode
+    | ConfluenceNode
     | JiraNode,
     Field(discriminator="type"),
 ]
@@ -711,6 +741,8 @@ __all__ = [
     "ArcadeNode",
     "ArcadeNodeData",
     "BaseNodeData",
+    "ConfluenceNode",
+    "ConfluenceNodeData",
     "DataTransformNode",
     "DataTransformNodeData",
     "EmailNode",
