@@ -556,4 +556,4 @@ class JiraProvider(ToolProvider):
             return HealthStatus(ok=False, message=f"Jira unreachable: {exc}")
 
 
-__all__ = ["JiraProvider", "MissingConfigError"]
+__all__ = ["JiraProvider", "MissingConfigError", "build_headers", "build_url"]
