@@ -14,6 +14,7 @@ import { toast } from "sonner";
 import { startNodeSpec } from "@/lib/start-node-schema";
 import { createExecution } from "@/lib/api/executions";
 import { DocumentField } from "./document-field";
+import { DatePickerInput, DateTimePickerInput } from "./date-field";
 
 type Workflow = components["schemas"]["WorkflowRead"];
 
@@ -91,6 +92,20 @@ export function WorkflowInputForm({ workflow }: { workflow: Workflow }) {
                   name={f.name}
                   required={f.required}
                   setValue={(v) => form.setValue(f.name, v)}
+                  registered={form.register(f.name)}
+                />
+              ) : f.type === "date" ? (
+                <DatePickerInput
+                  name={f.name}
+                  value={(form.watch(f.name) as string) ?? ""}
+                  setValue={(v) => form.setValue(f.name, v, { shouldValidate: true })}
+                  registered={form.register(f.name)}
+                />
+              ) : f.type === "datetime" ? (
+                <DateTimePickerInput
+                  name={f.name}
+                  value={(form.watch(f.name) as string) ?? ""}
+                  setValue={(v) => form.setValue(f.name, v, { shouldValidate: true })}
                   registered={form.register(f.name)}
                 />
               ) : (
