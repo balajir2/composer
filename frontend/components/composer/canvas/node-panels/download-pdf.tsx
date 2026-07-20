@@ -6,6 +6,7 @@ import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { NativeSelect } from "@/components/ui/native-select";
 import { PromptField } from "../prompt-field";
+import GoogleDriveConnect from "./google-drive-connect";
 
 const INPUT_FORMAT_OPTIONS = [
   { value: "html", label: "HTML" },
@@ -23,6 +24,8 @@ export default function DownloadPdfPanel({
   allNodes?: RFNode[];
   currentNodeId?: string;
 }) {
+  const provider = (data.provider as string) ?? "local";
+
   return (
     <div className="space-y-4">
       <div className="space-y-2">
@@ -55,23 +58,37 @@ export default function DownloadPdfPanel({
             </Label>
             <NativeSelect
               id="dlpdf-provider"
-              value={(data.provider as string) ?? "local"}
+              value={provider}
               onValueChange={(v) => onChange({ provider: v })}
-              options={[{ value: "local", label: "Local filesystem" }]}
+              options={[
+                { value: "local", label: "Local filesystem" },
+                { value: "google-drive", label: "Google Drive" },
+              ]}
             />
           </div>
-          <div className="space-y-1">
-            <Label htmlFor="dlpdf-dest" className="text-xs">
-              Destination path
-            </Label>
-            <Input
-              id="dlpdf-dest"
-              value={(data.destinationPath as string) ?? ""}
-              onChange={(e) => onChange({ destinationPath: e.target.value })}
-              placeholder="/out or {{output_dir}}"
-              className="font-mono text-xs"
+          {provider === "google-drive" ? (
+            <GoogleDriveConnect
+              connectionId={data.connectionId as string | undefined}
+              driveFolderId={data.driveFolderId as string | undefined}
+              driveProcessedFolderId={undefined}
+              driveErrorFolderId={undefined}
+              showProcessedErrorFolders={false}
+              onChange={onChange}
             />
-          </div>
+          ) : (
+            <div className="space-y-1">
+              <Label htmlFor="dlpdf-dest" className="text-xs">
+                Destination path
+              </Label>
+              <Input
+                id="dlpdf-dest"
+                value={(data.destinationPath as string) ?? ""}
+                onChange={(e) => onChange({ destinationPath: e.target.value })}
+                placeholder="/out or {{output_dir}}"
+                className="font-mono text-xs"
+              />
+            </div>
+          )}
           <div className="space-y-1">
             <Label htmlFor="dlpdf-filename" className="text-xs">
               Filename (no extension)
