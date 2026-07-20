@@ -9,7 +9,7 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def _reset_db_ctx() -> Iterator[None]:
+def _reset_db_ctx() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
     from src.engine.context import _current_db  # pyright: ignore[reportPrivateUsage]
 
     token = _current_db.set(None)
