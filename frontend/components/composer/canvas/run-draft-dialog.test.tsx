@@ -50,4 +50,37 @@ describe("RunDraftDialog", () => {
     expect(fileInput).not.toBeNull();
     expect(screen.queryByText(/Accepts \.txt, \.md, \.pdf, \.docx/)).toBeInTheDocument();
   });
+
+  it("renders a date picker trigger with a seeded default value for a date-typed Start input", () => {
+    const workflow = {
+      nodes: [
+        {
+          type: "start",
+          data: {
+            inputVariables: [
+              {
+                name: "report_date",
+                type: "date",
+                required: true,
+                description: "Report date",
+                defaultValue: "2026-07-20",
+              },
+            ],
+          },
+        },
+      ],
+    };
+    render(
+      wrap(
+        <RunDraftDialog
+          open={true}
+          onOpenChange={vi.fn()}
+          workflowId="wf1"
+          workflow={workflow}
+          onStarted={vi.fn()}
+        />
+      )
+    );
+    expect(screen.getByText("Jul 20, 2026")).toBeInTheDocument();
+  });
 });

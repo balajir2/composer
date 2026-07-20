@@ -5,6 +5,7 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { NativeSelect } from "@/components/ui/native-select";
 import { Plus, Trash2 } from "lucide-react";
+import { DatePickerButton, DateTimePickerButton } from "@/components/composer/date-field";
 
 // Mirrors backend StartInputVariable (src/engine/workflow.py).
 // type values are what the End-User input form + runtime renderer understand:
@@ -13,15 +14,24 @@ import { Plus, Trash2 } from "lucide-react";
 // "document" → file picker; uploads to /uploads/extract-text and the
 //              extracted plain text is what flows downstream as a
 //              regular string variable.
+// "date" → "YYYY-MM-DD" string, "datetime" → "YYYY-MM-DDTHH:mm:ss" string.
 type InputField = {
   name: string;
-  type: "text" | "number" | "boolean" | "json" | "document";
+  type: "text" | "number" | "boolean" | "json" | "document" | "date" | "datetime";
   required: boolean;
   description?: string;
   defaultValue?: unknown;
 };
 
-const ALLOWED_TYPES = ["text", "number", "boolean", "json", "document"] as const;
+const ALLOWED_TYPES = [
+  "text",
+  "number",
+  "boolean",
+  "json",
+  "document",
+  "date",
+  "datetime",
+] as const;
 
 const TYPE_OPTIONS = [
   { value: "text", label: "text" },
@@ -29,6 +39,8 @@ const TYPE_OPTIONS = [
   { value: "boolean", label: "boolean" },
   { value: "json", label: "json (object / array)" },
   { value: "document", label: "document (PDF / DOCX / MD / TXT upload)" },
+  { value: "date", label: "date" },
+  { value: "datetime", label: "date & time" },
 ];
 
 function readVariables(data: Record<string, unknown>): InputField[] {
@@ -39,11 +51,9 @@ function readVariables(data: Record<string, unknown>): InputField[] {
   if (Array.isArray(legacy)) {
     return (legacy as Array<Record<string, unknown>>).map((f) => ({
       name: String(f.name ?? ""),
-      type: (
-        ALLOWED_TYPES.includes(String(f.type) as (typeof ALLOWED_TYPES)[number])
-          ? (f.type as InputField["type"])
-          : "text"
-      ),
+      type: ALLOWED_TYPES.includes(String(f.type) as (typeof ALLOWED_TYPES)[number])
+        ? (f.type as InputField["type"])
+        : "text",
       required: Boolean(f.required),
       description: typeof f.description === "string" ? f.description : undefined,
       defaultValue: f.defaultValue,
@@ -71,10 +81,7 @@ export default function StartPanel({
   }
 
   function addField() {
-    commit([
-      ...inputVariables,
-      { name: "", type: "text", required: false, description: "" },
-    ]);
+    commit([...inputVariables, { name: "", type: "text", required: false, description: "" }]);
   }
 
   function removeField(index: number) {
@@ -88,9 +95,8 @@ export default function StartPanel({
           Input variables
         </Label>
         <p className="text-xs text-muted-foreground">
-          Declared here become state variables available to every downstream
-          node. Reference as <code>{"{{name}}"}</code> in prompts, URLs, and
-          transforms.
+          Declared here become state variables available to every downstream node. Reference as{" "}
+          <code>{"{{name}}"}</code> in prompts, URLs, and transforms.
         </p>
         {inputVariables.map((field, i) => (
           <div key={i} className="space-y-1.5 rounded-md border p-2">
@@ -128,9 +134,7 @@ export default function StartPanel({
               <Label className="text-xs">Type</Label>
               <NativeSelect
                 value={field.type}
-                onValueChange={(v) =>
-                  updateField(i, { type: v as InputField["type"] })
-                }
+                onValueChange={(v) => updateField(i, { type: v as InputField["type"] })}
                 options={TYPE_OPTIONS}
                 className="h-7 text-xs"
               />
@@ -140,14 +144,34 @@ export default function StartPanel({
               // uploaded fresh per run.  Show a one-line note instead
               // so the panel structure stays predictable.
               <p className="text-xs text-muted-foreground">
-                End-users get a file picker (PDF / DOCX / MD / TXT, max
-                10MB). Extracted text flows downstream as a regular
-                string variable — reference as{" "}
-                <code className="font-mono">
-                  &#123;&#123;{field.name || "name"}&#125;&#125;
-                </code>
-                .
+                End-users get a file picker (PDF / DOCX / MD / TXT, max 10MB). Extracted text flows
+                downstream as a regular string variable — reference as{" "}
+                <code className="font-mono">&#123;&#123;{field.name || "name"}&#125;&#125;</code>.
               </p>
+            ) : field.type === "date" ? (
+              <div className="space-y-1">
+                <Label className="text-xs">Default value (optional)</Label>
+                <DatePickerButton
+                  value={
+                    field.defaultValue === undefined || field.defaultValue === null
+                      ? ""
+                      : String(field.defaultValue)
+                  }
+                  onChange={(v) => updateField(i, { defaultValue: v || undefined })}
+                />
+              </div>
+            ) : field.type === "datetime" ? (
+              <div className="space-y-1">
+                <Label className="text-xs">Default value (optional)</Label>
+                <DateTimePickerButton
+                  value={
+                    field.defaultValue === undefined || field.defaultValue === null
+                      ? ""
+                      : String(field.defaultValue)
+                  }
+                  onChange={(v) => updateField(i, { defaultValue: v || undefined })}
+                />
+              </div>
             ) : (
               <div className="space-y-1">
                 <Label className="text-xs">Default value (optional)</Label>
@@ -162,11 +186,7 @@ export default function StartPanel({
                       defaultValue: e.target.value === "" ? undefined : e.target.value,
                     })
                   }
-                  placeholder={
-                    field.type === "json"
-                      ? '{"key": "value"}'
-                      : "leave blank for none"
-                  }
+                  placeholder={field.type === "json" ? '{"key": "value"}' : "leave blank for none"}
                   className="h-7 text-xs"
                 />
               </div>

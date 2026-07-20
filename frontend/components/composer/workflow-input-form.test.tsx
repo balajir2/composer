@@ -72,4 +72,45 @@ describe("WorkflowInputForm", () => {
     fireEvent.click(screen.getByText(/Run workflow/));
     expect(await screen.findByText(/required/i)).toBeInTheDocument();
   });
+
+  it("renders a date picker trigger button (not a plain text input) for a date-typed field", () => {
+    const wf: Workflow = {
+      ...baseWf,
+      nodes: [
+        {
+          type: "start",
+          data: {
+            inputVariables: [
+              { name: "report_date", description: "Report date", type: "date", required: true },
+            ],
+          },
+        },
+      ],
+    };
+    render(wrap(<WorkflowInputForm workflow={wf} />));
+    expect(screen.getByLabelText(/Report date/).tagName).toBe("BUTTON");
+  });
+
+  it("renders a date+time picker trigger button for a datetime-typed field", () => {
+    const wf: Workflow = {
+      ...baseWf,
+      nodes: [
+        {
+          type: "start",
+          data: {
+            inputVariables: [
+              {
+                name: "extract_timestamp",
+                description: "Extract timestamp",
+                type: "datetime",
+                required: true,
+              },
+            ],
+          },
+        },
+      ],
+    };
+    render(wrap(<WorkflowInputForm workflow={wf} />));
+    expect(screen.getByLabelText(/Extract timestamp/).tagName).toBe("BUTTON");
+  });
 });

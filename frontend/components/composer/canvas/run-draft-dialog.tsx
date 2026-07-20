@@ -21,6 +21,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { createExecution } from "@/lib/api/executions";
 import { startNodeSpec } from "@/lib/start-node-schema";
 import { DocumentField } from "../document-field";
+import { DatePickerInput, DateTimePickerInput } from "../date-field";
 
 type CanvasWorkflow = {
   nodes: Array<{ type: string; data: Record<string, unknown> }>;
@@ -182,6 +183,22 @@ export function RunDraftDialog({
                   type="checkbox"
                   {...form.register(f.name)}
                   className="h-4 w-4"
+                />
+              ) : f.type === "date" ? (
+                <DatePickerInput
+                  name={f.name}
+                  value={(form.watch(f.name) as string) ?? ""}
+                  setValue={(v) => form.setValue(f.name, v, { shouldValidate: true })}
+                  registered={form.register(f.name)}
+                  idPrefix="draft"
+                />
+              ) : f.type === "datetime" ? (
+                <DateTimePickerInput
+                  name={f.name}
+                  value={(form.watch(f.name) as string) ?? ""}
+                  setValue={(v) => form.setValue(f.name, v, { shouldValidate: true })}
+                  registered={form.register(f.name)}
+                  idPrefix="draft"
                 />
               ) : (
                 <Input
