@@ -291,7 +291,13 @@ class _JiraSearchIssuesTool(BaseTool):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
                 resp = await client.post(
-                    build_url(domain, "search"),
+                    # /rest/api/3/search was removed by Atlassian (HTTP 410,
+                    # 2026 changelog CHANGE-2046) in favor of this endpoint,
+                    # which also dropped the "total" field from its response
+                    # entirely (replaced by nextPageToken-based pagination —
+                    # not used here since this tool only ever fetches one
+                    # page, capped at max_results).
+                    build_url(domain, "search/jql"),
                     headers=build_headers(email, api_token),
                     json=body,
                 )
@@ -303,12 +309,11 @@ class _JiraSearchIssuesTool(BaseTool):
 
         data: dict[str, Any] = resp.json()
         issues = data.get("issues", [])
-        total = data.get("total", 0)
 
         if not issues:
             return f"No issues found for JQL: {jql}"
 
-        lines = [f"# {total} issues matching: {jql}\n"]
+        lines = [f"# {len(issues)} issue(s) matching (page limited to {max_results}): {jql}\n"]
         for iss in issues:
             flds = iss.get("fields", {})
             key = iss.get("key", "?")

@@ -122,28 +122,37 @@ class JiraExecutor:
         max_issues = self.node.data.max_issues
 
         issues: list[dict[str, Any]] = []
-        start_at = 0
-        total: int | None = None
+        next_page_token: str | None = None
+        truncated = False
         headers = build_headers(email, api_token)
-        url = build_url(domain, "search")
+        # Atlassian removed /rest/api/3/search (HTTP 410, 2026 changelog
+        # CHANGE-2046) in favor of /rest/api/3/search/jql. The replacement
+        # drops offset pagination (startAt/total) entirely in favor of an
+        # opaque nextPageToken: a response includes nextPageToken when more
+        # pages exist and omits it on the last page. There is no longer a
+        # "total" count in the response at all, so truncated is now derived
+        # from whether a nextPageToken was still present when the maxIssues
+        # cap was hit, not from a total-vs-fetched comparison.
+        url = build_url(domain, "search/jql")
 
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
             while True:
                 remaining = max_issues - len(issues)
                 if remaining <= 0:
+                    truncated = next_page_token is not None
                     break
                 body: dict[str, Any] = {
                     "jql": jql,
-                    "startAt": start_at,
                     "maxResults": min(_EXTRACT_PAGE_SIZE, remaining),
                     "fields": fields,
                 }
+                if next_page_token:
+                    body["nextPageToken"] = next_page_token
                 if expand_changelog:
                     body["expand"] = ["changelog"]
                 resp = await _post_search_with_retry(client, url, headers, body)
                 data = resp.json()
                 page_issues = data.get("issues", [])
-                total = data.get("total", len(page_issues))
                 for iss in page_issues:
                     entry: dict[str, Any] = {
                         "key": iss.get("key"),
@@ -152,14 +161,12 @@ class JiraExecutor:
                     if expand_changelog:
                         entry["changelog"] = iss.get("changelog", {})
                     issues.append(entry)
-                start_at += len(page_issues)
-                if not page_issues or (total is not None and start_at >= total):
+                next_page_token = data.get("nextPageToken")
+                if not page_issues or not next_page_token:
                     break
 
-        truncated = total is not None and len(issues) < total
         output = {
             "issues": issues,
-            "total": total if total is not None else len(issues),
             "fetched": len(issues),
             "truncated": truncated,
         }
