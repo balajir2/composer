@@ -207,12 +207,204 @@ async def test_move_file_does_not_move_wrong_outcome_folder(
     assert len(httpx_mock.get_requests()) == 1
 
 
-async def test_write_file_raises_not_implemented() -> None:
+async def test_write_file_creates_new_file_when_not_found(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """No existing file matches the search query -> a metadata-only create
+    (regular API) followed by a content upload (upload API) against the
+    newly-created file id. No update/PATCH against a pre-existing id."""
     from src.storage_providers.google_drive import GoogleDriveProvider
 
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.googleapis\.com/drive/v3/files\?"),
+        method="GET",
+        json={"files": []},
+    )
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/drive/v3/files",
+        method="POST",
+        json={"id": "new456"},
+    )
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/upload/drive/v3/files/new456?uploadType=media",
+        method="PATCH",
+        json={"id": "new456"},
+    )
+
     provider = GoogleDriveProvider("at-1")
-    with pytest.raises(NotImplementedError):
-        await provider.write_file("dest", "name.md", b"content")
+    await provider.write_file("folder123", "report.pdf", b"%PDF-fake-bytes")
+
+    requests = httpx_mock.get_requests()
+    assert len(requests) == 3
+
+    import json as _json
+
+    create_req = requests[1]
+    assert create_req.method == "POST"
+    assert _json.loads(create_req.content) == {"name": "report.pdf", "parents": ["folder123"]}
+
+    upload_req = requests[2]
+    assert upload_req.method == "PATCH"
+    assert (
+        str(upload_req.url)
+        == "https://www.googleapis.com/upload/drive/v3/files/new456?uploadType=media"
+    )
+    assert upload_req.content == b"%PDF-fake-bytes"
+    assert upload_req.headers.get("content-type") == "application/octet-stream"
+    assert upload_req.headers.get("authorization") == "Bearer at-1"
+
+
+async def test_write_file_updates_existing_file_in_place(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """A file with the same name already exists in the destination folder ->
+    its content is replaced (same file id), no new file is created, and no
+    POST /files create call happens at all."""
+    from src.storage_providers.google_drive import GoogleDriveProvider
+
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.googleapis\.com/drive/v3/files\?"),
+        method="GET",
+        json={"files": [{"id": "existing123"}]},
+    )
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/upload/drive/v3/files/existing123?uploadType=media",
+        method="PATCH",
+        json={"id": "existing123"},
+    )
+
+    provider = GoogleDriveProvider("at-1")
+    await provider.write_file("folder123", "report.pdf", b"%PDF-new-bytes")
+
+    requests = httpx_mock.get_requests()
+    assert len(requests) == 2
+    assert requests[0].method == "GET"
+    assert requests[1].method == "PATCH"
+    assert (
+        str(requests[1].url)
+        == "https://www.googleapis.com/upload/drive/v3/files/existing123?uploadType=media"
+    )
+    assert requests[1].content == b"%PDF-new-bytes"
+
+
+async def test_write_file_search_query_matches_name_and_parent_folder(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    from src.storage_providers.google_drive import GoogleDriveProvider
+
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.googleapis\.com/drive/v3/files\?"),
+        method="GET",
+        json={"files": []},
+    )
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/drive/v3/files", method="POST", json={"id": "n1"}
+    )
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/upload/drive/v3/files/n1?uploadType=media",
+        method="PATCH",
+        json={"id": "n1"},
+    )
+
+    provider = GoogleDriveProvider("at-1")
+    await provider.write_file("folder123", "weekly-report.pdf", b"content")
+
+    search_req = httpx_mock.get_requests()[0]
+    q = search_req.url.params["q"]
+    assert q == "name = 'weekly-report.pdf' and 'folder123' in parents and trashed = false"
+
+
+async def test_write_file_escapes_quotes_and_backslashes(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """Mirrors list_new_files's existing escaping test -- filename and
+    destination folder id are both attacker-reachable (substituted from
+    workflow state), so both must be escaped the same way before being
+    interpolated into the Drive query-language string."""
+    from src.storage_providers.google_drive import GoogleDriveProvider
+
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.googleapis\.com/drive/v3/files\?"),
+        method="GET",
+        json={"files": []},
+    )
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/drive/v3/files", method="POST", json={"id": "n1"}
+    )
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/upload/drive/v3/files/n1?uploadType=media",
+        method="PATCH",
+        json={"id": "n1"},
+    )
+
+    provider = GoogleDriveProvider("at-1")
+    await provider.write_file("folder'with\\special", "report'name.pdf", b"content")
+
+    search_req = httpx_mock.get_requests()[0]
+    q = search_req.url.params["q"]
+    assert "name = 'report\\'name.pdf'" in q
+    assert "'folder\\'with\\\\special' in parents" in q
+
+
+async def test_write_file_raises_on_search_http_error(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    from src.storage_providers.google_drive import GoogleDriveProvider, GoogleDriveProviderError
+
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.googleapis\.com/drive/v3/files\?"),
+        method="GET",
+        status_code=403,
+        text="permission denied",
+    )
+
+    provider = GoogleDriveProvider("at-1")
+    with pytest.raises(GoogleDriveProviderError):
+        await provider.write_file("folder123", "report.pdf", b"content")
+
+
+async def test_write_file_raises_on_create_http_error(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    from src.storage_providers.google_drive import GoogleDriveProvider, GoogleDriveProviderError
+
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.googleapis\.com/drive/v3/files\?"),
+        method="GET",
+        json={"files": []},
+    )
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/drive/v3/files",
+        method="POST",
+        status_code=500,
+        text="server error",
+    )
+
+    provider = GoogleDriveProvider("at-1")
+    with pytest.raises(GoogleDriveProviderError):
+        await provider.write_file("folder123", "report.pdf", b"content")
+
+
+async def test_write_file_raises_on_upload_http_error(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    from src.storage_providers.google_drive import GoogleDriveProvider, GoogleDriveProviderError
+
+    httpx_mock.add_response(
+        url=re.compile(r"^https://www\.googleapis\.com/drive/v3/files\?"),
+        method="GET",
+        json={"files": [{"id": "existing123"}]},
+    )
+    httpx_mock.add_response(
+        url="https://www.googleapis.com/upload/drive/v3/files/existing123?uploadType=media",
+        method="PATCH",
+        status_code=403,
+        text="permission denied",
+    )
+
+    provider = GoogleDriveProvider("at-1")
+    with pytest.raises(GoogleDriveProviderError):
+        await provider.write_file("folder123", "report.pdf", b"content")
 
 
 async def test_list_new_files_raises_on_http_error(

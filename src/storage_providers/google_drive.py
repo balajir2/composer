@@ -18,6 +18,7 @@ import httpx
 from src.storage_providers.base import FileRef, FileStorageProvider, HealthStatus
 
 DRIVE_API_BASE = "https://www.googleapis.com/drive/v3"
+UPLOAD_API_BASE = "https://www.googleapis.com/upload/drive/v3"
 
 
 class GoogleDriveProviderError(RuntimeError):
@@ -70,6 +71,34 @@ class GoogleDriveProvider(FileStorageProvider):
         try:
             async with httpx.AsyncClient(
                 base_url=DRIVE_API_BASE, headers=self._headers(), timeout=timeout
+            ) as client:
+                resp = await client.request(method, path, **kwargs)
+        except httpx.HTTPError as exc:
+            raise GoogleDriveProviderError(f"{error_prefix} (request error): {exc}") from exc
+        if resp.status_code >= 400:
+            raise GoogleDriveProviderError(
+                f"{error_prefix} (HTTP {resp.status_code}): {resp.text[:300]}"
+            )
+        return resp
+
+    async def _upload_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        error_prefix: str,
+        timeout: httpx.Timeout,
+        **kwargs: Any,
+    ) -> httpx.Response:
+        """Same choke point as _request(), but against Drive's separate
+        upload-specific base URL -- uploadType=media/multipart endpoints
+        live under /upload/drive/v3/, not /drive/v3/ like every other call
+        in this provider. Kept as its own method rather than parameterizing
+        _request()'s base_url, since every existing call site relies on
+        _request() always meaning the metadata API."""
+        try:
+            async with httpx.AsyncClient(
+                base_url=UPLOAD_API_BASE, headers=self._headers(), timeout=timeout
             ) as client:
                 resp = await client.request(method, path, **kwargs)
         except httpx.HTTPError as exc:
@@ -193,8 +222,47 @@ class GoogleDriveProvider(FileStorageProvider):
         )
 
     async def write_file(self, dest: str, filename: str, content: bytes) -> None:
-        raise NotImplementedError(
-            "GoogleDriveProvider is trigger-only; unrelated to the file-write node"
+        """`dest` is a Drive folder id (unlike LocalFilesystemProvider,
+        where `dest` is a directory path). Reruns with the same
+        folder+filename update the existing file in place rather than
+        creating a duplicate -- Drive has no filesystem-style uniqueness
+        constraint on names within a folder, so without this search step
+        every rerun would silently pile up a new file. Escaping mirrors
+        list_new_files' existing escaping for the same injection-safety
+        reason: both filename and dest can be attacker-reachable via
+        workflow-state substitution."""
+        escaped_name = filename.replace("\\", "\\\\").replace("'", "\\'")
+        escaped_dest = dest.replace("\\", "\\\\").replace("'", "\\'")
+        query = f"name = '{escaped_name}' and '{escaped_dest}' in parents and trashed = false"
+        search_resp = await self._request(
+            "GET",
+            "/files",
+            error_prefix="Drive find-existing failed",
+            timeout=httpx.Timeout(30.0, connect=5.0),
+            params={"q": query, "fields": "files(id)"},
+        )
+        existing = search_resp.json().get("files", [])
+
+        if existing:
+            file_id = existing[0]["id"]
+        else:
+            create_resp = await self._request(
+                "POST",
+                "/files",
+                error_prefix="Drive create failed",
+                timeout=httpx.Timeout(30.0, connect=5.0),
+                json={"name": filename, "parents": [dest]},
+            )
+            file_id = create_resp.json()["id"]
+
+        await self._upload_request(
+            "PATCH",
+            f"/files/{file_id}",
+            error_prefix="Drive content upload failed",
+            timeout=httpx.Timeout(60.0, connect=5.0),
+            params={"uploadType": "media"},
+            headers={"Content-Type": "application/octet-stream"},
+            content=content,
         )
 
     async def health_check(self) -> HealthStatus:
