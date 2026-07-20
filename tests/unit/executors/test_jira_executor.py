@@ -496,7 +496,7 @@ async def test_extract_passes_expand_changelog_when_enabled(httpx_mock: HTTPXMoc
     req = httpx_mock.get_request()  # pyright: ignore[reportUnknownMemberType]
     assert req is not None
     body = json.loads(req.content)
-    assert body["expand"] == ["changelog"]
+    assert body["expand"] == "changelog"
 
 
 async def test_extract_omits_expand_when_changelog_disabled(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]

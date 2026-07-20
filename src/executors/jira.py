@@ -149,7 +149,14 @@ class JiraExecutor:
                 if next_page_token:
                     body["nextPageToken"] = next_page_token
                 if expand_changelog:
-                    body["expand"] = ["changelog"]
+                    # /rest/api/3/search/jql's `expand` is a single string
+                    # (e.g. "changelog", comma-separated for multiple), not
+                    # an array like the old /rest/api/3/search accepted —
+                    # sending a list here gets the whole request rejected
+                    # with a bare "Invalid request payload" (no field named),
+                    # discovered via a live run after the search/jql
+                    # migration (fix/jira-search-jql-migration) shipped.
+                    body["expand"] = "changelog"
                 resp = await _post_search_with_retry(client, url, headers, body)
                 data = resp.json()
                 page_issues = data.get("issues", [])
