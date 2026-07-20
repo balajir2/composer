@@ -160,3 +160,25 @@ async def test_writes_pdf_file(tmp_path: Path) -> None:
     written = tmp_path / "report.pdf"
     assert written.exists()
     assert written.read_bytes().startswith(b"%PDF-")
+
+
+async def test_writes_html_file_verbatim_no_conversion(tmp_path: Path) -> None:
+    """Unlike md/docx/pdf, html is a raw passthrough — no Markdown parsing,
+    no HTML stripping. Content containing real tags and a <style> block
+    must survive byte-for-byte."""
+    from src.engine.state import initial_state
+    from src.executors.file_write import FileWriteExecutor
+
+    state = initial_state()
+    state["variables"]["name"] = "Ada"
+    content = (
+        "<!doctype html><html><head><style>@media print { .p { break-before: page; } "
+        '}</style></head><body><h1>Report for {{name}}</h1><p class="p">Body</p></body></html>'
+    )
+    node = _node(tmp_path, format="html", content=content)
+    delta = await FileWriteExecutor(node).arun(state)
+
+    written = tmp_path / "report.html"
+    expected = content.replace("{{name}}", "Ada")
+    assert written.read_text(encoding="utf-8") == expected
+    assert delta["variables"]["lastOutput"] == str(written)

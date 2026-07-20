@@ -21,7 +21,7 @@ _PROVIDERS: dict[str, type[FileStorageProvider]] = {
     "local": LocalFilesystemProvider,
 }
 
-_EXTENSIONS = {"md": "md", "docx": "docx", "pdf": "pdf"}
+_EXTENSIONS = {"md": "md", "docx": "docx", "pdf": "pdf", "html": "html"}
 
 
 class UnknownStorageProviderError(ValueError):
@@ -117,6 +117,8 @@ class FileWriteExecutor:
 
 def _convert(content: str, fmt: str) -> bytes:
     if fmt == "md":
+        return content.encode("utf-8")
+    if fmt == "html":
         return content.encode("utf-8")
     if fmt == "docx":
         from src.conversion.markdown_to_docx import markdown_to_docx

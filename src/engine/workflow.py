@@ -142,7 +142,7 @@ class FileWriteNodeData(BaseNodeData):
     provider: str = "local"
     destination_path: str | None = Field(default=None, alias="destinationPath")
     filename: str | None = None
-    format: Literal["md", "docx", "pdf"] = "md"
+    format: Literal["md", "docx", "pdf", "html"] = "md"
     content: str | None = None
 
 
