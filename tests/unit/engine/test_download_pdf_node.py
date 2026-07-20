@@ -42,3 +42,22 @@ def test_input_format_is_required_no_default() -> None:
 def test_provider_defaults_to_local() -> None:
     node = DownloadPdfNode.model_validate(_download_pdf_node_json())
     assert node.data.provider == "local"
+
+
+def test_google_drive_fields_parse_with_aliases() -> None:
+    node = DownloadPdfNode.model_validate(
+        _download_pdf_node_json(
+            provider="google-drive",
+            connectionId="conn-1",
+            driveFolderId="folder-1",
+        )
+    )
+    assert node.data.provider == "google-drive"
+    assert node.data.connection_id == "conn-1"
+    assert node.data.drive_folder_id == "folder-1"
+
+
+def test_google_drive_fields_default_to_none() -> None:
+    node = DownloadPdfNode.model_validate(_download_pdf_node_json())
+    assert node.data.connection_id is None
+    assert node.data.drive_folder_id is None

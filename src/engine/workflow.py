@@ -600,6 +600,11 @@ class DownloadPdfNodeData(BaseNodeData):
     provider: str = "local"
     destination_path: str | None = Field(default=None, alias="destinationPath")
     filename: str | None = None
+    # google-drive only -- destination_path is ignored when provider is
+    # "google-drive" (mirroring FileTriggerNodeData's sourcePath/destPath
+    # being ignored when ITS provider is "google-drive").
+    connection_id: str | None = Field(default=None, alias="connectionId")
+    drive_folder_id: str | None = Field(default=None, alias="driveFolderId")
 
 
 class DownloadPdfNode(BaseModel):
