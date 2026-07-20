@@ -72,6 +72,16 @@ class MissingDriveConfigError(ValueError):
     reasonable default destination to fall back to."""
 
 
+def _require_db() -> Any:
+    db = get_current_db()
+    if db is None:
+        raise RuntimeError(
+            "DownloadPdfExecutor requires src.engine.context.set_current_db to be "
+            "called before the compiled graph runs. LangGraphExecutor.run does this."
+        )
+    return db
+
+
 def _validate_filename(node_id: str, filename: str) -> None:
     if not filename or not filename.strip():
         raise InvalidFilenameError(f"download-pdf node {node_id!r} resolved to an empty filename")
@@ -94,12 +104,17 @@ class DownloadPdfExecutor:
         if provider_name == "google-drive":
             connection_id = substitute(self.node.data.connection_id or "", state)
             folder_id = substitute(self.node.data.drive_folder_id or "", state)
-            if not connection_id or not folder_id:
+            if (
+                not connection_id
+                or not connection_id.strip()
+                or not folder_id
+                or not folder_id.strip()
+            ):
                 raise MissingDriveConfigError(
                     f"download-pdf node {self.node.id!r}: google-drive provider requires "
                     "connectionId and driveFolderId to be set"
                 )
-            db = get_current_db()
+            db = _require_db()
             access_token = await get_valid_drive_access_token(connection_id, db)
             provider: FileStorageProvider = GoogleDriveProvider(access_token)
             destination = folder_id
