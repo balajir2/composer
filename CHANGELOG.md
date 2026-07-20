@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — Calendar pickers for Start-node `date`/`datetime` field types (2026-07-20)
+
+Start-node input fields (e.g. `report_date`, `extract_timestamp` in the Macy's Jira Weekly Delivery Tracking workflow) previously only had `text`/`number`/`boolean`/`json`/`document` types, forcing end-users to type dates by hand. Adds `date` and `datetime` as two new field types, each rendering a calendar picker instead of a plain text box, everywhere a Start field's value is entered.
+
+`StartInputVariable.type` (`src/engine/workflow.py`) needed no change — it's already a free-form string, so `date`/`datetime` are new accepted values, purely a frontend rendering hint; submitted execution values stay plain ISO-8601 text (`YYYY-MM-DD` / `YYYY-MM-DDTHH:mm:ss`) exactly like a `text` field. New frontend primitives: `components/ui/calendar.tsx` (a hand-rolled month-grid — no `react-day-picker`/`date-fns` dependency, since the repo's shadcn-derived UI kit is built on Base UI, not Radix) and `components/ui/popover.tsx` (the repo's first Popover, wrapping `@base-ui/react/popover`, mirroring `dropdown-menu.tsx`'s composition pattern). `components/composer/date-field.tsx` composes these into `DatePickerButton`/`DateTimePickerButton` (controlled widgets) and `DatePickerInput`/`DateTimePickerInput` (react-hook-form wrappers matching `DocumentField`'s register/setValue convention), wired into all three Start-field editing surfaces: the Designer panel's default-value editor, the production run form, and the "Run draft" dialog.
+
+Full TDD; unit tests for the date-formatting helpers, the `Calendar` primitive, the composed picker widgets, and each of the three wiring sites; Playwright e2e test drives the real calendar popover against live servers (the one interaction jsdom couldn't reliably cover — see `native-select.tsx`'s comment on why `Select` was replaced with a native `<select>` for the same reason).
+
 ### Fixed — Agent node's Provider dropdown showed empty for already-configured nodes (2026-07-18)
 
 User-reported: "I did not select a provider and yet it worked." Traced to `AgentNodeData` (`src/engine/workflow.py`) having no `provider` field at all — only a combined `model` string (e.g. `"anthropic/claude-haiku-4-5-20251001"`) that the executor (`src/executors/agent.py`) reads directly. The frontend's Provider dropdown (`agent.tsx`) is a UI-only convenience for filtering the Model dropdown, initialized from `data.provider` alone. Every seeded template (`scripts/seed_templates.py`) pre-populates `model` but never `provider`, so opening an already-configured Agent node showed a misleading blank "Select provider" placeholder — the node was fully valid and ran correctly (the backend never reads `provider`), but the UI looked unconfigured.

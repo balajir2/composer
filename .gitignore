@@ -78,6 +78,8 @@ frontend/out/
 frontend/next-env.d.ts
 frontend/.env
 frontend/.env.local
+frontend/test-results/
+frontend/playwright-report/
 
 # Claude Code per-project workspace.  Personal state (settings.local.json,
 # scheduled-task locks, transcripts) that should never travel with the repo.

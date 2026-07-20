@@ -102,9 +102,7 @@ export function startNodeSpec(wf: Workflow): { fields: StartField[]; schema: z.Z
         // The form stores extracted text once the file is uploaded.
         // For required fields the user must complete the upload; for
         // optional fields they can skip it.
-        field = f.required
-          ? z.string().min(1, "please upload a document")
-          : z.string().optional();
+        field = f.required ? z.string().min(1, "please upload a document") : z.string().optional();
         break;
       case "json":
       default: {

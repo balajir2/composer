@@ -101,7 +101,10 @@ export function DateTimePickerButton({
       </PopoverTrigger>
       <PopoverContent>
         <div className="space-y-2">
-          <Calendar value={date} onChange={(d) => onChange(formatDateTimeISO(d, time || "00:00"))} />
+          <Calendar
+            value={date}
+            onChange={(d) => onChange(formatDateTimeISO(d, time || "00:00"))}
+          />
           <input
             type="time"
             value={time}

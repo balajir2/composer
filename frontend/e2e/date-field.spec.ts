@@ -66,7 +66,11 @@ function todayLongLabel(): string {
 }
 
 function todayShortLabel(): string {
-  return new Date().toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+  return new Date().toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
 }
 
 test("end-user picks a date via the calendar and it's submitted as plain ISO text", async ({

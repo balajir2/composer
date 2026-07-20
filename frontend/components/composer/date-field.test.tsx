@@ -27,9 +27,7 @@ describe("DateTimePickerButton", () => {
   });
 
   it("shows the placeholder when empty", () => {
-    render(
-      <DateTimePickerButton value="" onChange={vi.fn()} placeholder="Pick date & time" />
-    );
+    render(<DateTimePickerButton value="" onChange={vi.fn()} placeholder="Pick date & time" />);
     expect(screen.getByText("Pick date & time")).toBeInTheDocument();
   });
 });

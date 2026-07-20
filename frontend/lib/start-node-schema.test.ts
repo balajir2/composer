@@ -7,9 +7,7 @@ function wf(inputVariables: unknown[]) {
 
 describe("startNodeSpec — date/datetime field types", () => {
   it("passes through a date field with its declared type", () => {
-    const { fields } = startNodeSpec(
-      wf([{ name: "report_date", type: "date", required: true }])
-    );
+    const { fields } = startNodeSpec(wf([{ name: "report_date", type: "date", required: true }]));
     expect(fields[0]?.type).toBe("date");
   });
 
@@ -21,9 +19,7 @@ describe("startNodeSpec — date/datetime field types", () => {
   });
 
   it("validates a required date field as a non-empty string", () => {
-    const { schema } = startNodeSpec(
-      wf([{ name: "report_date", type: "date", required: true }])
-    );
+    const { schema } = startNodeSpec(wf([{ name: "report_date", type: "date", required: true }]));
     expect(schema.safeParse({ report_date: "" }).success).toBe(false);
     expect(schema.safeParse({ report_date: "2026-07-20" }).success).toBe(true);
   });

@@ -23,7 +23,15 @@ type InputField = {
   defaultValue?: unknown;
 };
 
-const ALLOWED_TYPES = ["text", "number", "boolean", "json", "document", "date", "datetime"] as const;
+const ALLOWED_TYPES = [
+  "text",
+  "number",
+  "boolean",
+  "json",
+  "document",
+  "date",
+  "datetime",
+] as const;
 
 const TYPE_OPTIONS = [
   { value: "text", label: "text" },
@@ -43,11 +51,9 @@ function readVariables(data: Record<string, unknown>): InputField[] {
   if (Array.isArray(legacy)) {
     return (legacy as Array<Record<string, unknown>>).map((f) => ({
       name: String(f.name ?? ""),
-      type: (
-        ALLOWED_TYPES.includes(String(f.type) as (typeof ALLOWED_TYPES)[number])
-          ? (f.type as InputField["type"])
-          : "text"
-      ),
+      type: ALLOWED_TYPES.includes(String(f.type) as (typeof ALLOWED_TYPES)[number])
+        ? (f.type as InputField["type"])
+        : "text",
       required: Boolean(f.required),
       description: typeof f.description === "string" ? f.description : undefined,
       defaultValue: f.defaultValue,
@@ -75,10 +81,7 @@ export default function StartPanel({
   }
 
   function addField() {
-    commit([
-      ...inputVariables,
-      { name: "", type: "text", required: false, description: "" },
-    ]);
+    commit([...inputVariables, { name: "", type: "text", required: false, description: "" }]);
   }
 
   function removeField(index: number) {
@@ -92,9 +95,8 @@ export default function StartPanel({
           Input variables
         </Label>
         <p className="text-xs text-muted-foreground">
-          Declared here become state variables available to every downstream
-          node. Reference as <code>{"{{name}}"}</code> in prompts, URLs, and
-          transforms.
+          Declared here become state variables available to every downstream node. Reference as{" "}
+          <code>{"{{name}}"}</code> in prompts, URLs, and transforms.
         </p>
         {inputVariables.map((field, i) => (
           <div key={i} className="space-y-1.5 rounded-md border p-2">
@@ -132,9 +134,7 @@ export default function StartPanel({
               <Label className="text-xs">Type</Label>
               <NativeSelect
                 value={field.type}
-                onValueChange={(v) =>
-                  updateField(i, { type: v as InputField["type"] })
-                }
+                onValueChange={(v) => updateField(i, { type: v as InputField["type"] })}
                 options={TYPE_OPTIONS}
                 className="h-7 text-xs"
               />
@@ -144,13 +144,9 @@ export default function StartPanel({
               // uploaded fresh per run.  Show a one-line note instead
               // so the panel structure stays predictable.
               <p className="text-xs text-muted-foreground">
-                End-users get a file picker (PDF / DOCX / MD / TXT, max
-                10MB). Extracted text flows downstream as a regular
-                string variable — reference as{" "}
-                <code className="font-mono">
-                  &#123;&#123;{field.name || "name"}&#125;&#125;
-                </code>
-                .
+                End-users get a file picker (PDF / DOCX / MD / TXT, max 10MB). Extracted text flows
+                downstream as a regular string variable — reference as{" "}
+                <code className="font-mono">&#123;&#123;{field.name || "name"}&#125;&#125;</code>.
               </p>
             ) : field.type === "date" ? (
               <div className="space-y-1">
@@ -190,11 +186,7 @@ export default function StartPanel({
                       defaultValue: e.target.value === "" ? undefined : e.target.value,
                     })
                   }
-                  placeholder={
-                    field.type === "json"
-                      ? '{"key": "value"}'
-                      : "leave blank for none"
-                  }
+                  placeholder={field.type === "json" ? '{"key": "value"}' : "leave blank for none"}
                   className="h-7 text-xs"
                 />
               </div>
