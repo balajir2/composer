@@ -63,21 +63,28 @@ relevant in this mode:
 | `expandChangelog` | bool, default `true`. Passes `expand=changelog` so blocker-age and meaningful-update detection (BR-07, BR-08) have status-transition history to work from. |
 | `maxIssues` | Cap on total issues fetched, default 1000, hard ceiling 5000 (matches the BRD's NFR of "up to 5,000 issues within 15 minutes"). |
 
-Execution: loop `POST /rest/api/3/search` with `startAt` advancing by a fixed page size (e.g.
-100) until Jira's reported `total` is satisfied or `maxIssues` is hit (whichever first) —
-`truncated: true` is set in the latter case so downstream logic can flag "results incomplete"
-rather than silently under-counting. Transient 429/5xx responses retry with bounded exponential
-backoff (small fixed attempt cap) before failing the node — no silent infinite retry.
+**Implementation note (as-built, revised from an earlier draft of this spec):** the original
+implementation used `POST /rest/api/3/search` with `startAt` offset pagination against Jira's
+reported `total`. Atlassian removed that endpoint in production the same day (HTTP 410 —
+"migrate to `/rest/api/3/search/jql`", changelog CHANGE-2046), discovered when the user's actual
+first run of the Macy's workflow hit it live. The executor now calls `POST /rest/api/3/search/jql`
+and paginates via an opaque `nextPageToken`: present in the response when more pages exist, absent
+on the last page. Atlassian also dropped the `total` count from the response entirely — there is
+no longer any way to know the true matching-issue count without fetching all of it. `maxIssues` is
+still hit (whichever first) — `truncated: true` is set in the latter case so downstream logic can
+flag "results incomplete" rather than silently under-counting. Transient 429/5xx responses retry
+with bounded exponential backoff (small fixed attempt cap) before failing the node — no silent
+infinite retry.
 
 Output shape (deliberately un-opinionated — the executor doesn't encode BRD business rules,
-only fetches completely and deterministically):
+only fetches completely and deterministically; **`total` is gone from this shape** — a workflow
+that needs an issue count computes `len(issues)` itself downstream):
 
 ```json
 {
   "issues": [
     {"key": "MB-101", "fields": { /* raw Jira field object, whatever was requested */ }, "changelog": { /* raw, if expandChangelog */ }}
   ],
-  "total": 342,
   "fetched": 342,
   "truncated": false
 }
@@ -164,7 +171,7 @@ own page-history), and requires no new database table or filesystem dependency.
 ## Testing
 
 - **Jira `extract` operation**: unit tests with mocked `httpx` responses — multi-page pagination
-  advances `startAt` correctly; `maxIssues` cap truncates and sets `truncated: true`;
+  advances via `nextPageToken` correctly; `maxIssues` cap truncates and sets `truncated: true`;
   `expandChangelog` is passed through as `expand=changelog`; a 429/5xx response triggers bounded
   retry before eventually failing; `operation: "agent"` (omitted/default) is unaffected —
   existing `test_jira_executor.py` cases must still pass unmodified.

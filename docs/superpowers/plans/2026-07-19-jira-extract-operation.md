@@ -12,6 +12,21 @@
 
 ---
 
+> **Post-shipment errata (2026-07-19, same day):** Atlassian removed `/rest/api/3/search` in
+> production (HTTP 410 — "The requested API has been removed. Please migrate to the
+> `/rest/api/3/search/jql` API", changelog CHANGE-2046) shortly after this plan was executed and
+> merged. The task steps below (and their code/test samples) describe the **original**
+> `startAt`/`total`-based implementation as built — accurate history, but no longer what's running.
+> The actual current implementation (`fix/jira-search-jql-migration`, merged same day) calls
+> `POST /rest/api/3/search/jql` instead, paginates via an opaque `nextPageToken` (present when more
+> pages exist, absent on the last page) rather than `startAt`, and the output shape **no longer
+> includes a `total` key at all** — Atlassian dropped total counts from the new endpoint entirely.
+> `truncated` is now derived from "was `nextPageToken` still set when the `maxIssues` cap was hit,"
+> not from a total-vs-fetched comparison. Do not copy the `startAt`/`total` pattern below into any
+> future Jira work — read `src/executors/jira.py`'s current `_run_extract` instead.
+
+---
+
 ## Scope note (platform vs. customer flow)
 
 Per [[feedback_platform_vs_customer_flow]] — this plan adds a **generic** capability. Nothing here hardcodes any customer's JQL, project key, or field IDs (e.g. Macy's `customfield_10026`). The `fields` list has no default at all; every workflow supplies its own.
