@@ -28,6 +28,7 @@ import JiraPanel from "./node-panels/jira";
 import ConfluencePanel from "./node-panels/confluence";
 import FileTriggerPanel from "./node-panels/file-trigger";
 import FileWritePanel from "./node-panels/file-write";
+import DownloadPdfPanel from "./node-panels/download-pdf";
 
 // ---------------------------------------------------------------------------
 // Panel component type
@@ -70,6 +71,7 @@ const PANEL_MAP: Record<string, PanelComponent> = {
   confluence: ConfluencePanel,
   "file-trigger": FileTriggerPanel,
   "file-write": FileWritePanel,
+  "download-pdf": DownloadPdfPanel,
 };
 
 const TYPE_LABELS: Record<string, string> = {
@@ -96,6 +98,7 @@ const TYPE_LABELS: Record<string, string> = {
   confluence: "Confluence",
   "file-trigger": "File Trigger",
   "file-write": "File Write",
+  "download-pdf": "Download PDF",
 };
 
 // ---------------------------------------------------------------------------

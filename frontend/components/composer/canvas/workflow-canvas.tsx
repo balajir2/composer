@@ -227,6 +227,7 @@ export const COMPOSER_NODE_TYPES: NodeTypes = {
   confluence: InnerNode,
   "file-trigger": InnerNode,
   "file-write": InnerNode,
+  "download-pdf": InnerNode,
 };
 
 // ---------------------------------------------------------------------------

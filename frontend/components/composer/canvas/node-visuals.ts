@@ -17,6 +17,7 @@ import {
   CheckCircle2,
   Combine,
   Database,
+  FileDown,
   FileSearch,
   FolderInput,
   FolderOutput,
@@ -198,6 +199,12 @@ export const NODE_VISUALS: Record<string, NodeVisual> = {
     iconWrapClass: "bg-lime-100 text-lime-700",
     accent: "text-lime-700",
     label: "File Write",
+  },
+  "download-pdf": {
+    icon: FileDown,
+    iconWrapClass: "bg-rose-100 text-rose-700",
+    accent: "text-rose-700",
+    label: "Download PDF",
   },
 };
 
