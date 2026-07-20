@@ -59,6 +59,7 @@ class GoogleDriveProvider(FileStorageProvider):
         *,
         error_prefix: str,
         timeout: httpx.Timeout,
+        base_url: str = DRIVE_API_BASE,
         **kwargs: Any,
     ) -> httpx.Response:
         """Single choke point for all Drive API calls. Owns AsyncClient
@@ -67,38 +68,15 @@ class GoogleDriveProvider(FileStorageProvider):
         polling endpoint, so pooling a client across the provider's
         lifetime would add lifecycle-management complexity for little
         benefit here) and wraps both transport-level failures and
-        HTTP-error responses into GoogleDriveProviderError."""
-        try:
-            async with httpx.AsyncClient(
-                base_url=DRIVE_API_BASE, headers=self._headers(), timeout=timeout
-            ) as client:
-                resp = await client.request(method, path, **kwargs)
-        except httpx.HTTPError as exc:
-            raise GoogleDriveProviderError(f"{error_prefix} (request error): {exc}") from exc
-        if resp.status_code >= 400:
-            raise GoogleDriveProviderError(
-                f"{error_prefix} (HTTP {resp.status_code}): {resp.text[:300]}"
-            )
-        return resp
+        HTTP-error responses into GoogleDriveProviderError.
 
-    async def _upload_request(
-        self,
-        method: str,
-        path: str,
-        *,
-        error_prefix: str,
-        timeout: httpx.Timeout,
-        **kwargs: Any,
-    ) -> httpx.Response:
-        """Same choke point as _request(), but against Drive's separate
-        upload-specific base URL -- uploadType=media/multipart endpoints
-        live under /upload/drive/v3/, not /drive/v3/ like every other call
-        in this provider. Kept as its own method rather than parameterizing
-        _request()'s base_url, since every existing call site relies on
-        _request() always meaning the metadata API."""
+        `base_url` defaults to the metadata API (DRIVE_API_BASE) that every
+        existing call site relies on implicitly; write_file's content-upload
+        call overrides it to UPLOAD_API_BASE, since uploadType=media/multipart
+        endpoints live under /upload/drive/v3/, not /drive/v3/."""
         try:
             async with httpx.AsyncClient(
-                base_url=UPLOAD_API_BASE, headers=self._headers(), timeout=timeout
+                base_url=base_url, headers=self._headers(), timeout=timeout
             ) as client:
                 resp = await client.request(method, path, **kwargs)
         except httpx.HTTPError as exc:
@@ -233,7 +211,10 @@ class GoogleDriveProvider(FileStorageProvider):
         workflow-state substitution."""
         escaped_name = filename.replace("\\", "\\\\").replace("'", "\\'")
         escaped_dest = dest.replace("\\", "\\\\").replace("'", "\\'")
-        query = f"name = '{escaped_name}' and '{escaped_dest}' in parents and trashed = false"
+        query = (
+            f"name = '{escaped_name}' and '{escaped_dest}' in parents "
+            "and trashed = false and mimeType != 'application/vnd.google-apps.folder'"
+        )
         search_resp = await self._request(
             "GET",
             "/files",
@@ -255,11 +236,12 @@ class GoogleDriveProvider(FileStorageProvider):
             )
             file_id = create_resp.json()["id"]
 
-        await self._upload_request(
+        await self._request(
             "PATCH",
             f"/files/{file_id}",
             error_prefix="Drive content upload failed",
             timeout=httpx.Timeout(60.0, connect=5.0),
+            base_url=UPLOAD_API_BASE,
             params={"uploadType": "media"},
             headers={"Content-Type": "application/octet-stream"},
             content=content,

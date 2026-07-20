@@ -311,7 +311,10 @@ async def test_write_file_search_query_matches_name_and_parent_folder(
 
     search_req = httpx_mock.get_requests()[0]
     q = search_req.url.params["q"]
-    assert q == "name = 'weekly-report.pdf' and 'folder123' in parents and trashed = false"
+    assert q == (
+        "name = 'weekly-report.pdf' and 'folder123' in parents "
+        "and trashed = false and mimeType != 'application/vnd.google-apps.folder'"
+    )
 
 
 async def test_write_file_escapes_quotes_and_backslashes(
