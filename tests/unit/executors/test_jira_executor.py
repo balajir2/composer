@@ -435,20 +435,20 @@ def test_max_issues_rejects_values_above_ceiling() -> None:
 
 async def test_extract_paginates_across_multiple_pages(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
     httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
-        url="https://test.atlassian.net/rest/api/3/search",
+        url="https://test.atlassian.net/rest/api/3/search/jql",
         method="POST",
         json={
-            "total": 3,
             "issues": [
                 {"key": "MB-1", "fields": {"summary": "One"}},
                 {"key": "MB-2", "fields": {"summary": "Two"}},
             ],
+            "nextPageToken": "page-2-token",
         },
     )
     httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
-        url="https://test.atlassian.net/rest/api/3/search",
+        url="https://test.atlassian.net/rest/api/3/search/jql",
         method="POST",
-        json={"total": 3, "issues": [{"key": "MB-3", "fields": {"summary": "Three"}}]},
+        json={"issues": [{"key": "MB-3", "fields": {"summary": "Three"}}]},
     )
     node = JiraNode.model_validate(
         _jira_node_json(operation="extract", jql="project = MB", fields=["summary"])
@@ -456,16 +456,21 @@ async def test_extract_paginates_across_multiple_pages(httpx_mock: HTTPXMock) ->
     delta = await JiraExecutor(node).arun(initial_state())
     output = delta["variables"]["lastOutput"]
     assert [i["key"] for i in output["issues"]] == ["MB-1", "MB-2", "MB-3"]
-    assert output["total"] == 3
     assert output["fetched"] == 3
     assert output["truncated"] is False
+
+    req = httpx_mock.get_requests()[1]  # pyright: ignore[reportUnknownMemberType]
+    assert json.loads(req.content)["nextPageToken"] == "page-2-token"
 
 
 async def test_extract_stops_at_max_issues_and_flags_truncated(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
     httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
-        url="https://test.atlassian.net/rest/api/3/search",
+        url="https://test.atlassian.net/rest/api/3/search/jql",
         method="POST",
-        json={"total": 500, "issues": [{"key": f"MB-{i}", "fields": {}} for i in range(100)]},
+        json={
+            "issues": [{"key": f"MB-{i}", "fields": {}} for i in range(100)],
+            "nextPageToken": "there-is-more",
+        },
     )
     node = JiraNode.model_validate(
         _jira_node_json(operation="extract", jql="project = MB", fields=["summary"], maxIssues=100)
@@ -478,9 +483,9 @@ async def test_extract_stops_at_max_issues_and_flags_truncated(httpx_mock: HTTPX
 
 async def test_extract_passes_expand_changelog_when_enabled(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
     httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
-        url="https://test.atlassian.net/rest/api/3/search",
+        url="https://test.atlassian.net/rest/api/3/search/jql",
         method="POST",
-        json={"total": 0, "issues": []},
+        json={"issues": []},
     )
     node = JiraNode.model_validate(
         _jira_node_json(
@@ -496,9 +501,9 @@ async def test_extract_passes_expand_changelog_when_enabled(httpx_mock: HTTPXMoc
 
 async def test_extract_omits_expand_when_changelog_disabled(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
     httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
-        url="https://test.atlassian.net/rest/api/3/search",
+        url="https://test.atlassian.net/rest/api/3/search/jql",
         method="POST",
-        json={"total": 0, "issues": []},
+        json={"issues": []},
     )
     node = JiraNode.model_validate(
         _jira_node_json(
@@ -524,15 +529,15 @@ async def test_extract_retries_on_429_then_succeeds(
     monkeypatch.setattr(jira_executor_module.asyncio, "sleep", _no_sleep)
 
     httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
-        url="https://test.atlassian.net/rest/api/3/search",
+        url="https://test.atlassian.net/rest/api/3/search/jql",
         method="POST",
         status_code=429,
         text="rate limited",
     )
     httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
-        url="https://test.atlassian.net/rest/api/3/search",
+        url="https://test.atlassian.net/rest/api/3/search/jql",
         method="POST",
-        json={"total": 1, "issues": [{"key": "MB-1", "fields": {}}]},
+        json={"issues": [{"key": "MB-1", "fields": {}}]},
     )
     node = JiraNode.model_validate(
         _jira_node_json(operation="extract", jql="project = MB", fields=["summary"])
@@ -555,7 +560,7 @@ async def test_extract_raises_after_exhausting_retries(
 
     for _ in range(3):
         httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
-            url="https://test.atlassian.net/rest/api/3/search",
+            url="https://test.atlassian.net/rest/api/3/search/jql",
             method="POST",
             status_code=503,
             text="unavailable",
@@ -575,7 +580,7 @@ async def test_extract_raises_immediately_on_non_retryable_4xx(
     from src.executors.jira import JiraExtractHttpError
 
     httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
-        url="https://test.atlassian.net/rest/api/3/search",
+        url="https://test.atlassian.net/rest/api/3/search/jql",
         method="POST",
         status_code=400,
         text="Error in the JQL Query: 'foo' is a reserved word.",

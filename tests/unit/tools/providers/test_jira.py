@@ -148,10 +148,9 @@ async def test_search_issues(
 ) -> None:
     _set_jira_env(monkeypatch)
     httpx_mock.add_response(
-        url="https://test.atlassian.net/rest/api/3/search",
+        url="https://test.atlassian.net/rest/api/3/search/jql",
         method="POST",
         json={
-            "total": 1,
             "issues": [
                 {
                     "key": "PROJ-1",
