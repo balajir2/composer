@@ -76,6 +76,7 @@ export default function FileWritePanel({
                 { value: "md", label: "Markdown (.md)" },
                 { value: "docx", label: "Word (.docx)" },
                 { value: "pdf", label: "PDF (.pdf)" },
+                { value: "html", label: "HTML (.html)" },
               ]}
             />
           </div>
