@@ -587,6 +587,28 @@ class EmailNode(BaseModel):
     data: EmailNodeData
 
 
+# ─── download-pdf (Feature 2 foundation) ─────────────────────────────────
+
+
+class DownloadPdfNodeData(BaseNodeData):
+    input_format: Literal["html", "markdown"] = Field(alias="inputFormat")
+    content: str | None = None
+    # Plain str (not Literal["local"]): same reasoning as FileWriteNodeData.provider
+    # above -- the executor must be able to *receive* an unrecognized provider
+    # value and raise a runtime UnknownStorageProviderError from its own
+    # registry lookup, not reject it one layer too early at parse time.
+    provider: str = "local"
+    destination_path: str | None = Field(default=None, alias="destinationPath")
+    filename: str | None = None
+
+
+class DownloadPdfNode(BaseModel):
+    id: str
+    type: Literal["download-pdf"]
+    position: Position
+    data: DownloadPdfNodeData
+
+
 class ArcadeNodeData(BaseNodeData):
     # extra="forbid": see the identical comment on HttpNodeData above — the
     # Designer's Arcade panel used to write `toolName`/`args` instead of
@@ -706,7 +728,8 @@ WorkflowNode = Annotated[
     | ArcadeNode
     | JoinChunksNode
     | ConfluenceNode
-    | JiraNode,
+    | JiraNode
+    | DownloadPdfNode,
     Field(discriminator="type"),
 ]
 
@@ -745,6 +768,8 @@ __all__ = [
     "ConfluenceNodeData",
     "DataTransformNode",
     "DataTransformNodeData",
+    "DownloadPdfNode",
+    "DownloadPdfNodeData",
     "EmailNode",
     "EmailNodeData",
     "EmbeddingProvider",
