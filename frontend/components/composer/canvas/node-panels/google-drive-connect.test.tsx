@@ -238,4 +238,23 @@ describe("GoogleDriveConnect", () => {
     delete (window as { google?: unknown }).google;
     delete (window as { gapi?: unknown }).gapi;
   });
+
+  it("hides Processed/Error folder pickers when showProcessedErrorFolders is false", async () => {
+    listCloudStorageConnections.mockResolvedValue([
+      { id: "conn-1", provider: "google-drive", accountEmail: "user@gmail.com" },
+    ]);
+    render(
+      <GoogleDriveConnect
+        connectionId="conn-1"
+        driveFolderId="watch-folder"
+        driveProcessedFolderId={undefined}
+        driveErrorFolderId={undefined}
+        showProcessedErrorFolders={false}
+        onChange={vi.fn()}
+      />
+    );
+    expect(await screen.findByText(/Connected as user@gmail.com/)).toBeInTheDocument();
+    expect(screen.queryByText(/Processed folder/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Error folder/)).not.toBeInTheDocument();
+  });
 });

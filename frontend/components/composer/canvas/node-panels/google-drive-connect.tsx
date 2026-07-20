@@ -99,12 +99,17 @@ export default function GoogleDriveConnect({
   driveFolderId,
   driveProcessedFolderId,
   driveErrorFolderId,
+  showProcessedErrorFolders = true,
   onChange,
 }: {
   connectionId: string | undefined;
   driveFolderId: string | undefined;
   driveProcessedFolderId: string | undefined;
   driveErrorFolderId: string | undefined;
+  /** file-trigger's claim-move destinations are meaningless on a write
+   *  destination (e.g. download-pdf) -- defaults true so file-trigger's
+   *  existing usage (which doesn't pass this prop) is unaffected. */
+  showProcessedErrorFolders?: boolean;
   onChange: (patch: Record<string, unknown>) => void;
 }) {
   const [connections, setConnections] = useState<CloudStorageConnection[]>([]);
@@ -273,41 +278,45 @@ export default function GoogleDriveConnect({
             </div>
           </div>
 
-          <div className="space-y-1 border-t pt-2">
-            <div className="text-xs text-muted-foreground">
-              Processed folder (optional) — successfully-handled files are moved here
-              {driveProcessedFolderId ? `: ${driveProcessedFolderId}` : ""}
+          {showProcessedErrorFolders && (
+            <div className="space-y-1 border-t pt-2">
+              <div className="text-xs text-muted-foreground">
+                Processed folder (optional) — successfully-handled files are moved here
+                {driveProcessedFolderId ? `: ${driveProcessedFolderId}` : ""}
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={pickerBusy !== null}
+                onClick={() => handlePickFolder("processed")}
+              >
+                {pickerBusy === "processed"
+                  ? "Opening…"
+                  : driveProcessedFolderId
+                    ? "Change folder"
+                    : "Select folder"}
+              </Button>
             </div>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={pickerBusy !== null}
-              onClick={() => handlePickFolder("processed")}
-            >
-              {pickerBusy === "processed"
-                ? "Opening…"
-                : driveProcessedFolderId
-                  ? "Change folder"
-                  : "Select folder"}
-            </Button>
-          </div>
+          )}
 
-          <div className="space-y-1">
-            <div className="text-xs text-muted-foreground">
-              Error folder (optional) — files that fail to process are moved here
-              {driveErrorFolderId ? `: ${driveErrorFolderId}` : ""}
+          {showProcessedErrorFolders && (
+            <div className="space-y-1">
+              <div className="text-xs text-muted-foreground">
+                Error folder (optional) — files that fail to process are moved here
+                {driveErrorFolderId ? `: ${driveErrorFolderId}` : ""}
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={pickerBusy !== null}
+                onClick={() => handlePickFolder("error")}
+              >
+                {pickerBusy === "error" ? "Opening…" : driveErrorFolderId ? "Change folder" : "Select folder"}
+              </Button>
             </div>
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              disabled={pickerBusy !== null}
-              onClick={() => handlePickFolder("error")}
-            >
-              {pickerBusy === "error" ? "Opening…" : driveErrorFolderId ? "Change folder" : "Select folder"}
-            </Button>
-          </div>
+          )}
         </div>
       )}
     </div>
