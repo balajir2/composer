@@ -123,16 +123,17 @@ async def test_run_completes_start_to_end() -> None:
 
 
 async def test_mark_completed_preserves_falsy_final_output() -> None:
-    """P0-7 regression guard: `finalOutput or lastOutput` discards a
-    legitimate falsy finalOutput (0, False, "", [], {}) and silently
-    substitutes lastOutput instead, since Python treats a present-but-
-    falsy value the same as absent under `or`."""
+    """P0-7 regression guard: a legitimate falsy final output (0, False,
+    "", [], {}) must not be discarded in favor of lastOutput."""
     db = MagicMock()
     db.workflowexecution = MagicMock()
     db.workflowexecution.update = AsyncMock()
     executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
 
-    final_state = {"variables": {"finalOutput": 0, "lastOutput": "should not be used"}}
+    final_state = {
+        "final_outputs": {"end-1": 0},
+        "variables": {"lastOutput": "should not be used"},
+    }
     await executor._mark_completed("ex1", final_state)  # pyright: ignore[reportPrivateUsage]
 
     assert db.workflowexecution.update.await_args is not None
@@ -140,20 +141,40 @@ async def test_mark_completed_preserves_falsy_final_output() -> None:
     assert update_kwargs["output"].data == 0
 
 
-async def test_mark_completed_falls_back_to_last_output_when_final_output_absent() -> None:
-    """The fallback itself is correct behavior — only guard against
-    `finalOutput` being SET (even falsy) getting overridden."""
+async def test_mark_completed_falls_back_to_last_output_when_no_end_reached() -> None:
+    """No End node reached (e.g. a run that errored before completion) --
+    falls back to lastOutput, matching the historical fallback behavior
+    for that case."""
     db = MagicMock()
     db.workflowexecution = MagicMock()
     db.workflowexecution.update = AsyncMock()
     executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
 
-    final_state = {"variables": {"lastOutput": "fallback value"}}
+    final_state = {"final_outputs": {}, "variables": {"lastOutput": "fallback value"}}
     await executor._mark_completed("ex1", final_state)  # pyright: ignore[reportPrivateUsage]
 
     assert db.workflowexecution.update.await_args is not None
     update_kwargs = db.workflowexecution.update.await_args.kwargs["data"]
     assert update_kwargs["output"].data == "fallback value"
+
+
+async def test_mark_completed_persists_dict_when_multiple_ends_fire() -> None:
+    """Genuinely multiple End nodes contributing -- output is the full
+    dict, keyed by End node id, not a single collapsed scalar."""
+    db = MagicMock()
+    db.workflowexecution = MagicMock()
+    db.workflowexecution.update = AsyncMock()
+    executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
+
+    final_state = {
+        "final_outputs": {"end-a": "value-a", "end-b": "value-b"},
+        "variables": {"lastOutput": "should not be used"},
+    }
+    await executor._mark_completed("ex1", final_state)  # pyright: ignore[reportPrivateUsage]
+
+    assert db.workflowexecution.update.await_args is not None
+    update_kwargs = db.workflowexecution.update.await_args.kwargs["data"]
+    assert update_kwargs["output"].data == {"end-a": "value-a", "end-b": "value-b"}
 
 
 async def test_run_marks_failed_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:

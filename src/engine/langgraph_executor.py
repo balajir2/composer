@@ -177,21 +177,27 @@ class LangGraphExecutor:
     async def _mark_completed(self, execution_id: str, final_state: dict[str, Any]) -> None:
         """Persist completed status + output/variables/nodeResults."""
         final_vars: dict[str, Any] = final_state.get("variables") or {}
+        final_outputs: dict[str, Any] = final_state.get("final_outputs") or {}
+        # final_outputs is keyed by End-node id (see src/executors/end.py).
+        # The common case is exactly one End node -- collapse to a plain
+        # scalar so the persisted `output` is byte-for-byte identical to
+        # every existing single-End workflow's historical behavior.
+        # Genuinely multiple End nodes (e.g. independent parallel
+        # branches, or if-else branches each with their own End)
+        # persist the full dict instead of picking one arbitrarily.
+        # Tuple-unpack / falsy checks (not `or`) so a legitimately falsy
+        # value (0, False, "", [], {}) isn't discarded (P0-7).
+        if len(final_outputs) == 1:
+            (output_value,) = final_outputs.values()
+        elif len(final_outputs) > 1:
+            output_value = final_outputs
+        else:
+            output_value = final_vars.get("lastOutput")
         await self.db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
             where={"id": execution_id},
             data={
                 "status": "completed",
-                # `finalOutput` is an explicit override if a node sets it;
-                # otherwise surface whatever the last node produced so the
-                # execution panel never shows an empty "Final output" on a
-                # successful run. Presence check (not `or`) so a
-                # legitimately falsy finalOutput (0, False, "", [], {})
-                # isn't discarded in favor of lastOutput (P0-7).
-                "output": Json(
-                    final_vars["finalOutput"]
-                    if "finalOutput" in final_vars
-                    else final_vars.get("lastOutput")
-                ),
+                "output": Json(output_value),
                 "variables": Json(final_vars),
                 "nodeResults": Json(final_state.get("node_results") or {}),
                 "completedAt": datetime.now(UTC),
