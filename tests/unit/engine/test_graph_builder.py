@@ -723,3 +723,104 @@ def test_join_with_two_outgoing_edges_fails() -> None:
         WorkflowValidationError, match=r"Join node 'j' must have exactly one outgoing edge"
     ):
         validate_workflow_shape(wf)
+
+
+async def test_fan_out_through_join_converges_safely() -> None:
+    """The recommended pattern: two parallel branches converge through an
+    explicit join node before reaching a single End. Both branches use
+    the IDENTICAL stateValue deliberately: set-state also aliases its
+    value into variables.lastOutput (see src/executors/set_state.py),
+    so two branches racing on THAT shared key would be a separate,
+    already-flagged, out-of-scope concern if they wrote DIFFERENT
+    values -- using the same value keeps this test a clean, honest proof
+    of only what this fix claims: that both branches' OWN distinctly-
+    named variables survive the merge with no data loss."""
+    from src.engine.state import initial_state
+
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {
+                "id": "a",
+                "type": "set-state",
+                "position": {"x": 1, "y": 0},
+                "data": {"label": "A", "stateKey": "branch_a_ran", "stateValue": "yes"},
+            },
+            {
+                "id": "b",
+                "type": "set-state",
+                "position": {"x": 1, "y": 1},
+                "data": {"label": "B", "stateKey": "branch_b_ran", "stateValue": "yes"},
+            },
+            {"id": "j", "type": "join", "position": {"x": 2, "y": 0}, "data": {"label": "J"}},
+            {"id": "e", "type": "end", "position": {"x": 3, "y": 0}, "data": {"label": "E"}},
+        ],
+        edges=[
+            {"id": "e1", "source": "s", "target": "a"},
+            {"id": "e2", "source": "s", "target": "b"},
+            {"id": "e3", "source": "a", "target": "j"},
+            {"id": "e4", "source": "b", "target": "j"},
+            {"id": "e5", "source": "j", "target": "e"},
+        ],
+    )
+    compiled = build_graph(wf, MemorySaver())
+    result = await compiled.ainvoke(initial_state(), config={"configurable": {"thread_id": "t1"}})
+
+    # Both branches' distinctly-named work survived the merge into the
+    # single join/End path -- no data loss on the variables side.
+    assert result["variables"]["branch_a_ran"] == "yes"
+    assert result["variables"]["branch_b_ran"] == "yes"
+    assert result["final_outputs"] == {"e": "yes"}
+    assert "j" in result["node_results"]
+    assert "e" in result["node_results"]
+
+
+async def test_fan_out_to_independent_ends_captures_both_outputs() -> None:
+    """Two branches never reconverge -- each has its own single-incoming-
+    edge End (still legal; see the End/join validation tests above).
+    Proves final_outputs captures BOTH branches' outputs with no data
+    loss, even though both End nodes fire in the same LangGraph
+    superstep -- this is the exact topology that used to silently lose
+    one branch's output before this fix. Both branches deliberately use
+    the SAME stateValue for the same reason as the join test above: this
+    isolates the proof to the final_outputs write-collision fix under
+    test, without also depending on the separate, out-of-scope
+    variables.lastOutput collision that would occur if the branches
+    wrote DIFFERENT values."""
+    from src.engine.state import initial_state
+
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {
+                "id": "a",
+                "type": "set-state",
+                "position": {"x": 1, "y": 0},
+                "data": {"label": "A", "stateKey": "a_marker", "stateValue": "shared-value"},
+            },
+            {
+                "id": "b",
+                "type": "set-state",
+                "position": {"x": 1, "y": 1},
+                "data": {"label": "B", "stateKey": "b_marker", "stateValue": "shared-value"},
+            },
+            {"id": "end-a", "type": "end", "position": {"x": 2, "y": 0}, "data": {"label": "EA"}},
+            {"id": "end-b", "type": "end", "position": {"x": 2, "y": 1}, "data": {"label": "EB"}},
+        ],
+        edges=[
+            {"id": "e1", "source": "s", "target": "a"},
+            {"id": "e2", "source": "s", "target": "b"},
+            {"id": "e3", "source": "a", "target": "end-a"},
+            {"id": "e4", "source": "b", "target": "end-b"},
+        ],
+    )
+    compiled = build_graph(wf, MemorySaver())
+    result = await compiled.ainvoke(initial_state(), config={"configurable": {"thread_id": "t1"}})
+
+    # Both End nodes' own contributions are present -- this is the exact
+    # assertion that would have been flaky/lossy before this fix (one of
+    # the two keys would sometimes be missing, depending on LangGraph's
+    # unspecified concurrent-write application order).
+    assert result["final_outputs"] == {"end-a": "shared-value", "end-b": "shared-value"}
+    assert result["variables"]["a_marker"] == "shared-value"
+    assert result["variables"]["b_marker"] == "shared-value"
