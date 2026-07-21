@@ -621,3 +621,105 @@ async def test_build_graph_skips_file_trigger_node() -> None:
     compiled = build_graph(wf, MemorySaver())
     result = await compiled.ainvoke(initial_state(), config={"configurable": {"thread_id": "t1"}})
     assert "ft1" not in (result.get("node_results") or {})
+
+
+def test_end_with_zero_incoming_edges_fails() -> None:
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {"id": "e1", "type": "end", "position": {"x": 1, "y": 0}, "data": {"label": "E1"}},
+            {"id": "e2", "type": "end", "position": {"x": 2, "y": 0}, "data": {"label": "E2"}},
+        ],
+        edges=[{"id": "edge1", "source": "s", "target": "e1"}],
+    )
+    with pytest.raises(
+        WorkflowValidationError, match=r"End node 'e2' must have exactly one incoming edge"
+    ):
+        validate_workflow_shape(wf)
+
+
+def test_end_with_two_incoming_edges_fails() -> None:
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {
+                "id": "a",
+                "type": "set-state",
+                "position": {"x": 1, "y": 0},
+                "data": {"label": "A", "stateKey": "x", "stateValue": "1"},
+            },
+            {
+                "id": "b",
+                "type": "set-state",
+                "position": {"x": 1, "y": 1},
+                "data": {"label": "B", "stateKey": "y", "stateValue": "2"},
+            },
+            {"id": "e", "type": "end", "position": {"x": 2, "y": 0}, "data": {"label": "E"}},
+        ],
+        edges=[
+            {"id": "e1", "source": "s", "target": "a"},
+            {"id": "e2", "source": "s", "target": "b"},
+            {"id": "e3", "source": "a", "target": "e"},
+            {"id": "e4", "source": "b", "target": "e"},
+        ],
+    )
+    with pytest.raises(
+        WorkflowValidationError, match=r"End node 'e' must have exactly one incoming edge"
+    ):
+        validate_workflow_shape(wf)
+
+
+def test_end_note_edge_does_not_count_toward_incoming_tally() -> None:
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {"id": "e", "type": "end", "position": {"x": 1, "y": 0}, "data": {"label": "E"}},
+            {"id": "n", "type": "note", "position": {"x": -1, "y": 0}, "data": {"label": "N"}},
+        ],
+        edges=[
+            {"id": "e1", "source": "s", "target": "e"},
+            {"id": "e2", "source": "n", "target": "e"},
+        ],
+    )
+    validate_workflow_shape(wf)  # must not raise -- the Note edge is decoration, not counted
+
+
+def test_join_with_zero_outgoing_edges_fails() -> None:
+    # "e" gets its own direct incoming edge from "s" (unrelated to what's
+    # under test) specifically so End's own "exactly one incoming edge"
+    # check passes and doesn't mask the Join check this test targets.
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {"id": "j", "type": "join", "position": {"x": 1, "y": 0}, "data": {"label": "J"}},
+            {"id": "e", "type": "end", "position": {"x": 2, "y": 0}, "data": {"label": "E"}},
+        ],
+        edges=[
+            {"id": "e1", "source": "s", "target": "j"},
+            {"id": "e2", "source": "s", "target": "e"},
+        ],
+    )
+    with pytest.raises(
+        WorkflowValidationError, match=r"Join node 'j' must have exactly one outgoing edge"
+    ):
+        validate_workflow_shape(wf)
+
+
+def test_join_with_two_outgoing_edges_fails() -> None:
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {"id": "j", "type": "join", "position": {"x": 1, "y": 0}, "data": {"label": "J"}},
+            {"id": "e1", "type": "end", "position": {"x": 2, "y": 0}, "data": {"label": "E1"}},
+            {"id": "e2", "type": "end", "position": {"x": 2, "y": 1}, "data": {"label": "E2"}},
+        ],
+        edges=[
+            {"id": "e1e", "source": "s", "target": "j"},
+            {"id": "e2e", "source": "j", "target": "e1"},
+            {"id": "e3e", "source": "j", "target": "e2"},
+        ],
+    )
+    with pytest.raises(
+        WorkflowValidationError, match=r"Join node 'j' must have exactly one outgoing edge"
+    ):
+        validate_workflow_shape(wf)

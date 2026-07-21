@@ -181,7 +181,38 @@ def validate_workflow_shape(workflow: Workflow) -> None:
     if not end_ids:
         raise WorkflowValidationError("Workflow must contain at least one end node.")
 
+    # _check_edges must run before the End/join edge-count checks below --
+    # those checks index into `nodes` by edge.source/edge.target, which
+    # assumes every edge id is already known to reference a real node.
+    # Running edge-existence validation first keeps a malformed edge
+    # (unknown source/target id) reported as exactly that, rather than a
+    # KeyError or a misleading "wrong incoming/outgoing count" error.
     _check_edges(workflow.edges, set(nodes.keys()))
+
+    for end_id in end_ids:
+        incoming = [
+            e
+            for e in workflow.edges
+            if e.target == end_id and nodes[e.source].type not in _VISUAL_ONLY_TYPES
+        ]
+        if len(incoming) != 1:
+            raise WorkflowValidationError(
+                f"End node {end_id!r} must have exactly one incoming edge from an "
+                f"executable node (found {len(incoming)}). Converge multiple branches "
+                "through a join node before reaching a single End."
+            )
+
+    join_ids = [n.id for n in workflow.nodes if n.type == "join"]
+    for join_id in join_ids:
+        outgoing = [
+            e
+            for e in workflow.edges
+            if e.source == join_id and nodes[e.target].type not in _VISUAL_ONLY_TYPES
+        ]
+        if len(outgoing) != 1:
+            raise WorkflowValidationError(
+                f"Join node {join_id!r} must have exactly one outgoing edge (found {len(outgoing)})."
+            )
 
     # Phase 4b/5a: branch labels must match source type.
     _conditional_types = {"if-else", "while", "user-approval"}
