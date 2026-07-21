@@ -42,3 +42,8 @@ def test_initial_state_defaults() -> None:
 def test_initial_state_carries_input() -> None:
     s = initial_state({"user_message": "hi"})
     assert s["variables"]["input"] == {"user_message": "hi"}
+
+
+def test_initial_state_includes_final_outputs() -> None:
+    s = initial_state()
+    assert s["final_outputs"] == {}

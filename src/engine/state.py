@@ -43,6 +43,10 @@ class WorkflowStateDict(TypedDict):
     node_results: Annotated[dict[str, NodeExecutionResult], merge_dict]
     pending_auth: Annotated[dict[str, Any] | None, last_wins]
     loop_results: Annotated[list[Any], add]
+    # Keyed by End node id -- collision-safe by construction, the same
+    # pattern node_results already uses, so two End nodes firing in the
+    # same superstep never race (see src/executors/end.py).
+    final_outputs: Annotated[dict[str, Any], merge_dict]
     user_id: NotRequired[str]  # Phase 7a: propagated from WorkflowExecution.userId
 
 
@@ -55,6 +59,7 @@ def initial_state(raw_input: Any = "") -> WorkflowStateDict:
         "node_results": {},
         "pending_auth": None,
         "loop_results": [],
+        "final_outputs": {},
     }
 
 
