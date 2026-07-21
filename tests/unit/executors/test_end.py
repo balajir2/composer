@@ -23,7 +23,7 @@ async def test_end_returns_last_output(end_node: EndNode) -> None:
     state = initial_state()
     state["variables"]["lastOutput"] = {"answer": 42}
     delta = await EndExecutor(end_node).arun(state)
-    assert delta["variables"]["finalOutput"] == {"answer": 42}
+    assert delta["final_outputs"] == {"e": {"answer": 42}}
     assert delta["current_node_id"] == "e"
     assert delta["node_results"]["e"]["status"] == "completed"
 
@@ -33,7 +33,7 @@ async def test_end_tolerates_missing_last_output(end_node: EndNode) -> None:
     # variables has {"input": "", "lastOutput": ""} from initial_state
     state["variables"].pop("lastOutput")
     delta = await EndExecutor(end_node).arun(state)
-    assert delta["variables"]["finalOutput"] is None
+    assert delta["final_outputs"] == {"e": None}
 
 
 async def test_end_is_registered() -> None:
