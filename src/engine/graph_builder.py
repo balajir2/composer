@@ -68,6 +68,9 @@ from src.executors import (
     jira as _jira_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
 from src.executors import (
+    join as _join_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+)
+from src.executors import (
     join_chunks as _join_chunks_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
 from src.executors import (

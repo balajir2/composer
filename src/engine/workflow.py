@@ -85,6 +85,20 @@ class EndNode(BaseModel):
     data: EndNodeData
 
 
+# ─── join ────────────────────────────────────────────────────────────────
+
+
+class JoinNodeData(BaseNodeData):
+    pass
+
+
+class JoinNode(BaseModel):
+    id: str
+    type: Literal["join"]
+    position: Position
+    data: JoinNodeData
+
+
 # ─── note (visual-only; executor is a no-op; graph_builder skips) ────────
 
 
@@ -734,7 +748,8 @@ WorkflowNode = Annotated[
     | JoinChunksNode
     | ConfluenceNode
     | JiraNode
-    | DownloadPdfNode,
+    | DownloadPdfNode
+    | JoinNode,
     Field(discriminator="type"),
 ]
 
@@ -798,6 +813,8 @@ __all__ = [
     "JiraNodeData",
     "JoinChunksNode",
     "JoinChunksNodeData",
+    "JoinNode",
+    "JoinNodeData",
     "McpNode",
     "McpNodeData",
     "NoteNode",
