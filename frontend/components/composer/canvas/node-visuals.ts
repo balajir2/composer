@@ -24,6 +24,7 @@ import {
   Mail,
   Gamepad2,
   GitBranch,
+  GitMerge,
   Globe,
   HelpCircle,
   Layers,
@@ -205,6 +206,12 @@ export const NODE_VISUALS: Record<string, NodeVisual> = {
     iconWrapClass: "bg-rose-100 text-rose-700",
     accent: "text-rose-700",
     label: "Download PDF",
+  },
+  join: {
+    icon: GitMerge,
+    iconWrapClass: "bg-purple-100 text-purple-700",
+    accent: "text-purple-700",
+    label: "Join",
   },
 };
 

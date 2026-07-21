@@ -228,6 +228,7 @@ export const COMPOSER_NODE_TYPES: NodeTypes = {
   "file-trigger": InnerNode,
   "file-write": InnerNode,
   "download-pdf": InnerNode,
+  join: InnerNode,
 };
 
 // ---------------------------------------------------------------------------

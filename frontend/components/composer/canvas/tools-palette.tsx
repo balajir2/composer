@@ -41,6 +41,7 @@ export const COMPOSER_NODE_PALETTE: { nodeType: string; label: string }[] = [
   { nodeType: "jira", label: "Jira" },
   { nodeType: "confluence", label: "Confluence" },
   { nodeType: "download-pdf", label: "Download PDF" },
+  { nodeType: "join", label: "Join" },
 ];
 
 // ---------------------------------------------------------------------------
