@@ -43,8 +43,9 @@ asynchronously.
 
 Repository evidence currently includes:
 
-- **22 workflow node types** spanning AI, integration, data flow, control flow, safety, and delivery,
-  including file-trigger and file-write nodes for folder-watch ingestion and generated-file output.
+- **23 workflow node types** spanning AI, integration, data flow, control flow, safety, and delivery,
+  including file-trigger and file-write nodes for folder-watch ingestion and generated-file output,
+  and Jira/Confluence nodes for per-node-credentialed Atlassian Cloud automation.
 - **4 first-class LLM provider families:** Anthropic, OpenAI, Google, and Groq, with an extensible
   model catalogue and additional OpenAI-compatible provider support.
 - **5 vector database connectors:** Pinecone, Qdrant, Chroma, Weaviate, and Milvus, supporting
@@ -52,11 +53,14 @@ Repository evidence currently includes:
 - **Model Context Protocol support** for static and OAuth-connected MCP servers, including shared
   server configuration and per-user OAuth tokens.
 - **Human-in-the-loop execution** using LangGraph interrupts and PostgreSQL checkpoints.
-- **Jira, email, HTTP, Gamma, Arcade, search, scraping, browser, and MCP integrations.**
-- **Document intake** for PDF, DOCX, Markdown, and text.
+- **Jira, Confluence, email, HTTP, Gamma, Arcade, search, scraping, browser, and MCP integrations.**
+- **Document intake** for PDF, DOCX, Markdown, and text; a local `composer watch` CLI and a
+  server-side Google Drive OAuth file-trigger for folder-watch ingestion.
+- **Durable execution** — runs are queued via Google Cloud Tasks and claimed under a Postgres row
+  lock, so a run in progress survives the backend scaling to zero or restarting mid-execution.
 - **Published workflow APIs**, per-user API keys, WebSocket execution events, workflow sharing,
-  standalone authentication, and Azure AD SSO support.
-- **19 reference workflow templates** and **925 collected backend tests** in the current tree.
+  standalone authentication (including self-service password reset), and Azure AD SSO support.
+- **20 reference workflow templates** and **1,267 collected backend tests** in the current tree.
 - Operational, security, privacy, compliance, deployment, incident-response, and disaster-recovery
   documentation intended to support enterprise evaluation.
 
@@ -147,14 +151,19 @@ Composer is a functioning end-to-end product with broad feature coverage and sub
 tests. It should be presented as an early commercial platform—not as a finished hyperscale SaaS.
 
 The highest-value engineering priorities are documented transparently in
-[Claude Improvement Backlog](claude-improvement-backlog.md), including:
+[Claude Improvement Backlog](claude-improvement-backlog.md) and [Deferred Backlog](deferred-backlog.md).
+Several items originally flagged there are now shipped — durable background workers via Google
+Cloud Tasks, outbound-request (SSRF) hardening on the HTTP node, multi-instance-correct events and
+rate limiting via Postgres, and the live credential-disclosure gap for vector-DB/HTTP/MCP secrets —
+and the Prisma-vs-SQLAlchemy question was resolved by ADR-0031 (stay on Prisma Python, with
+documented trigger conditions for revisiting). What remains open:
 
-- Stronger frontend/backend node contract testing.
-- Durable background workers and idempotent side effects.
-- Centralized credential management and outbound-request hardening.
-- Multi-instance events and rate limiting.
-- Migration away from archived Prisma Client Python.
-- Upgrades from unsupported frontend framework versions.
+- Stronger frontend/backend node contract testing (several property panels still write field names
+  that don't match their backend schemas).
+- A first-class `Credential`/`Connection` model — secrets are already encrypted and redacted, but
+  reuse, rotation, and per-credential "which workflows depend on this" visibility don't exist yet.
+- Upgrades from unsupported frontend framework versions (Next.js 14, `reactflow` 11, a pre-release
+  NextAuth).
 
 This transparency is intentional: technical diligence is stronger when shipped capability,
 known risk, and future investment are clearly separated.

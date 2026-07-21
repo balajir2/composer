@@ -58,6 +58,16 @@ Engaged when Customer enables the corresponding tool in a workflow.
 | Browserless | Browserless.io | Headless Chrome rendering | URL + DOM operations Customer's workflow specifies | US / EU per Customer's choice | Opt-in |
 | Gamma | Gamma App, Inc. | Slide deck rendering | Outline content the workflow generates | US | Opt-in |
 | Arcade | Arcade, Inc. | External tool execution platform | Tool-call payloads for Arcade tools the workflow uses | US | Opt-in |
+| Jira Cloud | Atlassian, Inc. | Issue tracking (`jira` node) | Issue/comment content + the per-node domain/email/API-token credential the designer configures | Per Customer's Atlassian Cloud site | Opt-in |
+| Confluence Cloud | Atlassian, Inc. | Wiki page operations (`confluence` node) | Page content + the per-node domain/email/API-token credential the designer configures | Per Customer's Atlassian Cloud site | Opt-in |
+
+## File storage sub-processors
+
+Engaged when Customer connects a cloud folder to a `file-trigger` node. The local `composer watch` CLI provider has no sub-processor — it's a process Customer runs on their own machine against Customer's own filesystem.
+
+| Service | Provider | Purpose | Data flow | Region | Engagement |
+|---|---|---|---|---|---|
+| Google Drive | Google LLC | Server-side polling file-trigger (watch a folder, claim + optionally move processed/error files) | Per-user OAuth-scoped read/write access to the folder(s) Customer's admin connects | Per Google's data location policy | Opt-in |
 
 ## Vector database sub-processors
 

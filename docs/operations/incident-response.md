@@ -114,23 +114,31 @@ Common mitigations by failure class:
 
 ### Sweeper isn't running
 
+On Cloud Run (the production path), the sweeper is a Cloud Scheduler job (`composer-sweep`) POSTing to `/internal/sweep` every 5 minutes, not an in-process loop — check Cloud Scheduler's execution history for the job first:
+
 ```
-1. The "execution_sweeper: started" log line should appear once at boot. If not, the lifespan didn't start it correctly — check env vars (`EXECUTION_SWEEPER_INTERVAL_SECONDS != 0`) and restart
-2. Manually invoke the sweeper while you investigate:
-   uv run python -c "import asyncio; from src.maintenance.execution_sweeper import sweep_stuck_executions; from prisma import Prisma; \
+1. gcloud scheduler jobs describe composer-sweep --location=<region> --project=<project>
+   gcloud scheduler jobs run composer-sweep --location=<region> --project=<project>   # force an immediate run
+2. If the job's executions show 401s, the OIDC service account (CLOUD_TASKS_SERVICE_ACCOUNT) or the
+   audience (BACKEND_PUBLIC_URL) is misconfigured — check src/api/internal.py's `_verify_internal_oidc`
+   against the job's --oidc-service-account-email / --oidc-token-audience (scripts/gcp-bootstrap.ps1).
+3. Manually invoke all four sweeps while you investigate (covers stuck executions, expired approvals,
+   expired leases, and old execution_events — the same work POST /internal/sweep does):
+   uv run python -c "import asyncio; from src.maintenance.execution_sweeper import sweep_stuck_executions, sweep_expired_approvals, sweep_expired_leases, sweep_old_execution_events; from prisma import Prisma; \
      async def main():
          db = Prisma()
          await db.connect()
          try:
-             res = await sweep_stuck_executions(db, stuck_after_seconds=900)
-             print(res)
+             print(await sweep_stuck_executions(db, stuck_after_seconds=900))
          finally:
              await db.disconnect()
      asyncio.run(main())"
-3. While the sweeper's down, manually clear stuck rows via SQL if customer-impacting:
+4. While the sweeper's down, manually clear stuck rows via SQL if customer-impacting:
    UPDATE workflow_executions SET status='failed', error='Manually cleared during incident <id>', completed_at=now()
    WHERE status='running' AND started_at < now() - interval '15 minutes';
 ```
+
+On a non-Cloud-Run host still running the in-process fallback loop (`EXECUTION_SWEEPER_INTERVAL_SECONDS > 0`), the "execution_sweeper: started" log line should appear once at boot — if not, the lifespan didn't start it correctly; check the env var and restart.
 
 ### MCP server returning bad data
 

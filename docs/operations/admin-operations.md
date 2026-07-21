@@ -320,5 +320,5 @@ production without a dry-run flag.
 
 - [postgres-setup.md](postgres-setup.md) — Neon access, psql setup
 - [llm-keys.md](llm-keys.md) — LLM key management (admin endpoint coverage)
-- [vercel-setup.md](vercel-setup.md) — obtaining the deployed API URL
+- [gcp-cloud-run-setup.md](gcp-cloud-run-setup.md) — obtaining the deployed API URL (`gcloud run services describe composer-backend ...`)
 - [monitoring.md](monitoring.md) — LangSmith traces for debugging execution issues

@@ -7,8 +7,8 @@ Everything you need to build workflows on the canvas. If this is your first time
 - [Concepts](#concepts) — Workflows, executions, runs, drafts
 - [The canvas](#the-canvas) — Editing nodes, drawing edges, the property panel
 - [Variables and references](#variables-and-references) — `{{name}}` substitution and the eval scope
-- [Node reference](#node-reference) — All 22 node types
-- [Templates](#templates) — The 19 reference workflows and what each demonstrates
+- [Node reference](#node-reference) — All 24 node types
+- [Templates](#templates) — The 20 reference workflows and what each demonstrates
 - [Publishing workflows](#publishing-workflows) — External invoke API
 - [Document uploads](#document-uploads) — PDF / DOCX / Markdown / TXT inputs
 - [Patterns and recipes](#patterns-and-recipes) — Common idioms
@@ -84,7 +84,7 @@ What's *not* available: `import`, `eval`, `exec`, list comprehensions, dict lite
 
 ## Node reference
 
-The twenty-two node types, grouped by what they do.
+The twenty-four node types, grouped by what they do.
 
 ### Flow control
 
@@ -94,9 +94,11 @@ The entry point. Declares **input variables** the runtime form (or external invo
 
 | Field | Purpose |
 |---|---|
-| `inputVariables[]` | Each: `name`, `type` (`text` / `number` / `boolean` / `json` / `document`), `required`, `description`, `defaultValue` |
+| `inputVariables[]` | Each: `name`, `type` (`text` / `number` / `boolean` / `json` / `document` / `date` / `datetime`), `required`, `description`, `defaultValue` |
 
 `document` inputs render as a file picker on the run form; on select the file is uploaded to `/uploads/extract-text` and the extracted plain text becomes the variable value. See [Document uploads](#document-uploads).
+
+`date` and `datetime` inputs render a calendar picker (with a time input for `datetime`) everywhere the field is edited — the Designer panel's default-value editor, the production run form, and the Run Draft dialog — instead of a plain text box. The submitted value is always plain ISO-8601 text, exactly like a `text` field: `YYYY-MM-DD` for `date`, `YYYY-MM-DDTHH:mm:ss` for `datetime`. Downstream nodes see a regular string either way — the type only changes how the value is entered, not how it's stored or referenced.
 
 When the user submits a JSON object as input, the Start executor **spreads its keys** into top-level variables (so `{"name": "x"}` makes `{{name}}` resolve to `x`). When they submit a string, it lands under `{{input}}`.
 
@@ -342,20 +344,51 @@ Agentic Jira Cloud access (create, search, update, transition, and comment on is
 
 Output: `{lastOutput}` — the model's final text response after any tool calls complete.
 
-#### `file-trigger`
+#### `confluence`
 
-Visual-only, like `note` — never executes; `graph_builder` skips it when building the execution graph. It's a configuration surface, not a step in the flow: the actual folder-watching happens outside the graph entirely, in the separate `composer watch` CLI, which polls the folder and triggers a **published (production)** workflow through the ordinary external-invoke endpoint.
+Deterministic (no LLM) Confluence Cloud page operations via REST API v1. Like `jira`, credentials are entered directly on the node — per-node, per-workflow, no shared connection required.
 
 | Field | Purpose |
 |---|---|
-| `provider` | Storage provider (currently `local` only). |
+| `domain` | Confluence Cloud domain (e.g. `your-org.atlassian.net`). |
+| `email` | Confluence Cloud account email used for Basic auth. |
+| `apiToken` | API token from [id.atlassian.com/manage/api-tokens](https://id.atlassian.com/manage/api-tokens). |
+| `operation` | `create_or_update_page` (default) / `get_page` / `get_property` / `set_property`. |
+| `spaceKey` / `parentPageId` / `title` / `bodyStorageHtml` / `labels` | Used by `create_or_update_page` / `get_page` — `bodyStorageHtml` is Confluence's storage-format HTML, not Markdown. |
+| `pageId` / `propertyKey` / `propertyValue` | Used by `get_property` / `set_property` — page content-properties are a simple per-page key/value store, handy for stamping a workflow-run marker or version tag onto a page without editing its body. |
+
+**Credential storage:** the API token is encrypted at rest and redacted on every read, the same `encrypt_marked`/`decrypt_marked` pattern `jira` uses — the plaintext or ciphertext never leaves the server after the initial save.
+
+Output varies by operation: `create_or_update_page`/`get_page` return the page object (id, title, version, links); `get_property`/`set_property` return the property object.
+
+#### `file-trigger`
+
+Visual-only, like `note` — never executes; `graph_builder` skips it when building the execution graph. It's a configuration surface, not a step in the flow. Two provider modes, both watching for new files and feeding extracted text into a **published (production)** workflow the same way — they differ only in who does the polling.
+
+**`provider: "local"`** — the actual folder-watching happens outside the graph entirely, in a separate `composer watch` CLI process you run yourself.
+
+| Field | Purpose |
+|---|---|
+| `provider` | `local` |
 | `sourcePath` | Folder to watch for new files. |
 | `destPath` | Folder a file is moved to after a successful trigger. |
 | `errorPath` | Folder a file is moved to if extraction or the trigger call fails. |
 | `targetInputVariable` | Name of the Start node's input variable the extracted file text populates. |
-| `pollIntervalSeconds` | How often to poll `sourcePath`, in seconds (default 30). |
+| `pollIntervalSeconds` | How often the CLI polls `sourcePath`, in seconds (default 30). |
 
-Dropping a `file-trigger` node on the canvas documents intent — by itself it does nothing at run time. To make it live: publish the workflow (see [Publishing workflows](#publishing-workflows)) and run `composer watch --api-url <backend> --slug <externalSlug> --api-key ck_... --source <sourcePath> --dest <destPath> --error <errorPath> --target-var <targetInputVariable> --interval <pollIntervalSeconds>` from a machine that can see those folders. The CLI polls `sourcePath`; a file must appear unchanged across two consecutive polls before it's claimed (guards against reading a file that's still being copied). Once claimed, it extracts plain text (`.txt` / `.md` / `.markdown` / `.pdf` / `.docx`) and calls `POST /api/run/{slug}` — the same external-invoke endpoint any other production trigger uses — with `{targetInputVariable: <extracted text>}` as input. On success the file moves to `destPath`; on extraction or trigger failure it moves to `errorPath` instead, and the loop moves on to the next file.
+Dropping a `file-trigger` node on the canvas documents intent — by itself it does nothing at run time. To make it live: publish the workflow (see [Publishing workflows](#publishing-workflows)) and run `composer watch --api-url <backend> --slug <externalSlug> --api-key ck_... --source <sourcePath> --dest <destPath> --error <errorPath> --target-var <targetInputVariable> --interval <pollIntervalSeconds>` from a machine that can see those folders. The CLI polls `sourcePath`; a file must appear unchanged across two consecutive polls before it's claimed (guards against reading a file that's still being copied). Once claimed, it extracts plain text (`.txt` / `.md` / `.markdown` / `.pdf` / `.docx`) and calls `POST /api/run/{slug}` — the same external-invoke endpoint any other production trigger uses — with `{targetInputVariable: <extracted text>}` as input. On success the file moves to `destPath`; on extraction or trigger failure it moves to `errorPath` instead, and the loop moves on to the next file. `local` is a genuinely local process — it has to run on whatever machine can see the folder, since the hosted backend has no visibility into your local disk.
+
+**`provider: "google-drive"`** — polled server-side; no local process required. Connect your Google account from the node's property panel (a Google Picker lets you pick the watched folder, and optionally a processed/error folder), which stores an OAuth connection (`CloudStorageConnection`) rather than a plain path.
+
+| Field | Purpose |
+|---|---|
+| `provider` | `google-drive` |
+| `connectionId` | The OAuth connection created via the panel's "Connect Google Drive" flow. |
+| `driveFolderId` | The watched Drive folder (picked via the Google Picker). |
+| `targetInputVariable` | Same meaning as the local mode. |
+| `driveProcessedFolderId` / `driveErrorFolderId` | Optional. When set, a successfully- or unsuccessfully-processed file is also visibly relocated there (mirroring `destPath`/`errorPath`'s visible-move behavior) in addition to the permanent claim marker below. Leave unset and processed files just stay in place with no visible sign they were handled — still safely never reprocessed, just not visually moved. |
+
+A Cloud-Scheduler-triggered `POST /internal/poll-file-triggers` endpoint polls every production workflow's Drive file-trigger node on a flat 5-minute cadence (`pollIntervalSeconds` is meaningful for the local/CLI case only — Drive triggers don't use it). Claim tracking uses a Drive `appProperties` marker on each file rather than a move, so a file is never reprocessed even without a processed-folder configured.
 
 #### `file-write`
 
@@ -366,16 +399,33 @@ Writes generated content to a file via a storage provider (currently `local` fil
 | `provider` | Storage provider name. Plain string rather than a fixed choice — an unrecognised provider raises at execution time rather than being rejected when the workflow is saved. |
 | `destinationPath` | Folder to write into (substitution applies). Rejected if it resolves to blank/empty — the node refuses to fall back to writing into the server process's current working directory. |
 | `filename` | Bare filename **without an extension** — `format` always supplies it (e.g. `filename: "{{project_name}}-BRD"` with `format: pdf` writes `<project_name>-BRD.pdf`). Defaults to `output` if left blank. Rejected if it contains `/`, `\`, or `..` — use `destinationPath`, not the filename, for a nested output directory. |
-| `format` | `md` (default) / `docx` / `pdf`. |
-| `content` | Markdown source (Mustache substitution applies). |
+| `format` | `md` (default) / `docx` / `pdf` / `html`. |
+| `content` | Markdown source (Mustache substitution applies) for `md`/`docx`/`pdf`; raw HTML source for `format: html` — no Markdown parsing happens in that case, `content` is written through as-is. |
 
-Conversion: `md` is written as-is (UTF-8 bytes, no conversion). `docx` and `pdf` both parse the Markdown and render headings, paragraphs, bullet/numbered lists, tables, and bold/italic/inline-code onto the target format — a purpose-built renderer for structured, table-heavy documents (BRDs and similar), not a full-fidelity general-purpose Markdown converter. The PDF path blocks all external resource resolution (images and any other remote reference are refused) so rendering a workflow's Markdown can't be turned into an outbound request against attacker-chosen infrastructure; both the DOCX and PDF renderers also disable raw-HTML passthrough so bracket placeholders like `<Client Name>` render as literal text instead of silently vanishing.
+Conversion: `md` and `html` are both written as-is (UTF-8 bytes, no conversion — `html` just skips the Markdown step `md` also skips). `docx` and `pdf` both parse the Markdown and render headings, paragraphs, bullet/numbered lists, tables, and bold/italic/inline-code onto the target format — a purpose-built renderer for structured, table-heavy documents (BRDs and similar), not a full-fidelity general-purpose Markdown converter. The PDF path blocks all external resource resolution (images and any other remote reference are refused) so rendering a workflow's Markdown can't be turned into an outbound request against attacker-chosen infrastructure; both the DOCX and PDF renderers also disable raw-HTML passthrough so bracket placeholders like `<Client Name>` render as literal text instead of silently vanishing.
 
 Output: `{lastOutput}` is the full path the file was written to (e.g. `/data/out/report.pdf`) — reference it downstream as `{{<node_alias>.output}}`, for example to mention the file in a follow-up email.
 
+#### `download-pdf`
+
+Renders HTML or Markdown content straight to a PDF and writes it via a storage provider — the PDF-producing counterpart to `file-write`, broken out as its own node type (rather than just another `file-write` format option) because PDF rendering needs an explicit input-format choice up front.
+
+| Field | Purpose |
+|---|---|
+| `inputFormat` | `html` or `markdown` — which parser renders `content`. |
+| `content` | Source content (Mustache substitution applies). |
+| `provider` | `local` (default) or `google-drive`. |
+| `destinationPath` | (local only) Folder to write into. Rejected if blank, same guard as `file-write`. |
+| `connectionId` / `driveFolderId` | (google-drive only) An OAuth connection created via the panel's "Connect Google Drive" flow, and the destination folder picked via the Google Picker. Both required when `provider: google-drive` — there's no default destination to fall back to. |
+| `filename` | Bare filename without an extension — `.pdf` is always appended. Defaults to `output`. Same `/`, `\`, `..` rejection as `file-write`. |
+
+Same SSRF-blocking rendering guarantee as `file-write`'s PDF path (shared implementation, `src/conversion/_pdf_security.py`) — no external resource resolution, no raw-HTML passthrough on the Markdown path.
+
+Output: `{lastOutput}` is the full path written — `drive://<folderId>/<filename>.pdf` for Google Drive, or the local filesystem path otherwise.
+
 ## Templates
 
-The 18 templates seeded by `scripts/seed_templates.py`. Open the gallery at [/designer/templates](http://localhost:3000/designer/templates).
+The 20 templates seeded by `scripts/seed_templates.py`. Open the gallery at [/designer/templates](http://localhost:3000/designer/templates). For a walkthrough of exactly which parameters to set on each one, see [user-training-flow-setup.md](user-training-flow-setup.md).
 
 | # | Name | Demonstrates | External deps |
 |---|---|---|---|
@@ -397,6 +447,8 @@ The 18 templates seeded by `scripts/seed_templates.py`. Open the gallery at [/de
 | 16 | Code Review Assistant | Agent JSON + guardrails on output + branched delivery | LLM only |
 | 17 | Lead Enrichment | Multi-source research + structured CRM JSON | LLM + Tavily + Firecrawl |
 | 18 | Approved Email Distribution | Agent drafts HTML → human approval → Resend email delivery | LLM + Resend |
+| 19 | Arcade Tool Call | `arcade` node OAuth pause/resume against Arcade.dev | LLM + Arcade |
+| 20 | File Watch to Summarize and Email | `file-trigger` (visual) + `composer watch` CLI → Agent → Email | LLM + Resend + `composer watch` |
 
 Templates are owned by `userId=null` so no one can edit them through the API — clicking "Use template" creates a private user-owned copy. Edit the seed script + re-run to update the gallery.
 

@@ -2,7 +2,7 @@
 
 > **Audience:** customer security teams, architects, anyone who needs to know "could another customer's workflow ever see our data?"
 > **Maintained by:** Balaji Rajan (`balajirajan@gmail.com`)
-> **Last reviewed:** 2026-05-04.
+> **Last reviewed:** 2026-07-21.
 
 ## TL;DR
 
@@ -125,6 +125,7 @@ These hold today even though we don't ship shared tenancy:
 | 404 vs 403 policy | Every read | ✓ | Same |
 | Owner-only delete | Workflows, MCP servers | ✓ | Same — admins still can't delete other users' data even within an org |
 | Public workflow visibility | `workflows.is_public` | ✓ | Same — public would mean public *within the org*, not across orgs |
+| Workflow assignment (many-to-many sharing) | `workflow_assignments` (`workflowId`, `userId`, `assignedById`) | ✓ — grants full read/write/run to a non-owner within the *same* deployment; owner-only fields (delete, reassign owner) are untouched by an assignment | Same — an assignment would still be scoped to users within one org; no cross-org grant path |
 
 ## Tenancy at the integrations layer
 

@@ -153,17 +153,20 @@ observability + LangSmith for error visibility.
 
 ## 4. Rate-limit observability
 
-Composer's rate limiter (Phase 8) is **in-memory** using a token-bucket algorithm. It runs per
-Vercel function instance and resets on function cold-start.
+Composer's rate limiter is **Postgres-backed** (`rate_limit_buckets` table, `PostgresRateLimiter` —
+ADR-0033/P1-4), an atomic token-bucket per `(route, client)` pair. It is correct across every
+backend instance — Cloud Run's multi-instance scaling, multiple Vercel function instances, whatever
+the deployment shape — since bucket state lives in the shared database, not per-process memory.
 
 **Implications for observability:**
 
-- There is no central dashboard for rate-limit state across all Vercel instances.
+- There is one source of truth for rate-limit state: query `rate_limit_buckets` directly if you need
+  to inspect a specific caller's remaining tokens.
 - A rate-limit hit (HTTP 429) is logged as a warning: `Rate limit exceeded: <endpoint> for <user-id or IP>`.
-- Filter Vercel logs for `429` or `Rate limit exceeded` to detect sustained rate-limit pressure.
-- Because state is in-memory and per-instance, the effective rate limit per user is
-  `configured_limit × number_of_instances`. Under low traffic (few instances), the limit is
-  effectively tighter.
+- Filter backend logs for `429` or `Rate limit exceeded` to detect sustained rate-limit pressure.
+- Because state is shared (not per-instance), the configured limit is the *actual* effective limit
+  per caller — no multiplication by instance count, and no under-counting from cold starts resetting
+  in-memory state.
 
 **Configured limits (from `src/config.py`):**
 
@@ -177,8 +180,7 @@ Vercel function instance and resets on function cold-start.
 | `POST /mcp-servers/{id}/test` | 10/min | `RATE_LIMIT_MCP_TEST_PER_MINUTE` |
 
 These are `Settings` fields read from env vars at startup. To adjust limits without a code change,
-update the env var in Vercel and redeploy. Phase 9 retains the in-memory limiter; a distributed
-Redis-backed limiter is deferred.
+update the env var on the backend host and redeploy/restart.
 
 ---
 

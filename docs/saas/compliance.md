@@ -2,7 +2,7 @@
 
 > **Audience:** customer security teams, procurement, GRC reviewers.
 > **Maintained by:** Balaji Rajan (`balajirajan@gmail.com`)
-> **Last reviewed:** 2026-05-04. The certification status section is the part most likely to change.
+> **Last reviewed:** 2026-07-21. The certification status section is the part most likely to change.
 
 This document is the formal counterpart to [security.md](security.md). Where that doc explains the controls we've built, this one explains the **third-party assertions** customers can rely on, the regulatory frameworks Composer maps to, and the audit-log capabilities we expose.
 
@@ -93,6 +93,7 @@ Every Composer deployment captures the trail described below. For SOC 2 / GDPR /
 | Role change (member↔admin) | `users.role` column + DB audit log if you've added one — **no app-level history table yet** | Forever (or until SQL delete) |
 | Workflow create / update / publish / delete | Backend logs + `workflows.updated_at` | Same |
 | Workflow ownership reassignment | Backend logs | Same |
+| Workflow assignment grant / revoke (sharing) | Backend logs + `workflow_assignments` row (`assignedById`, `assignedAt`) | Same |
 | Execution start / complete / fail | `workflow_executions` row | Same |
 | Approval decision (approved/rejected) | `approvals` row | Same |
 | API key creation / revocation / first use | `api_keys.created_at`, `api_keys.revoked_at`, `api_keys.last_used_at` | Same |

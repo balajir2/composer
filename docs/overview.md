@@ -7,14 +7,16 @@ state, and published APIs in one inspectable system.
 ## Product status
 
 Composer is an **early commercial product** with an operational backend, visual Designer, Runs and
-Approvals experience, administration console, production invocation API, and 19 reference
-templates. The current repository collects 925 backend tests across unit, regression, and
+Approvals experience, administration console, production invocation API, and 20 reference
+templates. The current repository collects 1267 backend tests across unit, regression, and
 integration suites.
 
-The strongest deployment shape today is dedicated single-tenant or self-hosted. Work required for
-a scaled shared managed service—durable workers, distributed events/rate limits, stronger
-idempotency, credential centralization, and framework modernization—is tracked openly in the
-[Improvement Backlog](claude-improvement-backlog.md).
+Durable queued execution, cross-instance execution events, and cross-instance rate limits now run
+on Cloud Tasks and Postgres (ADR-0033), so the strongest deployment shape is no longer limited by
+single-instance assumptions. What's still tracked openly in the
+[Improvement Backlog](claude-improvement-backlog.md): a single canonical credential/connection
+model (today's per-integration encrypt-at-rest/redact-on-read pattern covers Jira, Confluence,
+vector-DB, HTTP, and MCP secrets, but not shared rotation/ownership) and framework modernization.
 
 ## Who Composer serves
 
@@ -50,14 +52,14 @@ idempotency, credential centralization, and framework modernization—is tracked
 
 | Area | Shipped capability |
 |---|---|
-| Workflow design | 22 Designer node types, variables, aliases, branching, loops, autosave, templates, draft runs. |
+| Workflow design | 24 Designer node types, variables, aliases, branching, loops, autosave, templates, draft runs. |
 | AI models | Anthropic, OpenAI, Google, and Groq families; model catalogue and verification; structured output. |
-| Enterprise tools | MCP with static/OAuth auth, Jira, HTTP, email, Arcade, Gamma, search, scrape, and browser providers. |
-| Data | Five vector DBs, ingestion/upsert, retrieval, embeddings, transforms, structured extraction, document upload. |
-| Human oversight | Checkpointed approve/reject steps, in-app decisions, emailed decision links, approval records and expiry. |
-| Product integration | Published workflow endpoints, per-user API keys, sync/async invocation, WebSocket events. |
+| Enterprise tools | MCP with static/OAuth auth, Jira, Confluence, HTTP (SSRF-guarded), email, Arcade, Gamma, search, scrape, and browser providers. |
+| Data | Five vector DBs, ingestion/upsert, retrieval, embeddings, transforms, structured extraction, document upload, folder-watch triggers and file delivery (local disk or Google Drive). |
+| Human oversight | Checkpointed approve/reject steps, in-app decisions, emailed decision links with optional attachments, approval records and expiry. |
+| Product integration | Published workflow endpoints, per-user API keys, sync/async invocation, idempotent retries, execution cancellation, WebSocket events. |
 | Administration | Users, roles, sharing, models, encrypted LLM keys, MCP servers, deployment settings, run history. |
-| Operations | PostgreSQL checkpoints, stuck-run cleanup, logs, LangSmith integration, deployment and incident runbooks. |
+| Operations | PostgreSQL checkpoints, durable Cloud Tasks execution queueing, stuck-run cleanup, logs, LangSmith integration, deployment and incident runbooks. |
 
 See [Product Capabilities](product-capabilities.md) and the [Designer Guide](designer-guide.md) for
 the complete feature catalogue.
@@ -99,9 +101,11 @@ deployment model.
 | Security primitives | AES-256-GCM, bcrypt, sandboxed expressions, E2B code execution |
 | Observability | Structured logs and optional LangSmith traces |
 
-The architecture is sound for the product, with two modernization priorities: replace the archived
-Prisma Client Python dependency over time and move the frontend to supported Next.js/React/React
-Flow lines. See [Architecture](architecture.md) and [Engineering Decisions](decisions.md).
+The architecture is sound for the product, with two modernization watch-items: the archived Prisma
+Client Python dependency (ADR-0031 evaluated migrating to SQLAlchemy 2 and chose to stay for now,
+with concrete, monitorable trigger conditions for revisiting) and moving the frontend to supported
+Next.js/React/React Flow lines. See [Architecture](architecture.md) and
+[Engineering Decisions](decisions.md).
 
 ## Evidence and diligence
 

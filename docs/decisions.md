@@ -492,7 +492,9 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 
 **Implemented by.** Phase 5b (commits `40ef435`…`a6a4a98`, 2026-04-21).
 
-**Related.** ADR-0001 (PrismaCheckpointSaver — same single-process assumption), ADR-0016 (Phase 5a emits `approval-pending` / `approval-resumed`), [Phase 5b spec](archive/phase-history/specs/2026-04-21-phase-5b-sse-streaming-design.md).
+**Superseded (2026-07-15).** ADR-0033 fully replaced the in-process bus and the SSE transport: events now persist to a durable, sequence-numbered `execution_events` table (surviving the multi-worker limitation this ADR accepted), and the client channel is `GET /executions/{id}/ws` (WebSocket, with reconnect-cursor replay), not SSE. This ADR is kept for historical context on why SSE + in-process was the right call at Phase 5's single-worker scale.
+
+**Related.** ADR-0001 (PrismaCheckpointSaver — same single-process assumption), ADR-0016 (Phase 5a emits `approval-pending` / `approval-resumed`), ADR-0033 (durable execution + Postgres events — the replacement), [Phase 5b spec](archive/phase-history/specs/2026-04-21-phase-5b-sse-streaming-design.md).
 
 ---
 
@@ -608,6 +610,8 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 - **Size caps are defense-in-depth.** Real OAB workflows are 10-30 nodes; 100 is comfortable. Users hitting the cap can tune via env or split workflows.
 - **Info-leak via timing.** Tight-read-authz returns 404 for both "doesn't exist" and "not owner" — but the timing might differ (owner path reads from DB, non-owner path reads + checks + 404). Phase 9+ could constant-time this if demanded; not in scope for Phase 8.
 - **No SSRF protection on `http` executor.** Private-network targets (169.254.169.254, 10.0.0.0/8) are reachable. Phase 9+ adds allowlist/blocklist.
+
+**Update (2026-07-12).** The SSRF gap noted above was closed — `src/security/ssrf.py` blocks IP-literal, DNS-resolution, and cloud-metadata-hostname targets, plus a response-size cap and URL redaction in errors/`node_results` (commit `999c5ac`, part of the Codex-audit remediation pass; see `CHANGELOG.md`'s 2026-07-12 entry). No standalone ADR was written for that remediation pass (11 items spanning security, correctness, and execution-API semantics) — flagging that gap here rather than fabricating one.
 
 **Implemented by.** Phase 8 (commits `222749e`…`20c4309` on `main`, 2026-04-22).
 

@@ -51,6 +51,8 @@ Provision a container host that supports:
 
 Run a smoke test: `docker run` your built backend image with a minimal env configuration that points at the database, and curl `/health` from the host's network. It should return 200.
 
+If deploying on GCP Cloud Run (the recommended path — see [gcp-cloud-run-setup.md](gcp-cloud-run-setup.md)), this phase also provisions a Cloud Tasks queue and two Cloud Scheduler jobs (`composer-sweep` → `POST /internal/sweep`, `composer-poll-file-triggers` → `POST /internal/poll-file-triggers`), both authenticated via a shared OIDC service account — `scripts/gcp-bootstrap.ps1` handles all of this. This isn't required for local development or CI: `enqueue_execution()` falls back to in-process `asyncio` dispatch whenever `CLOUD_TASKS_SERVICE_ACCOUNT` is unset, so a developer can run a workflow end-to-end with zero Cloud Tasks/Scheduler infra provisioned.
+
 ### 1.3 Frontend host
 
 Walk through [vercel-setup.md](vercel-setup.md). The end state:
@@ -117,8 +119,10 @@ LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
 
 ```bash
 EXECUTION_STUCK_AFTER_SECONDS=900     # default 15min; tighten if your runtime has a shorter budget
-EXECUTION_SWEEPER_INTERVAL_SECONDS=300 # default 5min; set to 0 to disable
+EXECUTION_SWEEPER_INTERVAL_SECONDS=300 # default 5min in-process fallback loop; set to 0 on Cloud Run
 ```
+
+On Cloud Run, set `EXECUTION_SWEEPER_INTERVAL_SECONDS=0` and let the `composer-sweep` Cloud Scheduler job (provisioned in Phase 1.2, `POST /internal/sweep` every 5 minutes) do the sweeping instead — the in-process loop requires `--no-cpu-throttling`, which is no longer part of the deploy config (see [gcp-cloud-run-setup.md](gcp-cloud-run-setup.md)). The in-process loop only stays useful for local development or a non-Cloud-Run host without a scheduler equivalent.
 
 ### Recommended — rate limits (defaults are fine for most deployments)
 
@@ -143,7 +147,7 @@ uv run prisma generate
 # Apply migrations
 uv run prisma migrate deploy
 
-# Seed the 19 reference templates (idempotent — safe to re-run)
+# Seed the 20 reference templates (idempotent — safe to re-run)
 uv run python -m scripts.seed_templates
 ```
 
@@ -202,7 +206,7 @@ Walk through [monitoring.md](monitoring.md). Minimum viable monitoring:
 - **Backend log shipping** to your aggregator (CloudWatch, Datadog, Loki, Vercel logs — whichever).
 - **LangSmith trace count check** — if traces stop appearing for 30 minutes during expected traffic, paged alert.
 - **Postgres connection pool alarm** at 80% of the plan limit.
-- **Sweeper alarm** if the `composer.execution_sweeper` task isn't reporting heartbeat logs (you'll see "execution_sweeper: started" once at boot and "execution_sweeper: marked N/M ..." periodically).
+- **Sweeper alarm**: on Cloud Run, alert on the `composer-sweep` Cloud Scheduler job's failure rate (Scheduler → job → executions) rather than a boot log — the sweeper runs as a real inbound request (`POST /internal/sweep`) on a fixed interval, not an in-process loop. On a non-Cloud-Run host still running the in-process fallback (`EXECUTION_SWEEPER_INTERVAL_SECONDS > 0`), watch for "execution_sweeper: started" once at boot and "execution_sweeper: marked N/M ..." periodically instead.
 
 **Done when**: you can see the health probe in the monitor, the backend logs in your aggregator, and a deliberately broken `/health` triggers the paged alert.
 

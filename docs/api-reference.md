@@ -27,6 +27,8 @@ In-memory token bucket per route key + client. Defaults:
 | `GET /users/search` | 30 / min (`rate_limit_users_search_per_minute`) | user_id |
 | `POST /api/run/{slug}` | configured (`rate_limit_api_run_per_minute`) | API key |
 | `POST /uploads/extract-text` | 20 / min | user_id |
+| `GET /approvals/email/{token}` | 20 / min (`rate_limit_approval_email_per_minute`) | client IP |
+| `POST /cloud-storage/connections/{id}/picker-token` | 10 / min (`rate_limit_picker_token_per_minute`) | user_id |
 
 429s carry a `Retry-After` header.
 
@@ -211,6 +213,19 @@ GET    /mcp-oauth/authorize-url/{id}      kick off OAuth flow
 ```
 
 Six critical MCP fixes from OAB's April 2026 debugging session are encoded — RFC 8707 `resource` parameter on every OAuth grant, manual `tools/list` (skipping Anthropic's native MCP connector that 73K-char tool definitions broke), `inputSchema` (camelCase) tolerance, server-side token retrieval (tokens never transit the client), shared-server token fallback, explicit LangSmith config threading. See [`decisions.md`](decisions.md) ADR-0007–ADR-0010 for the full story.
+
+## Cloud storage (Google Drive)
+
+```
+GET  /cloud-storage/google-drive/authorize          kick off OAuth flow, returns authorizeUrl
+GET  /cloud-storage/google-drive/callback           OAuth redirect URI (handled internally)
+GET  /cloud-storage/connections?provider=<x>        list mine
+POST /cloud-storage/connections/{id}/picker-token   one-time access token for the Google Picker embed
+```
+
+Backs the `file-trigger`/`file-write`/`download-pdf` nodes' Google Drive support. `authorize`/`callback` follow the same Authorization Code pattern as MCP OAuth (`src/integrations/google_drive/oauth.py`, structurally mirroring `src/mcp/oauth.py`), but against a single fixed-provider OAuth app (client id/secret from settings) rather than a per-record `oauthConfig`. Tokens are encrypted at rest (`CloudStorageConnection`) and never returned to the client — `picker-token` hands back a short-lived access token solely for the one call the Google Picker widget itself requires (`setOAuthToken`), refreshing it server-side via `get_valid_drive_access_token` first if needed. Returns 404 for a connection owned by another user (not 403, matching the platform's private-resource convention) and 409 if the stored refresh token has expired, so the frontend can prompt to reconnect.
+
+The actual folder polling is server-side and unauthenticated-by-caller: `POST /internal/poll-file-triggers`, OIDC-authenticated like `/internal/claim-and-run`/`/internal/sweep` (ADR-0033), triggered on a fixed 5-minute cadence by Cloud Scheduler — not part of this API surface, since nothing outside Composer's own infrastructure calls it. See [`architecture.md`](architecture.md) for the poll flow.
 
 ## LLM models
 

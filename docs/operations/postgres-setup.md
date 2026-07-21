@@ -43,7 +43,7 @@ postgresql://composer_owner:abc123XYZ@ep-cool-meadow-12345.us-east-2.aws.neon.te
 **Always include `?sslmode=require`.** Neon requires TLS and will reject plain TCP connections.
 
 Set this value:
-- As `DATABASE_URL` in Vercel env vars (see [vercel-setup.md §2](vercel-setup.md)).
+- As the `DATABASE_URL` secret for the `composer-backend` Cloud Run service (see [gcp-cloud-run-setup.md](gcp-cloud-run-setup.md) — Secret Manager, not a plain env var). Composer's actual production deployment runs the backend on GCP Cloud Run, not Vercel; Vercel is documented separately ([vercel-setup.md](vercel-setup.md)) only as an alternate path for the frontend, and even then the FastAPI backend — the only thing that ever reads `DATABASE_URL` — still needs a long-lived host like Cloud Run, since it cannot run as a Vercel Serverless Function.
 - In the local `.env` file for development.
 - In CI secrets as `TEST_DATABASE_URL` if you run integration tests against Neon.
 
@@ -183,7 +183,9 @@ pg_restore --dbname "postgresql://...?sslmode=require" composer-backup-YYYYMMDD-
 
 ## 6. Connection pooling
 
-Vercel functions are short-lived and can spike connection counts. For production, use Neon's
+Cloud Run's scale-to-zero behavior means a burst of traffic can spin up several backend instances
+at once, each opening its own connection pool — a real spike even though the backend is a
+long-lived process per instance, not a per-request serverless function. For production, use Neon's
 built-in PgBouncer pooler:
 
 In Neon console → **Connection Details** → toggle **Connection pooling**. The pooled connection
@@ -193,8 +195,8 @@ string has `-pooler` in the hostname:
 postgresql://...@ep-cool-meadow-12345-pooler.us-east-2.aws.neon.tech/neondb?sslmode=require
 ```
 
-Use this URL as `DATABASE_URL` in Vercel to avoid exhausting Postgres's max connection limit under
-concurrent Vercel invocations.
+Use this URL as the `DATABASE_URL` secret for the `composer-backend` Cloud Run service to avoid
+exhausting Postgres's max connection limit as instances scale up.
 
 Composer's Prisma client manages connections via `PRISMA_CLIENT_ENGINE_TYPE=library` (the default).
 Pooling at the Neon PgBouncer layer is additive and safe.
@@ -203,7 +205,7 @@ Pooling at the Neon PgBouncer layer is additive and safe.
 
 ## Cross-references
 
-- [vercel-setup.md](vercel-setup.md) — where to set DATABASE_URL in Vercel
+- [gcp-cloud-run-setup.md](gcp-cloud-run-setup.md) — where to set DATABASE_URL for the deployed backend
 - [llm-keys.md](llm-keys.md) — LLM key storage in the same Postgres database
 - [admin-operations.md](admin-operations.md) — admin SQL operations, migration, reconciliation
 - [monitoring.md](monitoring.md) — Postgres query observability via Neon console

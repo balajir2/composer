@@ -65,6 +65,8 @@ Composer routes data to a small set of third parties so we can deliver the Servi
 | LLM inference | Anthropic, OpenAI, Google AI, Groq |
 | Search and scraping tools | Tavily, Firecrawl, Serper, Browserless |
 | Other AI tools | Gamma, Arcade |
+| Business integrations (optional) | Atlassian (Jira Cloud, Confluence Cloud) |
+| Cloud file storage (optional) | Google Drive |
 | Vector databases (optional) | Pinecone, Qdrant, Chroma, Weaviate, Milvus |
 | MCP servers | Whatever your workflow connects to |
 | Hosting | Neon (database), Vercel (frontend), {{BACKEND_HOST}} (backend) |

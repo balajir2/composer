@@ -2,7 +2,7 @@
 
 > **Audience:** customers, prospects, partners, internal contributors.
 > **Maintained by:** Balaji Rajan (`balajirajan@gmail.com`)
-> **Last updated:** 2026-07-11. Reviewed quarterly.
+> **Last updated:** 2026-07-21. Reviewed quarterly.
 > **Status:** Directional planning for product and fundraising discussions; not a contractual
 > delivery commitment and not evidence that every listed item is staffed or funded.
 
@@ -17,12 +17,24 @@ This is what we plan to ship over the next four quarters, what we've shipped rec
 | Branching node UI + branch label routing | 2026-04 | Two-handle UI for if-else / while / user-approval; `sourceHandle` → `branch` field on save |
 | Transform `outputKey` ergonomics | 2026-04 | Compute and persist a named variable in one node — closes the "loop counter is verbose" gap |
 | Vector DB upsert across all 5 providers | 2026-04 | Pinecone, Qdrant, Chroma, Weaviate, Milvus all do query + upsert; auto-chunking for string input |
-| 19 reference templates | 2026-07 | Each annotated with the capability it demonstrates |
+| 20 reference templates | 2026-07-15 | Each annotated with the capability it demonstrates; latest is a file-watch → summarize → email pipeline |
 | Single + bulk delete on /runs/history | 2026-04-30 | Members delete their own; admin overrides (with the "admin can't delete other users' workflows" carve-out preserved) |
 | MCP base64-blob sanitiser | 2026-05-04 | Closes the OAB-reported defect class; Highspot xlsx fetches no longer OOM the agent context |
 | Stuck-execution sweeper | 2026-05-04 | Background coroutine flips abandoned `running` rows to `failed` with explanatory error |
 | Resilient detached-task wrapper for `/api/run/{slug}` | 2026-05-04 | Uncaught crashes from the async invocation path now persist failure before re-raising |
 | World-class SaaS documentation overhaul | 2026-05-04 | This folder. Security / privacy / compliance / SLA / multi-tenancy / pricing / roadmap / support / customer onboarding + new operational runbooks |
+| Workflow assignment & sharing | 2026-07-09 | Many-to-many sharing layered on top of single ownership; full read/write/run, no view-only split |
+| Jira node | 2026-07-10 | Per-node Jira Cloud domain/email/API-token credentials; agentic loop over 6 Jira REST tools |
+| Self-service "Forgot password?" flow | 2026-07-10 | Signed emailed reset link alongside the existing admin-forced reset; closes the account-enumeration vector |
+| Designer autosave | 2026-07-10 | 3-second debounced autosave; fixes an owner's unsaved edits being invisible to a reassigned/shared user |
+| File storage provider framework (`file-trigger` / `file-write`) + `composer watch` CLI | 2026-07-11 | Local folder-watch → production-workflow trigger; generated Markdown/Word/PDF file output |
+| Approve-via-email + waiting-approval auto-expiry | 2026-07-11 | Signed one-click approve/reject email links; auto-fails a pause with no decision after 7 days |
+| Codex-audit security & correctness remediation (13 items) | 2026-07-12 | HTTP-node SSRF guard, boot-time production-config validation, scanner-safe email approvals, execution idempotency keys, and more — see the [Improvement Backlog](../claude-improvement-backlog.md) |
+| Credential-disclosure gap closed for vector-DB / HTTP / MCP secrets | 2026-07-13 | Extends Jira's encrypt-at-rest + redact-on-read pattern to every secret-bearing node/server field |
+| Durable execution via Cloud Tasks + Postgres-backed events/rate limits | 2026-07-15 | Runs, real-time events, and rate limits all now survive multi-instance deploys and Cloud Run scale-to-zero |
+| Google Drive OAuth file-trigger (server-side polling) | 2026-07-16 | Cloud file-trigger with no local agent required, alongside the existing local `composer watch` |
+| Confluence node | 2026-07-19 | Sibling to Jira: deterministic Confluence Cloud page create/update/get/set-property operations |
+| Calendar pickers for Start-node `date`/`datetime` fields | 2026-07-20 | New Start-input field types render a calendar picker instead of a plain text box |
 
 The full record is in [`../../CHANGELOG.md`](../../CHANGELOG.md).
 
@@ -39,7 +51,6 @@ available funding.
 | **Customer data export endpoint** | `GET /admin/users/{id}/export` returning the user's full data trail as JSON. Currently a custom SQL job for GDPR / CCPA right-of-access requests. | Q3 2026 |
 | **Bring-your-own-encryption-key (KMS-backed)** | Per-org KEK with KMS-issued data keys. The `src/security/encryption.py` interface already accommodates this; the work is the KMS provider integration + key-rotation runbook. | Q3 2026 |
 | **Public status page (managed customers)** | Customer-visible per-deployment status, uptime measurements, incident history. Today individual customers learn about incidents via email; the status page automates it. | Q3 2026 |
-| **Redis-backed rate limiter** | The in-memory limiter is correct per-process but doesn't share state across replicas. For deployments running >1 backend pod the limit is multiplied; Redis fixes it. | Q3 2026 |
 
 ## On the roadmap (next 6–12 months)
 

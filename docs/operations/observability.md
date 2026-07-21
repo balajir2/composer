@@ -45,8 +45,10 @@ Common log lines and what they mean:
 | `auth: dev-mode fallback ENABLED` | `ENVIRONMENT` isn't set to `production` — dangerous in real deployments |
 | `Execution <id> failed` | Workflow execution raised an exception; details follow with full traceback |
 | `Execution <id> paused at user-approval node` | Interrupt-resume cycle began; expect a `/resume` call later |
-| `execution_sweeper: started (interval=300s, stuck_after=900s)` | Sweeper boot — should appear once per backend startup |
-| `execution_sweeper: marked N/M stuck executions as failed` | Sweeper found stuck rows and marked them failed |
+| `execution_sweeper: started (interval=300s, stuck_after=900s)` | In-process sweeper fallback loop boot — expected on non-Cloud-Run hosts, or on Cloud Run only if `EXECUTION_SWEEPER_INTERVAL_SECONDS` wasn't set to `0`. On the production Cloud Run config this is disabled; look for `POST /internal/sweep` request logs (Cloud Scheduler-triggered) instead. |
+| `execution_sweeper: marked N/M stuck executions as failed` | A sweep pass (in-process loop or a `POST /internal/sweep` call) found stuck rows and marked them failed |
+| `internal: OIDC verification failed: ...` | A push request to `/internal/claim-and-run` or `/internal/sweep` presented an invalid/wrong-audience OIDC token — check the Cloud Tasks queue's / Cloud Scheduler job's service account matches `CLOUD_TASKS_SERVICE_ACCOUNT` |
+| `cloud_tasks: in-process fallback failed for execution <id>` | `enqueue_execution()`'s dev-mode fallback (no `CLOUD_TASKS_SERVICE_ACCOUNT` configured) crashed running the execution in-process — expected only outside production |
 | `run: detached executor task crashed for <id>` | Async invocation path's wrapper caught an uncaught executor crash |
 | `MCPClient: tools/list returned <N> tools` | MCP server enumeration succeeded |
 | `MCP base64 blob stripped from response` | Sanitiser fired on an MCP response — usually fine |

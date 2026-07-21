@@ -14,6 +14,7 @@ Pick the doc that matches what you're trying to do.
 | **Run Composer locally and build my first workflow** | [getting-started.md](getting-started.md) |
 | **Understand how the platform works internally** | [architecture.md](architecture.md) |
 | **Build workflows in the Designer (nodes, variables, templates, publishing)** | [designer-guide.md](designer-guide.md) |
+| **Set up one of the 20 example flows, parameter by parameter** | [user-training-flow-setup.md](user-training-flow-setup.md) |
 | **Manage users, LLM keys, MCP servers, deployment settings** | [admin-guide.md](admin-guide.md) |
 | **Deploy and operate Composer in production** | [operations.md](operations.md) |
 | **Call Composer's HTTP API or external-invoke endpoint** | [api-reference.md](api-reference.md) |
@@ -25,7 +26,7 @@ Pick the doc that matches what you're trying to do.
 
 - **Investor / strategic partner** — [investor-overview.md](investor-overview.md) → [product-capabilities.md](product-capabilities.md) → [architecture.md](architecture.md).
 - **First-time visitor / stakeholder** — start with [overview.md](overview.md), then skim [product-capabilities.md](product-capabilities.md).
-- **Workflow designer / business user** — [getting-started.md](getting-started.md) → [designer-guide.md](designer-guide.md).
+- **Workflow designer / business user** — [getting-started.md](getting-started.md) → [designer-guide.md](designer-guide.md) → [user-training-flow-setup.md](user-training-flow-setup.md) for worked examples.
 - **Engineer adding a new node or fixing a bug** — [architecture.md](architecture.md) → [decisions.md](decisions.md). Phase-specific design specs are under [archive/phase-history/](archive/phase-history/).
 - **Admin** — [admin-guide.md](admin-guide.md).
 - **Ops / SRE deploying Composer** — [operations.md](operations.md), then the relevant runbook under [operations/](operations/).

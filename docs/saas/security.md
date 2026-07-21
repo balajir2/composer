@@ -2,13 +2,13 @@
 
 > **Audience:** prospective customer security teams, internal SREs, vulnerability researchers.
 > **Maintained by:** Balaji Rajan (`balajirajan@gmail.com`)
-> **Last reviewed:** 2026-05-04. Engineering source of truth: [`../decisions.md`](../decisions.md).
+> **Last reviewed:** 2026-07-21. Engineering source of truth: [`../decisions.md`](../decisions.md).
 
 This is what we promise about Composer's security, what we've built to deliver on it, and how to report a problem if you find one.
 
 ## Security posture in one paragraph
 
-Composer includes meaningful security foundations: encrypted LLM keys and OAuth tokens, bcrypt-hashed passwords and API keys, role-based authorization, size limits, sandboxed expressions, isolated code execution, and MCP response sanitization. Production security still depends on deployment configuration and network controls. Known hardening work—including centralized credentials, HTTP-node SSRF defenses, scanner-safe approval confirmation, and distributed rate limiting—is tracked in the [Improvement Backlog](../claude-improvement-backlog.md). Composer is not currently SOC 2 certified; see [compliance.md](compliance.md).
+Composer includes meaningful security foundations: encrypted LLM keys, OAuth tokens, vector-DB/HTTP/MCP secrets, and per-node integration credentials (Jira, Confluence); bcrypt-hashed passwords and API keys; role-based authorization; size limits; an application-level SSRF guard on the HTTP node; sandboxed expressions; isolated code execution; MCP response sanitization; boot-time production-config validation; and Postgres-backed rate limiting that stays correct across multiple deployed instances. The remaining hardening item tracked in the [Improvement Backlog](../claude-improvement-backlog.md) and [Deferred Backlog](../deferred-backlog.md) is a first-class `Credential`/`Connection` model — today's per-field encrypt-at-rest + redact-on-read pattern closes the disclosure risk but doesn't yet give reuse, rotation, or "which workflows use this credential" visibility. Composer is not currently SOC 2 certified; see [compliance.md](compliance.md).
 
 ## Threat model
 
@@ -31,7 +31,7 @@ Composer includes meaningful security foundations: encrypted LLM keys and OAuth 
 1. **External attacker without credentials.** Cannot reach private workflows or executions; cannot enumerate users; cannot brute-force passwords (bcrypt cost factor + rate limits). Public workflows are world-readable by design.
 2. **External attacker with stolen credentials (one user).** Can do what that user can do — read/write their own workflows, run published workflows their key authorises. Cannot escalate to admin without a second credential set. The blast radius is one user's data; admin operations remain protected.
 3. **Authenticated member targeting another member's data.** Returns **404, not 403**, on any cross-user read so existence isn't leaked. Admin overrides exist for incident response (see [admin-guide.md](../admin-guide.md)) but are owner-only on **delete** specifically — even an admin can't accidentally erase another user's workflow.
-4. **Malicious workflow author.** `simpleeval` rejects dunders, imports, and direct `eval`/`exec`; code execution uses the external E2B sandbox. The HTTP node is intentionally powerful and currently requires deployment-level egress controls to prevent access to internal or metadata endpoints until application-level SSRF defenses land.
+4. **Malicious workflow author.** `simpleeval` rejects dunders, imports, and direct `eval`/`exec`; code execution uses the external E2B sandbox. The HTTP node is intentionally powerful, so it carries an application-level SSRF guard ([src/security/ssrf.py](../../src/security/ssrf.py)): IP-literal, DNS-resolution, and cloud-metadata-hostname blocking (including `169.254.169.254`), a response-size cap, and URL redaction (credentials and sensitive query parameters are stripped before appearing in errors or `node_results`). Deployment-level egress controls remain a good defense-in-depth layer, but are no longer the only line of defense.
 5. **Malicious MCP server.** MCP output is treated as untrusted model input. The base64 blob sanitiser ([src/mcp/sanitize.py](../../src/mcp/sanitize.py)) removes a known class of oversized embedded binary payload; broader response-size and tool-result policies remain hardening work.
 6. **Compromised LLM provider returning malicious tool calls.** Tool calls are validated against the registered tool's JSON schema before execution; the executor only invokes tools the workflow explicitly enables; HTTP nodes use the customer's tools, not the model's free will.
 7. **Operator with database access.** Sees encrypted secrets, plaintext workflow definitions, plaintext execution logs (LangSmith too). For deployments where this is unacceptable, see "Bring your own encryption key" below.
@@ -50,7 +50,9 @@ Composer includes meaningful security foundations: encrypted LLM keys and OAuth 
 |---|---|---|---|
 | LLM API keys (`llm_api_keys.encrypted_key`) | AES-256-GCM | `ENCRYPTION_KEY` env var (32-byte, hex-encoded) | Manual via admin UI; the key never appears in plaintext after first save |
 | MCP OAuth tokens (`mcp_oauth_tokens.encrypted_*_token`) | AES-256-GCM | Same `ENCRYPTION_KEY` | Refresh tokens automatically rotate per OAuth provider's policy |
-| User passwords | bcrypt (cost 12) | n/a (one-way) | Customer-driven (password reset flow) |
+| Jira / Confluence API tokens (per-node) | AES-256-GCM | Same `ENCRYPTION_KEY` | Manual — re-save the node with a new token; redacted on every read after first save |
+| Vector-DB `apiKey` / `embeddingApiKey`, HTTP node headers, MCP server headers, MCP `oauthConfig.clientSecret` | AES-256-GCM (`encrypt_marked`/`decrypt_marked` + header-aware helpers, [src/security/encryption.py](../../src/security/encryption.py)) | Same `ENCRYPTION_KEY` | Manual — re-save the node/server with a new value; redacted on every read (`GET /workflows`, `/workflows/search`, `/workflows/{id}`, `GET /mcp-servers`) |
+| User passwords | bcrypt (cost 12) | n/a (one-way) | Customer-driven — self-service `/forgot-password` email flow or admin-forced reset |
 | Per-user API keys | bcrypt (cost 12) | n/a (one-way) | Manual via runs page; old keys can be revoked at any time |
 | Composer JWTs | HS256 signed with `JWT_SECRET` | Single secret per deployment | Manual (rotating invalidates active sessions) |
 | Frontend session tokens | NextAuth's encrypted JWT | NextAuth's `AUTH_SECRET` | Manual; rotating logs everyone out |
@@ -80,7 +82,7 @@ Three layers stack:
 2. **Composer JWT (backend session).** HS256, mints from NextAuth's claims. 8-hour access token; 30-day refresh token, rotates on every `/auth/refresh` call so active users never see a re-auth prompt. Idle users re-auth after 30 days.
 3. **Per-user API keys** (`ck_<bcrypt-hashed>`). Created via the runs page, shown plaintext once, used in `Authorization: Bearer ck_...` headers for `POST /api/run/{slug}`. Owners can revoke at any time; revoked keys 401 immediately.
 
-Standalone deployments accept username/password registration; SSO-enabled deployments can require Azure AD with no fallback.
+Standalone deployments accept username/password registration; SSO-enabled deployments can require Azure AD with no fallback. Standalone users can reset a forgotten password themselves via a signed, time-limited emailed link (`POST /auth/forgot-password` / `POST /auth/reset-password`) in addition to the admin-forced reset path; the forgot-password endpoint always returns 204 regardless of whether the email matches an account, closing the account-enumeration vector.
 
 ## Authorisation
 
@@ -89,8 +91,9 @@ Role is one bit on `users.role` — `admin` or `member`. The default for new use
 | Resource | Member access | Admin access |
 |---|---|---|
 | Own workflows | Read / write / publish / delete | Same |
+| Workflow shared via assignment (not owned) | Read / write / publish / run — full access, no view-only split | Same |
 | Other user's *public* workflow | Read; clone via "Use as template" | Read |
-| Other user's *private* workflow | **404** (existence hidden) | Read / update / publish |
+| Other user's *private*, unassigned workflow | **404** (existence hidden) | Read / update / publish |
 | Delete *any* workflow | Owner only | **Owner only** — admins cannot delete other users' workflows by design (audit trail consideration) |
 | Reassign workflow owner | n/a | `PATCH /workflows/{id}/owner` |
 | Run a public workflow | Anyone with a valid API key | Same |
@@ -118,7 +121,7 @@ Beyond size caps, every Pydantic model on the API surface is `extra="forbid"` �
 
 ## Rate limits
 
-In-memory token-bucket per route:
+Postgres-backed atomic token-bucket per route ([src/security/rate_limit_pg.py](../../src/security/rate_limit_pg.py)), correct across every replica of a multi-instance deployment (no per-process double-counting or reset-on-restart):
 
 | Route | Default | Setting |
 |---|---|---|
@@ -131,17 +134,19 @@ In-memory token-bucket per route:
 | `POST /mcp-servers/{id}/test` | 10 / min | `rate_limit_mcp_test_per_minute` |
 | `POST /uploads/extract-text` | 20 / min | hard-coded |
 
-The bucket is keyed per actor (user id, IP address for unauthenticated routes, API key id for external invokes). For deployments behind multiple replicas a Redis-backed limiter is on the [roadmap](roadmap.md); the in-memory limiter is correct per-process and conservative enough that misuse can't sustain a real DoS at any plausible replica count.
+The bucket is keyed per actor (user id, IP address for unauthenticated routes, API key id for external invokes). Because the buckets live in Postgres and are updated via an atomic conditional update, the limit holds even when a deployment runs more than one backend instance — a caller can't get extra headroom by having requests land on different replicas.
 
 ## Network egress
 
-Composer's HTTP node will call any URL the workflow author specifies. **You should restrict outbound traffic at the network layer** if your threat model requires it:
+Composer's HTTP node will call any URL the workflow author specifies, subject to an application-level SSRF guard ([src/security/ssrf.py](../../src/security/ssrf.py)): outbound requests to IP-literal or DNS-resolved loopback, link-local, and RFC 1918 private-network addresses, and to cloud-metadata hostnames (`169.254.169.254` and equivalents), are blocked by default, alongside a response-size cap and redaction of credentials/sensitive query parameters in errors.
 
-- Block egress to RFC 1918 / link-local / metadata-service addresses (`169.254.169.254`, `127.0.0.0/8`, `10.0.0.0/8`, `192.168.0.0/16`, `172.16.0.0/12`).
+For deployments with a stricter threat model, we still recommend restricting outbound traffic at the network layer as defense-in-depth:
+
+- Block egress to RFC 1918 / link-local / metadata-service addresses at the VPC / security-group level in addition to the application-level guard.
 - For Vercel-hosted backends, this is automatic for the metadata-service ranges. For Fly / containers in your VPC, configure your egress proxy or security group accordingly.
 - The `tools.<name>.enabled` deployment setting can block specific built-in tool providers (e.g. disable Browserless if your security team won't approve headless Chrome).
 
-The application enforces no allowlist by default — that's a network-layer concern. We can ship one if your contract requires it.
+The application does not enforce an admin-configurable destination allowlist beyond the SSRF blocklist above — that remains a network-layer concern. We can ship one if your contract requires it.
 
 ## Logging & audit trail
 
@@ -186,14 +191,20 @@ We do not currently run a paid bug bounty. Researchers who provide constructive 
 | bcrypt for passwords + API keys | ✓ | `src/security/passwords.py`, `src/security/api_keys.py` |
 | RBAC | ✓ | `Depends(ensure_admin)` in admin routes |
 | Input size caps | ✓ | `src/config.py` |
-| Rate limiting (per-actor) | ✓ | `src/security/rate_limit.py` |
+| Rate limiting (per-actor, Postgres-backed, multi-instance-correct) | ✓ | `src/security/rate_limit_pg.py` |
 | Sandboxed expression eval | ✓ | `src/executors/_eval.py` (simpleeval) |
 | Sandboxed code execution | ✓ | `e2b_code_interpreter` |
 | MCP OAuth (RFC 8707 resource binding) | ✓ | `src/mcp/oauth.py` |
 | MCP base64 blob sanitisation | ✓ | `src/mcp/sanitize.py` |
+| SSRF guard on the HTTP node | ✓ | `src/security/ssrf.py` |
+| Boot-time production-config validation | ✓ | `src/config_validation.py` |
+| Encrypt-at-rest + redact-on-read for vector-DB/HTTP/MCP secrets | ✓ | `src/security/encryption.py` |
+| Scanner-safe email approval confirmation (GET never mutates) | ✓ | `src/api/approval_email.py` |
 | 404-on-cross-tenant-read | ✓ | Every workflow + execution route |
-| Stuck-execution sweeper | ✓ | `src/maintenance/execution_sweeper.py` |
+| Durable execution (survives Cloud Run scale-to-zero mid-run) | ✓ | `src/execution/cloud_tasks.py`, `POST /internal/claim-and-run` |
+| Stuck-execution / expired-lease sweeper | ✓ | `src/maintenance/execution_sweeper.py` |
 | Comprehensive audit log | Partial — DB tables yes, separate audit-log table on roadmap | `workflow_executions`, `approvals`, `api_keys` |
+| Centralized `Credential`/`Connection` model | Roadmap — secrets are already encrypted + redacted per-field; a shared reuse/rotation abstraction is the open item | See [Deferred Backlog](../deferred-backlog.md) P0-5 |
 | Bring-your-own KMS / KEK | Roadmap | `src/security/encryption.py` is abstracted to support this |
 | WAF / DDoS protection | Customer's CDN / load balancer | n/a (no application-layer WAF) |
 | SOC 2 Type II | In progress | See [compliance.md](compliance.md) |

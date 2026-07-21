@@ -47,7 +47,9 @@ composer/
 │   │   ├── mcp_servers.py          MCP CRUD + OAuth callback
 │   │   ├── llm_models*.py          live + DB-curated model catalog
 │   │   ├── events_ws.py            /executions/{id}/ws — reconnect cursor + LISTEN wake-up
-│   │   └── internal.py             /internal/claim-and-run + /internal/sweep (OIDC push auth)
+│   │   ├── approval_email.py       public GET /approvals/email/{token} — resolve a signed decision
+│   │   ├── cloud_storage_oauth.py  Google Drive OAuth connect + Picker token issuance
+│   │   └── internal.py             /internal/claim-and-run, /internal/sweep, /internal/poll-file-triggers (OIDC push auth)
 │   ├── execution/
 │   │   └── cloud_tasks.py          enqueue_execution_task() — Cloud Tasks push wrapper
 │   ├── engine/
@@ -59,10 +61,12 @@ composer/
 │   │   ├── events_pg.py            PostgresEventStore — durable, sequence-numbered
 │   │   ├── events_notify.py        Postgres LISTEN/NOTIFY wake-up signal
 │   │   └── graph_builder.py        validation + conditional routing
-│   ├── executors/                  # 20 Designer node-type implementations
+│   ├── executors/                  # 22 Designer node-type implementations
 │   │   ├── base.py                    register_executor + dispatch
 │   │   ├── _eval.py                   simpleeval wrapper (Mustache aware)
 │   │   ├── start.py / end.py / agent.py / http.py / …
+│   │   ├── jira.py / confluence.py    per-node credentials, encrypted at rest (ADR-0028)
+│   │   ├── file_write.py / download_pdf.py   write via a FileStorageProvider
 │   │   └── vector_db.py               query + upsert dispatch
 │   ├── llm/
 │   │   ├── providers.py            Anthropic/OpenAI/Google/Groq dispatch
@@ -78,11 +82,23 @@ composer/
 │   ├── vectordb/
 │   │   ├── embedding.py            OpenAI text-embedding-3-small
 │   │   └── providers/              pinecone / qdrant / chroma / weaviate / milvus
+│   ├── storage_providers/
+│   │   ├── base.py                 FileStorageProvider ABC, FileRef, HealthStatus
+│   │   ├── local.py                LocalFilesystemProvider — polling, partial-write-safe
+│   │   └── google_drive.py         GoogleDriveProvider — appProperties claim marker
+│   ├── conversion/
+│   │   ├── markdown_to_docx.py     markdown-it-py token-walker onto python-docx
+│   │   ├── markdown_to_pdf.py      markdown-it-py → HTML → xhtml2pdf
+│   │   ├── html_to_pdf.py          direct HTML → xhtml2pdf (download-pdf's html mode)
+│   │   └── _pdf_security.py        shared deny-all link_callback (SSRF-safe PDF export)
+│   ├── cli/
+│   │   ├── watch.py                composer watch — polls a folder, drives POST /api/run/{slug}
+│   │   └── main.py                 CLI entry point (watch, keys subcommands)
 │   ├── security/
 │   │   ├── auth.py                 dependency injection for user_id + role
-│   │   ├── jwt.py                  Composer JWT mint + verify
+│   │   ├── jwt.py                  Composer JWT mint + verify (access/refresh/password_change/approval_email)
 │   │   ├── api_key_auth.py         per-user API key auth
-│   │   ├── encryption.py           AES-256-GCM
+│   │   ├── encryption.py           AES-256-GCM + encrypt_marked/decrypt_marked + header redaction
 │   │   ├── rate_limit.py           in-memory token bucket (protocol shared with the below)
 │   │   ├── rate_limit_pg.py        Postgres-backed atomic token bucket (cross-instance correct)
 │   │   ├── passwords.py            bcrypt
@@ -95,7 +111,8 @@ composer/
 │   │                                sweep_expired_leases / sweep_old_execution_events —
 │   │                                invoked by POST /internal/sweep, not an in-process loop
 │   ├── migration/                  OAB → Composer one-shot importer
-│   └── integrations/               LangSmith config threading
+│   ├── config_validation.py        validate_production_config() — FastAPI startup guard
+│   └── integrations/               LangSmith config threading, Resend email, Google Drive OAuth
 ├── frontend/
 │   ├── app/                        Next.js App Router
 │   │   ├── designer/                  canvas + templates + settings
@@ -106,8 +123,8 @@ composer/
 │   ├── lib/api/                    typed REST clients (OpenAPI-generated schema)
 │   └── e2e/                        Playwright suite
 ├── prisma/schema.prisma            Single source of truth for the data model
-├── tests/                          925 currently collected backend tests
-├── scripts/seed_templates.py       Seeds the 19 reference templates
+├── tests/                          1267 currently collected backend tests
+├── scripts/seed_templates.py       Seeds the 20 reference templates
 └── docs/                           ← you are here
 ```
 
@@ -227,6 +244,19 @@ WebSocket client
 
 **Full design record:** ADR-0033 in [`decisions.md`](decisions.md); implementation plan: [`docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md`](superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md).
 
+## File storage providers and Google Drive polling
+
+`file-trigger`, `file-write`, and `download-pdf` all sit on the same pluggable `FileStorageProvider` ABC (`src/storage_providers/base.py`) rather than hard-coding a filesystem. Two implementations exist today:
+
+- **`LocalFilesystemProvider`** — polling-based, partial-write-safe (a file must be stable across two consecutive polls before it's claimed). Driven by the `composer watch` CLI ([`src/cli/watch.py`](../src/cli/watch.py)), a long-lived local process that triggers a **production** workflow via the existing `POST /api/run/{slug}` external-invoke endpoint whenever a file lands — no dedicated trigger endpoint. `file-trigger` itself is visual-only (`graph_builder.py`'s `_VISUAL_ONLY_TYPES`), the same pattern as `note`: it's a canvas-visible configuration surface, not a step the execution engine advances through.
+- **`GoogleDriveProvider`** — server-side, no local agent required. Per-user OAuth tokens live in `CloudStorageConnection` (mirrors `McpOAuthToken`'s encryption pattern; connect/callback/list routes in `src/api/cloud_storage_oauth.py`, see [`api-reference.md`](api-reference.md)). Its claim mechanism is a Drive `appProperties` marker rather than a move-to-folder — `move_file()` sets the marker first (permanent, never-reprocess guarantee) then, only if `driveProcessedFolderId`/`driveErrorFolderId` are configured on the node, additionally relocates the file there for user-visible feedback. `POST /internal/poll-file-triggers` (`src/api/internal.py`) — OIDC-authenticated, Cloud-Scheduler-triggered, a sibling to ADR-0033's `claim-and-run`/`sweep` — is the poll loop, running on a flat 5-minute cadence for all Drive triggers regardless of the node's own `pollIntervalSeconds` (that field stays meaningful for the local/CLI case only).
+
+`download-pdf` reuses `GoogleDriveProvider` for its own Google Drive destination option, resolving the OAuth token the same server-side way via `get_valid_drive_access_token`.
+
+DOCX/PDF rendering (`src/conversion/`) is pure-Python — `markdown-it-py` + `python-docx` for DOCX, `markdown-it-py` → HTML → `xhtml2pdf` for PDF — deliberately avoiding a pandoc system dependency. PDF export (both `markdown_to_pdf` and `download-pdf`'s direct `html_to_pdf` path) shares a deny-all `link_callback` (`src/conversion/_pdf_security.py`) that blocks all outbound resource resolution during rendering, closing the same class of SSRF risk the `http` node's `src/security/ssrf.py` guard closes for direct HTTP calls (IP-literal/DNS-resolution/cloud-metadata-hostname blocking).
+
+**Full design record:** ADR-0030 in [`decisions.md`](decisions.md) (file storage framework); Google Drive design doc referenced from the CHANGELOG's 2026-07-16 entry.
+
 ## Auth model
 
 Three layers stack:
@@ -235,7 +265,9 @@ Three layers stack:
 2. **Composer JWT (backend session)** — HS256, mirrors IE's `DES-004`. Used by all interactive UI calls.
 3. **Per-user API keys (backend)** — bcrypt-hashed, stored in `api_keys`. Used by external invokes (`POST /api/run/{slug}`); the published workflow's owner controls who can call it.
 
-Admin role is set on the `User.role` column; admin-only routes use `Depends(ensure_admin)`. Per-execution authz: workflow owners + admins can read/edit; public workflows are world-readable; private workflows return 404 (not 403) to non-owners to avoid leaking existence.
+Admin role is set on the `User.role` column; admin-only routes use `Depends(ensure_admin)`. Per-execution authz: workflow owners + admins can read/edit; public workflows are world-readable; private workflows return 404 (not 403) to non-owners to avoid leaking existence. Workflow assignment (`WorkflowAssignment`, ADR-0025) layers full read+write access on top of the single-owner field for non-owner users the owner or an admin explicitly shares with.
+
+`validate_production_config()` ([`src/config_validation.py`](../src/config_validation.py)) runs at FastAPI startup and refuses to boot with an unsafe production configuration — e.g. a missing JWT secret or the dev-mode auth fallback left enabled — rather than silently running insecurely.
 
 ## Frontend
 

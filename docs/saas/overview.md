@@ -18,22 +18,24 @@ A single Composer deployment supports three audiences inside your organisation:
 | **End users** | Run published workflows, watch live execution, approve human-in-the-loop steps, manage personal API keys | `/runs/*` |
 | **Admins** | Manage users, LLM API keys, MCP servers, model catalog, deployment settings, global execution history | `/admin/*` |
 
-What you can build with it: RAG pipelines, multi-source research agents, classify-and-branch ticket triage, document-intake-to-action-items flows, presentation generation, code review assistants, lead-enrichment pipelines, human-in-the-loop approvals. Composer ships with 19 reference templates that double as the recommended starting point.
+What you can build with it: RAG pipelines, multi-source research agents, classify-and-branch ticket triage, document-intake-to-action-items flows, presentation generation, code review assistants, lead-enrichment pipelines, human-in-the-loop approvals. Composer ships with 20 reference templates that double as the recommended starting point.
 
 ## Proposed managed deployment package
 
 Whether you self-host or we host for you, the contract is the same. Each Composer environment includes:
 
-- **22 node types** (start, end, agent, mcp, http, set-state, transform, data-transform, extract, if-else, while, user-approval, join-chunks, note, guardrails, gamma-ai, email, arcade, vector-db, jira, file-trigger, file-write)
+- **24 node types** (start, end, agent, mcp, http, set-state, transform, data-transform, extract, if-else, while, user-approval, join-chunks, note, guardrails, gamma-ai, email, arcade, vector-db, jira, confluence, file-trigger, file-write, download-pdf)
 - **4 LLM providers** (Anthropic, OpenAI, Google, Groq) with per-model verification and auto-disable on retirement
 - **5 vector DB connectors** (Pinecone, Qdrant, Chroma, Weaviate, Milvus) with query + upsert
 - **6 built-in tool providers** (Tavily, Firecrawl, Serper, Browserless, Gamma, Arcade) plus full **MCP support** (static auth + OAuth flow, including Highspot-grade RFC 8707)
-- **Three auth modes**: Standalone JWT (local accounts), Embedded JWT (drop into Bounteous IE), or Azure AD SSO via NextAuth
+- **Three auth modes**: Standalone JWT (local accounts, with self-service password reset), Embedded JWT (drop into Bounteous IE), or Azure AD SSO via NextAuth
 - **Per-user API keys** for external invokes
 - **Real-time WebSocket streaming** of node-by-node execution events
+- **Durable execution** — runs survive a Cloud Run instance scaling to zero mid-flight, via Google Cloud Tasks + a Postgres-backed claim/lease/sweep model
 - **LangSmith tracing** on every run
 - **Document upload** with text extraction (PDF / DOCX / Markdown / TXT) — no persistence, no S3 dependency
-- **19 reference templates** that demonstrate common patterns, so designers don't start from a blank canvas
+- **File watching** — a local `composer watch` CLI or a server-side, OAuth-connected Google Drive poller can trigger a published workflow when a file lands, with generated output written back out via the `file-write` node (Markdown / Word / PDF)
+- **20 reference templates** that demonstrate common patterns, so designers don't start from a blank canvas
 
 ## The deployment shapes we support
 

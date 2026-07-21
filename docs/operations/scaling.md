@@ -37,16 +37,16 @@ The sequence isn't strict — a workflow that uploads enormous documents + calls
 
 ## Backend compute (horizontal scaling)
 
-The backend is **stateless per request** (state lives in Postgres + checkpoints + the in-memory event bus). Horizontal scaling is straightforward:
+The backend is **stateless per request** (state lives in Postgres — checkpoints, the durable `execution_events` table, and the `rate_limit_buckets` table; there is no in-process event bus or rate-limit state left to lose on a restart). Horizontal scaling is straightforward:
 
 - **Add replicas** via the host's UI. New replicas pick up traffic from the load balancer immediately.
 - **Health checks** prevent traffic from hitting unhealthy replicas; the host should be configured for both startup probes (don't route until ready) and liveness probes (restart unhealthy).
-- **Rolling restarts** are safe. Pending executions continue on their current replica; new requests land on whichever replica picks them up.
+- **Rolling restarts** are safe. Pending executions continue independently of any single replica — execution ownership is a Postgres row + lease claimed via `SELECT ... FOR UPDATE SKIP LOCKED` (ADR-0033), not in-memory state on the replica that first accepted the request.
 
-What doesn't scale horizontally:
+What still has a per-replica wrinkle:
 
-- **WebSocket connections** for a given execution stay on the replica that serves the initial connection. If that replica is restarted mid-execution, the WS drops; the client polls the DB and observes the run completes (Composer's design — see [`../archive/incident-history/2026-04-30-execution-status-truth.md`](../archive/incident-history/2026-04-30-execution-status-truth.md)). For deployments with many long-running executions, this means rolling restarts cause WS reconnects.
-- **The in-memory rate limiter** is per-replica today. With N replicas, the effective rate is N× the configured per-route limit. If accurate cross-replica rate limiting matters, the Redis-backed limiter on the [`../saas/roadmap.md`](../saas/roadmap.md) is the fix.
+- **WebSocket connections** for a given execution are held open by whichever replica serves that connection. If that replica is restarted mid-execution, the WS drops — but reconnecting (to any replica) now replays missed events from the durable `execution_events` table via a reconnect cursor before resubscribing live (`GET /executions/{id}/ws`), closing the old in-memory event bus's missed-event and no-cross-instance-visibility gaps (see [`../archive/incident-history/2026-04-30-execution-status-truth.md`](../archive/incident-history/2026-04-30-execution-status-truth.md) for the earlier design this replaced). For deployments with many long-running executions, rolling restarts still cause a visible reconnect blip, just not data loss.
+- **Rate limiting is correct across replicas.** The Postgres-backed `rate_limit_buckets` table (ADR-0033/P1-4) replaced the old in-memory per-replica token bucket, so the configured per-route limit is the actual effective limit regardless of replica count — no N× multiplication to account for.
 
 ### Sizing rule of thumb
 
@@ -182,4 +182,4 @@ Capacity scaling solves the symptom; workflow review solves the cause. Politely 
 - [monitoring.md](monitoring.md) — the alarms that surface when scaling is needed
 - [postgres-setup.md](postgres-setup.md) — DB scaling specifics
 - [`../saas/sla.md`](../saas/sla.md) — the SLA commitments capacity has to support
-- [`../saas/roadmap.md`](../saas/roadmap.md) — Redis-backed rate limiter, multi-key LLM dispatch, etc.
+- [`../saas/roadmap.md`](../saas/roadmap.md) — multi-key LLM dispatch, etc. (cross-replica rate limiting is resolved — see the Postgres-backed limiter above — but `roadmap.md` may still list it as pending; flag for correction if so)

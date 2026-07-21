@@ -67,7 +67,7 @@ Where the actual API keys live (encrypted, source of truth).
 
 **Sync to runtime**: the FastAPI app reads keys from Postgres on startup, but if you want them in the runtime's env vars too (some hosts, some integrations), the `composer keys sync --target vercel` CLI pushes the current Postgres values to Vercel env vars. See [`operations/llm-keys.md`](operations/llm-keys.md).
 
-**Not shown here — the `jira` node's per-node API token**: the `jira` node type doesn't use a centrally-managed key like the ones above. Its `domain`/`email`/`apiToken` fields live directly on the node and are entered per-workflow by the designer. The token is still AES-256-GCM-encrypted at rest and redacted (to a fixed `••••••••` marker) in every API response — it's just a separate storage path (inline in the workflow's `nodes` JSON) rather than the `LlmApiKey` table this page manages, so it has no row here and no "first 6 chars" prefix display.
+**Not shown here — the `jira` and `confluence` nodes' per-node API tokens**: neither node type uses a centrally-managed key like the ones above. Their `domain`/`email`/`apiToken` fields live directly on the node and are entered per-workflow by the designer. The token is still AES-256-GCM-encrypted at rest and redacted (to a fixed `••••••••` marker) in every API response — it's just a separate storage path (inline in the workflow's `nodes` JSON) rather than the `LlmApiKey` table this page manages, so it has no row here and no "first 6 chars" prefix display.
 
 ### MCP servers
 
@@ -97,6 +97,7 @@ Global feed of every workflow on the system. Useful for:
 - Searching across all users (the regular `/designer` page only shows a user's own)
 - Reassigning ownership when an employee leaves — click a row → Reassign → enter the new owner's email
 - Setting `isPublic` / `isProduction` on someone else's workflow (e.g. publish a workflow they authored)
+- **Managing access** — click a row → Manage access to grant or revoke a shared *assignment* on any workflow, same dialog a workflow owner sees from their own Settings page. This is where an admin gets visibility into (and control over) who a workflow has been shared with, separate from who owns it. Any member (not just admins) can look up people to share with via `GET /users/search` (rate-limited, 30/min/user) from their own workflow's "Manage access" panel — admins aren't required to broker every share.
 
 ## Common admin tasks
 

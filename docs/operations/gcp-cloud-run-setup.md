@@ -4,7 +4,7 @@
 > **Audience:** the engineer deploying Composer to Google Cloud Platform for the first time, plus anyone operating it day-to-day.
 > **Project today:** `composer-497608` (region `us-central1`).
 
-End-to-end recipe for running Composer on GCP. Cheapest possible setup that's still production-quality: Cloud Run (scale-to-zero default), Secret Manager for secrets, Artifact Registry for images, Neon for Postgres. ~$0–5/month at evaluation volume; ~$25–35/month for always-warm production.
+End-to-end recipe for running Composer on GCP. Cheapest possible setup that's still production-quality: Cloud Run (scale-to-zero default), Cloud Tasks + Cloud Scheduler for durable execution (ADR-0033), Secret Manager for secrets, Artifact Registry for images, Neon for Postgres. ~$0–5/month at evaluation volume; ~$25–35/month for always-warm production.
 
 ## Architecture
 
@@ -22,14 +22,22 @@ End-to-end recipe for running Composer on GCP. Cheapest possible setup that's st
   │  Next.js 14          │       │  FastAPI + WS        │
   │  256–512 MiB / 1 vCPU│       │  1 GiB / 1 vCPU      │
   │  scale-to-zero       │       │  scale-to-zero,      │
-  │                      │       │  CPU-always-allocated│
+  │                      │       │  default CPU         │
+  │                      │       │  throttling (no      │
+  │                      │       │  --no-cpu-throttling)│
   └──────────────────────┘       └────────┬─────────────┘
-                                          │
+                                          │  OIDC push (claim-and-run)
                                           ▼
-                              ┌──────────────────────┐
-                              │  Neon Postgres       │
-                              │  (free tier)         │
-                              └──────────────────────┘
+                              ┌──────────────────────┐      ┌───────────────────────────┐
+                              │  Neon Postgres       │◀─────│  Cloud Tasks queue        │
+                              │  (free tier)         │      │  composer-executions      │
+                              └──────────────────────┘      └───────────────────────────┘
+                                          ▲                  ┌───────────────────────────┐
+                                          └──────────────────│  Cloud Scheduler          │
+                                             OIDC push        │  composer-sweep (5 min)   │
+                                             (/internal/sweep, │  composer-poll-file-      │
+                                              /internal/poll-  │  triggers (5 min)         │
+                                              file-triggers)   └───────────────────────────┘
 
   Secret Manager      Artifact Registry      GitHub Actions
   (DATABASE_URL,      (composer/backend,     (build + push +
@@ -38,12 +46,14 @@ End-to-end recipe for running Composer on GCP. Cheapest possible setup that's st
    LLM keys, etc.)     by SHA + latest)
 ```
 
+Cloud Tasks and Cloud Scheduler both push to the backend as real, OIDC-authenticated inbound HTTP requests (`POST /internal/claim-and-run`, `POST /internal/sweep`, `POST /internal/poll-file-triggers`) — this is what keeps a Cloud Run instance alive for the duration of an execution even at `--min-instances=0`, instead of relying on a detached background task that scale-to-zero could kill mid-flight (ADR-0033). Locally or in CI, none of this needs to be provisioned: `enqueue_execution()` falls back to in-process `asyncio` dispatch whenever `CLOUD_TASKS_SERVICE_ACCOUNT` is unset.
+
 ## Prerequisites
 
 Already done (per the GCP one-time setup you executed previously):
 
 - [x] GCP project `composer-497608` exists with billing linked
-- [x] APIs enabled: `run`, `artifactregistry`, `secretmanager`, `cloudbuild`, `iam`, `iamcredentials`, `logging`, `monitoring`
+- [x] APIs enabled: `run`, `artifactregistry`, `secretmanager`, `cloudbuild`, `iam`, `iamcredentials`, `logging`, `monitoring`, `cloudtasks`, `cloudscheduler` (the last two back the durable-execution queue + sweep/poll jobs — see Step 2's "1a"/"3c"/"3d")
 - [x] Artifact Registry repo `composer` in `us-central1`
 - [x] Service account `composer-deployer@composer-497608.iam.gserviceaccount.com` with the four deploy roles
 - [x] gcloud CLI installed + authenticated locally
@@ -97,8 +107,12 @@ From the repo root:
 What it does (idempotent — safe to re-run any time):
 
 1. Pushes every `.env` value to Secret Manager (creates new secrets the first time, adds a new version on re-run).
+1a. Provisions the `composer-executions` Cloud Tasks queue and a shared OIDC service account (`composer-tasks@...`) used for both Cloud Tasks push delivery (`claim-and-run`) and Cloud Scheduler push delivery (`sweep`, `poll-file-triggers`) — ADR-0033/P1-2/P1-4.
 2. Builds + pushes the backend image to Artifact Registry.
-3. Deploys `composer-backend` to Cloud Run.
+3. Deploys `composer-backend` to Cloud Run, with `EXECUTION_SWEEPER_INTERVAL_SECONDS=0` (the in-process sweeper fallback loop is disabled — Cloud Scheduler drives sweeping instead) and the `CLOUD_TASKS_*`/`GCP_PROJECT_ID`/`GCP_REGION` env vars `enqueue_execution()` needs.
+3a–3b. Grants the backend's runtime service account permission to enqueue Cloud Tasks and mint the OIDC token embedded in each task; grants the shared OIDC service account `roles/run.invoker` on the backend.
+3c. Provisions the `composer-sweep` Cloud Scheduler job (`POST /internal/sweep` every 5 minutes — stuck executions, expired approvals, expired leases, old `execution_events`).
+3d. Provisions the `composer-poll-file-triggers` Cloud Scheduler job (`POST /internal/poll-file-triggers` every 5 minutes — Google Drive file-trigger polling).
 4. Builds + pushes the frontend image with `NEXT_PUBLIC_COMPOSER_API_URL` baked in to point at the backend.
 5. Deploys `composer-frontend` to Cloud Run.
 6. Prints the two `*.run.app` URLs (or your custom domains).
@@ -380,6 +394,8 @@ Approximate monthly cost for the recommended config at single-tenant evaluation 
 |---|---|
 | Cloud Run backend (scale-to-zero, occasional traffic) | ~$0–3 |
 | Cloud Run frontend (scale-to-zero) | ~$0–1 |
+| Cloud Tasks (composer-executions queue — one task enqueued per execution/resume) | $0 (well under the free tier at evaluation volume) |
+| Cloud Scheduler (composer-sweep + composer-poll-file-triggers, 5-min cadence each) | ~$0.20 (2 jobs × $0.10/job/month beyond the 3 free jobs) |
 | Secret Manager (10 secrets) | ~$0.30 |
 | Artifact Registry (bounded by cleanup policy — keep-10 + 90d) | ~$0.10–0.30 |
 | Cloud Logging + Monitoring | $0 (under free tier) |
@@ -413,14 +429,16 @@ Cloud Run caps individual WebSocket connections at 60 minutes (matching the `--t
 
 Set `--min-instances=1` (costs ~$25/month) or add a warmup ping (free — see Step 6).
 
-### "execution_sweeper isn't running" alarm
+### "composer-sweep isn't running" alarm
 
-The backend Cloud Run service must have `--no-cpu-throttling` (= "CPU always allocated") for the asyncio-based sweeper to tick between requests. The bootstrap script and Cloud Run deploy both set this. Verify with:
+Production sweeping is a Cloud Scheduler job (`composer-sweep`), not the in-process `asyncio` loop — `EXECUTION_SWEEPER_INTERVAL_SECONDS=0` disables the loop on the deployed backend, and `--no-cpu-throttling` is deliberately **not** set (it was the dominant Cloud Run cost driver before this redesign; see the `Do not re-add --no-cpu-throttling` comment in `scripts/gcp-bootstrap.ps1`). If the alarm fires, check the Scheduler job itself, not CPU allocation:
 
 ```powershell
-gcloud run services describe composer-backend --region=us-central1 `
-  --format='value(spec.template.spec.containers[0].resources.cpuIdleSpec)'
+gcloud scheduler jobs describe composer-sweep --location=us-central1 --project=composer-497608
+gcloud scheduler jobs run composer-sweep --location=us-central1 --project=composer-497608  # force a run
 ```
+
+A failing execution usually means the OIDC push auth is misconfigured — check that `CLOUD_TASKS_SERVICE_ACCOUNT` on the backend matches the job's `--oidc-service-account-email`, and that the job's `--oidc-token-audience` still matches the backend's current URL (a custom-domain migration without re-running the bootstrap script is the most common cause of drift here). The same applies to the `composer-poll-file-triggers` job (Google Drive file-trigger polling) — both jobs share the same service account and verification path (`_verify_internal_oidc` in `src/api/internal.py`).
 
 ## Adjacent docs
 

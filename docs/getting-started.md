@@ -77,7 +77,7 @@ uv run prisma generate
 # Apply migrations
 uv run prisma migrate deploy
 
-# Seed the 19 reference templates (idempotent — safe to re-run)
+# Seed the 20 reference templates (idempotent — safe to re-run)
 uv run python -m scripts.seed_templates
 ```
 
@@ -114,7 +114,7 @@ cd frontend
 npm run dev
 ```
 
-In **dev mode** (no `ENVIRONMENT=production` env var) the backend allows an unauthenticated fallback user `dev` so you can start clicking around immediately. For real auth setup (Azure SSO or username/password), see [admin-guide.md](admin-guide.md).
+In **dev mode** (no `ENVIRONMENT=production` env var) the backend allows an unauthenticated fallback user `dev` so you can start clicking around immediately. For real auth setup (Azure SSO or username/password), see [admin-guide.md](admin-guide.md). Username/password users who forget their password can use the **Forgot password?** link on the login page — no admin needed.
 
 > **Heads up: port collisions.** If `npm run dev` shows "Sign-in failed. Check your credentials." even with valid creds, the most likely cause is a different project squatting on the backend port. The launcher above checks for this; if you started uvicorn manually, verify with `curl http://localhost:8001/health` that it returns Composer's health response (`"service":"composer"`) and not some other app's. If a different app is on the port, switch backend + `frontend\.env.local` to a free port and restart `npm run dev` so the `NEXT_PUBLIC_*` env reload kicks in.
 
@@ -130,7 +130,7 @@ A complete walkthrough using the simplest template:
    - **Model**: pick a model from the dropdown — only models the admin has enabled show up. If empty, see [admin-guide.md → LLM models](admin-guide.md#llm-models).
    - **Prompt**: `You are a helpful AI assistant. Provide a clear, concise answer to the following question:\n\n{{question}}\n\n…`
    - The `{{question}}` token is the input variable declared on the Start node — it gets replaced at run time with whatever the user provides.
-4. **Click Save** in the top bar.
+4. **Click Save** in the top bar. (The Designer also autosaves your edits a few seconds after you stop typing — watch for "All changes saved" next to Save — so clicking Save is a way to save immediately, not a requirement.)
 5. **Click Run Draft** (next to Save). A panel slides in from the right showing live execution events.
 6. Enter a question (default: *What are the key benefits of using AI agents in workflow automation?*) and run.
 7. Watch the canvas: the agent node pulses purple while running, turns green when complete. The right panel shows the answer.
@@ -138,7 +138,7 @@ A complete walkthrough using the simplest template:
 That's the basic loop. From here:
 
 - **Tweak the prompt** — edit the agent node's instructions, save, run again.
-- **Add more inputs** — click the Start node, add a `tone` variable (type=text, default=`professional`). Reference it in the agent prompt as `{{tone}}`.
+- **Add more inputs** — click the Start node, add a `tone` variable (type=text, default=`professional`). Reference it in the agent prompt as `{{tone}}`. Other field types are available too — `number`, `boolean`, `json`, `document` (file upload), and `date`/`datetime` (calendar picker) — see [designer-guide.md](designer-guide.md) for the full list.
 - **Try a more complex template** — Templates 8 (human approval), 11 (RAG), 14 (support triage) demonstrate more advanced patterns.
 
 ## 6. Publish a workflow as an API
@@ -178,6 +178,7 @@ cd frontend && ./node_modules/.bin/tsc --noEmit -p tsconfig.json
 ## Where to next
 
 - **Build something real** — [designer-guide.md](designer-guide.md) covers every node type, variable substitution, templates, publishing, document uploads.
+- **Walk through every template** — [user-training-flow-setup.md](user-training-flow-setup.md) covers all 20 example templates with exact parameters, step by step.
 - **Understand the internals** — [architecture.md](architecture.md).
 - **Deploy to staging / production** — [operations.md](operations.md).
 - **Common admin tasks** — [admin-guide.md](admin-guide.md).

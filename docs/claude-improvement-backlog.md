@@ -56,6 +56,12 @@ Claude Code should validate this order rather than accepting it blindly.
 
 ## Audit status (2026-07-11)
 
+> **2026-07-21 update:** most of the "Confirmed runtime and security defects" below were fixed in
+> the 2026-07-12 Codex-audit remediation pass (P0-1, P0-2, P0-6, P0-7, P1-1, P1-6) or the 2026-07-13
+> credential-disclosure patch (P0-5, partial). The "Confirmed node-contract defects" list (P0-0) and
+> the Start/End terminal-path-validation portion of P0-8 remain open. See each numbered section
+> below for its individual resolved-status note and commit reference.
+
 This backlog was expanded after a systematic static audit of:
 
 - All currently registered frontend node property panels.
@@ -104,6 +110,10 @@ race, security-boundary, and adversarial tests that the existing suite does not 
 ---
 
 ## P0-0: Fix frontend/backend node field contracts
+
+> **Status (2026-07-21): not started.** Not part of the 2026-07-12 Codex-audit remediation pass (see
+> CHANGELOG.md's "Fixed — Codex audit remediation" entry, which covers P0-1 through P1-6 but not
+> P0-0) and not in `docs/deferred-backlog.md`. Still open.
 
 ### Problem
 
@@ -314,6 +324,9 @@ new discoveries as follow-up backlog items unless they are necessary to make thi
 
 ## P0-1: Validate workflow variable references
 
+> **Status (2026-07-21): resolved.** Shipped 2026-07-12 (commit `f723efb`) as part of the Codex-audit
+> remediation pass — see CHANGELOG.md.
+
 ### Problem
 
 Unresolved `{{variable}}` placeholders remain literal at runtime. A workflow can therefore run
@@ -359,6 +372,10 @@ Prevent invalid variable references from reaching execution or production publis
 ---
 
 ## P0-2: Add structured action outcomes and semantic success policies
+
+> **Status (2026-07-21): resolved.** Shipped 2026-07-12 (commit `8ccf91b`) as part of the Codex-audit
+> remediation pass — `ToolCallRecord` + `action_policy` (`require_tool_call` /
+> `require_successful_tool_call`), applied to Jira first. See CHANGELOG.md.
 
 ### Problem
 
@@ -412,6 +429,10 @@ Distinguish technical completion from successful business action.
 
 ## P0-3: Make downstream notifications outcome-aware
 
+> **Status (2026-07-21): resolved.** Shipped 2026-07-12 as part of the Codex-audit remediation pass —
+> the live "BRD to Jira Tickets + Notification" production workflow now checks P0-2's structured
+> outcomes before sending its success notification. See CHANGELOG.md.
+
 ### Problem
 
 An email can claim that tickets were created even when the upstream Jira node performed no
@@ -441,6 +462,10 @@ Ensure downstream branches and messages reflect verified action outcomes.
 ---
 
 ## P0-4: Harden production configuration and deployments
+
+> **Status (2026-07-21): resolved.** Shipped 2026-07-12 (commit `311828f`) — `validate_production_config()`
+> (`src/config_validation.py`) runs at FastAPI startup and refuses to boot with an unsafe production
+> configuration. See CHANGELOG.md.
 
 ### Problem
 
@@ -479,6 +504,12 @@ Fail fast when production configuration contains unsafe or development-only valu
 ---
 
 ## P0-5: Centralize and protect workflow credentials
+
+> **Status (2026-07-21): partially resolved.** The live plaintext-disclosure gap (vector-DB `apiKey`/
+> `embeddingApiKey`, HTTP node headers, MCP server headers, `oauthConfig.clientSecret`) was patched
+> 2026-07-13 via generic `encrypt_marked`/`decrypt_marked` + header-redaction primitives in
+> `src/security/encryption.py` (ADR-0032). The first-class `Credential`/`Connection` model this
+> section also asks for is still an open design decision — see `docs/deferred-backlog.md` §P0-5.
 
 ### Problem
 
@@ -522,6 +553,10 @@ Create one secure credential abstraction shared by all integrations.
 
 ## P0-6: Add outbound HTTP request security controls
 
+> **Status (2026-07-21): resolved.** Shipped 2026-07-12 (commit `999c5ac`) — SSRF guard
+> (`src/security/ssrf.py`: IP-literal + DNS-resolution + cloud-metadata-hostname blocking), a
+> response-size cap, and URL redaction on the `http` node. See CHANGELOG.md.
+
 ### Problem
 
 The HTTP node accepts a variable-substituted URL and sends the request from the backend without an
@@ -563,6 +598,11 @@ administrators who intentionally need internal endpoints.
 
 ## P1-1: Make email approvals scanner-safe
 
+> **Status (2026-07-21): resolved.** Shipped 2026-07-12 (commit `a8237ac`) — `GET /approvals/email/{token}`
+> only validates and redirects to a confirmation page; the decision itself requires a `POST` from a
+> real form submission. The in-app resume endpoint gained the same atomic conditional-transition
+> guard. See CHANGELOG.md.
+
 ### Problem
 
 The emailed approval URL performs a state-changing operation through GET. Email security scanners
@@ -597,6 +637,12 @@ Require deliberate user confirmation before changing approval state.
 ---
 
 ## P0-7: Protect workflow state and execution-input boundaries
+
+> **Status (2026-07-21): resolved.** Shipped 2026-07-12 — Jira credential precedence fixed (a
+> `setdefault` bug let caller-supplied `variables.jira_api_token` silently override the node's own
+> token; commit `7b5c828`), and `finalOutput`/`lastOutput` resolution changed from an `or`-fallback
+> to a presence check so a legitimately falsy `finalOutput` isn't discarded (commit `d9b0933`). See
+> CHANGELOG.md.
 
 ### Problem
 
@@ -656,6 +702,12 @@ preserving intentional workflow composition.
 
 ## P0-8: Strengthen graph-shape and terminal-path validation
 
+> **Status (2026-07-21): resolved (reachability mismatch closed).** Shipped 2026-07-12 (commit
+> `6697ac3`) — `_check_reachability`'s validation-time BFS now filters visual-only node types the
+> same way `build_graph`'s compile-time edge projection does. See CHANGELOG.md. The broader terminal-
+> path / fan-out / multiple-End-node semantics this section also describes were not re-audited as
+> part of that pass; treat those specifics as unverified rather than confirmed resolved.
+
 ### Problem
 
 Graph validation computes reachability using every edge, including edges to and from visual-only
@@ -708,6 +760,10 @@ semantics.
 
 ## P1-2: Move workflow execution to durable workers
 
+> **Status (2026-07-21): resolved.** Shipped 2026-07-15 via Google Cloud Tasks + a Postgres
+> claim/lease/sweep model — see ADR-0033 in `docs/decisions.md` and `docs/deferred-backlog.md` §P1-2
+> for the full outcome and task-by-commit record.
+
 ### Problem
 
 Executions are currently launched through request-bound background tasks or raw asyncio tasks.
@@ -746,6 +802,14 @@ workers. Prefer the smallest reliable option compatible with Cloud Run and LangG
 
 ## P1-3: Add idempotency for side-effecting nodes
 
+> **Status (2026-07-21): resolved at the execution-API layer.** Shipped 2026-07-12 (commit `cf8f84c`)
+> — optional `idempotencyKey` on `POST /executions` and `POST /api/run/{slug}`, scoped per workflow
+> and backed by a DB-level unique constraint on `(workflow_id, idempotency_key)`, so a retried
+> request returns the original execution instead of duplicating side effects. See CHANGELOG.md. The
+> more granular per-node-operation idempotency this section also describes (stable operation
+> identity per node/loop-iteration, provider idempotency keys) was not separately implemented —
+> treat that scope as still open.
+
 ### Objective
 
 Prevent duplicate Jira issues, emails, comments, and HTTP mutations during retry or resume.
@@ -769,6 +833,11 @@ Prevent duplicate Jira issues, emails, comments, and HTTP mutations during retry
 ---
 
 ## P1-4: Replace process-local events and rate limits
+
+> **Status (2026-07-21): resolved.** Shipped 2026-07-15 — events moved to a durable, sequence-numbered
+> `execution_events` table with Postgres `LISTEN/NOTIFY` as a wake-up signal; rate limiting moved to
+> a Postgres-backed atomic bucket table. See ADR-0033 in `docs/decisions.md` and
+> `docs/deferred-backlog.md` §P1-4.
 
 ### Problem
 
@@ -799,6 +868,12 @@ Make real-time events and rate limiting consistent across instances.
 
 ## P1-5: Improve execution trace usability
 
+> **Status (2026-07-21): partially resolved.** Shipped 2026-07-12 (commit `73473ee`) — every node's
+> `node_results` entry and `node_completed`/`node_failed` WebSocket event now carry
+> `startedAt`/`completedAt`/`durationMs`, added once in `wrap_executor_with_events`. See CHANGELOG.md.
+> The rest of this section's requirements (retry count, LLM token usage/cost, `completed_with_warnings`
+> status, copyable diagnostic summary) were not part of that change — treat those as still open.
+
 ### Objective
 
 Make it obvious what every node attempted, accomplished, skipped, or failed to do.
@@ -827,6 +902,12 @@ Show, with secret sanitization:
 ---
 
 ## P1-6: Correct execution API status, sizing, deletion, and cancellation semantics
+
+> **Status (2026-07-21): resolved.** Shipped 2026-07-12 (commit `b3e31a3`) — sync `POST /api/run/{slug}`
+> no longer hard-codes `running` for a paused approval after timeout; both execution-input size
+> checks now measure true UTF-8 byte length; `DELETE /executions/{id}` and
+> `POST /executions/delete-bulk` reject/skip active executions; added
+> `POST /executions/{id}/cancel`. See CHANGELOG.md.
 
 ### Problem
 
@@ -882,6 +963,10 @@ Give callers truthful status and make active execution lifecycle operations safe
 
 ## P2-1: Add dry-run execution mode
 
+> **Status (2026-07-21): not started — deferred pending a product decision.** See
+> `docs/deferred-backlog.md` §P2-1 for the specific control-flow-semantics question that needs
+> answering before implementation starts.
+
 ### Objective
 
 Preview external actions without performing mutations.
@@ -905,6 +990,10 @@ Preview external actions without performing mutations.
 
 ## P2-2: Add reusable connection management
 
+> **Status (2026-07-21): not started — deferred, and sequenced behind P0-5.** See
+> `docs/deferred-backlog.md` §P2-2. P0-5's `Credential`/`Connection` model decision needs to land
+> first — a Connections page needs something to manage.
+
 ### Objective
 
 Improve credential reuse, rotation, testing, and setup usability.
@@ -926,6 +1015,11 @@ Improve credential reuse, rotation, testing, and setup usability.
 ---
 
 ## P2-3: Split oversized modules along domain boundaries
+
+> **Status (2026-07-21): not started — deliberately deferred.** See `docs/deferred-backlog.md` §P2-3:
+> `src/engine/workflow.py` and related engine files have been under continuous concurrent editing by
+> other feature work, so a large structural refactor right now risks merge-conflict churn for no
+> functional benefit. Revisit once that work settles.
 
 ### Objective
 
@@ -955,6 +1049,11 @@ Reduce maintenance risk without changing external behavior.
 ---
 
 ## P2-4: Improve dependency and build reproducibility
+
+> **Status (2026-07-21): not started — deferred.** See `docs/deferred-backlog.md` §P2-4. Note that
+> this section's recommended upgrade order lists "replace or contain Prisma Client Python risk" as
+> step 2 — that step is resolved by ADR-0031 (stay on Prisma Python; see P3-1 below), which unblocks
+> the rest of the sequence without a persistence-layer migration.
 
 ### Objective
 
@@ -1024,6 +1123,11 @@ Resolved versions observed in the local environment:
 ---
 
 ## P3-1: Evaluate the long-term Python persistence stack
+
+> **Status (2026-07-21): resolved.** ADR-0031 (`docs/decisions.md`) decided to stay on Prisma Python,
+> validated by a proof-of-concept (`scripts/poc_persistence_row_lock.py`) confirming Prisma's
+> raw-SQL escape hatch supports the `SELECT ... FOR UPDATE SKIP LOCKED` row-claiming pattern P1-2
+> needed. See `docs/deferred-backlog.md` §P3-1 for concrete trigger conditions for revisiting.
 
 ### Objective
 

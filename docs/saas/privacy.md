@@ -23,6 +23,7 @@ The full schema lives in [`../../prisma/schema.prisma`](../../prisma/schema.pris
 | `sessions` (NextAuth) | Active session tokens | No (session id only) | Contract |
 | `api_keys` | bcrypt-hashed key, label, prefix, owner, last-used timestamp, expiry | No (label may include PII if user includes their email) | Contract |
 | `mcp_servers` + `mcp_oauth_tokens` | Encrypted OAuth tokens for the MCP server, scopes, issuer | No directly; tokens grant access to *external* systems whose data may include PII | Contract |
+| `cloud_storage_connections` | Encrypted per-user OAuth tokens for cloud file-trigger providers (Google Drive today) | No directly; tokens grant access to the connected Drive folder's contents | Contract |
 | `llm_api_keys` | Encrypted provider API keys | No | Contract |
 
 ### Workflow & execution
@@ -105,6 +106,8 @@ Composer routes data to a small set of third parties, each of which has its own 
 | **Tavily, Firecrawl, Serper, Browserless** | The query / URL the workflow author specified | Web search + scraping | Per provider |
 | **Gamma** | Outline content the workflow generated | Slide deck rendering | US |
 | **Arcade** | Tool-call payloads for the workflow's enabled Arcade tools | Tool execution | US |
+| **Atlassian (Jira Cloud / Confluence Cloud)** | Issue/page content and the per-node domain/email/API-token credential the designer configures on the `jira` or `confluence` node | Ticket + wiki-page automation | Per Atlassian Cloud site |
+| **Google Drive** (optional, per `file-trigger` node) | OAuth-scoped read/write access to the folder(s) a designer connects, for server-side file-watch polling | Cloud file-trigger ingestion | Per Google's data location policy |
 | **MCP servers** (per workflow) | Whatever the workflow's MCP nodes call them with | External integrations | Per server |
 | **LangSmith** (optional) | Full execution trace including prompts + tool calls + outputs | Tracing + debugging | US — opt-out by leaving `LANGCHAIN_TRACING_V2=false` |
 | **Pinecone / Qdrant / Chroma / Weaviate / Milvus** (optional) | Vector embeddings + metadata of customer documents | RAG retrieval | Per provider |

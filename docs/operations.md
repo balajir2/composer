@@ -25,7 +25,7 @@ A completed deployment passes all of these smoke tests:
 - A test user can register / sign in via SSO
 - Admin can save an LLM API key via Admin → LLM keys and a designer can run a workflow that uses it
 - An external invoke (`POST /api/run/{slug}` with `Bearer ck_...`) executes successfully
-- The execution_sweeper boot log line appears (`execution_sweeper: started ...`)
+- `POST /internal/sweep` returns 200 when called with a valid OIDC token from the `composer-sweep` Cloud Scheduler job (or, in local/dev where Cloud Tasks isn't provisioned, the `execution_sweeper: started ...` boot log line appears for the in-process fallback loop)
 
 ## Production operations
 
@@ -41,23 +41,27 @@ A completed deployment passes all of these smoke tests:
 |---|---|---|
 | Workflow definitions | Postgres `workflows` table | — |
 | User accounts | Postgres `users` (standalone) or Azure AD (SSO) | Postgres User row created on first SSO login |
-| LLM API keys | Postgres `llm_api_keys` (AES-256-GCM) | Vercel env vars (via `composer keys sync`) |
+| LLM API keys | Postgres `llm_api_keys` (AES-256-GCM) | Read directly by Cloud Run at startup + on every Admin UI save (no restart needed); `composer keys sync --target vercel` is an optional secondary channel only if you also run Vercel-hosted infra |
 | Per-user API keys | Postgres `api_keys` (bcrypt-hashed) | — |
 | MCP servers + OAuth tokens | Postgres `mcp_servers` + `mcp_oauth_tokens` (encrypted) | — |
 | LLM model catalog | Postgres `llm_models` | Designer's model dropdown |
 | Deployment settings | Postgres `deployment_settings` | Read by backend per-request |
 | Execution checkpoints | Postgres `langgraph_checkpoints` | — |
+| Execution status + queueing | Postgres `workflow_executions` (`status='queued'` row + lease) | Google Cloud Tasks task (OIDC push to `POST /internal/claim-and-run`) |
+| Execution events (node started/completed, etc.) | Postgres `execution_events` (sequence-numbered) | `GET /executions/{id}/ws` replays from a reconnect cursor, then subscribes live via Postgres `LISTEN`/`NOTIFY` |
+| Rate-limit buckets | Postgres `rate_limit_buckets` | — (correct across all Cloud Run instances) |
 
 ## Stack quick reference
 
 | Layer | What runs where |
 |---|---|
-| **Frontend** | Next.js 14 → Vercel Serverless Functions |
-| **Backend HTTP** | FastAPI → containerised on Fly / Render / App Runner / your container host (Vercel Serverless can't keep WS connections open — see Vercel runbook) |
+| **Frontend** | Next.js 14 → GCP Cloud Run (recommended + actually deployed — [`gcp-cloud-run-setup.md`](operations/gcp-cloud-run-setup.md)); Vercel is an alternate path ([`vercel-setup.md`](operations/vercel-setup.md)) |
+| **Backend HTTP** | FastAPI → GCP Cloud Run (recommended + actually deployed) or any other long-lived container host (Fly / Render / App Runner). Not Vercel Serverless Functions — they can't keep WS connections open |
 | **Database** | Postgres 15+ → Neon (managed) or self-hosted |
-| **WebSockets** | Same FastAPI host (must be a long-lived process, not serverless) |
+| **Durable execution queue** | Google Cloud Tasks (`POST /internal/claim-and-run` push target) + Cloud Scheduler (`POST /internal/sweep`, `POST /internal/poll-file-triggers`) — falls back to in-process `asyncio` dispatch when `CLOUD_TASKS_SERVICE_ACCOUNT` is unset (local/CI) |
+| **WebSockets** | Same FastAPI host (must be a long-lived process, not serverless); `GET /executions/{id}/ws` replays missed events from Postgres before subscribing live |
 | **Tracing** | LangSmith (optional but recommended) |
-| **Logs** | Vercel for frontend, your container host for backend |
+| **Logs** | Cloud Run's log viewer for both services (or Vercel, if using the alternate frontend path) |
 
 ## Required environment variables
 
@@ -85,6 +89,7 @@ For Azure SSO add `AUTH_AZURE_AD_*` plus the NextAuth secret. For LangSmith trac
 | LangSmith trace count | Daily | `composer-production` project — if traces stop, tracing's broken |
 | Postgres connection pool | Weekly | Neon dashboard — alert at 80% of plan |
 | LLM key verification | Monthly | Admin → LLM models → click Verify on each row |
+| `composer-sweep` / `composer-poll-file-triggers` Cloud Scheduler jobs succeeding | Weekly | Cloud Scheduler console — a run of failures usually means OIDC push-auth drift (see [`operations/gcp-cloud-run-setup.md`](operations/gcp-cloud-run-setup.md#composer-sweep-isnt-running-alarm)) |
 
 ## Disaster recovery
 

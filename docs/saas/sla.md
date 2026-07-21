@@ -38,6 +38,10 @@ What's **excluded** from uptime calculation:
 
 Customers get a **public status page** (managed plans only) listing current and historical incidents, including the ones excluded above. Transparency on what's broken matters more than crediting accuracy.
 
+## Execution durability
+
+A queued or in-flight workflow run is now durable against the underlying compute recycling: `POST /executions` enqueues a Google Cloud Tasks job rather than a request-bound background task, a claim-and-run endpoint picks it up under `SELECT ... FOR UPDATE SKIP LOCKED`, and a lease/heartbeat plus a Cloud-Scheduler-triggered sweep recover a run whose worker died mid-execution. In practice this means an autoscaled backend instance scaling to zero — or a deploy rolling instances — no longer silently kills work in progress. This is an architectural property of the platform, not a separate contractual commitment; it's what the uptime and RTO/RPO numbers above are built on.
+
 ## Severity classification
 
 When you report an issue, we triage to one of four severities. The category drives response time and escalation.
