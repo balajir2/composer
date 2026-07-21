@@ -26,6 +26,7 @@ from src.api.llm_models_live import router as llm_models_live_router
 from src.api.mcp_servers import oauth_router
 from src.api.mcp_servers import router as mcp_servers_router
 from src.api.run import router as run_router
+from src.api.test_cleanup import router as test_cleanup_router
 from src.api.uploads import router as uploads_router
 from src.api.users import router as users_router
 from src.api.workflows import router as workflows_router
@@ -148,6 +149,11 @@ def create_app() -> FastAPI:
     app.include_router(run_router)
     app.include_router(uploads_router)
     app.include_router(users_router)
+
+    # Test-only self-service hard-delete for e2e accounts (never in
+    # production) -- see src/api/test_cleanup.py's module docstring.
+    if settings.environment != "production":
+        app.include_router(test_cleanup_router)
 
     # Phase 7a: auth
     if settings.deployment_mode == "standalone":

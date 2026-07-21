@@ -10,7 +10,11 @@
  */
 
 import { test, expect } from "@playwright/test";
-import { createTestUser } from "./fixtures/test-user";
+import { createTestUser, cleanupTestUsers } from "./fixtures/test-user";
+
+test.afterEach(async () => {
+  await cleanupTestUsers();
+});
 
 // ---------------------------------------------------------------------------
 // Helpers

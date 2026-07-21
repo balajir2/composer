@@ -11,9 +11,13 @@
  */
 
 import { test, expect, request as playwrightRequest } from "@playwright/test";
-import { createTestUser } from "./fixtures/test-user";
+import { createTestUser, cleanupTestUsers } from "./fixtures/test-user";
 
 const apiUrl = process.env.NEXT_PUBLIC_COMPOSER_API_URL ?? "http://localhost:8000";
+
+test.afterEach(async () => {
+  await cleanupTestUsers();
+});
 
 const DATE_FIELD_WORKFLOW_BODY = {
   name: "PW Date Field Workflow",
@@ -70,7 +74,7 @@ const DATETIME_FIELD_WORKFLOW_BODY = {
 
 async function createAndPublishWorkflow(
   accessToken: string,
-  body: Record<string, unknown> = DATE_FIELD_WORKFLOW_BODY,
+  body: Record<string, unknown> = DATE_FIELD_WORKFLOW_BODY
 ): Promise<string> {
   const ctx = await playwrightRequest.newContext();
   const res = await ctx.post(`${apiUrl}/workflows`, {
@@ -171,9 +175,7 @@ test("end-user picks a date+time via the datetime picker and it's submitted as a
   // Close the popover (click the trigger again) and confirm the trigger
   // text reflects both the date and the time, per formatDateTimeDisplay.
   await page.locator("#f-extract_timestamp").click();
-  await expect(page.locator("#f-extract_timestamp")).toContainText(
-    `${todayShortLabel()} 2:30 PM`,
-  );
+  await expect(page.locator("#f-extract_timestamp")).toContainText(`${todayShortLabel()} 2:30 PM`);
 
   await page.getByRole("button", { name: /run|submit/i }).click();
   await expect(page).toHaveURL(/\/runs\/.+\/executions\/.+/, { timeout: 15_000 });

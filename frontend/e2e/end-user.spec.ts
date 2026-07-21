@@ -8,9 +8,13 @@
  */
 
 import { test, expect, request as playwrightRequest } from "@playwright/test";
-import { createTestUser } from "./fixtures/test-user";
+import { createTestUser, cleanupTestUsers } from "./fixtures/test-user";
 
 const apiUrl = process.env.NEXT_PUBLIC_COMPOSER_API_URL ?? "http://localhost:8000";
+
+test.afterEach(async () => {
+  await cleanupTestUsers();
+});
 
 // Minimal Start→End workflow that completes immediately (no LLM required).
 const MINIMAL_WORKFLOW_BODY = {

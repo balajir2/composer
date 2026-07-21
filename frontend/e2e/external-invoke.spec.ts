@@ -17,8 +17,13 @@
 
 import { test, expect } from "@playwright/test";
 import crypto from "crypto";
+import { createTestUser, cleanupTestUsers } from "./fixtures/test-user";
 
 const apiUrl = process.env.NEXT_PUBLIC_COMPOSER_API_URL ?? "http://localhost:8000";
+
+test.afterEach(async () => {
+  await cleanupTestUsers();
+});
 
 const MINIMAL_PUBLISHED_WORKFLOW = {
   name: "PW External Invoke",
@@ -42,15 +47,8 @@ test("POST /api/run/{slug} with API key returns executionId and runs to completi
   request,
 }) => {
   // 1. Register user
-  const email = `pw-ext-${crypto.randomBytes(4).toString("hex")}@example.com`;
-  const password = "correct-horse-battery-staple";
-
-  const regRes = await request.post(`${apiUrl}/auth/register`, {
-    data: { email, password, displayName: "Playwright External" },
-  });
-  expect(regRes.status()).toBe(201);
-  const regBody = (await regRes.json()) as { id: string; accessToken: string };
-  const userToken = regBody.accessToken;
+  const user = await createTestUser();
+  const userToken = user.accessToken;
 
   // 2. Create API key
   const keyRes = await request.post(`${apiUrl}/api-keys`, {

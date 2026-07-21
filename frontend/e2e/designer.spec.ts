@@ -13,7 +13,11 @@
 
 import { test, expect } from "@playwright/test";
 import AxeBuilder from "@axe-core/playwright";
-import { createTestUser } from "./fixtures/test-user";
+import { createTestUser, cleanupTestUsers } from "./fixtures/test-user";
+
+test.afterEach(async () => {
+  await cleanupTestUsers();
+});
 
 async function loginAs(page: import("@playwright/test").Page, email: string, password: string) {
   await page.goto("/login");
