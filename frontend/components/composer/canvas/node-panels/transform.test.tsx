@@ -69,4 +69,36 @@ describe("TransformPanel", () => {
       expect(screen.getByText(/NameNotDefined/)).toBeInTheDocument()
     );
   });
+
+  it("Test button is disabled when the expression is only whitespace", () => {
+    render(wrap(<TransformPanel data={{ transformScript: "   " }} onChange={vi.fn()} />));
+    expect(screen.getByRole("button", { name: "Test" })).toBeDisabled();
+  });
+
+  it("clears a stale result once the expression is edited", async () => {
+    evaluateTransformExpression.mockResolvedValue({ ok: true, result: "HI", error: null });
+    const { rerender } = render(
+      wrap(
+        <TransformPanel
+          data={{ transformScript: "lastOutput.upper()" }}
+          onChange={vi.fn()}
+          workflowId="wf-1"
+        />
+      )
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    await waitFor(() => expect(screen.getByText("HI")).toBeInTheDocument());
+
+    rerender(
+      wrap(
+        <TransformPanel
+          data={{ transformScript: "lastOutput.lower()" }}
+          onChange={vi.fn()}
+          workflowId="wf-1"
+        />
+      )
+    );
+
+    await waitFor(() => expect(screen.queryByText("HI")).not.toBeInTheDocument());
+  });
 });

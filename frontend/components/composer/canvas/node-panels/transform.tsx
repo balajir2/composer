@@ -1,5 +1,6 @@
 "use client";
 
+import { useEffect } from "react";
 import { useMutation } from "@tanstack/react-query";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
@@ -59,6 +60,15 @@ export default function TransformPanel({
         variables: sampleState.parsed ?? {},
       }),
   });
+  const { reset: resetTest } = testMutation;
+
+  // A stale result from a previous expression/sample-state combination is
+  // actively misleading once either changes -- the whole point of this
+  // section is iterate-then-test, so the result must not outlive the input
+  // it was computed from.
+  useEffect(() => {
+    resetTest();
+  }, [transformScript, sampleState.text, resetTest]);
 
   return (
     <div className="space-y-4">
@@ -133,7 +143,7 @@ export default function TransformPanel({
           type="button"
           size="sm"
           variant="outline"
-          disabled={!transformScript || sampleState.error !== null || testMutation.isPending}
+          disabled={!transformScript.trim() || sampleState.error !== null || testMutation.isPending}
           onClick={() => testMutation.mutate()}
         >
           {testMutation.isPending ? "Testing…" : "Test"}
