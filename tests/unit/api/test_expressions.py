@@ -52,6 +52,20 @@ def test_evaluate_transform_defaults_variables_to_empty_dict() -> None:
     assert resp.json() == {"ok": True, "result": 2, "error": None}
 
 
+def test_evaluate_transform_last_output_defaults_to_empty_string() -> None:
+    """Regression test: with no sample variables at all, lastOutput must
+    behave like a fresh workflow run (lastOutput=""), not silently become
+    None -- otherwise an expression that's valid at a real Start node
+    (e.g. string-concatenating lastOutput) would falsely fail here."""
+    client = _client()
+    resp = client.post(
+        "/expressions/evaluate-transform",
+        json={"expression": 'lastOutput + "!"', "variables": {}},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"ok": True, "result": "!", "error": None}
+
+
 def test_evaluate_transform_zero_division_returns_ok_false_not_500() -> None:
     """Regression test: evaluate()'s EvalError wrapping doesn't cover every
     exception simpleeval can raise (ZeroDivisionError isn't in its except

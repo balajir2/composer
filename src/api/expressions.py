@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.config import get_settings
-from src.engine.state import initial_state
+from src.engine.state import WorkflowStateDict, initial_state
 from src.executors._eval import EvalError, evaluate
 from src.executors.data_transform import SUPPORTED_OPS, run_map_filter_reduce
 from src.security.auth import get_current_user_id
@@ -31,6 +31,18 @@ from src.security.rate_limit import (
 )
 
 router = APIRouter(tags=["expressions"])
+
+
+def _build_state(variables: dict[str, Any]) -> WorkflowStateDict:
+    """Fake state for expression testing, seeded from initial_state()'s
+    defaults (e.g. lastOutput="") rather than replaced wholesale -- an
+    empty sample-state test should behave like a fresh workflow run, not
+    diverge from it (a bare {} sample would otherwise leave lastOutput as
+    None instead of "", the one case where an expression could pass here
+    and fail differently -- or vice versa -- in real execution)."""
+    state = initial_state()
+    state["variables"] = {**state["variables"], **variables}
+    return state
 
 
 class EvaluateTransformRequest(BaseModel):
@@ -89,8 +101,7 @@ async def evaluate_transform_expression(
         client_key=user_id,
         config=per_minute_config(get_settings().rate_limit_expression_test_per_minute),
     )
-    state = initial_state()
-    state["variables"] = payload.variables
+    state = _build_state(payload.variables)
     try:
         result = evaluate(payload.expression, state)
     except EvalError as exc:
@@ -124,8 +135,7 @@ async def evaluate_data_transform_expression(
             error=(f"operation {payload.operation!r} not supported (need map / filter / reduce)"),
         )
 
-    state = initial_state()
-    state["variables"] = payload.variables
+    state = _build_state(payload.variables)
 
     try:
         coll = evaluate(payload.collection, state)
