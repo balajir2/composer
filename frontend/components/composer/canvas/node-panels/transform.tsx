@@ -1,8 +1,12 @@
 "use client";
 
+import { useMutation } from "@tanstack/react-query";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@/components/ui/button";
+import { evaluateTransformExpression } from "@/lib/api/expressions";
+import { SampleStateField, useSampleState } from "./sample-state-field";
 
 /**
  * Transform node panel.
@@ -37,13 +41,24 @@ function describeOutputKeyError(value: string): string | null {
 export default function TransformPanel({
   data,
   onChange,
+  workflowId,
 }: {
   data: Record<string, unknown>;
   onChange: (patch: Record<string, unknown>) => void;
+  workflowId?: string;
 }) {
   const transformScript = (data.transformScript as string) ?? "";
   const outputKey = (data.outputKey as string) ?? "";
   const outputKeyError = describeOutputKeyError(outputKey);
+
+  const sampleState = useSampleState(workflowId);
+  const testMutation = useMutation({
+    mutationFn: () =>
+      evaluateTransformExpression({
+        expression: transformScript,
+        variables: sampleState.parsed ?? {},
+      }),
+  });
 
   return (
     <div className="space-y-4">
@@ -103,6 +118,39 @@ export default function TransformPanel({
             or directly as{" "}
             <code className="font-mono">{outputKey || "name"}</code> in
             another expression.
+          </p>
+        )}
+      </div>
+
+      <div className="space-y-2 border-t pt-4">
+        <Label>Test expression</Label>
+        <SampleStateField
+          text={sampleState.text}
+          onChangeText={sampleState.setText}
+          error={sampleState.error}
+        />
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          disabled={!transformScript || sampleState.error !== null || testMutation.isPending}
+          onClick={() => testMutation.mutate()}
+        >
+          {testMutation.isPending ? "Testing…" : "Test"}
+        </Button>
+        {testMutation.data &&
+          (testMutation.data.ok ? (
+            <pre className="overflow-x-auto rounded bg-muted p-2 text-xs">
+              {typeof testMutation.data.result === "string"
+                ? testMutation.data.result
+                : JSON.stringify(testMutation.data.result, null, 2)}
+            </pre>
+          ) : (
+            <p className="text-xs text-destructive">{testMutation.data.error}</p>
+          ))}
+        {testMutation.isError && (
+          <p className="text-xs text-destructive">
+            {testMutation.error instanceof Error ? testMutation.error.message : "Test failed."}
           </p>
         )}
       </div>
