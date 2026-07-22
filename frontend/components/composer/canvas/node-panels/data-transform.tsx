@@ -179,7 +179,9 @@ export default function DataTransformPanel({
                 </p>
               )}
               <pre className="overflow-x-auto rounded bg-muted p-2 text-xs">
-                {JSON.stringify(testMutation.data.result, null, 2)}
+                {typeof testMutation.data.result === "string"
+                  ? testMutation.data.result
+                  : JSON.stringify(testMutation.data.result, null, 2)}
               </pre>
             </div>
           ) : (

@@ -110,6 +110,34 @@ describe("DataTransformPanel", () => {
     });
   });
 
+  it("shows a string reduce result unquoted, not JSON-escaped", async () => {
+    evaluateDataTransformExpression.mockResolvedValue({
+      ok: true,
+      result: "assembled text",
+      error: null,
+      itemCount: 2,
+      truncated: false,
+    });
+    render(
+      wrap(
+        <DataTransformPanel
+          data={{
+            operation: "reduce",
+            collection: "variables['nums']",
+            expression: "acc + item",
+            initial: "",
+          }}
+          onChange={vi.fn()}
+          currentNodeId="dt-1"
+          workflowId="wf-1"
+        />
+      )
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    await waitFor(() => expect(screen.getByText("assembled text")).toBeInTheDocument());
+    expect(screen.queryByText('"assembled text"')).not.toBeInTheDocument();
+  });
+
   it("shows the truncation banner when the backend reports truncated", async () => {
     evaluateDataTransformExpression.mockResolvedValue({
       ok: true,
