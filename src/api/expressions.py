@@ -65,6 +65,14 @@ async def evaluate_transform_expression(
         result = evaluate(payload.expression, state)
     except EvalError as exc:
         return EvaluateExpressionResult(ok=False, error=str(exc))
+    except Exception as exc:
+        # evaluate()'s EvalError wrapping doesn't cover every exception
+        # simpleeval can raise (e.g. ZeroDivisionError isn't in its except
+        # tuple). Real executors are shielded by
+        # src/engine/events_wrapper.py's engine-level catch-all; this route
+        # is the outermost boundary and has no equivalent net, so it must
+        # catch broadly itself to honor its "always 200" contract.
+        return EvaluateExpressionResult(ok=False, error=f"{type(exc).__name__}: {exc}")
     return EvaluateExpressionResult(ok=True, result=result)
 
 

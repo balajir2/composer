@@ -50,3 +50,17 @@ def test_evaluate_transform_defaults_variables_to_empty_dict() -> None:
     resp = client.post("/expressions/evaluate-transform", json={"expression": "1 + 1"})
     assert resp.status_code == 200, resp.text
     assert resp.json() == {"ok": True, "result": 2, "error": None}
+
+
+def test_evaluate_transform_zero_division_returns_ok_false_not_500() -> None:
+    """Regression test: evaluate()'s EvalError wrapping doesn't cover every
+    exception simpleeval can raise (ZeroDivisionError isn't in its except
+    tuple) -- this endpoint has no engine-level catch-all net beneath it, so
+    it must not 500 on an expression a designer would plausibly type while
+    testing a draft."""
+    client = _client()
+    resp = client.post("/expressions/evaluate-transform", json={"expression": "1 / 0"})
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is False
+    assert "ZeroDivisionError" in body["error"]
