@@ -167,6 +167,62 @@ def _check_reachability(
             )
 
 
+def _branch_markers(
+    nodes: dict[str, WorkflowNode], edges: list[WorkflowEdge]
+) -> dict[str, set[tuple[str, str]]]:
+    """For each node, the (conditional_node_id, branch_label) pairs that hold
+    on every path from Start to that node -- i.e. which branch of which
+    if-else/while/user-approval ancestor was taken to reach it. Used to prove
+    two `End`-reaching branches are mutually exclusive (can never both fire
+    in the same run) rather than requiring a `join` node in between.
+
+    Approximate for cyclic graphs (a `while` body edge feeds back into an
+    already-visited node): iterates to a fixed point instead of a strict
+    topological walk. Workflows are capped at 100 nodes / 200 edges
+    (Phase 8), so the extra passes are cheap regardless.
+    """
+    markers: dict[str, set[tuple[str, str]]] = {node_id: set() for node_id in nodes}
+    incoming: dict[str, list[WorkflowEdge]] = {}
+    for edge in edges:
+        incoming.setdefault(edge.target, []).append(edge)
+
+    start_id = next((n.id for n in nodes.values() if n.type == "start"), None)
+    changed = True
+    iterations = 0
+    while changed and iterations <= len(nodes):
+        changed = False
+        iterations += 1
+        for node_id, node_edges in incoming.items():
+            if node_id == start_id:
+                continue
+            new_marks: set[tuple[str, str]] = set()
+            for edge in node_edges:
+                source = nodes.get(edge.source)
+                if source is None:
+                    continue
+                new_marks |= markers.get(edge.source, set())
+                if source.type in CONDITIONAL_SOURCE_TYPES and edge.branch is not None:
+                    new_marks.add((edge.source, edge.branch))
+            if not new_marks.issubset(markers[node_id]):
+                markers[node_id] |= new_marks
+                changed = True
+    return markers
+
+
+def _mutually_exclusive(markers_a: set[tuple[str, str]], markers_b: set[tuple[str, str]]) -> bool:
+    """True if some shared conditional ancestor was reached via disjoint
+    branch sets on the way to each -- meaning a single run that reaches one
+    can never also reach the other."""
+    conds_a = {cond for cond, _ in markers_a}
+    conds_b = {cond for cond, _ in markers_b}
+    for cond in conds_a & conds_b:
+        branches_a = {branch for c, branch in markers_a if c == cond}
+        branches_b = {branch for c, branch in markers_b if c == cond}
+        if branches_a.isdisjoint(branches_b):
+            return True
+    return False
+
+
 def validate_workflow_shape(workflow: Workflow) -> None:
     """Validate a workflow's structural invariants. Raises WorkflowValidationError on failure."""
     nodes = _nodes_by_id(workflow.nodes)
@@ -189,18 +245,35 @@ def validate_workflow_shape(workflow: Workflow) -> None:
     # KeyError or a misleading "wrong incoming/outgoing count" error.
     _check_edges(workflow.edges, set(nodes.keys()))
 
+    branch_markers = _branch_markers(nodes, workflow.edges)
     for end_id in end_ids:
         incoming = [
             e
             for e in workflow.edges
             if e.target == end_id and nodes[e.source].type not in _VISUAL_ONLY_TYPES
         ]
-        if len(incoming) != 1:
-            raise WorkflowValidationError(
-                f"End node {end_id!r} must have exactly one incoming edge from an "
-                f"executable node (found {len(incoming)}). Converge multiple branches "
-                "through a join node before reaching a single End."
-            )
+        if len(incoming) == 1:
+            continue
+        if len(incoming) > 1:
+            sources = [e.source for e in incoming]
+            # Multiple incoming edges are fine when they're all mutually
+            # exclusive branches of a shared if-else/while/user-approval
+            # ancestor (only one ever fires per run) -- e.g. an if-else's
+            # true/false branches both reconverging on one End through their
+            # own set-state nodes. Only genuine concurrent fan-out (two
+            # branches that could BOTH execute in the same run) needs a
+            # join node.
+            if all(
+                _mutually_exclusive(branch_markers[sources[i]], branch_markers[sources[j]])
+                for i in range(len(sources))
+                for j in range(i + 1, len(sources))
+            ):
+                continue
+        raise WorkflowValidationError(
+            f"End node {end_id!r} must have exactly one incoming edge from an "
+            f"executable node (found {len(incoming)}). Converge multiple branches "
+            "through a join node before reaching a single End."
+        )
 
     join_ids = [n.id for n in workflow.nodes if n.type == "join"]
     for join_id in join_ids:

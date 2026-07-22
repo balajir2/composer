@@ -684,6 +684,143 @@ def test_end_note_edge_does_not_count_toward_incoming_tally() -> None:
     validate_workflow_shape(wf)  # must not raise -- the Note edge is decoration, not counted
 
 
+def test_end_reached_by_both_if_else_branches_is_allowed() -> None:
+    """Regression test: an if-else's true/false branches reconverging on one
+    shared End (each through its own set-state node) is a completely
+    standard, previously-working topology -- CI caught this validation
+    incorrectly rejecting it after the fan-out/fan-in fix (found via
+    tests/integration/test_if_else_routing.py failing with a false-positive
+    "must have exactly one incoming edge" error). Only one of the two
+    branches ever executes per run (LangGraph's add_conditional_edges),
+    so this is safe without a join node -- unlike
+    test_end_with_two_incoming_edges_fails's genuine unconditional fan-out.
+    """
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {
+                "id": "ie",
+                "type": "if-else",
+                "position": {"x": 1, "y": 0},
+                "data": {"label": "IE", "condition": "variables['x'] > 0"},
+            },
+            {
+                "id": "ok",
+                "type": "set-state",
+                "position": {"x": 2, "y": 0},
+                "data": {"label": "OK", "stateKey": "result", "stateValue": "true"},
+            },
+            {
+                "id": "no",
+                "type": "set-state",
+                "position": {"x": 2, "y": 1},
+                "data": {"label": "NO", "stateKey": "result", "stateValue": "false"},
+            },
+            {"id": "e", "type": "end", "position": {"x": 3, "y": 0}, "data": {"label": "E"}},
+        ],
+        edges=[
+            {"id": "e1", "source": "s", "target": "ie"},
+            {"id": "e2", "source": "ie", "target": "ok", "branch": "true"},
+            {"id": "e3", "source": "ie", "target": "no", "branch": "false"},
+            {"id": "e4", "source": "ok", "target": "e"},
+            {"id": "e5", "source": "no", "target": "e"},
+        ],
+    )
+    validate_workflow_shape(wf)  # must not raise
+
+
+def test_end_reached_by_both_user_approval_branches_is_allowed() -> None:
+    """Same regression as test_end_reached_by_both_if_else_branches_is_allowed,
+    for user-approval's approved/rejected branches (the exact topology
+    tests/integration/test_user_approval_approved.py and
+    test_user_approval_rejected.py use)."""
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {
+                "id": "ua",
+                "type": "user-approval",
+                "position": {"x": 1, "y": 0},
+                "data": {"label": "UA", "approvalMessage": "Please approve"},
+            },
+            {
+                "id": "ok",
+                "type": "set-state",
+                "position": {"x": 2, "y": 0},
+                "data": {"label": "OK", "stateKey": "result", "stateValue": "approved"},
+            },
+            {
+                "id": "no",
+                "type": "set-state",
+                "position": {"x": 2, "y": 1},
+                "data": {"label": "NO", "stateKey": "result", "stateValue": "rejected"},
+            },
+            {"id": "e", "type": "end", "position": {"x": 3, "y": 0}, "data": {"label": "E"}},
+        ],
+        edges=[
+            {"id": "e1", "source": "s", "target": "ua"},
+            {"id": "e2", "source": "ua", "target": "ok", "branch": "approved"},
+            {"id": "e3", "source": "ua", "target": "no", "branch": "rejected"},
+            {"id": "e4", "source": "ok", "target": "e"},
+            {"id": "e5", "source": "no", "target": "e"},
+        ],
+    )
+    validate_workflow_shape(wf)  # must not raise
+
+
+def test_end_reached_by_unconditional_fan_out_through_conditional_lookalikes_still_fails() -> None:
+    """Two branches that both descend from an if-else's SAME branch (not
+    different branches) are NOT mutually exclusive and must still be
+    rejected -- guards against a too-permissive fix that treats any
+    if-else-adjacent topology as automatically safe."""
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {
+                "id": "ie",
+                "type": "if-else",
+                "position": {"x": 1, "y": 0},
+                "data": {"label": "IE", "condition": "variables['x'] > 0"},
+            },
+            {
+                "id": "a",
+                "type": "set-state",
+                "position": {"x": 2, "y": 0},
+                "data": {"label": "A", "stateKey": "x", "stateValue": "1"},
+            },
+            {
+                "id": "b",
+                "type": "set-state",
+                "position": {"x": 2, "y": 1},
+                "data": {"label": "B", "stateKey": "y", "stateValue": "2"},
+            },
+            {
+                "id": "no",
+                "type": "set-state",
+                "position": {"x": 2, "y": 2},
+                "data": {"label": "NO", "stateKey": "result", "stateValue": "false"},
+            },
+            {"id": "e", "type": "end", "position": {"x": 3, "y": 0}, "data": {"label": "E"}},
+        ],
+        edges=[
+            {"id": "e1", "source": "s", "target": "ie"},
+            # Both "a" and "b" hang off the SAME "true" branch via genuine
+            # unconditional fan-out -- both fire together whenever the
+            # condition is true, so they're not mutually exclusive.
+            {"id": "e2", "source": "ie", "target": "a", "branch": "true"},
+            {"id": "e3", "source": "ie", "target": "b", "branch": "true"},
+            {"id": "e4", "source": "ie", "target": "no", "branch": "false"},
+            {"id": "e5", "source": "a", "target": "e"},
+            {"id": "e6", "source": "b", "target": "e"},
+            {"id": "e7", "source": "no", "target": "e"},
+        ],
+    )
+    with pytest.raises(
+        WorkflowValidationError, match=r"End node 'e' must have exactly one incoming edge"
+    ):
+        validate_workflow_shape(wf)
+
+
 def test_join_with_zero_outgoing_edges_fails() -> None:
     # "e" gets its own direct incoming edge from "s" (unrelated to what's
     # under test) specifically so End's own "exactly one incoming edge"
