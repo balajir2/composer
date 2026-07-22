@@ -340,6 +340,139 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/approvals/email/{token}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve Approval Email
+         * @description Read-only: validates the token and redirects to the confirmation
+         *     page. Never mutates state, so a scanner/preview service prefetching
+         *     this link is harmless — see module docstring.
+         */
+        get: operations["resolve_approval_email_approvals_email__token__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/approvals/email/{token}/confirm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Confirm Approval Email
+         * @description The actual mutation — only reached via a deliberate POST (the
+         *     frontend confirmation page's form submission), never a bare GET.
+         *     Re-validates everything from scratch rather than trusting the GET
+         *     that (probably) preceded it, since state may have changed in
+         *     between (e.g. resolved through another channel, or simply expired).
+         *     No CSRF token needed beyond the signed token itself: this endpoint
+         *     has no ambient session/cookie to ride, so a cross-site form couldn't
+         *     submit a valid request without already knowing the token — the same
+         *     credential the GET link itself required.
+         */
+        post: operations["confirm_approval_email_approvals_email__token__confirm_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cloud-storage/google-drive/authorize": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Google Drive Authorize */
+        get: operations["google_drive_authorize_cloud_storage_google_drive_authorize_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cloud-storage/google-drive/callback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Google Drive Callback */
+        get: operations["google_drive_callback_cloud_storage_google_drive_callback_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cloud-storage/connections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Cloud Storage Connections */
+        get: operations["list_cloud_storage_connections_cloud_storage_connections_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/cloud-storage/connections/{connection_id}/picker-token": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Get Picker Token
+         * @description Hand back the connection's current OAuth access token for one-time
+         *     client-side use by the Google Picker embed (Task 9's frontend
+         *     component) — not a new or narrower scope, just the same drive.file
+         *     token get_valid_drive_access_token() already produces server-side,
+         *     exposed for the one call the Picker widget itself requires
+         *     (setOAuthToken). 404s (not 403) for a connection owned by another
+         *     user, matching this codebase's private-resource convention (CLAUDE.md
+         *     Phase 8: private = 404 for non-owner).
+         *
+         *     Rate-limited like mcp_servers.py's test_mcp_connection: this route can
+         *     trigger a live Google OAuth token-refresh call on every invocation via
+         *     get_valid_drive_access_token(), so an unbounded caller could hammer
+         *     Google's token endpoint.
+         */
+        post: operations["get_picker_token_cloud_storage_connections__connection_id__picker_token_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/llm-models": {
         parameters: {
             query?: never;
@@ -542,6 +675,9 @@ export interface paths {
          *         outlive the execution row in some scenarios).  We delete
          *         them explicitly here because once the execution is gone the
          *         checkpoints are unreachable garbage.
+         *       - `execution_events` — no FK to the execution either (same
+         *         rationale as checkpoints, P1-4).  Deleted explicitly so
+         *         events don't orphan permanently.
          *       - `workflow_executions` row itself.
          */
         delete: operations["delete_execution_executions__execution_id__delete"];
@@ -577,6 +713,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/executions/{execution_id}/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Cancel Execution
+         * @description First-class cancellation (P1-6): the public status vocabulary
+         *     documents `canceled`, but nothing ever wrote it — worker shutdown
+         *     persisted `failed`, and there was no user-triggered cancel operation.
+         *
+         *     Known limitation: this marks the row canceled but does not preempt an
+         *     in-flight claim-and-run delivery (P1-2: execution is driven by
+         *     POST /internal/claim-and-run, not a request-bound background task) —
+         *     LangGraph has no cooperative-cancellation hook wired through the
+         *     executor today. Any side-effecting node (Jira, email, HTTP) already
+         *     in flight when cancel is called still
+         *     completes; this stops the row from looking permanently stuck and gives
+         *     callers a real terminal status to key off, which is the concrete gap
+         *     this closes. True mid-node preemption is a separate, larger change.
+         */
+        post: operations["cancel_execution_executions__execution_id__cancel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/executions/{execution_id}/resume": {
         parameters: {
             query?: never;
@@ -588,6 +756,125 @@ export interface paths {
         put?: never;
         /** Resume Execution */
         post: operations["resume_execution_executions__execution_id__resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/expressions/evaluate-transform": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Evaluate Transform Expression */
+        post: operations["evaluate_transform_expression_expressions_evaluate_transform_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/expressions/evaluate-data-transform": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Evaluate Data Transform Expression */
+        post: operations["evaluate_data_transform_expression_expressions_evaluate_data_transform_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/internal/claim-and-run": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Claim And Run */
+        post: operations["claim_and_run_internal_claim_and_run_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/internal/sweep": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Sweep
+         * @description Cloud-Scheduler-triggered maintenance sweep (P1-2/P1-4).
+         *
+         *     Runs all four sweep functions exactly once per invocation, reading
+         *     thresholds from settings. Intentionally NOT wired into the
+         *     in-process `_sweeper_loop` — see this module's docstring and the
+         *     2026-07-14 revision note in Task 11 of
+         *     docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md.
+         *
+         *     Each of the four sweeps is isolated in its own try/except: this
+         *     endpoint is now the SOLE production trigger for lease recovery and
+         *     retention cleanup (no in-process background loop to fall back on —
+         *     see the module docstring), so one sweep raising (e.g. a transient DB
+         *     error on its initial query) must not prevent the other three from
+         *     running, and must not turn the whole invocation into an unhandled
+         *     500 that Cloud Scheduler just retries wholesale. A failed sweep's
+         *     field is `null` in the response; every other field still reflects
+         *     real work done this invocation.
+         */
+        post: operations["sweep_internal_sweep_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/internal/poll-file-triggers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Poll File Triggers
+         * @description Cloud-Scheduler-triggered poll of every production workflow's
+         *     google-drive file-trigger node — the server-side replacement for
+         *     `composer watch`, which only works for locally-hosted folders. Fifth
+         *     sweep-style endpoint alongside claim-and-run/sweep: same OIDC auth,
+         *     same isolate-failures-per-item shape as `sweep`. See
+         *     docs/archive/phase-history/specs/2026-07-15-google-drive-oauth-file-trigger-design.md §D.
+         *
+         *     Isolation is two-layered, both added in a post-implementation review
+         *     (P1-2): a malformed `nodes` field on a workflow skips just that
+         *     workflow (outer try/except below), and a malformed individual
+         *     file-trigger node skips just that node (inner try/except) — neither
+         *     aborts the rest of the poll, matching this endpoint's own
+         *     isolate-failures-per-item contract.
+         */
+        post: operations["poll_file_triggers_internal_poll_file_triggers_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -811,6 +1098,36 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/internal/test-users/me": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        post?: never;
+        /**
+         * Delete Own Test Account
+         * @description Hard-delete the calling account and everything it owns.
+         *
+         *     Deletion order matters: workflows first, since their `onDelete:
+         *     Cascade` FK (schema.prisma's WorkflowExecution/Approval relations)
+         *     takes their executions and approvals with them at the DB level; then
+         *     the `userId`-scoped tables that have no FK relation to User at all
+         *     (workflows.userId itself included -- see schema.prisma's comment
+         *     that it is a loose string, not a `@relation`) and so need an
+         *     explicit delete rather than relying on cascade; then the user row
+         *     itself, whose own `onDelete: Cascade` FK from ApiKey takes any
+         *     remaining API keys with it.
+         */
+        delete: operations["delete_own_test_account_internal_test_users_me_delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/auth/register": {
         parameters: {
             query?: never;
@@ -893,6 +1210,40 @@ export interface paths {
         put?: never;
         /** Change Password */
         post: operations["change_password_auth_change_password_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/forgot-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Forgot Password */
+        post: operations["forgot_password_auth_forgot_password_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/auth/reset-password": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reset Password */
+        post: operations["reset_password_auth_reset_password_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1106,8 +1457,6 @@ export interface components {
              * @default workflow-builder
              */
             arcadeUserId: string;
-        } & {
-            [key: string]: unknown;
         };
         /** AuthResponse */
         AuthResponse: {
@@ -1125,6 +1474,11 @@ export interface components {
             accessTokenExpiresAt: number;
             /** Refreshtokenexpiresat */
             refreshTokenExpiresAt: number;
+        };
+        /** AuthorizeResponse */
+        AuthorizeResponse: {
+            /** Authorizeurl */
+            authorizeUrl: string;
         };
         /** AvailableModelsResponse */
         AvailableModelsResponse: {
@@ -1178,6 +1532,77 @@ export interface components {
             /** Newpassword */
             newPassword: string;
         };
+        /** ClaimAndRunRequest */
+        ClaimAndRunRequest: {
+            /** Executionid */
+            executionId: string;
+            /**
+             * Kind
+             * @default run
+             * @enum {string}
+             */
+            kind: "run" | "resume";
+        };
+        /** CloudStorageConnectionRead */
+        CloudStorageConnectionRead: {
+            /** Id */
+            id: string;
+            /** Provider */
+            provider: string;
+            /** Accountemail */
+            accountEmail: string;
+        };
+        /** ConfluenceNode */
+        ConfluenceNode: {
+            /** Id */
+            id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "confluence";
+            position: components["schemas"]["Position"];
+            data: components["schemas"]["ConfluenceNodeData"];
+        };
+        /** ConfluenceNodeData */
+        ConfluenceNodeData: {
+            /** Label */
+            label: string;
+            /** Nodetype */
+            nodeType?: string | null;
+            /** Nodename */
+            nodeName?: string | null;
+            /** Domain */
+            domain?: string | null;
+            /** Email */
+            email?: string | null;
+            /** Apitoken */
+            apiToken?: string | null;
+            /**
+             * Operation
+             * @default create_or_update_page
+             * @enum {string}
+             */
+            operation: "create_or_update_page" | "get_page" | "get_property" | "set_property";
+            /** Spacekey */
+            spaceKey?: string | null;
+            /** Parentpageid */
+            parentPageId?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Bodystoragehtml */
+            bodyStorageHtml?: string | null;
+            /** Labels */
+            labels?: string[] | null;
+            /** Pageid */
+            pageId?: string | null;
+            /** Propertykey */
+            propertyKey?: string | null;
+            /** Propertyvalue */
+            propertyValue?: unknown | null;
+        } & {
+            [key: string]: unknown;
+        };
         /** DataTransformNode */
         DataTransformNode: {
             /** Id */
@@ -1220,6 +1645,47 @@ export interface components {
             itemVar: string;
             /** Initial */
             initial?: unknown | null;
+        };
+        /** DownloadPdfNode */
+        DownloadPdfNode: {
+            /** Id */
+            id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "download-pdf";
+            position: components["schemas"]["Position"];
+            data: components["schemas"]["DownloadPdfNodeData"];
+        };
+        /** DownloadPdfNodeData */
+        DownloadPdfNodeData: {
+            /** Label */
+            label: string;
+            /** Nodetype */
+            nodeType?: string | null;
+            /** Nodename */
+            nodeName?: string | null;
+            /**
+             * Inputformat
+             * @enum {string}
+             */
+            inputFormat: "html" | "markdown";
+            /** Content */
+            content?: string | null;
+            /**
+             * Provider
+             * @default local
+             */
+            provider: string;
+            /** Destinationpath */
+            destinationPath?: string | null;
+            /** Filename */
+            filename?: string | null;
+            /** Connectionid */
+            connectionId?: string | null;
+            /** Drivefolderid */
+            driveFolderId?: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -1318,12 +1784,68 @@ export interface components {
         } & {
             [key: string]: unknown;
         };
+        /** EvaluateDataTransformRequest */
+        EvaluateDataTransformRequest: {
+            /** Operation */
+            operation: string;
+            /** Collection */
+            collection: string;
+            /** Expression */
+            expression: string;
+            /**
+             * Itemvar
+             * @default item
+             */
+            itemVar: string;
+            /** Initial */
+            initial?: unknown;
+            /** Variables */
+            variables?: {
+                [key: string]: unknown;
+            };
+        };
+        /** EvaluateDataTransformResult */
+        EvaluateDataTransformResult: {
+            /** Ok */
+            ok: boolean;
+            /** Result */
+            result?: unknown;
+            /** Error */
+            error?: string | null;
+            /** Itemcount */
+            itemCount?: number | null;
+            /**
+             * Truncated
+             * @default false
+             */
+            truncated: boolean;
+        };
+        /** EvaluateExpressionResult */
+        EvaluateExpressionResult: {
+            /** Ok */
+            ok: boolean;
+            /** Result */
+            result?: unknown;
+            /** Error */
+            error?: string | null;
+        };
+        /** EvaluateTransformRequest */
+        EvaluateTransformRequest: {
+            /** Expression */
+            expression: string;
+            /** Variables */
+            variables?: {
+                [key: string]: unknown;
+            };
+        };
         /** ExecutionCreate */
         ExecutionCreate: {
             /** Workflowid */
             workflowId: string;
             /** Input */
             input?: unknown;
+            /** Idempotencykey */
+            idempotencyKey?: string | null;
         };
         /** ExecutionListResponse */
         ExecutionListResponse: {
@@ -1403,8 +1925,104 @@ export interface components {
             input?: string | null;
             /** Model */
             model?: string | null;
+        };
+        /** FileTriggerNode */
+        FileTriggerNode: {
+            /** Id */
+            id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "file-trigger";
+            position: components["schemas"]["Position"];
+            data: components["schemas"]["FileTriggerNodeData"];
+        };
+        /** FileTriggerNodeData */
+        FileTriggerNodeData: {
+            /** Label */
+            label: string;
+            /** Nodetype */
+            nodeType?: string | null;
+            /** Nodename */
+            nodeName?: string | null;
+            /**
+             * Provider
+             * @default local
+             * @enum {string}
+             */
+            provider: "local" | "google-drive";
+            /** Sourcepath */
+            sourcePath?: string | null;
+            /** Destpath */
+            destPath?: string | null;
+            /** Errorpath */
+            errorPath?: string | null;
+            /** Targetinputvariable */
+            targetInputVariable?: string | null;
+            /**
+             * Pollintervalseconds
+             * @default 30
+             */
+            pollIntervalSeconds: number;
+            /** Connectionid */
+            connectionId?: string | null;
+            /** Drivefolderid */
+            driveFolderId?: string | null;
+            /** Driveprocessedfolderid */
+            driveProcessedFolderId?: string | null;
+            /** Driveerrorfolderid */
+            driveErrorFolderId?: string | null;
         } & {
             [key: string]: unknown;
+        };
+        /** FileWriteNode */
+        FileWriteNode: {
+            /** Id */
+            id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "file-write";
+            position: components["schemas"]["Position"];
+            data: components["schemas"]["FileWriteNodeData"];
+        };
+        /** FileWriteNodeData */
+        FileWriteNodeData: {
+            /** Label */
+            label: string;
+            /** Nodetype */
+            nodeType?: string | null;
+            /** Nodename */
+            nodeName?: string | null;
+            /**
+             * Provider
+             * @default local
+             */
+            provider: string;
+            /** Destinationpath */
+            destinationPath?: string | null;
+            /** Filename */
+            filename?: string | null;
+            /**
+             * Format
+             * @default md
+             * @enum {string}
+             */
+            format: "md" | "docx" | "pdf" | "html";
+            /** Content */
+            content?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** ForgotPasswordRequest */
+        ForgotPasswordRequest: {
+            /**
+             * Email
+             * Format: email
+             */
+            email: string;
         };
         /** GammaAiNode */
         GammaAiNode: {
@@ -1545,8 +2163,6 @@ export interface components {
             httpBody?: unknown | null;
             /** Responsepath */
             responsePath?: string | null;
-        } & {
-            [key: string]: unknown;
         };
         /** IfElseNode */
         IfElseNode: {
@@ -1578,6 +2194,72 @@ export interface components {
             trueLabel?: string | null;
             /** Falselabel */
             falseLabel?: string | null;
+        } & {
+            [key: string]: unknown;
+        };
+        /** JiraNode */
+        JiraNode: {
+            /** Id */
+            id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "jira";
+            position: components["schemas"]["Position"];
+            data: components["schemas"]["JiraNodeData"];
+        };
+        /** JiraNodeData */
+        JiraNodeData: {
+            /** Label */
+            label: string;
+            /** Nodetype */
+            nodeType?: string | null;
+            /** Nodename */
+            nodeName?: string | null;
+            /** Domain */
+            domain?: string | null;
+            /** Email */
+            email?: string | null;
+            /** Apitoken */
+            apiToken?: string | null;
+            /** Instructions */
+            instructions?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Maxiterations */
+            maxIterations?: number | null;
+            /**
+             * Actionpolicy
+             * @default best_effort
+             * @enum {string}
+             */
+            actionPolicy: "best_effort" | "require_tool_call" | "require_successful_tool_call";
+            /**
+             * Minimumsuccessfulcalls
+             * @default 1
+             */
+            minimumSuccessfulCalls: number;
+            /**
+             * Operation
+             * @default agent
+             * @enum {string}
+             */
+            operation: "agent" | "extract";
+            /** Jql */
+            jql?: string | null;
+            /** Fields */
+            fields?: string[] | null;
+            /**
+             * Expandchangelog
+             * @default true
+             */
+            expandChangelog: boolean;
+            /**
+             * Maxissues
+             * @default 1000
+             */
+            maxIssues: number;
         } & {
             [key: string]: unknown;
         };
@@ -1623,6 +2305,27 @@ export interface components {
              * @default false
              */
             joinChunksIncludeMetadata: boolean;
+        };
+        /** JoinNode */
+        JoinNode: {
+            /** Id */
+            id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "join";
+            position: components["schemas"]["Position"];
+            data: components["schemas"]["JoinNodeData"];
+        };
+        /** JoinNodeData */
+        JoinNodeData: {
+            /** Label */
+            label: string;
+            /** Nodetype */
+            nodeType?: string | null;
+            /** Nodename */
+            nodeName?: string | null;
         } & {
             [key: string]: unknown;
         };
@@ -1956,6 +2659,11 @@ export interface components {
             /** Email */
             email?: string | null;
         };
+        /** PickerTokenResponse */
+        PickerTokenResponse: {
+            /** Accesstoken */
+            accessToken: string;
+        };
         /** Position */
         Position: {
             /** X */
@@ -1979,6 +2687,13 @@ export interface components {
             password: string;
             /** Displayname */
             displayName?: string | null;
+        };
+        /** ResetPasswordRequest */
+        ResetPasswordRequest: {
+            /** Token */
+            token: string;
+            /** Newpassword */
+            newPassword: string;
         };
         /** ResetPasswordResponse */
         ResetPasswordResponse: {
@@ -2018,6 +2733,8 @@ export interface components {
              * @default 60
              */
             timeoutSeconds: number;
+            /** Idempotencykey */
+            idempotencyKey?: string | null;
         };
         /** SetStateNode */
         SetStateNode: {
@@ -2221,8 +2938,12 @@ export interface components {
             nodeName?: string | null;
             /** Approvalmessage */
             approvalMessage?: string | null;
-        } & {
-            [key: string]: unknown;
+            /** Approveremail */
+            approverEmail?: string | null;
+            /** Approvercc */
+            approverCc?: string | null;
+            /** Attachmentpath */
+            attachmentPath?: string | null;
         };
         /** UserSearchResult */
         UserSearchResult: {
@@ -2469,7 +3190,7 @@ export interface components {
             /** Estimatedtime */
             estimatedTime?: string | null;
             /** Nodes */
-            nodes: (components["schemas"]["StartNode"] | components["schemas"]["EndNode"] | components["schemas"]["NoteNode"] | components["schemas"]["AgentNode"] | components["schemas"]["McpNode"] | components["schemas"]["IfElseNode"] | components["schemas"]["WhileNode"] | components["schemas"]["UserApprovalNode"] | components["schemas"]["TransformNode"] | components["schemas"]["DataTransformNode"] | components["schemas"]["SetStateNode"] | components["schemas"]["ExtractNode"] | components["schemas"]["HttpNode"] | components["schemas"]["GuardrailsNode"] | components["schemas"]["VectorDbNode"] | components["schemas"]["GammaAiNode"] | components["schemas"]["EmailNode"] | components["schemas"]["ArcadeNode"] | components["schemas"]["JoinChunksNode"])[];
+            nodes: (components["schemas"]["StartNode"] | components["schemas"]["EndNode"] | components["schemas"]["NoteNode"] | components["schemas"]["FileTriggerNode"] | components["schemas"]["FileWriteNode"] | components["schemas"]["AgentNode"] | components["schemas"]["McpNode"] | components["schemas"]["IfElseNode"] | components["schemas"]["WhileNode"] | components["schemas"]["UserApprovalNode"] | components["schemas"]["TransformNode"] | components["schemas"]["DataTransformNode"] | components["schemas"]["SetStateNode"] | components["schemas"]["ExtractNode"] | components["schemas"]["HttpNode"] | components["schemas"]["GuardrailsNode"] | components["schemas"]["VectorDbNode"] | components["schemas"]["GammaAiNode"] | components["schemas"]["EmailNode"] | components["schemas"]["ArcadeNode"] | components["schemas"]["JoinChunksNode"] | components["schemas"]["ConfluenceNode"] | components["schemas"]["JiraNode"] | components["schemas"]["DownloadPdfNode"] | components["schemas"]["JoinNode"])[];
             /** Edges */
             edges: components["schemas"]["WorkflowEdge"][];
             /** Version */
@@ -3266,6 +3987,182 @@ export interface operations {
             };
         };
     };
+    resolve_approval_email_approvals_email__token__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    confirm_approval_email_approvals_email__token__confirm_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                token: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    google_drive_authorize_cloud_storage_google_drive_authorize_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AuthorizeResponse"];
+                };
+            };
+        };
+    };
+    google_drive_callback_cloud_storage_google_drive_callback_get: {
+        parameters: {
+            query: {
+                code: string;
+                state: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_cloud_storage_connections_cloud_storage_connections_get: {
+        parameters: {
+            query?: {
+                provider?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CloudStorageConnectionRead"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_picker_token_cloud_storage_connections__connection_id__picker_token_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connection_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PickerTokenResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_enabled_models_llm_models_get: {
         parameters: {
             query?: {
@@ -3850,6 +4747,37 @@ export interface operations {
             };
         };
     };
+    cancel_execution_executions__execution_id__cancel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                execution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     resume_execution_executions__execution_id__resume_post: {
         parameters: {
             query?: never;
@@ -3872,6 +4800,175 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ExecutionRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    evaluate_transform_expression_expressions_evaluate_transform_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvaluateTransformRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluateExpressionResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    evaluate_data_transform_expression_expressions_evaluate_data_transform_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvaluateDataTransformRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvaluateDataTransformResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    claim_and_run_internal_claim_and_run_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ClaimAndRunRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    sweep_internal_sweep_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: number | null;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    poll_file_triggers_internal_poll_file_triggers_post: {
+        parameters: {
+            query?: never;
+            header?: {
+                authorization?: string | null;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: number;
+                    };
                 };
             };
             /** @description Validation Error */
@@ -4299,6 +5396,24 @@ export interface operations {
             };
         };
     };
+    delete_own_test_account_internal_test_users_me_delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+        };
+    };
     register_auth_register_post: {
         parameters: {
             query?: never;
@@ -4426,6 +5541,68 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ChangePasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    forgot_password_auth_forgot_password_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ForgotPasswordRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            204: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reset_password_auth_reset_password_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResetPasswordRequest"];
             };
         };
         responses: {
