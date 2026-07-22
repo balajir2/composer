@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor, renderHook } from "@testing-library/react";
+import { render, screen, waitFor, renderHook, fireEvent, act } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SampleStateField, useSampleState } from "./sample-state-field";
 
@@ -48,6 +48,32 @@ describe("useSampleState", () => {
     renderHook(() => useSampleState(undefined), { wrapper: wrapperComponent });
     expect(listExecutions).not.toHaveBeenCalled();
   });
+
+  it("does not clobber a user's edit that happens before the pre-fill fetch resolves", async () => {
+    let resolveFetch: (value: unknown) => void = () => {};
+    listExecutions.mockReturnValue(
+      new Promise((resolve) => {
+        resolveFetch = resolve;
+      })
+    );
+    const { result } = renderHook(() => useSampleState("wf-1"), { wrapper: wrapperComponent });
+
+    act(() => {
+      result.current.setText('{"userTyped": true}');
+    });
+
+    await act(async () => {
+      resolveFetch({
+        total: 1,
+        items: [{ id: "e1", variables: { counter: 3 }, nodeResults: {} }],
+        limit: 1,
+        offset: 0,
+      });
+    });
+
+    await waitFor(() => expect(listExecutions).toHaveBeenCalled());
+    expect(result.current.text).toBe('{"userTyped": true}');
+  });
 });
 
 describe("SampleStateField", () => {
@@ -61,6 +87,9 @@ describe("SampleStateField", () => {
   it("calls onChangeText as the textarea is edited", () => {
     const onChangeText = vi.fn();
     render(wrap(<SampleStateField text="{}" onChangeText={onChangeText} error={null} />));
-    screen.getByLabelText(/Sample state/i);
+    fireEvent.change(screen.getByLabelText(/Sample state/i), {
+      target: { value: '{"counter": 1}' },
+    });
+    expect(onChangeText).toHaveBeenCalledWith('{"counter": 1}');
   });
 });

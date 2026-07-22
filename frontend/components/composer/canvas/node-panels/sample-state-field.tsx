@@ -21,6 +21,7 @@ export interface SampleState {
 export function useSampleState(workflowId?: string): SampleState {
   const [text, setText] = useState("{}");
   const prefilled = useRef(false);
+  const userEdited = useRef(false);
 
   const { data } = useQuery({
     queryKey: ["latest-execution-variables", workflowId],
@@ -29,7 +30,7 @@ export function useSampleState(workflowId?: string): SampleState {
   });
 
   useEffect(() => {
-    if (prefilled.current || !data) return;
+    if (prefilled.current || !data || userEdited.current) return;
     prefilled.current = true;
     const latest = data.items[0];
     const variables = latest?.variables as Record<string, unknown> | undefined;
@@ -37,6 +38,11 @@ export function useSampleState(workflowId?: string): SampleState {
       setText(JSON.stringify(variables, null, 2));
     }
   }, [data]);
+
+  function setTextTracked(next: string): void {
+    userEdited.current = true;
+    setText(next);
+  }
 
   let parsed: Record<string, unknown> | null = null;
   let error: string | null = null;
@@ -51,7 +57,7 @@ export function useSampleState(workflowId?: string): SampleState {
     error = "Invalid JSON";
   }
 
-  return { text, setText, parsed, error };
+  return { text, setText: setTextTracked, parsed, error };
 }
 
 export function SampleStateField({
