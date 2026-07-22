@@ -21,6 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from src.config import get_settings
 from src.engine.state import initial_state
 from src.executors._eval import EvalError, evaluate
+from src.executors.data_transform import SUPPORTED_OPS, run_map_filter_reduce
 from src.security.auth import get_current_user_id
 from src.security.rate_limit import (
     RateLimiterProtocol,
@@ -45,6 +46,35 @@ class EvaluateExpressionResult(BaseModel):
     ok: bool
     result: Any = None
     error: str | None = None
+
+
+# Defensive cap on evaluate-data-transform's collection size. This
+# endpoint accepts a client-supplied collection directly -- unlike real
+# execution, no workflow input-size limit applies here, so unbounded
+# input from an authenticated-but-adversarial client shouldn't cost the
+# server unbounded eval time.
+_MAX_TEST_ITEMS = 50
+
+
+class EvaluateDataTransformRequest(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    operation: str
+    collection: str
+    expression: str
+    item_var: str = Field(default="item", alias="itemVar")
+    initial: Any = None
+    variables: dict[str, Any] = Field(default_factory=dict)
+
+
+class EvaluateDataTransformResult(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    ok: bool
+    result: Any = None
+    error: str | None = None
+    item_count: int | None = Field(default=None, alias="itemCount")
+    truncated: bool = False
 
 
 @router.post("/expressions/evaluate-transform", response_model=EvaluateExpressionResult)
@@ -76,7 +106,66 @@ async def evaluate_transform_expression(
     return EvaluateExpressionResult(ok=True, result=result)
 
 
+@router.post("/expressions/evaluate-data-transform", response_model=EvaluateDataTransformResult)
+async def evaluate_data_transform_expression(
+    payload: EvaluateDataTransformRequest,
+    user_id: str = Depends(get_current_user_id),
+    limiter: RateLimiterProtocol = Depends(get_rate_limiter),
+) -> EvaluateDataTransformResult:  # pyright: ignore[reportUnusedFunction]
+    await enforce(
+        limiter,
+        route_key="expression_test",
+        client_key=user_id,
+        config=per_minute_config(get_settings().rate_limit_expression_test_per_minute),
+    )
+    if payload.operation not in SUPPORTED_OPS:
+        return EvaluateDataTransformResult(
+            ok=False,
+            error=(f"operation {payload.operation!r} not supported (need map / filter / reduce)"),
+        )
+
+    state = initial_state()
+    state["variables"] = payload.variables
+
+    try:
+        coll = evaluate(payload.collection, state)
+    except EvalError as exc:
+        return EvaluateDataTransformResult(ok=False, error=f"collection: {exc}")
+    except Exception as exc:
+        return EvaluateDataTransformResult(
+            ok=False, error=f"collection: {type(exc).__name__}: {exc}"
+        )
+
+    if not isinstance(coll, (list, tuple)):
+        return EvaluateDataTransformResult(
+            ok=False,
+            error=(
+                f"collection evaluated to non-iterable type {type(coll).__name__}, expected a list"
+            ),
+        )
+
+    truncated = len(coll) > _MAX_TEST_ITEMS
+    sample = list(coll[:_MAX_TEST_ITEMS])
+
+    try:
+        result = run_map_filter_reduce(
+            payload.operation, sample, payload.expression, payload.item_var, payload.initial, state
+        )
+    except EvalError as exc:
+        return EvaluateDataTransformResult(ok=False, error=f"per-item expression: {exc}")
+    except Exception as exc:
+        return EvaluateDataTransformResult(
+            ok=False, error=f"per-item expression: {type(exc).__name__}: {exc}"
+        )
+
+    return EvaluateDataTransformResult(
+        ok=True, result=result, itemCount=len(sample), truncated=truncated
+    )
+
+
 __all__ = [
+    "EvaluateDataTransformRequest",
+    "EvaluateDataTransformResult",
     "EvaluateExpressionResult",
     "EvaluateTransformRequest",
     "router",

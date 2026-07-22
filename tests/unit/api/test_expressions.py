@@ -64,3 +64,138 @@ def test_evaluate_transform_zero_division_returns_ok_false_not_500() -> None:
     body = resp.json()
     assert body["ok"] is False
     assert "ZeroDivisionError" in body["error"]
+
+
+def test_evaluate_data_transform_map() -> None:
+    client = _client()
+    resp = client.post(
+        "/expressions/evaluate-data-transform",
+        json={
+            "operation": "map",
+            "collection": "variables['nums']",
+            "expression": "item * 2",
+            "itemVar": "item",
+            "variables": {"nums": [1, 2, 3]},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["result"] == [2, 4, 6]
+    assert body["itemCount"] == 3
+    assert body["truncated"] is False
+
+
+def test_evaluate_data_transform_reduce_with_initial() -> None:
+    client = _client()
+    resp = client.post(
+        "/expressions/evaluate-data-transform",
+        json={
+            "operation": "reduce",
+            "collection": "variables['nums']",
+            "expression": "acc + item",
+            "itemVar": "item",
+            "initial": 0,
+            "variables": {"nums": [1, 2, 3, 4]},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body == {"ok": True, "result": 10, "error": None, "itemCount": 4, "truncated": False}
+
+
+def test_evaluate_data_transform_non_list_collection() -> None:
+    client = _client()
+    resp = client.post(
+        "/expressions/evaluate-data-transform",
+        json={
+            "operation": "map",
+            "collection": "variables['scalar']",
+            "expression": "item",
+            "itemVar": "item",
+            "variables": {"scalar": 42},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is False
+    assert "non-iterable" in body["error"] or "int" in body["error"]
+
+
+def test_evaluate_data_transform_unknown_operation() -> None:
+    client = _client()
+    resp = client.post(
+        "/expressions/evaluate-data-transform",
+        json={
+            "operation": "sum",
+            "collection": "variables['nums']",
+            "expression": "item",
+            "itemVar": "item",
+            "variables": {"nums": [1, 2]},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is False
+    assert "sum" in body["error"]
+
+
+def test_evaluate_data_transform_truncates_at_50_items() -> None:
+    client = _client()
+    resp = client.post(
+        "/expressions/evaluate-data-transform",
+        json={
+            "operation": "map",
+            "collection": "variables['nums']",
+            "expression": "item",
+            "itemVar": "item",
+            "variables": {"nums": list(range(60))},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["itemCount"] == 50
+    assert body["truncated"] is True
+    assert len(body["result"]) == 50
+
+
+def test_evaluate_data_transform_bad_per_item_expression() -> None:
+    client = _client()
+    resp = client.post(
+        "/expressions/evaluate-data-transform",
+        json={
+            "operation": "map",
+            "collection": "variables['nums']",
+            "expression": "item.nonexistent_attr",
+            "itemVar": "item",
+            "variables": {"nums": [1, 2]},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is False
+
+
+def test_evaluate_data_transform_reduce_zero_division_returns_ok_false_not_500() -> None:
+    """Regression test, same class of bug fixed in evaluate-transform (see
+    commit b5af25f): evaluate()'s EvalError wrapping doesn't cover every
+    exception simpleeval can raise. This endpoint has no engine-level
+    catch-all beneath it, so a per-item expression that raises
+    ZeroDivisionError (or any other exception outside EvalError's tuple)
+    must still return {ok: false}, not a raw 500."""
+    client = _client()
+    resp = client.post(
+        "/expressions/evaluate-data-transform",
+        json={
+            "operation": "reduce",
+            "collection": "variables['nums']",
+            "expression": "acc + (item / 0)",
+            "itemVar": "item",
+            "initial": 0,
+            "variables": {"nums": [1, 2]},
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is False
