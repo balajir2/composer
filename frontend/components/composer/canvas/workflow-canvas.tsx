@@ -271,6 +271,10 @@ interface WorkflowCanvasProps {
   /** Live draft-run state — each node's className reflects
    *  running / completed / failed so designers see progress in-canvas. */
   runState?: DesignerExecutionState;
+  /** The workflow's own id -- threaded down to node panels so features
+   *  like the transform "Test expression" section can fetch this
+   *  workflow's own execution history. */
+  workflowId?: string;
 }
 
 export function WorkflowCanvas({
@@ -279,6 +283,7 @@ export function WorkflowCanvas({
   onNodesChange,
   onEdgesChange,
   runState,
+  workflowId,
 }: WorkflowCanvasProps) {
   const [nodes, setNodes, handleNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, handleEdgesChange] = useEdgesState(initialEdges);
@@ -601,6 +606,7 @@ export function WorkflowCanvas({
           allNodes={nodes}
           onChange={handlePanelChange}
           onClose={() => setSelectedNodeId(null)}
+          workflowId={workflowId}
         />
       )}
     </div>

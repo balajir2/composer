@@ -44,6 +44,9 @@ export type PanelProps = {
   /** The id of the node currently being edited (so the picker can exclude
    *  it from "Previous nodes"). */
   currentNodeId?: string;
+  /** The workflow's own id -- not every panel needs it, so it's optional
+   *  like allNodes/currentNodeId. */
+  workflowId?: string;
 };
 
 type PanelComponent = (props: PanelProps) => React.ReactElement | null;
@@ -113,6 +116,7 @@ interface PropertyPanelProps {
   allNodes: RFNode[];
   onChange: (patch: Record<string, unknown>) => void;
   onClose: () => void;
+  workflowId?: string;
 }
 
 // Snake-case the user's node name so the variable-substitution path
@@ -126,7 +130,7 @@ function sanitizeVarAlias(raw: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
-export function PropertyPanel({ node, allNodes, onChange, onClose }: PropertyPanelProps) {
+export function PropertyPanel({ node, allNodes, onChange, onClose, workflowId }: PropertyPanelProps) {
   const PanelContent = PANEL_MAP[node.type ?? ""];
   const typeLabel = TYPE_LABELS[node.type ?? ""] ?? node.type ?? "Node";
   const nodeData = (node.data ?? {}) as Record<string, unknown>;
@@ -186,6 +190,7 @@ export function PropertyPanel({ node, allNodes, onChange, onClose }: PropertyPan
             onChange={onChange}
             allNodes={allNodes}
             currentNodeId={node.id}
+            workflowId={workflowId}
           />
         ) : (
           <p className="text-sm text-muted-foreground">

@@ -325,6 +325,7 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
       <div className="flex flex-1 overflow-hidden">
         <div className="flex-1 overflow-hidden">
           <WorkflowCanvas
+            workflowId={workflowId}
             initialNodes={rfNodes}
             initialEdges={rfEdges}
             onNodesChange={(nodes) => {
