@@ -5,10 +5,13 @@ from typing import Any
 import pytest
 
 from src.engine.state import initial_state
+from src.engine.state import initial_state as _initial_state_for_helper
 from src.engine.workflow import DataTransformNode
 from src.executors.data_transform import (
+    SUPPORTED_OPS,
     DataTransformExecutor,
     DataTransformNodeError,
+    run_map_filter_reduce,
 )
 
 
@@ -120,3 +123,25 @@ async def test_data_transform_executor_is_registered() -> None:
     )
     executor = build_executor(node)
     assert isinstance(executor, DataTransformExecutor)
+
+
+def test_supported_ops_is_public() -> None:
+    assert {"map", "filter", "reduce"} == SUPPORTED_OPS
+
+
+async def test_run_map_filter_reduce_map() -> None:
+    state = _initial_state_for_helper()
+    result = run_map_filter_reduce("map", [1, 2, 3], "item * 2", "item", None, state)
+    assert result == [2, 4, 6]
+
+
+async def test_run_map_filter_reduce_filter() -> None:
+    state = _initial_state_for_helper()
+    result = run_map_filter_reduce("filter", [-1, 0, 1, 2], "item > 0", "item", None, state)
+    assert result == [1, 2]
+
+
+async def test_run_map_filter_reduce_reduce() -> None:
+    state = _initial_state_for_helper()
+    result = run_map_filter_reduce("reduce", [1, 2, 3, 4], "acc + item", "item", 0, state)
+    assert result == 10

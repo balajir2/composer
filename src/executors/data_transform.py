@@ -19,7 +19,34 @@ class DataTransformNodeError(RuntimeError):
     """Raised for unknown operation, non-iterable collection, or eval failure."""
 
 
-_SUPPORTED_OPS = {"map", "filter", "reduce"}
+SUPPORTED_OPS = {"map", "filter", "reduce"}
+
+
+def run_map_filter_reduce(
+    op: str,
+    coll: list[Any] | tuple[Any, ...],
+    expr: str,
+    item_var: str,
+    initial: Any,
+    state: WorkflowStateDict,
+) -> Any:
+    """Run map/filter/reduce over `coll`, evaluating `expr` per item.
+
+    Shared by DataTransformExecutor (real execution) and the
+    evaluate-data-transform test-preview endpoint (src/api/expressions.py),
+    so the preview can never drift from real execution behavior. Assumes
+    `op` is already validated to be one of SUPPORTED_OPS. Raises EvalError
+    on any per-item evaluation failure.
+    """
+    if op == "map":
+        return [evaluate(expr, state, extra_names={item_var: x}) for x in coll]
+    if op == "filter":
+        return [x for x in coll if evaluate(expr, state, extra_names={item_var: x})]
+    # reduce
+    acc: Any = initial
+    for x in coll:
+        acc = evaluate(expr, state, extra_names={item_var: x, "acc": acc})
+    return acc
 
 
 @register_executor("data-transform")
@@ -29,7 +56,7 @@ class DataTransformExecutor:
 
     async def arun(self, state: WorkflowStateDict) -> dict[str, Any]:
         op = self.node.data.operation
-        if op not in _SUPPORTED_OPS:
+        if op not in SUPPORTED_OPS:
             raise DataTransformNodeError(
                 f"data-transform node {self.node.id!r} operation {op!r} not "
                 f"supported (need map / filter / reduce)"
@@ -55,21 +82,8 @@ class DataTransformExecutor:
         item_var = self.node.data.item_var
         expr = self.node.data.expression
 
-        output: Any
         try:
-            if op == "map":
-                output = [evaluate(expr, state, extra_names={item_var: x}) for x in coll]
-            elif op == "filter":
-                output = [x for x in coll if evaluate(expr, state, extra_names={item_var: x})]
-            else:  # reduce
-                acc: Any = self.node.data.initial
-                for x in coll:
-                    acc = evaluate(
-                        expr,
-                        state,
-                        extra_names={item_var: x, "acc": acc},
-                    )
-                output = acc
+            output = run_map_filter_reduce(op, coll, expr, item_var, self.node.data.initial, state)
         except EvalError as exc:
             raise DataTransformNodeError(
                 f"data-transform node {self.node.id!r} per-item expression: {exc}"
@@ -93,4 +107,9 @@ class DataTransformExecutor:
         }
 
 
-__all__ = ["DataTransformExecutor", "DataTransformNodeError"]
+__all__ = [
+    "SUPPORTED_OPS",
+    "DataTransformExecutor",
+    "DataTransformNodeError",
+    "run_map_filter_reduce",
+]
