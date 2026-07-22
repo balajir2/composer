@@ -11,7 +11,7 @@ export async function listExecutions(params?: {
   offset?: number;
 }): Promise<ExecutionListResponse> {
   const q = new URLSearchParams();
-  if (params?.workflowId) q.set("workflow_id", params.workflowId);
+  if (params?.workflowId) q.set("workflowId", params.workflowId);
   if (params?.limit !== undefined) q.set("limit", String(params.limit));
   if (params?.offset !== undefined) q.set("offset", String(params.offset));
   const qs = q.toString();
