@@ -8,12 +8,20 @@ restarts. All three cleanups are independently guarded, so a failure in
 any one must never skip the others — verified in multiple directions below.
 """
 
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
+from prisma.engine.errors import (
+    EngineConnectionError,  # pyright: ignore[reportMissingImports, reportAttributeAccessIssue]
+)
 
-from src.storage.db import prisma_lifespan
+from src.config import get_settings
+from src.storage.db import (
+    _connect_with_retry,  # pyright: ignore[reportPrivateUsage]
+    prisma_lifespan,
+)
 
 
 @pytest.fixture
@@ -128,3 +136,39 @@ async def test_prisma_lifespan_shutdown_cleanups_are_mutually_independent(
     close_notify_mock.assert_awaited_once()
     close_cloud_tasks_mock.assert_awaited_once()
     mock_prisma.disconnect.assert_awaited_once()
+
+
+async def test_connect_with_retry_gives_up_after_configured_max_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sustained outage (not a transient cold-start blip) must not retry
+    forever — it must stop at db_connect_max_attempts so a doomed boot fails
+    fast instead of burning ~90s of compute per Cloud Run crash-loop cycle."""
+    monkeypatch.setenv("DB_CONNECT_MAX_ATTEMPTS", "2")
+    get_settings.cache_clear()
+
+    mock_db = MagicMock()
+    mock_db.connect = AsyncMock(side_effect=EngineConnectionError("down"))
+
+    with pytest.raises(EngineConnectionError):
+        await _connect_with_retry(mock_db)
+
+    assert mock_db.connect.await_count == 2
+
+
+async def test_connect_with_retry_passes_configured_timeout_to_connect(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Each attempt's engine-spawn timeout must come from settings, not the
+    Prisma client's 10s default — a real Neon cold-start wakes in under a
+    second, so a tight per-attempt budget still tolerates it while capping
+    how long a genuinely-down database can stall a boot attempt."""
+    monkeypatch.setenv("DB_CONNECT_TIMEOUT_SECONDS", "3")
+    get_settings.cache_clear()
+
+    mock_db = MagicMock()
+    mock_db.connect = AsyncMock()
+
+    await _connect_with_retry(mock_db)
+
+    mock_db.connect.assert_awaited_once_with(timeout=timedelta(seconds=3))

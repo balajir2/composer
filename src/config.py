@@ -30,6 +30,27 @@ class Settings(BaseSettings):
         default="postgresql://composer:composer@localhost:5432/composer",
         description="Postgres connection string. Required.",
     )
+    # Startup circuit breaker (src/storage/db.py's _connect_with_retry): if
+    # the database is genuinely down (not just cold-starting), a container
+    # that spends ~90s retrying before Cloud Run kills its failed boot and
+    # respawns a new one turns an outage into a runaway compute-burning
+    # crash loop (see docs/archive/incident-history for the 2026-08 Neon
+    # free-tier exhaustion incident this defends against). Keep these tight
+    # enough that a genuinely-down DB fails a boot attempt in single-digit
+    # seconds, not tens of seconds — a real Neon cold-start wakes in under a
+    # second, so this budget is generous for the case it's meant to handle.
+    db_connect_max_attempts: int = Field(
+        default=3,
+        description="Max db.connect() attempts during startup before giving up.",
+    )
+    db_connect_timeout_seconds: float = Field(
+        default=3.0,
+        description="Per-attempt timeout for the Prisma engine to become reachable.",
+    )
+    db_connect_initial_backoff_seconds: float = Field(
+        default=0.5,
+        description="Backoff before the 2nd connect attempt; doubles each retry after.",
+    )
 
     # ─── Auth ─────────────────────────────────────
     jwt_secret: str = Field(

@@ -8,6 +8,7 @@ import asyncio
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import timedelta
 from typing import TYPE_CHECKING
 
 from fastapi import FastAPI, Request
@@ -16,6 +17,7 @@ from prisma.engine.errors import (  # pyright: ignore[reportMissingImports, repo
 )
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from src.config import get_settings
 
 if TYPE_CHECKING:
     from src.engine.events_pg import PostgresEventStore
@@ -23,34 +25,43 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 # Neon (and any serverless Postgres) auto-suspends compute after idle.  The
 # first connection wakes it, but the wake can take a few seconds; if the
 # Prisma query engine subprocess hits that latency it crashes with P1001
 # and Python sees `EngineConnectionError`.  We retry the connect a handful
 # of times with exponential backoff so the lifespan startup survives a
 # cold endpoint without operator intervention.
-_CONNECT_MAX_ATTEMPTS = 5
-_CONNECT_INITIAL_BACKOFF_SECONDS = 1.0
-
-
+#
+# Attempt count, per-attempt timeout, and backoff are deliberately tight
+# (see Settings.db_connect_* in src/config.py): a real Neon cold-start
+# wakes in under a second, but a *genuinely down* database used to make
+# each failed boot burn ~90s (5 attempts x the Prisma client's 10s default
+# engine-spawn timeout, plus backoff) before Cloud Run killed the instance
+# and respawned a new one — turning an outage into a runaway crash loop
+# that burns GCP compute with nothing to show for it (2026-08 Neon
+# free-tier exhaustion incident). Failing fast bounds that per-boot cost.
 async def _connect_with_retry(db: Prisma) -> None:  # pyright: ignore[reportUnknownParameterType]
     """Connect Prisma, retrying on EngineConnectionError to handle Neon cold-starts."""
-    backoff = _CONNECT_INITIAL_BACKOFF_SECONDS
+    settings = get_settings()
+    max_attempts = settings.db_connect_max_attempts
+    backoff = settings.db_connect_initial_backoff_seconds
+    timeout = timedelta(seconds=settings.db_connect_timeout_seconds)
     last_exc: Exception | None = None
-    for attempt in range(1, _CONNECT_MAX_ATTEMPTS + 1):
+    for attempt in range(1, max_attempts + 1):
         try:
-            await db.connect()
+            await db.connect(timeout=timeout)
             if attempt > 1:
                 logger.info("prisma: connected on attempt %d", attempt)
             return
         except EngineConnectionError as exc:
             last_exc = exc
-            if attempt == _CONNECT_MAX_ATTEMPTS:
+            if attempt == max_attempts:
                 break
             logger.warning(
                 "prisma: connect attempt %d/%d failed (%s); retrying in %.1fs",
                 attempt,
-                _CONNECT_MAX_ATTEMPTS,
+                max_attempts,
                 type(exc).__name__,
                 backoff,
             )
