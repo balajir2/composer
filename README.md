@@ -1,5 +1,7 @@
 # Composer
 
+<img width="1907" height="846" alt="image" src="https://github.com/user-attachments/assets/c0fe9110-b7dc-47a0-9e54-2ba4ac45a5d7" />
+
 > **Design, govern, and operate agentic AI workflows.**
 > Composer combines a visual workflow canvas with a durable LangGraph runtime, enterprise tools,
 > human approvals, published APIs, and node-level execution visibility.
