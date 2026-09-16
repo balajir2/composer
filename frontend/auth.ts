@@ -1,13 +1,8 @@
 import NextAuth, { type NextAuthConfig } from "next-auth";
-import type { JWT } from "next-auth/jwt";
 import AzureAD from "next-auth/providers/azure-ad";
 import Credentials from "next-auth/providers/credentials";
-import {
-  composerLogin,
-  composerMe,
-  composerRefresh,
-  composerSsoExchange,
-} from "@/lib/composer-api";
+import { composerLogin, composerMe, composerSsoExchange } from "@/lib/composer-api";
+import { refreshComposerTokens, type ComposerJwt } from "@/lib/auth-token-refresh";
 
 /**
  * Enterprise session management:
@@ -15,42 +10,15 @@ import {
  *   - Refresh token: 30 d (backend-enforced), rotating on every use.
  *   - NextAuth JWT callback refreshes access tokens proactively 60 s before
  *     expiry, so clients never see a 401 as long as the session is active.
+ *     That refresh also re-checks the current role (see
+ *     lib/auth-token-refresh.ts) so a promotion/demotion made after login
+ *     takes effect within one access-token cycle.
  *   - If refresh fails (revoked / expired / backend down), sets
  *     token.error = "RefreshAccessTokenError"; the next useSession() sees it,
  *     and the API client forces a signOut on 401.
  */
 
 const REFRESH_SKEW_SECONDS = 60;
-
-type ComposerJwt = JWT & {
-  composerAccessToken?: string;
-  composerRefreshToken?: string;
-  accessTokenExpiresAt?: number;
-  refreshTokenExpiresAt?: number;
-  role?: "admin" | "member";
-  mustChangePassword?: boolean;
-  passwordChangeToken?: string;
-  error?: "RefreshAccessTokenError";
-};
-
-async function refreshComposerTokens(token: ComposerJwt): Promise<ComposerJwt> {
-  if (!token.composerRefreshToken) {
-    return { ...token, error: "RefreshAccessTokenError" };
-  }
-  try {
-    const tokens = await composerRefresh(token.composerRefreshToken);
-    return {
-      ...token,
-      composerAccessToken: tokens.accessToken,
-      composerRefreshToken: tokens.refreshToken,
-      accessTokenExpiresAt: tokens.accessTokenExpiresAt,
-      refreshTokenExpiresAt: tokens.refreshTokenExpiresAt,
-      error: undefined,
-    };
-  } catch {
-    return { ...token, error: "RefreshAccessTokenError" };
-  }
-}
 
 export const authConfig: NextAuthConfig = {
   // NextAuth v5 enforces an "untrusted host" check in production — by
@@ -80,10 +48,7 @@ export const authConfig: NextAuthConfig = {
       async authorize(creds) {
         if (!creds?.email || !creds?.password) return null;
         try {
-          const result = await composerLogin(
-            creds.email as string,
-            creds.password as string
-          );
+          const result = await composerLogin(creds.email as string, creds.password as string);
           if ("mustChangePassword" in result) {
             return {
               id: creds.email as string,
@@ -204,6 +169,3 @@ export const authConfig: NextAuthConfig = {
 };
 
 export const { handlers, auth, signIn, signOut } = NextAuth(authConfig);
-
-// Re-export for test imports.
-export { composerRefresh };

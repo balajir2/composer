@@ -99,9 +99,9 @@ describe("composer session helpers", () => {
   it("composerChangePassword throws on non-OK response", async () => {
     mockFetch.mockResolvedValueOnce({ ok: false, status: 401 });
     const { composerChangePassword } = await import("@/lib/composer-api");
-    await expect(
-      composerChangePassword("tok-1", "wrong", "new-pw")
-    ).rejects.toThrow(/change password failed/);
+    await expect(composerChangePassword("tok-1", "wrong", "new-pw")).rejects.toThrow(
+      /change password failed/
+    );
   });
 
   it("composerForgotPassword posts email and resolves on 204", async () => {
@@ -142,5 +142,70 @@ describe("composer session helpers", () => {
     await expect(composerResetPassword("bad-token", "new-pw-12345678")).rejects.toThrow(
       /reset password failed/
     );
+  });
+
+  describe("refreshComposerTokens", () => {
+    it("re-fetches the current role from /auth/me so a promotion made after login takes effect on the next token refresh, not only on a fresh login", async () => {
+      const nowSec = Math.floor(Date.now() / 1000);
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            accessToken: "new-access",
+            refreshToken: "new-refresh",
+            accessTokenExpiresAt: nowSec + 28800,
+            refreshTokenExpiresAt: nowSec + 2592000,
+          }),
+        })
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            id: "u1",
+            email: "apurva@example.com",
+            role: "admin",
+            displayName: "Apurva Durga",
+          }),
+        });
+
+      const { refreshComposerTokens } = await import("@/lib/auth-token-refresh");
+      const result = await refreshComposerTokens({
+        composerRefreshToken: "old-refresh",
+        role: "member",
+      } as never);
+
+      expect(result.role).toBe("admin");
+      expect(result.composerAccessToken).toBe("new-access");
+      expect(mockFetch).toHaveBeenLastCalledWith(
+        expect.stringContaining("/auth/me"),
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: "Bearer new-access" }),
+        })
+      );
+    });
+
+    it("keeps the previous role when the /auth/me re-fetch fails, without failing the token refresh itself", async () => {
+      const nowSec = Math.floor(Date.now() / 1000);
+      mockFetch
+        .mockResolvedValueOnce({
+          ok: true,
+          json: async () => ({
+            accessToken: "new-access",
+            refreshToken: "new-refresh",
+            accessTokenExpiresAt: nowSec + 28800,
+            refreshTokenExpiresAt: nowSec + 2592000,
+          }),
+        })
+        .mockResolvedValueOnce({ ok: false, status: 500 });
+
+      const { refreshComposerTokens } = await import("@/lib/auth-token-refresh");
+      const result = await refreshComposerTokens({
+        composerRefreshToken: "old-refresh",
+        role: "admin",
+      } as never);
+
+      expect(result.role).toBe("admin");
+      expect(result.error).toBeUndefined();
+      expect(result.composerAccessToken).toBe("new-access");
+    });
   });
 });
