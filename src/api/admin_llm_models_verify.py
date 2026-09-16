@@ -6,9 +6,11 @@ not necessarily models the account *can invoke*.  Google ships
 non-grandfathered key tries to call it; OpenAI keeps deprecated aliases
 in the listing for weeks after they stop accepting traffic.
 
-Verify hits the model with the smallest possible call (free where the
-provider offers it, otherwise a 1-token completion) and stamps the row
-with `ok` / `unavailable` / error message.
+Verify hits the model with the smallest reliable call (free where the
+provider offers it, otherwise a minimal completion — 1 token for most
+providers, more for OpenAI to survive reasoning-model overhead, see
+`_OPENAI_PROBE_TOKEN_HEADROOM`) and stamps the row with `ok` /
+`unavailable` / error message.
 
 Auth-vs-model distinction: 401/403 is a *key* problem (don't penalise
 the model); 404 / model-not-found is a *model* problem.  We only mark
@@ -102,11 +104,17 @@ async def _verify_anthropic(model_id: str, key: str) -> ModelVerifyResult:
 
 
 def _is_openai_reasoning_model(model_id: str) -> bool:
-    """OpenAI reasoning models (o1*, o3*, o4*) reject `max_tokens` and
-    require `max_completion_tokens` — chat models accept either but
-    `max_tokens` is deprecated.  Pattern-match the prefix instead of
-    maintaining a hard-coded list so newer reasoning families pick up
-    the right shape automatically."""
+    """Historical o<N>-prefix pattern (o1, o3-mini, o4-mini, ...).
+
+    Kept only for `openai_chat_probe_body()`, which other OpenAI-compatible
+    providers (Groq, DeepSeek, Qwen) still use — their own APIs haven't
+    (as of this writing) extended `max_tokens` deprecation beyond an o<N>-
+    style reasoning family the way OpenAI's real API now has. OpenAI's own
+    probe (`_verify_openai` below) no longer uses this: as of 2026-08,
+    OpenAI rejects `max_tokens` on effectively every current model, not
+    just the o<N> family (confirmed directly against the live API — see
+    the commit that added `_openai_probe_body`), so pattern-matching by
+    name is no longer a reliable signal for OpenAI itself."""
     if not model_id:
         return False
     # Prefix shape: a single 'o' followed by a digit (o1, o3-mini, etc).
@@ -114,6 +122,8 @@ def _is_openai_reasoning_model(model_id: str) -> bool:
 
 
 def openai_chat_probe_body(model_id: str) -> dict[str, object]:
+    """Shared with Groq/DeepSeek/Qwen via `_verify_openai_compatible` —
+    NOT used by `_verify_openai` itself; see `_openai_probe_body`."""
     body: dict[str, object] = {
         "model": model_id,
         "messages": [{"role": "user", "content": "hi"}],
@@ -125,16 +135,36 @@ def openai_chat_probe_body(model_id: str) -> dict[str, object]:
     return body
 
 
+# Empirically verified against the live API (2026-09): a 1-token budget
+# gets consumed entirely by a reasoning model's hidden reasoning_content
+# before any visible output, producing a 400 whose message contains the
+# word "model" -- which _classify() misreads as model-unavailable, same
+# false-negative failure mode as the wrong parameter name. 16 tokens of
+# headroom was sufficient for every current model tested (gpt-5.x,
+# gpt-6-astra, o1, o3-mini, o4-mini).
+_OPENAI_PROBE_TOKEN_HEADROOM = 16
+
+
+def _openai_probe_body(model_id: str) -> dict[str, object]:
+    """OpenAI's real API now rejects `max_tokens` on effectively every
+    current model (gpt-5.x, gpt-6-astra, o1/o3/o4), not just an o<N>-named
+    reasoning family -- always send `max_completion_tokens`, never guess
+    by model name."""
+    return {
+        "model": model_id,
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_completion_tokens": _OPENAI_PROBE_TOKEN_HEADROOM,
+    }
+
+
 async def _verify_openai(model_id: str, key: str) -> ModelVerifyResult:
-    # Use chat/completions with the smallest possible call — every
+    # Use chat/completions with the smallest reliable call — every
     # chat-capable model accepts this shape, and retired ones return
-    # 404 / model_not_found before we burn tokens.  Reasoning models
-    # need `max_completion_tokens` instead of the deprecated `max_tokens`,
-    # so dispatch by model name.
+    # 404 / model_not_found before we burn meaningful tokens.
     resp = await _post(
         "https://api.openai.com/v1/chat/completions",
         headers={"Authorization": f"Bearer {key}", "content-type": "application/json"},
-        json=openai_chat_probe_body(model_id),
+        json=_openai_probe_body(model_id),
     )
     status = _classify(resp.status_code, resp.text)
     msg = (
