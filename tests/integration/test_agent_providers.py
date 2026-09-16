@@ -34,7 +34,7 @@ async def _poll_until_terminal(
         ("anthropic", "anthropic/claude-haiku-4-5-20251001", "ANTHROPIC_API_KEY"),
         ("openai", "openai/gpt-5-nano", "OPENAI_API_KEY"),
         ("google", "google/gemini-2.5-flash", "GOOGLE_API_KEY"),
-        ("groq", "groq/llama-3.3-70b-versatile", "GROQ_API_KEY"),
+        ("groq", "groq/openai/gpt-oss-120b", "GROQ_API_KEY"),
     ],
 )
 async def test_start_agent_end_real_provider(

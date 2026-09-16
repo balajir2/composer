@@ -51,7 +51,7 @@ def test_groq_returns_chat_groq(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()
     from langchain_groq import ChatGroq  # pyright: ignore[reportMissingImports]
 
-    model = build_chat_model("groq/llama-3.3-70b-versatile")
+    model = build_chat_model("groq/openai/gpt-oss-120b")
     assert isinstance(model, ChatGroq)
 
 

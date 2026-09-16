@@ -213,7 +213,7 @@ async def test_agent_respects_max_iterations(
         ("anthropic", "anthropic/claude-3-5-haiku-latest"),
         ("openai", "openai/gpt-5-nano"),
         ("google", "google/gemini-2.0-flash"),
-        ("groq", "groq/llama-3.3-70b-versatile"),
+        ("groq", "groq/openai/gpt-oss-120b"),
     ],
 )
 async def test_agent_runs_for_each_provider(
