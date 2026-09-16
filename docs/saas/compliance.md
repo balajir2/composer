@@ -29,7 +29,7 @@ We are working toward SOC 2 Type II. A pre-audit gap assessment was completed an
 
 | Trust Services Criterion | What we have | Gap to Type II readiness |
 |---|---|---|
-| **CC1 — Control environment** | Bounteous-level governance + Composer-specific code review + ADR-backed change management | Formal information-security policy needs sign-off |
+| **CC1 — Control environment** | Org-level governance + Composer-specific code review + ADR-backed change management | Formal information-security policy needs sign-off |
 | **CC2 — Communication & information** | All policies in this folder + onboarding docs | Internal policy distribution log |
 | **CC3 — Risk assessment** | Threat model in [security.md](security.md); incident-class write-ups in [archive/incident-history](../archive/incident-history/) | Annual formal risk-assessment ritual |
 | **CC4 — Monitoring** | Per-route logging, per-execution audit, optional LangSmith tracing | Continuous-monitoring tooling (vendor TBD) |

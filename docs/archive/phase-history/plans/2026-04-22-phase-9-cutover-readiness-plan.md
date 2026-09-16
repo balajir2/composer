@@ -233,7 +233,7 @@ Expected: `composer --help` invokable from any directory.
 
 `npx convex export` emits one JSON per table under <export-dir>/.  Each
 file is a line-delimited JSON (JSONL).  We read them into memory because
-Bounteous-internal OAB is small (handfuls of users).
+Internal OAB is small (handfuls of users).
 """
 
 from __future__ import annotations
@@ -657,8 +657,8 @@ __all__ = ["MigrationReport", "run_migration"]
 
 `tests/fixtures/convex_export/users.jsonl`:
 ```
-{"_id":"oab-user-a","clerkId":"user_2alice","email":"ALICE@bounteous.com","name":"Alice"}
-{"_id":"oab-user-b","clerkId":"user_2bob","email":"bob@bounteous.com","name":"Bob"}
+{"_id":"oab-user-a","clerkId":"user_2alice","email":"ALICE@example.com","name":"Alice"}
+{"_id":"oab-user-b","clerkId":"user_2bob","email":"bob@example.com","name":"Bob"}
 ```
 
 `tests/fixtures/convex_export/workflows.jsonl`:
@@ -977,7 +977,7 @@ NULL filter means re-running only touches still-orphaned rows.
 Exits 1 with clear error if no user matches the email.
 
 Run at cutover: after a user registers/SSOs into Composer, ops runs
-  composer reconcile --email <user@bounteous.com>
+  composer reconcile --email <user@example.com>
 and their migrated workflows become accessible.
 
 See Phase 9 spec §4.3.
@@ -1039,7 +1039,7 @@ async def test_migration_and_reconciliation_cycle(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     db: Any = app.state.db
-    email_a = f"phase9-a-{secrets.token_hex(6)}@bounteous.test"
+    email_a = f"phase9-a-{secrets.token_hex(6)}@example.test"
 
     oab_users = [
         {"_id": "oab-u-a", "clerkId": "user_2A", "email": email_a.upper(), "name": "Alice"},
@@ -2833,8 +2833,8 @@ _MINIMAL: dict[str, Any] = {
 
 async def test_ws_two_user_authz(client: AsyncClient, app: FastAPI) -> None:
     db: Any = app.state.db
-    a_email = f"ws-a-{secrets.token_hex(6)}@bounteous.test"
-    b_email = f"ws-b-{secrets.token_hex(6)}@bounteous.test"
+    a_email = f"ws-a-{secrets.token_hex(6)}@example.test"
+    b_email = f"ws-b-{secrets.token_hex(6)}@example.test"
     password = "correct-horse-battery-staple"
     user_a_id: str | None = None
     user_b_id: str | None = None
@@ -3124,7 +3124,7 @@ Append a new ADR section after ADR-0021, following the existing format:
 1. **No user migration.** OAB's `users` table is not copied. Clerk IDs are dropped. Email is the stable cross-system identity used for reconciliation.
 2. **Email-based reconciliation.** Migrated rows carry `original_owner_email` (nullable, lower-cased); `user_id = NULL` until a Composer User with the matching email exists, after which `composer reconcile --email X` or `PATCH /workflows/{id}/owner` claims the rows. `original_owner_email` stays indefinitely as an audit column.
 3. **Admin read/publish bypass; no admin DELETE bypass.** Admins see all workflows/executions/events and can PUT any workflow (including flipping `isPublic`). DELETE remains strict owner-only to avoid silent destructive bypass.
-4. **LLM keys in Postgres; Vercel sync at deploy time.** Bounteous owns the source of truth. Runtime reads env vars (unchanged); `composer keys sync --target vercel` pushes the decrypted values to Vercel env at deploy.
+4. **LLM keys in Postgres; Vercel sync at deploy time.** Composer owns the source of truth. Runtime reads env vars (unchanged); `composer keys sync --target vercel` pushes the decrypted values to Vercel env at deploy.
 5. **WebSocket replaces SSE atomically.** Event bus switches to DES-007 event shapes in the same commit that deletes the SSE endpoint. No transitional window; no "legacy SSE" endpoint kept.
 6. **DES-007 event contract from blueprint.** Phase 9 uses the event shape documented in Composer's own `2026-04-15-composer-03-engineering-blueprint.md` §7.3. Verification against IE source is a Phase 10 pre-work checkpoint — any drift gets fixed as a bugfix commit then.
 7. **Skip approvals + LangGraph checkpoints migration.** Approvals are audit-only data; JS checkpoints are Python-incompatible. In-flight OAB executions are not recoverable on Composer.
@@ -3134,7 +3134,7 @@ Append a new ADR section after ADR-0021, following the existing format:
 - **Post-cutover manual step:** ops runs `composer reconcile --email X` once per user (automatable via post-login hook in Phase 10 SSO).
 - **Admins exist but have no self-serve promote endpoint** — requires DB write.
 - **One-time data loss:** any OAB execution in `running`/`waiting_approval` when cutover happens becomes a `failed` record with an explanatory error. Acceptable given the internal user base.
-- **Vercel lock-in for LLM keys is mitigated:** keys live in Bounteous-owned Postgres; Vercel can be replaced without losing the keys.
+- **Vercel lock-in for LLM keys is mitigated:** keys live in Composer-owned Postgres; Vercel can be replaced without losing the keys.
 - **WebSocket-only streaming** means dev tooling can't use `curl` for live events anymore. Alternative: small Python WS client for ad-hoc debugging.
 
 **Implemented by.** Phase 9 (commits `<FIRST_SHA>`…`<LAST_SHA>` on `main`, 2026-04-22).

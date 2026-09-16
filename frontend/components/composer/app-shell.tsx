@@ -18,9 +18,8 @@ export function AppShell({
 
   return (
     <div className="flex min-h-screen">
-      {/* Bounteous-branded sidebar: vertical deep-purple gradient, white
-          text, pink active indicator.  Mirrors the brand system from
-          Bounteous AI Efficiency (public/shared/styles.css). */}
+      {/* Branded sidebar: vertical deep-purple gradient, white
+          text, pink active indicator. */}
       <aside className="flex w-64 flex-col bg-brand-gradient">
         <Link
           href="/"

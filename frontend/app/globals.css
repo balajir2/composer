@@ -10,10 +10,8 @@
 
 @layer base {
   /* ────────────────────────────────────────────────────────────────────
-   * Bounteous brand tokens — mirrors
-   * D:/GitHub/Bounteous AI Efficiency/public/shared/styles.css.
-   * These are the raw brand values; the semantic tokens below map them
-   * into shadcn's theme slots so every component picks up the brand.
+   * Brand tokens — the raw brand values; the semantic tokens below map
+   * them into shadcn's theme slots so every component picks up the brand.
    * ──────────────────────────────────────────────────────────────── */
   :root {
     --brand-deep: #2e1869;
@@ -43,7 +41,7 @@
     --popover: #ffffff;
     --popover-foreground: #3f3e46;
 
-    /* Primary — Bounteous deep purple */
+    /* Primary — deep purple */
     --primary: #2e1869;
     --primary-foreground: #ffffff;
 
@@ -140,7 +138,7 @@
   h2,
   h3,
   h4 {
-    /* Tighter heading tracking matches the Bounteous brand's display feel. */
+    /* Tighter heading tracking matches the brand's display feel. */
     color: var(--brand-deep);
     letter-spacing: -0.01em;
   }
@@ -187,7 +185,7 @@
 
 /* React Flow defaults are too thin against our coloured chips — bump
  * edge stroke + add a soft drop shadow so connections read clearly on
- * the Bounteous-tinted background. */
+ * the brand-tinted background. */
 .react-flow__edge-path {
   stroke: var(--brand-purple);
   stroke-width: 2;
@@ -208,7 +206,7 @@
 }
 
 /* ---------------------------------------------------------------------------
- * Bounteous utilities — available to any component that wants the branded
+ * Brand utilities — available to any component that wants the branded
  * gradient surfaces without re-declaring them.
  * ------------------------------------------------------------------------- */
 

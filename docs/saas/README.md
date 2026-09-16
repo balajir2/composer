@@ -3,10 +3,10 @@
 > **Maintained by:** Balaji Rajan (`balajirajan@gmail.com`)
 
 This folder contains proposed customer-facing and operational-commercial documentation for
-founders, security reviewers, prospective enterprise customers, and teams evaluating a managed
-Composer service. Start with the [Investor Overview](../investor-overview.md) for the product and
-investment narrative. Commercial, legal, SLA, and compliance language remains draft material until
-reviewed and adopted by the relevant business, security, and legal owners.
+security reviewers, prospective enterprise customers, and teams evaluating a managed Composer
+service. Start with [overview.md](overview.md) for the product shape and deployment model.
+Commercial, legal, SLA, and compliance language remains draft material until reviewed and adopted
+by the relevant business, security, and legal owners.
 
 ## What's here
 
@@ -37,7 +37,7 @@ incident response, DR, observability, and scaling.
 
 ## Status & honesty
 
-Composer is a **deliberate Python rebuild** of [Open Agent Builder](https://github.com/balajir2/open-agent-builder), built on a stack that mirrors Bounteous's Intelligent Engineering platform. Phases 0–10 are complete; the platform runs end-to-end with FastAPI + Postgres + LangGraph + Next.js.
+Composer is a **deliberate Python rebuild** of [Open Agent Builder](https://github.com/balajir2/open-agent-builder), built on a stack chosen for enterprise-platform integration. Phases 0–10 are complete; the platform runs end-to-end with FastAPI + Postgres + LangGraph + Next.js.
 
 The **deployment topology we run today is single-tenant per environment** — one Composer instance, one Postgres database, one Vercel/Fly host, one set of customer accounts. We have not yet shipped a shared-tenant SaaS where multiple customer organisations live in the same database. [multi-tenancy.md](multi-tenancy.md) explains the trade-offs and the path to a shared model when a customer needs it.
 

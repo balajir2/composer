@@ -3,9 +3,8 @@
 > **Audience:** procurement, finance, customer admins evaluating plan tiers.
 > **Maintained by:** Balaji Rajan (`balajirajan@gmail.com`)
 > **Status:** **Commercial hypothesis, not a live price sheet.** The tiers, quotas, overages, and
-> managed-service commitments below are proposed packaging for fundraising and customer discovery.
-> They are not implemented billing controls and are not contractual unless included in a signed
-> agreement.
+> managed-service commitments below are proposed packaging for customer discovery. They are not
+> implemented billing controls and are not contractual unless included in a signed agreement.
 
 ## Plan shape
 

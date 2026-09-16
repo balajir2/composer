@@ -14,7 +14,7 @@
 
 ## Scope note (platform vs. customer flow)
 
-This is generic platform capability — no Macy's-specific paths, filenames, or content appears anywhere in this plan's code. A future Feature 2 workflow will *use* this node with its own configuration, which is out of scope here.
+This is generic platform capability — no customer-specific paths, filenames, or content appears anywhere in this plan's code. A future workflow will *use* this node with its own configuration, which is out of scope here.
 
 ---
 

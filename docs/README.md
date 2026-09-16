@@ -8,7 +8,6 @@ Pick the doc that matches what you're trying to do.
 
 | ...do this | ...read this |
 |---|---|
-| **Evaluate Composer as an investor or strategic partner** | [investor-overview.md](investor-overview.md) |
 | **Review every shipped product capability** | [product-capabilities.md](product-capabilities.md) |
 | **Understand what Composer is and why it exists** | [overview.md](overview.md) |
 | **Run Composer locally and build my first workflow** | [getting-started.md](getting-started.md) |
@@ -24,7 +23,6 @@ Pick the doc that matches what you're trying to do.
 
 ## By role
 
-- **Investor / strategic partner** — [investor-overview.md](investor-overview.md) → [product-capabilities.md](product-capabilities.md) → [architecture.md](architecture.md).
 - **First-time visitor / stakeholder** — start with [overview.md](overview.md), then skim [product-capabilities.md](product-capabilities.md).
 - **Workflow designer / business user** — [getting-started.md](getting-started.md) → [designer-guide.md](designer-guide.md) → [user-training-flow-setup.md](user-training-flow-setup.md) for worked examples.
 - **Engineer adding a new node or fixing a bug** — [architecture.md](architecture.md) → [decisions.md](decisions.md). Phase-specific design specs are under [archive/phase-history/](archive/phase-history/).
@@ -63,7 +61,7 @@ The deeper operational runbooks are under [operations/](operations/) — see the
 
 `docs/archive/` holds material that was load-bearing during the rebuild but is no longer needed for daily reference:
 
-- **`design-history/`** — the six 2026-04-15 brainstorming docs, the 2026-04-20 Python port design, and David Lawton's IE critique. Useful for understanding *why* Composer is the way it is.
+- **`design-history/`** — the remaining 2026-04-15 brainstorming docs and the 2026-04-20 Python port design. Useful for understanding *why* Composer is the way it is.
 - **`phase-history/`** — phase-by-phase implementation specs (`specs/`) and plans (`plans/`) from Phases 1–10. The code that resulted is what's authoritative now; these are kept for traceability.
 - **`incident-history/`** — postmortems and defect-class write-ups, with status headers showing what landed in Composer for each.
 

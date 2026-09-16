@@ -460,7 +460,7 @@ Three steps to make a workflow callable as `POST /api/run/{slug}`:
 2. **Generate an API key** at [/runs/api-keys](http://localhost:3000/runs/api-keys). The plaintext `ck_...` value shows once.
 3. **Call the endpoint**:
    ```bash
-   curl -X POST "https://composer.bounteous.com/api/run/my-workflow" \
+   curl -X POST "https://composer.example.com/api/run/my-workflow" \
      -H "Authorization: Bearer ck_YOUR_KEY" \
      -H "Content-Type: application/json" \
      -d '{"input": {"question": "..."}, "sync": true, "timeoutSeconds": 90}'

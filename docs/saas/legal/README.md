@@ -36,7 +36,7 @@ The templates assume:
 - **A B2B SaaS business model.** They reference plan tiers and contract structures from [pricing.md](../pricing.md). They don't presume a free B2C consumer product.
 - **GDPR / CCPA in scope.** The privacy materials map cleanly onto European + Californian regimes. Other regimes (LGPD, PIPEDA, APPI, India's DPDP) are addressable but not pre-written.
 - **No HIPAA, PCI, FedRAMP, or other regulated-data regime out of the box.** See [compliance.md](../compliance.md) for the stance on each. Where these regimes matter, materially revised contractual language is required.
-- **Bounteous as the default contracting entity.** Replace with your legal entity and governing law throughout.
+- **A placeholder default contracting entity.** Replace with your legal entity and governing law throughout.
 - **Sub-processors limited to the list in [subprocessors.md](subprocessors.md).** Adding a new third party means updating the sub-processor list, notifying customers per the change-notice protocol, and revising the privacy policy if user-visible.
 
 ## Change-notification protocol

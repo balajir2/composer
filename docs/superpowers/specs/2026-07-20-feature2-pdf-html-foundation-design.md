@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-20
 **Status:** Approved (design phase) — implementation plan not yet written
-**Origin:** Macy's "Jira-Driven Weekly Tracking & Executive Project Reporting" BRD, Feature 2
+**Origin:** a customer's "Jira-Driven Weekly Tracking & Executive Project Reporting" BRD, Feature 2
 (Executive Weekly Report in HTML/PDF). This is new platform capability built on top of the
 already-complete Composer engine and the Jira/Confluence foundation shipped 2026-07-19 — not
 OAB-parity work, does not touch `D:/GitHub/open-agent-builder`.

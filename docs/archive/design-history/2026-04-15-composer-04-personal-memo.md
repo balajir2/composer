@@ -81,7 +81,7 @@ The exec doc has a nice story. The reality:
 - **Sales cycles are slow.** "Faster GTM" doesn't mean revenue in a quarter. It means the first demo and the first signed pilot. Real revenue from Composer is 2+ quarters out from first demo.
 - **Customers don't ask for "low-code" features by name.** They ask for specific things ("I need the AC Validator to post to Slack"). Composer lets us answer those asks without coding. Frame it that way, not as a feature.
 - **Competition exists.** LangFlow, Flowise, n8n (with AI nodes), LangSmith Studio. None have IE's enterprise wrapper, but all are faster to try. Positioning has to hammer enterprise governance + IE-specific integrations.
-- **Internal competition.** Bounteous engineering might be skeptical of low-code. "Why should I compose a workflow when I can just code the agent?" Answer: because the customer isn't you. They can't code. That's the whole point.
+- **Internal competition.** Engineering might be skeptical of low-code. "Why should I compose a workflow when I can just code the agent?" Answer: because the customer isn't you. They can't code. That's the whole point.
 
 ---
 

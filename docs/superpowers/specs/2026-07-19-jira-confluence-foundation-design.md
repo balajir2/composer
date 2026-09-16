@@ -2,12 +2,10 @@
 
 **Date:** 2026-07-19
 **Status:** Approved (design phase) — implementation plan not yet written
-**Origin:** Macy's "Jira-Driven Weekly Tracking & Executive Project Reporting" BRD
-(`D:\Factspan\FlowComposer\Macys_JIRA_Weekly_Tracking_and_Executive_Reporting_BRD.pdf`) and its
-two master prompts (`D:\Factspan\FlowComposer\Master Prompts.pdf`). This is **not** OAB-parity
-work and does not touch `D:/GitHub/open-agent-builder` — it is new platform capability built on
-top of the already-complete Composer engine (Phases 0–10), in service of a real customer
-workflow request.
+**Origin:** a customer's "Jira-Driven Weekly Tracking & Executive Project Reporting" BRD and its
+two master prompts. This is **not** OAB-parity work and does not touch
+`D:/GitHub/open-agent-builder` — it is new platform capability built on top of the already-complete
+Composer engine (Phases 0–10), in service of a real customer workflow request.
 
 ## Why this spec exists
 
@@ -67,7 +65,7 @@ relevant in this mode:
 implementation used `POST /rest/api/3/search` with `startAt` offset pagination against Jira's
 reported `total`. Atlassian removed that endpoint in production the same day (HTTP 410 —
 "migrate to `/rest/api/3/search/jql`", changelog CHANGE-2046), discovered when the user's actual
-first run of the Macy's workflow hit it live. The executor now calls `POST /rest/api/3/search/jql`
+first run of the customer workflow hit it live. The executor now calls `POST /rest/api/3/search/jql`
 and paginates via an opaque `nextPageToken`: present in the response when more pages exist, absent
 on the last page. Atlassian also dropped the `total` count from the response entirely — there is
 no longer any way to know the true matching-issue count without fetching all of it. `maxIssues` is
@@ -95,16 +93,17 @@ metric calculation, and diligence scoring (per the earlier user decision: determ
 LLM only for narrative prose) — that logic belongs to the Feature 1/2 workflow specs, not to
 this executor.
 
-**Story Points field, confirmed:** despite `MB` being a Jira Core / Work Management project
-(where a points field is not a given), the Factspan Jira instance does have one:
+**Story Points field, confirmed:** despite the test project being a Jira Core / Work Management
+project (where a points field is not a given), the test Jira instance does have one:
 `customfield_10026` ("Story Points", type `float`), confirmed via
-`GET /rest/api/3/search?jql=project=MB&fields=*all` against the real instance. This closes the
-open question raised earlier in this spec (whether `MB` has a points-equivalent field at all —
-it does) and unblocks BR-01–BR-03 for the Macy's flow.
+`GET /rest/api/3/search?jql=project=<project>&fields=*all` against the real instance. This closes
+the open question raised earlier in this spec (whether the project has a points-equivalent field
+at all — it does) and unblocks BR-01–BR-03 for the customer's flow.
 
 This is strictly **customer-flow configuration, not a platform default.** The `extract`
-operation's `fields` list has no built-in default at all — every workflow (Macy's or otherwise)
-supplies its own field list explicitly. `customfield_10026` belongs only in the Feature 1/2
+operation's `fields` list has no built-in default at all — every workflow (this customer's or
+otherwise) supplies its own field list explicitly. `customfield_10026` belongs only in the
+Feature 1/2
 workflow's node configuration (a future sub-project), never in this executor's code or schema
 defaults — a different customer's Jira instance will have a different (or no) points field ID,
 and the platform node must not encode assumptions about any one tenant's field layout.
@@ -180,7 +179,7 @@ own page-history), and requires no new database table or filesystem dependency.
   `found: false` on no match rather than raising; `get_property`/`set_property` round-trip
   arbitrary JSON; credential encryption/redaction tests mirroring the existing Jira
   credential-encryption test pattern (`tests/unit/api/test_workflows_jira_tokens.py`).
-- **Real end-to-end verification**: happens against the user's actual Factspan Jira/Confluence
+- **Real end-to-end verification**: happens against the user's actual Jira/Confluence instance
   once credentials are entered locally (in their own `.env` or through the Designer UI once
   it's running) — never shared with or read by the implementing agent.
 

@@ -1,2 +1,2 @@
-{"_id":"oab-user-a","clerkId":"user_2alice","email":"ALICE@bounteous.com","name":"Alice"}
-{"_id":"oab-user-b","clerkId":"user_2bob","email":"bob@bounteous.com","name":"Bob"}
+{"_id":"oab-user-a","clerkId":"user_2alice","email":"ALICE@example.com","name":"Alice"}
+{"_id":"oab-user-b","clerkId":"user_2bob","email":"bob@example.com","name":"Bob"}

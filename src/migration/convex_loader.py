@@ -2,7 +2,7 @@
 
 `npx convex export` emits one JSON per table under <export-dir>/.  Each
 file is a line-delimited JSON (JSONL).  We read them into memory because
-Bounteous-internal OAB is small (handfuls of users).
+the source deployment is small (handfuls of users).
 """
 
 from __future__ import annotations

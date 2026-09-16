@@ -28,7 +28,7 @@ Whether you self-host or we host for you, the contract is the same. Each Compose
 - **4 LLM providers** (Anthropic, OpenAI, Google, Groq) with per-model verification and auto-disable on retirement
 - **5 vector DB connectors** (Pinecone, Qdrant, Chroma, Weaviate, Milvus) with query + upsert
 - **6 built-in tool providers** (Tavily, Firecrawl, Serper, Browserless, Gamma, Arcade) plus full **MCP support** (static auth + OAuth flow, including Highspot-grade RFC 8707)
-- **Three auth modes**: Standalone JWT (local accounts, with self-service password reset), Embedded JWT (drop into Bounteous IE), or Azure AD SSO via NextAuth
+- **Three auth modes**: Standalone JWT (local accounts, with self-service password reset), Embedded JWT (drop into a host platform's auth), or Azure AD SSO via NextAuth
 - **Per-user API keys** for external invokes
 - **Real-time WebSocket streaming** of node-by-node execution events
 - **Durable execution** — runs survive a Cloud Run instance scaling to zero mid-flight, via Google Cloud Tasks + a Postgres-backed claim/lease/sweep model
@@ -45,7 +45,7 @@ Composer is deployment-mode aware. The same code base runs in any of the topolog
 |---|---|---|
 | **Customer self-host** | You run Composer in your own cloud (Postgres + a container host + optional CDN). We provide the code + runbooks. | Customers with an existing platform team and a strict data-residency requirement |
 | **Composer-managed (single-tenant)** | We run a Composer instance dedicated to your organisation in a region of your choice. Your data never sits in shared infrastructure. | Mid-market and enterprise customers; the default for new deals today |
-| **Embedded into Bounteous IE** | Composer slots in as a module of Bounteous's Intelligent Engineering platform. Auth, tenancy, and billing roll up to IE. | Customers who already have an IE relationship |
+| **Embedded into a host platform** | Composer slots in as a module of a larger internal platform. Auth, tenancy, and billing roll up to the host. | Customers who already run their own multi-product internal platform |
 
 A future **shared-tenant** offering — many customer organisations in one Composer instance — is on the roadmap but not shipping yet. See [multi-tenancy.md](multi-tenancy.md) for the isolation analysis and migration path.
 
@@ -55,21 +55,21 @@ Stack we're committed to (see [`../decisions.md`](../decisions.md) for the ratio
 
 | Layer | Choice | Why we picked it |
 |---|---|---|
-| Runtime | Python 3.11 / 3.12 | Aligns with IE; widest LangGraph + LangChain ecosystem |
-| Web framework | FastAPI | Async-first; OpenAPI auto-generated; matches IE's transport pattern |
-| ORM | Prisma Python | Type-safe schema-first ORM; same generator IE uses |
+| Runtime | Python 3.11 / 3.12 | Widest LangGraph + LangChain ecosystem |
+| Web framework | FastAPI | Async-first; OpenAPI auto-generated |
+| ORM | Prisma Python | Type-safe, schema-first ORM |
 | Database | Postgres 15+ (Neon recommended) | Battle-tested transactional store; PITR available |
 | Orchestration | LangGraph Python + LangChain | Resumable state machines with first-class checkpoint persistence |
 | Frontend | Next.js 14 + Tailwind + shadcn/ui | Modern App Router; the canvas uses React Flow |
 | Auth | NextAuth v5 + Composer JWT (HS256) + per-user API keys | Three-layer model — covers SSO, password, and machine-to-machine |
-| Real-time | WebSocket | Long-lived connections for execution events; matches IE `DES-007` |
+| Real-time | WebSocket | Long-lived connections for execution events |
 | Encryption at rest | `cryptography` AES-256-GCM | NIST-blessed; what we use to protect API keys + OAuth tokens |
 | Sandboxed eval | `simpleeval` (never `eval()`) | The eval surface is restricted to sandboxed expression evaluation |
 | Code execution sandbox | `e2b_code_interpreter` | When workflows need real Python execution |
 
 ## Why Composer exists
 
-We built Composer because Open Agent Builder — the TypeScript/Convex predecessor — couldn't slot into Bounteous's Intelligent Engineering platform. The decision to rebuild instead of port was deliberate: the goal was Python on the IE stack from day one, with internal architecture free to be cleaner than OAB's. The completion bar is **behavioural parity** (OAB's regression suite must pass against Composer), not structural parity.
+We built Composer because Open Agent Builder — the TypeScript/Convex predecessor — couldn't slot into the broader internal platform it needed to integrate with. The decision to rebuild instead of port was deliberate: the goal was a Python, enterprise-ready stack from day one, with internal architecture free to be cleaner than OAB's. The completion bar is **behavioural parity** (OAB's regression suite must pass against Composer), not structural parity.
 
 This matters for customers because:
 

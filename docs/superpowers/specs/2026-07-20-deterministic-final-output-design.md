@@ -11,7 +11,7 @@ data-loss bug rather than a hypothetical one — plus an explicit `join` node ty
 topic. The rest of P0-8 (reachability computed from the wrong edge set, Start/End edge direction
 misuse beyond what this spec adds, cycle detection for non-`While` loops, a unified
 validation/compilation graph representation) stays a separate, future backlog item — no
-Macy's-specific or other customer-specific literals appear anywhere in this design; this is generic
+customer-specific literals appear anywhere in this design; this is generic
 platform capability.
 
 ## Why this spec exists

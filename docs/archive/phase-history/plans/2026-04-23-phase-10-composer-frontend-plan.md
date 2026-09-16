@@ -5470,7 +5470,7 @@ refactor(frontend): accessibility + design system consistency pass (Phase 10f)
   Label htmlFor; every Dialog has DialogTitle.
 - Tailwind config: Inter font via next/font, 8px spacing conventions
   in place, border-radius uses --radius CSS variable for later
-  Bounteous re-theming.
+  custom re-theming.
 
 Adds @axe-core/playwright dev dep used by Task 23.
 
@@ -5699,7 +5699,7 @@ Phase 10 assumes option 1 for production deployment.
 
 1. **Register an app** in Azure AD → App Registrations → New Registration.
    - Name: `Composer (prod)` (or env-specific).
-   - Supported account types: Single tenant (your Bounteous tenant).
+   - Supported account types: Single tenant (your organization's tenant).
    - Redirect URI: `Web` → `https://composer.your-domain/api/auth/callback/azure-ad`.
 2. **Note the IDs:**
    - Application (client) ID → maps to `AZURE_AD_CLIENT_ID` (frontend NextAuth) and `SSO_AZURE_AD_EXPECTED_AUDIENCE` (backend, prefixed `api://` if you add an API scope).
@@ -5894,7 +5894,7 @@ Append after ADR-0022:
 1. **Fresh UX, not OAB visual port.** OAB is behavioral reference; frontend built fresh in Next.js 14 App Router + Tailwind + shadcn/ui (Radix primitives).
 2. **Monorepo under `composer/frontend/`.** Not a separate repo. OpenAPI TS types generated in-place from Composer's FastAPI schema.
 3. **Single Next.js app, role-aware routes.** `/designer/*`, `/runs/*`, `/admin/*` guarded at layout level. One build, one deploy.
-4. **Tailwind + shadcn/ui over Ant/Mantine.** Radix primitives copied into the repo; full design control; CSS variables hook for future Bounteous branding.
+4. **Tailwind + shadcn/ui over Ant/Mantine.** Radix primitives copied into the repo; full design control; CSS variables hook for future custom branding.
 5. **Three audiences, not two.** Admin added as first-class with dedicated UI (user management, catalog publishing, LLM keys, workflow override).
 6. **Unified Tools palette for designers.** Built-in providers + shared MCPs merge into one palette; architectural distinction hidden from designers (visible only in Admin UI).
 7. **Email as Azure SSO identity link.** Phase 9's email-as-cross-system-identity extended to Azure AD via `/auth/sso-exchange`. Standalone `/auth/login` preserved. `User.passwordHash` nullable.

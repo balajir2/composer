@@ -109,7 +109,6 @@ Next.js/React/React Flow lines. See [Architecture](architecture.md) and
 
 ## Evidence and diligence
 
-- [Investor Overview](investor-overview.md) — market/product narrative and diligence index.
 - [Product Capabilities](product-capabilities.md) — shipped feature catalogue.
 - [Architecture](architecture.md) — runtime and data flow.
 - [API Reference](api-reference.md) — integration contract.

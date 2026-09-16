@@ -8,7 +8,7 @@
 
 ## 1. Goal
 
-Ship Composer as a usable enterprise product with a fresh UX built for three distinct audiences — **Designer**, **End User**, **Admin** — atop the Phase 0–9 backend. Users log in via Bounteous Azure SSO or standalone email/password; Designers build workflows; End Users run published workflows via UI or external API; Admins manage users and publish tools/MCPs to a shared catalog. Every published workflow is callable from outside the app via a stable, API-key-authenticated URL.
+Ship Composer as a usable enterprise product with a fresh UX built for three distinct audiences — **Designer**, **End User**, **Admin** — atop the Phase 0–9 backend. Users log in via Azure SSO or standalone email/password; Designers build workflows; End Users run published workflows via UI or external API; Admins manage users and publish tools/MCPs to a shared catalog. Every published workflow is callable from outside the app via a stable, API-key-authenticated URL.
 
 **Concretely:**
 - Fresh Next.js 14 frontend under `composer/frontend/` (monorepo, not a separate repo).
@@ -23,12 +23,12 @@ Ship Composer as a usable enterprise product with a fresh UX built for three dis
 
 - **No OAB visual port.** OAB's UI is not reproduced. UX is re-designed for enterprise audiences; OAB is behavioral reference only.
 - **No per-workflow version snapshots.** Editing a production workflow updates the latest; no historical versioning in this phase. (If a workflow is being actively invoked externally, designers should test in a draft copy — no tooling enforces this yet.)
-- **No group-based access.** Phase 10 ships role-based access only (public = any authenticated user + any API key; private = owner + admin). Group-based ACL is a future phase if Bounteous-internal scale demands it.
+- **No group-based access.** Phase 10 ships role-based access only (public = any authenticated user + any API key; private = owner + admin). Group-based ACL is a future phase if internal scale demands it.
 - **No Convex → Composer data bridge in the frontend.** Phase 9's one-shot `composer migrate` already moved OAB data; the frontend only talks to Composer's REST/WS.
-- **No multi-tenant segmentation.** Single-tenant (Bounteous-internal). Tenant-scoping is a Phase 11+ concern if Composer is productized externally.
+- **No multi-tenant segmentation.** Single-tenant (internal). Tenant-scoping is a Phase 11+ concern if Composer is productized externally.
 - **No self-serve password reset.** Users who forget their password contact an admin (DB `UPDATE`). `/auth/forgot-password` flow deferred.
 - **No API-key rotation automation.** Users create keys, revoke them, and create new ones manually. No "rotate key" convenience endpoint.
-- **No branded white-labeling.** Enterprise look but Composer-default theming (with CSS-variable hooks so Bounteous theming can be applied later as a small PR).
+- **No branded white-labeling.** Enterprise look but Composer-default theming (with CSS-variable hooks so custom theming can be applied later as a small PR).
 - **No offline / PWA.** Frontend assumes connectivity; online-only.
 - **No mobile-first.** Desktop-first, mobile-tolerable for the End User UI only; Designer and Admin are desktop-only.
 
@@ -220,7 +220,7 @@ composer/
 
 - **Next.js 14+** App Router (RSC + server actions where helpful).
 - **TypeScript** strict mode.
-- **Tailwind CSS 3+** — utility classes; design tokens as CSS variables for future Bounteous theming.
+- **Tailwind CSS 3+** — utility classes; design tokens as CSS variables for future custom theming.
 - **shadcn/ui** — Radix primitives (Dialog, DropdownMenu, Sheet, Toast, Table, Form, Button, Input, Select, Tabs, Tooltip, Sonner toasts). Copied into `components/ui/` via `npx shadcn init`.
 - **NextAuth.js v5 (Auth.js)** — session management. Two providers:
   - `AzureAD` — Azure tenant configurable via env (`AZURE_AD_TENANT_ID`, `AZURE_AD_CLIENT_ID`, `AZURE_AD_CLIENT_SECRET`).
@@ -370,7 +370,7 @@ Port OAB's node panels as behavioral reference, but re-implement in shadcn/ui fo
 ### 9.2 Design system consistency
 
 - All shadcn primitives styled with a single Tailwind theme defined in `tailwind.config.ts`.
-- CSS variables for primary/secondary colors, border radii, shadows → easy to swap for Bounteous branding later.
+- CSS variables for primary/secondary colors, border radii, shadows → easy to swap for custom branding later.
 - Inter font as default; fallback to system-ui.
 - 8px spacing grid throughout.
 - Loading states: skeleton components (shadcn's `Skeleton`) on every data-fetching page.
@@ -471,7 +471,7 @@ All six sub-phases shipped. Specifically:
 - Self-serve password reset.
 - Multi-tenant.
 - Mobile-first / PWA.
-- Bounteous-branded visual theme (the CSS variables are ready; just swap values).
+- Custom-branded visual theme (the CSS variables are ready; just swap values).
 - Offline-capable workflows.
 - Real-time collaborative editing on the Designer canvas.
 - Advanced observability (distributed traces, per-user usage dashboards).

@@ -1,6 +1,6 @@
 # Azure SSO setup
 
-**Audience:** Bounteous ops/SRE. Covers Azure AD app registration and env-var mapping for
+**Audience:** platform ops/SRE. Covers Azure AD app registration and env-var mapping for
 Composer's NextAuth v5 + backend SSO exchange integration.
 
 > **Not currently enabled.** Composer supports Azure AD SSO as a standalone-mode auth option
@@ -33,8 +33,8 @@ Composer's NextAuth v5 + backend SSO exchange integration.
 2. Fill in:
    - **Name:** `Composer (prod)` (or env-specific, e.g., `Composer (staging)`).
    - **Supported account types:** Select **Accounts in this organizational directory only (Single tenant)**.
-   - **Redirect URI:** Select **Web** and paste: `https://composer.bounteous.com/api/auth/callback/azure-ad`
-     (Replace `composer.bounteous.com` with your actual domain.)
+   - **Redirect URI:** Select **Web** and paste: `https://composer.example.com/api/auth/callback/azure-ad`
+     (Replace `composer.example.com` with your actual domain.)
 3. Click **Register**. The app is created.
 
 ---
@@ -155,17 +155,17 @@ if `email` is missing — but including the claim explicitly is cleaner.
 
 ## 8. Testing the flow
 
-1. Navigate to `https://composer.bounteous.com/login` (production URL).
+1. Navigate to `https://composer.example.com/login` (production URL).
 2. Click **Continue with Azure AD**.
 3. You are redirected to Azure's login → consent screen.
 4. After consent, you are redirected back to Composer and logged in.
-5. Verify: Go to `https://composer.bounteous.com/auth/me` — you should see your user profile with `role`, `email`, etc.
+5. Verify: Go to `https://composer.example.com/auth/me` — you should see your user profile with `role`, `email`, etc.
 
 If login fails:
 
 - Check backend logs (`gcloud run services logs read composer-backend --region=us-central1` — see [gcp-cloud-run-setup.md](gcp-cloud-run-setup.md)) for `/auth/sso-exchange` errors.
 - Verify `SSO_ENABLED=true` and the three `SSO_AZURE_AD_*` env vars are set.
-- Confirm the redirect URI in Azure AD matches exactly: `https://composer.bounteous.com/api/auth/callback/azure-ad`.
+- Confirm the redirect URI in Azure AD matches exactly: `https://composer.example.com/api/auth/callback/azure-ad`.
 
 ---
 
@@ -189,7 +189,7 @@ If login fails:
 **Cause:** The redirect URI in Azure AD does not match the one NextAuth sends.
 
 **Fix:** Verify the redirect URI in Azure → App Registrations → (your app) → **Authentication** 
-matches exactly: `https://composer.bounteous.com/api/auth/callback/azure-ad`. Update if needed.
+matches exactly: `https://composer.example.com/api/auth/callback/azure-ad`. Update if needed.
 
 ### User registers with Azure SSO but can't access their workflows
 

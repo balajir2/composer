@@ -75,7 +75,7 @@ Path: `/admin/mcp-servers`.
 
 Lists every MCP server registered in the system (across all users). The admin's main job here is the **`isShared` toggle** — when on, the MCP server is discoverable + usable by every designer. When off (default), only the user who registered it can use it.
 
-The shared-token fallback (per ADR-0008): when User B uses a shared MCP server but doesn't have their own OAuth token, the server falls back to the original registrant's token. This is what makes "Bounteous-blessed Highspot MCP server" practical — admin registers + authorises once, every designer benefits.
+The shared-token fallback (per ADR-0008): when User B uses a shared MCP server but doesn't have their own OAuth token, the server falls back to the original registrant's token. This is what makes an org-wide, admin-blessed Highspot MCP server practical — admin registers + authorises once, every designer benefits.
 
 ### Deployment settings
 
@@ -137,10 +137,10 @@ One-shot at cutover. The procedure is in [`operations/admin-operations.md`](oper
 ### Reassigning a workflow when an employee leaves
 
 ```bash
-curl -X PATCH https://composer.bounteous.com/workflows/<workflow-id>/owner \
+curl -X PATCH https://composer.example.com/workflows/<workflow-id>/owner \
   -H "Authorization: Bearer <admin-jwt>" \
   -H "Content-Type: application/json" \
-  -d '{"email": "newowner@bounteous.com"}'
+  -d '{"email": "newowner@example.com"}'
 ```
 
 Or via the `/admin/workflows` UI — click the workflow → Reassign → enter the new owner's email.

@@ -8,18 +8,18 @@
 
 ## 1. Goal
 
-Take Composer from "feature-complete backend" to "production-shippable on Vercel + Postgres with Bounteous-internal OAB users migrated over."
+Take Composer from "feature-complete backend" to "production-shippable on Vercel + Postgres with internal OAB users migrated over."
 
 Concretely:
 - One-shot migration of existing OAB Convex data into Composer Postgres, preserving workflow/execution/MCP ownership intent via email-based reconciliation.
 - Admin-role capabilities so ops can verify migrated data and manage ownership post-cutover.
-- LLM API keys stored in Postgres (Bounteous-owned) with a deploy-time sync step to Vercel env vars.
+- LLM API keys stored in Postgres (Composer-owned) with a deploy-time sync step to Vercel env vars.
 - WebSocket streaming replacing SSE, aligned with IE's `DES-007` event contract.
 - Deployment runbook + finalized `.env.example`.
 
 ## 2. Non-goals
 
-- **No Azure SSO integration.** Bounteous Azure SSO is Phase 10 (NextAuth-side). Phase 9 assumes users arrive via Composer's existing `/auth/register` or `/auth/login` paths; SSO integration reuses the same User-by-email identity.
+- **No Azure SSO integration.** Azure SSO is Phase 10 (NextAuth-side). Phase 9 assumes users arrive via Composer's existing `/auth/register` or `/auth/login` paths; SSO integration reuses the same User-by-email identity.
 - **No user migration.** OAB's `users` table is NOT copied. Clerk user IDs are dropped entirely. Email is the stable cross-system identity.
 - **No Redis rate limiter.** Phase 8 in-memory limiter stays for Phase 9. Multi-worker distributed limiting deferred.
 - **No SSRF protection on the `http` executor.** Deferred.
@@ -78,13 +78,13 @@ OAB's `userId` on every migrated row is a Clerk ID. Composer does not migrate us
 1. **Schema change (one Prisma migration):** add column `originalOwnerEmail String?` to `Workflow`, `WorkflowExecution`, and `McpServer`. No reference to "Clerk" in column name or comment — just "the email of the owner at migration time."
 2. **Migration joins OAB `workflows.userId` → OAB `users.email`** via the in-memory lookup built from the OAB users export file.
 3. **Migration writes `user_id = NULL` + `original_owner_email = <email>`** on every migrated row. NULL user_id means Phase 8 authz leaves the row invisible to non-owners/non-admins; `is_public=true` rows stay world-readable.
-4. **Reconciliation CLI:** `composer reconcile --email alice@bounteous.com` — looks up the Composer User with that email, UPDATEs all `workflow`/`workflow_execution`/`mcp_servers` rows where `original_owner_email = <that email>` to set `user_id = <user's cuid>`. Idempotent; safe to re-run.
+4. **Reconciliation CLI:** `composer reconcile --email alice@example.com` — looks up the Composer User with that email, UPDATEs all `workflow`/`workflow_execution`/`mcp_servers` rows where `original_owner_email = <that email>` to set `user_id = <user's cuid>`. Idempotent; safe to re-run.
 5. **`original_owner_email` stays in the schema indefinitely** as an audit field. Drop in a future phase if desired.
 
 **What Alice experiences at cutover:**
 - Ops migrates OAB data via `composer migrate --export-dir=<path>`.
-- Alice registers at Composer (`/auth/register` with `alice@bounteous.com`) — gets a standard Composer User record.
-- Ops (or a future post-login hook in Phase 10) runs `composer reconcile --email alice@bounteous.com` — her workflows/executions/MCPs become visible to her.
+- Alice registers at Composer (`/auth/register` with `alice@example.com`) — gets a standard Composer User record.
+- Ops (or a future post-login hook in Phase 10) runs `composer reconcile --email alice@example.com` — her workflows/executions/MCPs become visible to her.
 - Alice logs in → sees her migrated workflows. Private workflows she owned stay private.
 
 ### 4.4 Execution state
@@ -146,7 +146,7 @@ Rationale for leaving DELETE owner-only: destructive + irreversible. Needs an ex
 
 New endpoint `PATCH /workflows/{id}/owner`, admin-only.
 
-Body: `{"user_id": "clm7..."}` OR `{"email": "alice@bounteous.com"}`.
+Body: `{"user_id": "clm7..."}` OR `{"email": "alice@example.com"}`.
 
 Behavior:
 - If body carries `email`, server resolves it via `SELECT id FROM users WHERE email = $1`. If no match → 404 `"user with email {email!r} not found"`.
@@ -439,7 +439,7 @@ Backfill into `docs/design/decisions.md` as ADR-0022:
 1. **No user migration.** OAB users are not copied to Composer. Clerk IDs are dropped. Email is the stable cross-system identity.
 2. **Email-based reconciliation.** `original_owner_email` column on migrated rows; `user_id = NULL` at migration time; `composer reconcile --email X` CLI maps rows to post-register/SSO users.
 3. **Admin bypass scope.** Admins bypass read/publish authz on workflows/executions/MCPs. Admin does NOT bypass DELETE; admin does not see executions as reassignable.
-4. **LLM keys in Postgres.** Bounteous owns the source of truth. Runtime still reads env vars; deploy-time sync script pushes to Vercel. Same encryption mechanism as MCP OAuth tokens.
+4. **LLM keys in Postgres.** Composer owns the source of truth. Runtime still reads env vars; deploy-time sync script pushes to Vercel. Same encryption mechanism as MCP OAuth tokens.
 5. **WebSocket replaces SSE atomically.** Event bus switches to DES-007 shapes in the same commit; SSE endpoint removed; streaming tests migrated.
 6. **DES-007 event contract from blueprint.** Shape taken from Composer's own blueprint doc §7.3 with a pre-plan IE-source verification gate.
 7. **Skip approvals + checkpoints migration.** Approvals are audit-only; LangGraph JS checkpoints are Python-incompatible. Both are dropped; in-flight OAB executions are not recoverable on Composer.

@@ -1,6 +1,6 @@
 # LLM Keys Management
 
-**Audience:** Bounteous ops/SRE. Covers the full lifecycle of LLM API keys in Composer: where they
+**Audience:** platform ops/SRE. Covers the full lifecycle of LLM API keys in Composer: where they
 live and how to set and rotate them. Composer's actual production deployment is **GCP Cloud Run**
 (see [gcp-cloud-run-setup.md](gcp-cloud-run-setup.md)), which reads keys directly from Postgres —
 the `--target vercel` sync described below is an optional, secondary distribution channel, only

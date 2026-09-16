@@ -14,7 +14,7 @@
 
 ## Scope note (platform vs. customer flow)
 
-Generic platform capability — no Macy's-specific or other customer-specific literals appear anywhere in this plan's code.
+Generic platform capability — no customer-specific literals appear anywhere in this plan's code.
 
 ---
 

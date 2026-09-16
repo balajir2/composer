@@ -1,6 +1,6 @@
 # Postgres Setup
 
-**Audience:** Bounteous ops/SRE. Covers Neon-hosted Postgres. If you are using a different Postgres
+**Audience:** platform ops/SRE. Covers Neon-hosted Postgres. If you are using a different Postgres
 provider, the Neon-specific steps (console UI, branch model, PITR) differ but the
 `DATABASE_URL`/`prisma migrate deploy` steps are identical.
 
@@ -88,9 +88,9 @@ There is no self-serve admin-promotion flow. The first admin must be created by 
 Have the ops engineer (or the user who will be admin) register via the API:
 
 ```bash
-curl -X POST https://composer.bounteous.com/auth/register \
+curl -X POST https://composer.example.com/auth/register \
   -H "Content-Type: application/json" \
-  -d '{"email": "ops@bounteous.com", "password": "choose-a-strong-password"}'
+  -d '{"email": "ops@example.com", "password": "choose-a-strong-password"}'
 ```
 
 This creates a `users` row with `role = 'member'`.
@@ -109,13 +109,13 @@ Then run:
 ```sql
 UPDATE users
 SET role = 'admin'
-WHERE email = 'ops@bounteous.com';
+WHERE email = 'ops@example.com';
 ```
 
 Verify:
 
 ```sql
-SELECT id, email, role, created_at FROM users WHERE email = 'ops@bounteous.com';
+SELECT id, email, role, created_at FROM users WHERE email = 'ops@example.com';
 ```
 
 Expected: `role = admin`.

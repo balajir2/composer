@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-20
 **Status:** Approved (design phase) — implementation plan not yet written
-**Origin:** User request while working the Macy's "Jira-Driven Weekly Tracking" workflow, which
+**Origin:** User request while working a customer's "Jira-Driven Weekly Tracking" workflow, which
 needs a `report_date` (date-only) and `extract_timestamp` (date+time) input on its Start node.
 Purely a Designer/runtime UX improvement — not OAB-parity work, does not touch
 `D:/GitHub/open-agent-builder`.

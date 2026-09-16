@@ -4,7 +4,7 @@
 
 **Date:** 2026-04-15
 **Source repo:** https://github.com/balajir2/open-agent-builder
-**Target:** `apps/composer/` inside `Bounteous-Inc/intelligent-engineering`
+**Target:** `apps/composer/` inside a monorepo for a larger internal platform
 
 ---
 

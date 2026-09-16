@@ -1,6 +1,6 @@
 # Vercel Setup (frontend only — alternate path)
 
-**Audience:** Bounteous ops/SRE choosing to host the Next.js frontend on Vercel instead of Cloud Run.
+**Audience:** platform ops/SRE choosing to host the Next.js frontend on Vercel instead of Cloud Run.
 Assumes a Vercel account exists and you have owner or admin access to the project.
 
 > **This is not the recommended or currently-deployed path.** Composer's actual production
@@ -48,7 +48,7 @@ unless noted.
 |---|---|
 | `NEXT_PUBLIC_COMPOSER_API_URL` | HTTPS URL of the deployed backend (e.g. the Cloud Run `composer-backend` URL) — used by the API client and the NextAuth Credentials provider |
 | `NEXTAUTH_SECRET` | 32-byte hex string — generate with `openssl rand -hex 32`. Unique per environment. |
-| `NEXTAUTH_URL` | The frontend's own public URL (e.g. `https://composer.bounteous.com`) |
+| `NEXTAUTH_URL` | The frontend's own public URL (e.g. `https://composer.example.com`) |
 | `AZURE_AD_TENANT_ID` / `AZURE_AD_CLIENT_ID` / `AZURE_AD_CLIENT_SECRET` | Only if Azure SSO is enabled — see [azure-sso.md](azure-sso.md) |
 | `NEXT_PUBLIC_AZURE_SSO_ENABLED` | `true` to show the "Continue with Azure" button on `/login`; `false` otherwise |
 
@@ -62,13 +62,13 @@ LangSmith tracing — belong to the backend's own host, not this Vercel project.
 ## 3. Domain setup
 
 1. In the Vercel project → **Settings** → **Domains**, add your custom domain (e.g.
-   `composer.bounteous.com`).
+   `composer.example.com`).
 2. Vercel provides the DNS records to configure (CNAME or A/AAAA). Add them in your DNS provider.
 3. Vercel auto-provisions a TLS certificate via Let's Encrypt.
 4. Propagation takes 1–10 minutes depending on TTL. Verify with:
 
 ```bash
-curl -I https://composer.bounteous.com/login
+curl -I https://composer.example.com/login
 # Expected: HTTP/2 200
 ```
 

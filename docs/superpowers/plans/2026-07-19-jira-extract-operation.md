@@ -29,7 +29,7 @@
 
 ## Scope note (platform vs. customer flow)
 
-Per [[feedback_platform_vs_customer_flow]] — this plan adds a **generic** capability. Nothing here hardcodes any customer's JQL, project key, or field IDs (e.g. Macy's `customfield_10026`). The `fields` list has no default at all; every workflow supplies its own.
+Per [[feedback_platform_vs_customer_flow]] — this plan adds a **generic** capability. Nothing here hardcodes any customer's JQL, project key, or field IDs (e.g. a customer's `customfield_10026`). The `fields` list has no default at all; every workflow supplies its own.
 
 ---
 

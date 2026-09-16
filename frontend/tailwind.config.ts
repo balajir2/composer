@@ -10,8 +10,8 @@ const config: Config = {
     extend: {
       fontFamily: {
         // Plus Jakarta Sans is loaded via next/font in app/layout.tsx and
-        // injected as --font-sans on <body>.  Matches Bounteous brand
-        // typography.  System fallback covers env without the font.
+        // injected as --font-sans on <body>.  System fallback covers env
+        // without the font.
         sans: ["var(--font-sans)", "system-ui", "sans-serif"],
       },
       borderRadius: {

@@ -105,7 +105,7 @@ No changes to `graph_builder.py`, `COMPOSER_NODE_TYPES`, or the palette — `fil
 
 On the same GCP project already used for Cloud Tasks/Scheduler (ADR-0033):
 1. Enable the **Drive API**.
-2. Configure the **OAuth consent screen** — External, **Testing** publishing status (no Google verification required for up to 100 test users; appropriate for internal Bounteous use). Add each connecting user as a test user.
+2. Configure the **OAuth consent screen** — External, **Testing** publishing status (no Google verification required for up to 100 test users; appropriate for internal use). Add each connecting user as a test user.
 3. Create an **OAuth 2.0 Client ID** (Web application type), redirect URI → `{backend_public_url}/cloud-storage/google-drive/callback`.
 4. Create an **API key**, restricted to the **Picker API**, for frontend use.
 5. New env vars: `GOOGLE_OAUTH_CLIENT_ID`, `GOOGLE_OAUTH_CLIENT_SECRET`, `GOOGLE_PICKER_API_KEY`.

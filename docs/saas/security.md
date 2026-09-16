@@ -40,7 +40,7 @@ Composer includes meaningful security foundations: encrypted LLM keys, OAuth tok
 
 - **Side-channel attacks against the LLM provider.** What the model writes into its tool calls is the model's choice. Customers concerned about prompt injection should use the `guardrails` node (PII / moderation / jailbreak / hallucination classifiers) on inputs **and** outputs. See [designer-guide.md](../designer-guide.md) for the patterns.
 - **Compromised customer browser.** A user with malware on their machine can do anything that user can do; we don't try to defeat client-side compromise.
-- **Insider threat at Bounteous (managed deployments).** Documented separately in the access-control runbook; relevant to managed customers, not to the codebase.
+- **Insider threat at the operator (managed deployments).** Documented separately in the access-control runbook; relevant to managed customers, not to the codebase.
 
 ## What we encrypt and how
 

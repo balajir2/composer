@@ -1,6 +1,6 @@
 # Admin Operations
 
-**Audience:** Bounteous ops/SRE. Covers day-to-day and cutover operations performed by an admin
+**Audience:** platform ops/SRE. Covers day-to-day and cutover operations performed by an admin
 user or by ops via direct Postgres access.
 
 ---
@@ -21,12 +21,12 @@ Postgres instance.
 -- Promote a user to admin
 UPDATE users
 SET role = 'admin'
-WHERE email = 'ops@bounteous.com';
+WHERE email = 'ops@example.com';
 
 -- Verify
 SELECT id, email, role, created_at
 FROM users
-WHERE email = 'ops@bounteous.com';
+WHERE email = 'ops@example.com';
 ```
 
 Expected result: `role = admin`.
@@ -118,16 +118,16 @@ their migrated data.
 
 ```bash
 DATABASE_URL=<composer-prod-db> \
-composer reconcile --email alice@bounteous.com
+composer reconcile --email alice@example.com
 ```
 
 This sets `user_id = <alice's cuid>` on every row in `workflows`, `workflow_executions`, and
-`mcp_servers` where `original_owner_email = 'alice@bounteous.com'`.
+`mcp_servers` where `original_owner_email = 'alice@example.com'`.
 
 Output:
 
 ```
-Reconciling alice@bounteous.com ...
+Reconciling alice@example.com ...
   Found user id: clm7xyzABC123
   Updated 12 workflows.
   Updated 48 executions.
@@ -141,7 +141,7 @@ The command is idempotent — re-running it after the user already has their dat
 If the user has not yet registered:
 
 ```
-Error: no Composer user found with email alice@bounteous.com.
+Error: no Composer user found with email alice@example.com.
        Ask the user to register at /auth/register first.
 ```
 
@@ -173,10 +173,10 @@ Use `PATCH /workflows/{id}/owner` to reassign ownership of one workflow. Admin-o
 ### By email
 
 ```bash
-curl -X PATCH https://composer.bounteous.com/workflows/<workflow-id>/owner \
+curl -X PATCH https://composer.example.com/workflows/<workflow-id>/owner \
   -H "Authorization: Bearer <admin-jwt>" \
   -H "Content-Type: application/json" \
-  -d '{"email": "alice@bounteous.com"}'
+  -d '{"email": "alice@example.com"}'
 ```
 
 The server looks up Alice's `user_id` by email and updates the workflow. Returns 200 with the
@@ -185,7 +185,7 @@ updated workflow object.
 ### By user_id
 
 ```bash
-curl -X PATCH https://composer.bounteous.com/workflows/<workflow-id>/owner \
+curl -X PATCH https://composer.example.com/workflows/<workflow-id>/owner \
   -H "Authorization: Bearer <admin-jwt>" \
   -H "Content-Type: application/json" \
   -d '{"user_id": "clm7xyzABC123"}'
@@ -194,10 +194,10 @@ curl -X PATCH https://composer.bounteous.com/workflows/<workflow-id>/owner \
 ### Same for MCP servers
 
 ```bash
-curl -X PATCH https://composer.bounteous.com/mcp-servers/<server-id>/owner \
+curl -X PATCH https://composer.example.com/mcp-servers/<server-id>/owner \
   -H "Authorization: Bearer <admin-jwt>" \
   -H "Content-Type: application/json" \
-  -d '{"email": "alice@bounteous.com"}'
+  -d '{"email": "alice@example.com"}'
 ```
 
 ### Error cases
@@ -214,9 +214,9 @@ curl -X PATCH https://composer.bounteous.com/mcp-servers/<server-id>/owner \
 ## 5. Getting an admin JWT for curl operations
 
 ```bash
-curl -X POST https://composer.bounteous.com/auth/login \
+curl -X POST https://composer.example.com/auth/login \
   -H "Content-Type: application/json" \
-  -d '{"email": "ops@bounteous.com", "password": "..."}'
+  -d '{"email": "ops@example.com", "password": "..."}'
 # → {"access_token": "eyJ...", "refresh_token": "eyJ...", "token_type": "bearer"}
 ```
 
@@ -266,7 +266,7 @@ SELECT ms.id, ms.name, ms.original_owner_email, ms.user_id,
        mot.id AS token_id
 FROM mcp_servers ms
 LEFT JOIN mcp_oauth_tokens mot ON mot.mcp_server_id = ms.id
-WHERE ms.original_owner_email = 'alice@bounteous.com';
+WHERE ms.original_owner_email = 'alice@example.com';
 ```
 
 If `token_id` is NULL but the server should have tokens, the token was skipped during migration.
@@ -276,13 +276,13 @@ If `token_id` is NULL but the server should have tokens, the token was skipped d
 
 ### "User registered but reconcile says 'no user found'"
 
-Email case mismatch. OAB stored `Alice@Bounteous.com`; Composer normalizes to lowercase.
+Email case mismatch. OAB stored `Alice@Example.com`; Composer normalizes to lowercase.
 
 ```sql
-SELECT email FROM users WHERE lower(email) = lower('Alice@Bounteous.com');
+SELECT email FROM users WHERE lower(email) = lower('Alice@Example.com');
 ```
 
-Run reconcile with the lowercase value: `composer reconcile --email alice@bounteous.com`
+Run reconcile with the lowercase value: `composer reconcile --email alice@example.com`
 
 ---
 

@@ -14,7 +14,7 @@
 
 ## Scope note (platform vs. customer flow)
 
-Per the platform/customer-flow boundary established in earlier work on this project: this format is generic — any workflow can use it for any HTML content. Nothing here references Macy's, Feature 2, or any specific report structure.
+Per the platform/customer-flow boundary established in earlier work on this project: this format is generic — any workflow can use it for any HTML content. Nothing here references any specific customer or report structure.
 
 ---
 

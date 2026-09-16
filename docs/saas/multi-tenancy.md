@@ -26,12 +26,12 @@ We provision a Composer environment dedicated to your organisation. Today this i
 
 - **Tenancy boundary**: a dedicated VPC + dedicated Postgres database + dedicated app host per customer. No shared compute, no shared storage.
 - **Encryption keys** (`ENCRYPTION_KEY`, `JWT_SECRET`) are unique per deployment and never leave that deployment's secret store.
-- **Access controls**: we don't read your data. Operational access for the Bounteous team is logged separately and reviewed quarterly. Documented in the contract.
+- **Access controls**: we don't read your data. Operational access for the operating team is logged separately and reviewed quarterly. Documented in the contract.
 - **Customer signs**: ToS, DPA, optional BAA (if HIPAA is in flight — see [compliance.md](compliance.md)).
 
-### 3. Embedded into Bounteous Intelligent Engineering
+### 3. Embedded into a host platform
 
-Composer slots into IE as a module. Auth, tenancy, billing, and operational ownership roll up to IE's platform team.
+Composer slots into a larger internal platform as a module. Auth, tenancy, billing, and operational ownership roll up to the host platform's team.
 
 - **Tenancy boundary**: IE's tenant model. Each IE customer maps to a Composer "deployment" boundary in the same way as a single-tenant managed deployment.
 - **Auth**: NextAuth → IE-issued JWTs (Composer's "embedded" deployment mode). The `IEP_JWT_ISSUER` and `IEP_JWKS_URL` settings wire Composer to IE's trust store.
@@ -95,7 +95,7 @@ The application sets `app.current_org_id` per-request. RLS catches the case wher
 ### Customer-facing changes
 
 - **Sign-up flow** routes to an "organisation creation" step the first time, then "join an existing org" thereafter (invite-link).
-- **Admin role** becomes scoped per-organisation. A "super-admin" role is reserved for Bounteous operations (used only for incident response, fully logged).
+- **Admin role** becomes scoped per-organisation. A "super-admin" role is reserved for the operating team (used only for incident response, fully logged).
 - **Per-org settings**: plan tier, included quotas, billing contact, DPA signed-on date, data-residency region.
 - **Per-org limits**: soft caps on workflows / executions / API keys, with overage handling per [pricing.md](pricing.md).
 

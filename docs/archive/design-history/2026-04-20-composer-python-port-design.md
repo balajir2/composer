@@ -11,7 +11,7 @@
 
 On 2026-04-15 we produced six documents (`composer-01` through `composer-06` in this directory) proposing Composer as a new module inside the IE monorepo: a Python-ported Open Agent Builder that lets tenant admins and business users compose workflows over IE's agent catalog.
 
-David Lawton (IE owner) responded with a critical analysis on 2026-04-20 (`IE Investigation/OAB Composer - Critical Analysis.docx`). His position: the strategic direction is sound, but timing and sequencing are wrong. He recommends:
+IE's owner responded with a critical analysis on 2026-04-20. His position: the strategic direction is sound, but timing and sequencing are wrong. He recommends:
 
 1. **Now:** Ship IE's MCP adapter (~4 weeks) — already scoped and security-reviewed, benefits six consumer categories (IDEs, CI/CD, OAB, etc.)
 2. **Next:** Use OAB standalone with MCP bridge (~2–4 weeks) to pilot with consultants + one tenant, collect real usage data
@@ -25,12 +25,12 @@ His concrete concerns:
 
 ### Our response: a clean-break rebuild on IE's stack
 
-We are not replying to David with a counter-position. We use the window his sequencing implicitly grants us — the ~4 weeks while he ships the MCP adapter, extended to ~13 weeks total (10 backend + 3 UI) — to proactively rebuild OAB on IE's Python stack.
+We are not replying with a counter-position. We use the window the reviewer's sequencing implicitly grants us — the ~4 weeks while IE ships the MCP adapter, extended to ~13 weeks total (10 backend + 3 UI) — to proactively rebuild OAB on IE's Python stack.
 
 **Net effect:**
-- David's stack concern (#1) is addressed preemptively: when the Composer conversation resumes, the Python rebuild already exists on IE-compatible infrastructure
-- David's security concern (#2) is outside this design's scope and will be addressed separately when Composer-in-IE becomes a real proposal
-- David's sequencing (#3) is implicitly accepted: MCP adapter ships first, Composer pilots with MCP bridge
+- The stack concern (#1) is addressed preemptively: when the Composer conversation resumes, the Python rebuild already exists on IE-compatible infrastructure
+- The security concern (#2) is outside this design's scope and will be addressed separately when Composer-in-IE becomes a real proposal
+- The sequencing concern (#3) is implicitly accepted: MCP adapter ships first, Composer pilots with MCP bridge
 - We retain full control of OAB's evolution; no dependency on IE's decisions during the rebuild
 
 ### The four governing rules
@@ -116,7 +116,7 @@ Solo engineer (Balaji) + AI assistance (Claude). No additional hires or contract
 
 **Frozen. Zero commits. Read-only reference.**
 
-No bug fixes, no feature work, no refactoring. If a critical issue is discovered, it is fixed in Composer when Composer's code reaches that area — not in TS OAB. Internal Bounteous users accept TS OAB in its current state for the duration of the rebuild.
+No bug fixes, no feature work, no refactoring. If a critical issue is discovered, it is fixed in Composer when Composer's code reaches that area — not in TS OAB. Internal users accept TS OAB in its current state for the duration of the rebuild.
 
 ---
 
@@ -402,7 +402,7 @@ Intentionally deferred:
 
 - **Frontend repo location** — at start of Phase 10, decide whether `composer/frontend/` (same repo) or a separate `composer-ui` repo is cleaner. Either works; committing to one now is premature.
 - **Production deployment architecture** (Vercel, AWS, IE's infra?) — decided after Phase 10.
-- **Security model for user-composed workflows** — David's concern #2. Relevant when Composer-in-IE is proposed; not during this rebuild.
+- **Security model for user-composed workflows** — the reviewer's concern #2. Relevant when Composer-in-IE is proposed; not during this rebuild.
 - **Cutover plan for TS OAB internal users** — decided near end of Phase 10.
 - **IE MCP adapter integration** — when IE ships their MCP adapter, we register it in Composer as any other MCP server. No special design work here.
 - **Composer-inside-IE merge** — happens (or doesn't) post-parity as a separate decision.
@@ -412,9 +412,9 @@ Intentionally deferred:
 ## 10. Communication Plan
 
 **During the rebuild (weeks 1–13):**
-- No proactive communication to David or IE
+- No proactive communication to IE or its owner
 - The Composer design docs from 2026-04-15 remain our public position
-- If David asks for updates, the honest answer is: "We're modernizing OAB's stack; we'll have more to say when it's ready"
+- If asked for updates, the honest answer is: "We're modernizing OAB's stack; we'll have more to say when it's ready"
 
 **At parity — end of Phase 9 (around week 10):**
 - Optional early reveal if IE's MCP adapter is ready and a demo opportunity exists. Backend-only demo via the API + a simple curl trace can suffice.

@@ -8,13 +8,13 @@
 
 **Tech Stack:** Python 3.11, FastAPI, Pydantic v2, httpx, pytest + pytest-httpx (backend). Next.js/React, vitest + @testing-library/react (frontend).
 
-**Spec:** `docs/superpowers/specs/2026-07-19-jira-confluence-foundation-design.md` (Component 2). Component 3 (the baseline-via-properties usage pattern) is *not* built here — it's workflow configuration for a future Macy's-flow plan, consuming this node's `get_property`/`set_property` operations.
+**Spec:** `docs/superpowers/specs/2026-07-19-jira-confluence-foundation-design.md` (Component 2). Component 3 (the baseline-via-properties usage pattern) is *not* built here — it's workflow configuration for a future customer-flow plan, consuming this node's `get_property`/`set_property` operations.
 
 ---
 
 ## Scope note (platform vs. customer flow)
 
-Per [[feedback_platform_vs_customer_flow]] — this is generic platform capability. No Macy's-specific space key, page-naming convention, or property key is hardcoded anywhere in this plan's code; those are workflow-level configuration for a separate future plan.
+Per [[feedback_platform_vs_customer_flow]] — this is generic platform capability. No customer-specific space key, page-naming convention, or property key is hardcoded anywhere in this plan's code; those are workflow-level configuration for a separate future plan.
 
 ---
 
@@ -1710,7 +1710,7 @@ EOF
 
 ## Self-review notes
 
-- **Spec coverage**: Component 2 of the spec (Confluence node — 4 deterministic operations, encrypted credentials, idempotent create-or-update, content-properties for get/set) is fully covered by Tasks 1-6. Component 3 (baseline pattern) deliberately isn't built here — it's a usage pattern for a future Macy's-flow plan to apply, consuming `get_page`/`get_property`/`set_property` as workflow configuration.
+- **Spec coverage**: Component 2 of the spec (Confluence node — 4 deterministic operations, encrypted credentials, idempotent create-or-update, content-properties for get/set) is fully covered by Tasks 1-6. Component 3 (baseline pattern) deliberately isn't built here — it's a usage pattern for a future customer-flow plan to apply, consuming `get_page`/`get_property`/`set_property` as workflow configuration.
 - **Placeholder scan**: none found — every step has complete code, including the label-reconciliation DELETE/POST logic that a shortcut version might have skipped.
 - **Type consistency**: `space_key`/`parent_page_id`/`body_storage_html`/`page_id`/`property_key`/`property_value` (Python) match `spaceKey`/`parentPageId`/`bodyStorageHtml`/`pageId`/`propertyKey`/`propertyValue` (the camelCase aliases the frontend panel in Task 5 actually sends) consistently across Tasks 1, 3, and 5. `ConfluenceConfigError`/`ConfluenceHttpError` names match between Task 3's implementation and its tests.
-- **Platform/customer-flow boundary**: verified no Macy's-specific space key, page title convention, or property key appears anywhere in this plan's code — confirmed against [[feedback_platform_vs_customer_flow]].
+- **Platform/customer-flow boundary**: verified no customer-specific space key, page title convention, or property key appears anywhere in this plan's code — confirmed against [[feedback_platform_vs_customer_flow]].

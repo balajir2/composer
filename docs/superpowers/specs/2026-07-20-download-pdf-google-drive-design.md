@@ -2,11 +2,11 @@
 
 **Date:** 2026-07-20
 **Status:** Approved (design phase) — implementation plan not yet written
-**Origin:** Raised while testing the Macy's Feature 2 executive-report workflow — `download-pdf`
+**Origin:** Raised while testing a customer's executive-report workflow — `download-pdf`
 (and `file-write`) only support the `local` storage provider, so a file written on the deployed
 Cloud Run instance (`flowcomposer.online`) is not retrievable through the product today. This is
-new platform capability, not customer-flow-specific — no Macy's-specific literals appear anywhere
-in this design.
+new platform capability, not customer-flow-specific — no customer-specific literals appear
+anywhere in this design.
 
 ## Why this spec exists
 

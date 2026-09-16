@@ -1,6 +1,6 @@
 # Monitoring
 
-**Audience:** Bounteous ops/SRE. Covers LangSmith traces, Vercel logs and log drains, error rate
+**Audience:** platform ops/SRE. Covers LangSmith traces, Vercel logs and log drains, error rate
 monitoring, and post-cutover watchlist.
 
 ---

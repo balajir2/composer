@@ -28,9 +28,9 @@ See §2 below for the full context on why OAB is frozen and how to use it correc
 
 ## What Composer is
 
-Python rebuild of [Open Agent Builder](https://github.com/balajir2/open-agent-builder) on an Intelligent Engineering (IE) compatible stack. Private repo at `balajir2/composer`.
+A from-scratch Python rebuild of an earlier TypeScript/Convex workflow-automation prototype, on a fresh FastAPI + Postgres + LangGraph stack chosen for portability and enterprise integration.
 
-**Goal:** When "should Composer become a module in IE?" becomes a real proposal, the code already exists on IE's stack, ready to plug in. This is a deliberate strategic response to David Lawton's (IE owner) 2026-04-20 critical analysis.
+**Goal:** ship a standalone, self-hostable visual workflow platform on a modern, dependency-light stack, built from the operational lessons of the earlier prototype rather than a line-by-line port.
 
 ---
 
@@ -101,13 +101,13 @@ Backend phases 0–9 ≈ 10 weeks. UI phase 10 ≈ 3 weeks. Total ≈ 13 weeks.
 |---|---|
 | Language | Python 3.11 or 3.12 (`>=3.11,<3.13`) |
 | Web framework | FastAPI |
-| ORM | **Prisma Python** (user explicitly chose over SQLAlchemy for IE parity) |
+| ORM | **Prisma Python** (user explicitly chose over SQLAlchemy) |
 | Database | Postgres 15+ (Neon for dev, Docker fallback) |
 | Orchestration | LangGraph Python + LangChain |
 | LLM providers | `langchain-anthropic`, `langchain-openai`, `langchain-google-genai`, `langchain-groq` |
 | Validation | Pydantic v2 |
-| Auth | JWT (HS256) matching IE's `DES-004` pattern |
-| Real-time | SSE (Phase 5) → WebSocket (Phase 9, matching IE `DES-007`) |
+| Auth | JWT (HS256) |
+| Real-time | SSE (Phase 5) → WebSocket (Phase 9) |
 | Encryption | `cryptography` (AES-256-GCM) |
 | Safe expressions | `simpleeval` (NEVER `eval()`) |
 | Code sandbox | `e2b_code_interpreter` |
@@ -176,7 +176,7 @@ OAB lives at `D:/GitHub/open-agent-builder`. See the **CRITICAL** callout at the
 
 The user's four governing rules (above) include Rule 2: "Open Agent Builder continues as-is. No changes. No fixes. The repo is only available to the composer repo for lookup (read only)."
 
-This is a deliberate strategic choice. OAB serves a handful of internal Bounteous users in its current TypeScript form. During the ~13-week Composer rebuild, OAB is NOT maintained in parallel. Bugs that would be introduced by changes in OAB (merge conflicts, broken tests, regressions) would tax the user's time and distract from Composer. The policy is: OAB stays exactly as it was on 2026-04-20, forever, until it is replaced by Composer.
+This is a deliberate strategic choice. OAB serves a handful of internal users in its current TypeScript form. During the ~13-week Composer rebuild, OAB is NOT maintained in parallel. Bugs that would be introduced by changes in OAB (merge conflicts, broken tests, regressions) would tax the user's time and distract from Composer. The policy is: OAB stays exactly as it was on 2026-04-20, forever, until it is replaced by Composer.
 
 ### Allowed operations on OAB
 

@@ -75,7 +75,7 @@ export const NODE_VISUALS: Record<string, NodeVisual> = {
   },
   agent: {
     icon: Bot,
-    // Bounteous brand-purple tile — agent is the workhorse, deserves the
+    // Brand-purple tile — agent is the workhorse, deserves the
     // primary palette.
     iconWrapClass: "bg-[var(--brand-pink-alpha)] text-[var(--brand-deep)]",
     accent: "text-[var(--brand-deep)]",
