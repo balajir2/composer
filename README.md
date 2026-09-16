@@ -78,7 +78,7 @@ The whole loop is what most agentic-AI teams build from scratch: prompt + tool d
 ### LLM provider support
 
 - **4 providers**: Anthropic Claude, OpenAI, Google Gemini, Groq
-- **Per-model verification**: every model in the catalog gets a 1-token probe; auto-disabled on `unavailable` so retired models disappear from designer dropdowns
+- **Per-model verification**: every model in the catalog gets a real minimal-completion probe (1 token for Anthropic/Google/Groq; 16 for OpenAI, whose current models need headroom past hidden reasoning tokens); auto-disabled on `unavailable` so retired models disappear from designer dropdowns
 - **Runtime pre-flight**: agent executor refuses to start on a disabled model with a clear error
 - **Centralised key management**: keys live encrypted in Postgres (AES-256-GCM); admin UI tests + rotates them; optional sync to deployment env vars
 
