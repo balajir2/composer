@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 import src.api.admin_llm_keys_test as key_tests
@@ -60,3 +61,30 @@ async def test_chinese_llm_provider_key_tests_use_models_endpoint(
         url,
         headers={"Authorization": "Bearer provider-key"},
     )
+
+
+@pytest.mark.asyncio
+async def test_typesafe_key_test_ok_on_200(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_post(
+        url: str, headers: dict[str, str], json: dict[str, object]
+    ) -> httpx.Response:
+        request = httpx.Request("POST", url)
+        return httpx.Response(200, json={"answers": {}}, request=request)
+
+    monkeypatch.setattr(key_tests, "_post", _fake_post)
+    result = await key_tests.run_key_test("typesafe", "sk-test")
+    assert result.ok is True
+
+
+@pytest.mark.asyncio
+async def test_typesafe_key_test_fails_on_401(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_post(
+        url: str, headers: dict[str, str], json: dict[str, object]
+    ) -> httpx.Response:
+        request = httpx.Request("POST", url)
+        return httpx.Response(401, text="bad key", request=request)
+
+    monkeypatch.setattr(key_tests, "_post", _fake_post)
+    result = await key_tests.run_key_test("typesafe", "sk-bad")
+    assert result.ok is False
+    assert result.status == 401

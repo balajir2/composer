@@ -257,6 +257,27 @@ async def _test_resend(key: str) -> KeyTestResult:
     )
 
 
+async def _test_typesafe(key: str) -> KeyTestResult:
+    # Side-effect-free auth check: /v1/systemone accepts a minimal question
+    # payload and validates auth before evaluating it.  A valid key returns
+    # 200; an invalid key returns 401.
+    resp = await _post(
+        "https://api.typesafe.ai/v1/systemone",
+        headers={"Authorization": f"Bearer {key}", "content-type": "application/json"},
+        json={
+            "state": "ping",
+            "questions": {"probe": {"type": "noul", "instructions": "Is this text non-empty?"}},
+        },
+    )
+    if resp.status_code == 200:
+        return KeyTestResult(ok=True, status=200, message="TypeSafe key valid.")
+    return KeyTestResult(
+        ok=False,
+        status=resp.status_code,
+        message=f"TypeSafe HTTP {resp.status_code}: {resp.text[:200]}",
+    )
+
+
 _TESTERS = {
     "anthropic": _test_anthropic,
     "openai": _test_openai,
@@ -271,6 +292,7 @@ _TESTERS = {
     "browserless": _test_browserless,
     "gamma": _test_gamma,
     "resend": _test_resend,
+    "typesafe": _test_typesafe,
 }
 
 
