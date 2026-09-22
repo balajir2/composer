@@ -1,10 +1,9 @@
 """Tests for the Decision node's Pydantic models (src/engine/workflow.py)."""
 
 import pytest
-from pydantic import ValidationError
+from pydantic import TypeAdapter, ValidationError
 
 from src.engine.workflow import DecisionNode, WorkflowNode
-from pydantic import TypeAdapter
 
 
 def _binary_node(**data_overrides):
@@ -58,7 +57,10 @@ def test_choice_node_rejects_duplicate_labels():
 
 def test_examples_round_trip():
     node = _binary_node(
-        examples=[{"input": "server is down", "result": True}, {"input": "nice weather", "result": False}]
+        examples=[
+            {"input": "server is down", "result": True},
+            {"input": "nice weather", "result": False},
+        ]
     )
     assert node.data.examples[0].input == "server is down"
     assert node.data.examples[0].result is True
