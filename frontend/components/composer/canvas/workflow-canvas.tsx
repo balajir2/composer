@@ -156,10 +156,38 @@ const BRANCH_SPECS: Record<string, BranchSpec[]> = {
     { id: "approved", label: "approved", color: "rgb(16,185,129)" },
     { id: "rejected", label: "rejected", color: "rgb(244,63,94)" },
   ],
+  decision: [
+    { id: "true", label: "true", color: "rgb(16,185,129)" },
+    { id: "false", label: "false", color: "rgb(244,63,94)" },
+  ],
 };
 
+// Decision's "choice" mode has a variable number of outgoing branches
+// (one per configured option), unlike the fixed true/false pair used by
+// its "binary" mode (and by if-else/while/user-approval).  Colors cycle
+// through this palette so each choice branch is visually distinct.
+const CHOICE_BRANCH_COLORS = [
+  "rgb(59,130,246)",
+  "rgb(168,85,247)",
+  "rgb(234,179,8)",
+  "rgb(16,185,129)",
+  "rgb(244,63,94)",
+];
+
 function BranchingNode({ id, data, type }: NodeProps<NodeData>) {
-  const branches = BRANCH_SPECS[type ?? ""] ?? [];
+  const isDecisionChoice =
+    type === "decision" && (data as Record<string, unknown>)?.mode === "choice";
+  const branches: BranchSpec[] = isDecisionChoice
+    ? (((data as Record<string, unknown>).options as { label: string }[]) ?? []).map(
+        (opt, idx) => ({
+          id: opt.label,
+          label: opt.label,
+          color:
+            CHOICE_BRANCH_COLORS[idx % CHOICE_BRANCH_COLORS.length] ??
+            CHOICE_BRANCH_COLORS[0]!,
+        })
+      )
+    : BRANCH_SPECS[type ?? ""] ?? [];
   return (
     <>
       <Handle type="target" position={Position.Left} style={HANDLE_STYLE} />
@@ -214,6 +242,7 @@ export const COMPOSER_NODE_TYPES: NodeTypes = {
   "data-transform": InnerNode,
   extract: InnerNode,
   "if-else": BranchingNode,
+  decision: BranchingNode,
   while: BranchingNode,
   "user-approval": BranchingNode,
   "join-chunks": InnerNode,

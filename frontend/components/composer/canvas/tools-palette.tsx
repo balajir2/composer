@@ -27,6 +27,7 @@ export const COMPOSER_NODE_PALETTE: { nodeType: string; label: string }[] = [
   { nodeType: "data-transform", label: "Data Transform" },
   { nodeType: "extract", label: "Extract" },
   { nodeType: "if-else", label: "If / Else" },
+  { nodeType: "decision", label: "Decision" },
   { nodeType: "while", label: "While" },
   { nodeType: "user-approval", label: "User Approval" },
   { nodeType: "join-chunks", label: "Join Chunks" },

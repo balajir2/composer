@@ -33,6 +33,7 @@ import {
   Plug,
   Presentation,
   Repeat,
+  Scale,
   Shield,
   Sparkles,
   StickyNote,
@@ -122,6 +123,12 @@ export const NODE_VISUALS: Record<string, NodeVisual> = {
     iconWrapClass: "bg-orange-100 text-orange-700",
     accent: "text-orange-700",
     label: "If / Else",
+  },
+  decision: {
+    icon: Scale,
+    iconWrapClass: "bg-purple-100 text-purple-700",
+    accent: "text-purple-700",
+    label: "Decision",
   },
   while: {
     icon: Repeat,
