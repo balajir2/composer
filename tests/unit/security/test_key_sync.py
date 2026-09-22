@@ -180,6 +180,12 @@ async def test_sync_survives_db_query_failure(
     assert any("connection refused" in r.message for r in caplog.records)
 
 
+def test_typesafe_in_provider_to_settings_field() -> None:
+    from src.security.key_sync import PROVIDER_TO_SETTINGS_FIELD
+
+    assert PROVIDER_TO_SETTINGS_FIELD["typesafe"] == "typesafe_api_key"
+
+
 @pytest.mark.asyncio
 async def test_sync_empty_table_is_noop(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_valid_encryption_key(monkeypatch)

@@ -24,6 +24,7 @@ _EXPECTED_PROVIDERS = {
     "browserless",
     "gamma",
     "resend",
+    "typesafe",
 }
 
 _EXPECTED_ENV_VARS = {
@@ -40,6 +41,7 @@ _EXPECTED_ENV_VARS = {
     "BROWSERLESS_API_KEY",
     "GAMMA_API_KEY",
     "RESEND_API_KEY",
+    "TYPESAFE_API_KEY",
 }
 
 
@@ -66,3 +68,7 @@ def test_provider_to_env_values_are_unique() -> None:
 def test_provider_to_env_all_env_vars_expected() -> None:
     """The set of env-var values must exactly match the expected set."""
     assert set(_PROVIDER_TO_ENV.values()) == _EXPECTED_ENV_VARS
+
+
+def test_typesafe_in_provider_to_env() -> None:
+    assert _PROVIDER_TO_ENV["typesafe"] == "TYPESAFE_API_KEY"

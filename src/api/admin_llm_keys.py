@@ -31,6 +31,7 @@ _ALLOWED_PROVIDERS = {
     "browserless",
     "gamma",
     "resend",
+    "typesafe",
 }
 
 

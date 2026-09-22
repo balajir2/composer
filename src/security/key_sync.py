@@ -52,6 +52,7 @@ PROVIDER_TO_SETTINGS_FIELD: dict[str, str] = {
     "browserless": "browserless_api_key",
     "gamma": "gamma_api_key",
     "resend": "resend_api_key",
+    "typesafe": "typesafe_api_key",
 }
 
 

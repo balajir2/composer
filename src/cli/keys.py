@@ -26,6 +26,7 @@ _PROVIDER_TO_ENV: dict[str, str] = {
     "browserless": "BROWSERLESS_API_KEY",
     "gamma": "GAMMA_API_KEY",
     "resend": "RESEND_API_KEY",
+    "typesafe": "TYPESAFE_API_KEY",
 }
 
 

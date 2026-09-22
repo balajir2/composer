@@ -121,6 +121,12 @@ def test_put_updates_when_present(monkeypatch: pytest.MonkeyPatch) -> None:
     db.llmapikey.update.assert_awaited_once()
 
 
+def test_typesafe_is_an_allowed_provider() -> None:
+    from src.api.admin_llm_keys import _ALLOWED_PROVIDERS  # pyright: ignore[reportPrivateUsage]
+
+    assert "typesafe" in _ALLOWED_PROVIDERS  # pyright: ignore[reportPrivateUsage]
+
+
 def test_put_rejects_unknown_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _ = _client_admin(monkeypatch)
     resp = client.put("/admin/llm-keys/bogus", json={"value": "any"})
