@@ -12,9 +12,11 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+import httpx
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, create_model
 
+from src.config import get_settings
 from src.engine.context import get_current_langsmith
 from src.executors.guardrails import DEFAULT_MODEL
 from src.llm.providers import build_chat_model
@@ -141,10 +143,83 @@ class LLMJudgmentProvider:
         return parsed.option, parsed.confidence
 
 
+_TYPESAFE_URL = "https://api.typesafe.ai/v1/systemone"
+_TYPESAFE_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+
+
+def _format_instructions(
+    instruction: str, examples: list[DecisionExample], *, value_key: str
+) -> str:
+    if not examples:
+        return instruction
+    lines = [instruction, "", "Examples:"]
+    for i, ex in enumerate(examples, start=1):
+        value = ex.result if value_key == "result" else ex.option
+        lines.append(f'{i}. "{ex.input}" -> {value}')
+    return "\n".join(lines)
+
+
+@register_judgment_provider("typesafe")
+class TypeSafeJudgmentProvider:
+    async def _post(self, body: dict[str, Any]) -> dict[str, Any]:
+        api_key = get_settings().typesafe_api_key or ""
+        async with httpx.AsyncClient(timeout=_TYPESAFE_TIMEOUT) as client:
+            resp = await client.post(
+                _TYPESAFE_URL, json=body, headers={"Authorization": f"Bearer {api_key}"}
+            )
+        if resp.status_code >= 400:
+            raise JudgmentProviderError(f"TypeSafe HTTP {resp.status_code}: {resp.text[:240]}")
+        return resp.json()
+
+    async def decide_binary(
+        self, *, instruction: str, examples: list[DecisionExample], text: str, model: str | None
+    ) -> tuple[bool, float]:
+        body: dict[str, Any] = {
+            "state": text,
+            "questions": {
+                "decision": {
+                    "type": "noul",
+                    "instructions": _format_instructions(instruction, examples, value_key="result"),
+                }
+            },
+        }
+        if model:
+            body["model"] = model
+        data = await self._post(body)
+        noul = data["answers"]["decision"]["noul"]
+        result = noul >= 0.5
+        confidence = noul if result else 1 - noul
+        return result, confidence
+
+    async def decide_choice(
+        self,
+        *,
+        instruction: str,
+        options: list[DecisionOption],
+        examples: list[DecisionExample],
+        text: str,
+        model: str | None,
+    ) -> tuple[str, float]:
+        criteria = {opt.label: opt.description for opt in options if opt.description}
+        question: dict[str, Any] = {
+            "type": "choice",
+            "instructions": _format_instructions(instruction, examples, value_key="option"),
+        }
+        if criteria:
+            question["criteria"] = criteria
+        body: dict[str, Any] = {"state": text, "questions": {"decision": question}}
+        if model:
+            body["model"] = model
+        data = await self._post(body)
+        answer = data["answers"]["decision"]
+        return answer["choice"], answer["confidence"]
+
+
 __all__ = [
     "JudgmentProvider",
     "JudgmentProviderError",
     "LLMJudgmentProvider",
+    "TypeSafeJudgmentProvider",
     "build_judgment_provider",
     "register_judgment_provider",
 ]
