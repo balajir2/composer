@@ -15,6 +15,7 @@ import TransformPanel from "./node-panels/transform";
 import DataTransformPanel from "./node-panels/data-transform";
 import ExtractPanel from "./node-panels/extract";
 import IfElsePanel from "./node-panels/if-else";
+import DecisionPanel from "./node-panels/decision";
 import WhilePanel from "./node-panels/while";
 import UserApprovalPanel from "./node-panels/user-approval";
 import JoinChunksPanel from "./node-panels/join-chunks";
@@ -62,6 +63,7 @@ const PANEL_MAP: Record<string, PanelComponent> = {
   "data-transform": DataTransformPanel,
   extract: ExtractPanel,
   "if-else": IfElsePanel,
+  decision: DecisionPanel,
   while: WhilePanel,
   "user-approval": UserApprovalPanel,
   "join-chunks": JoinChunksPanel,
@@ -90,6 +92,7 @@ const TYPE_LABELS: Record<string, string> = {
   "data-transform": "Data Transform",
   extract: "Extract",
   "if-else": "If / Else",
+  decision: "Decision",
   while: "While",
   "user-approval": "User Approval",
   "join-chunks": "Join Chunks",
