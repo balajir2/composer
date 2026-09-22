@@ -37,6 +37,7 @@ const PROVIDERS = [
   { id: "groq", label: "Groq" },
   { id: "deepseek", label: "DeepSeek" },
   { id: "qwen", label: "Qwen" },
+  { id: "typesafe", label: "TypeSafe (Jev)" },
   { id: "langsmith", label: "LangSmith" },
   { id: "tavily", label: "Tavily" },
   { id: "firecrawl", label: "Firecrawl" },

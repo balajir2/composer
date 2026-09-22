@@ -43,6 +43,7 @@ const PROVIDER_OPTIONS = [
   { value: "groq", label: "Groq" },
   { value: "deepseek", label: "DeepSeek" },
   { value: "qwen", label: "Qwen" },
+  { value: "typesafe", label: "TypeSafe (Jev)" },
 ];
 
 export default function AdminLlmModelsPage() {
