@@ -194,6 +194,12 @@ _PROVIDERS: dict[str, _ProviderSpec] = {
     ),
 }
 
+# Providers with no live /models discovery endpoint at all. These skip
+# _fetch_live entirely and are served straight from the DB-curated
+# fallback (admin-maintained LlmModel rows) rather than "fetch, then
+# fall back on failure."
+_DB_ONLY_PROVIDERS: set[str] = {"typesafe"}
+
 
 _PROBE_CONCURRENCY = 6
 
@@ -314,7 +320,7 @@ async def _db_fallback(db: Prisma, provider: str) -> list[LiveModel]:  # pyright
 async def list_available_models(
     provider: str = Query(
         ...,
-        description="Provider id: anthropic|openai|google|groq|deepseek|qwen",
+        description="Provider id: anthropic|openai|google|groq|deepseek|qwen|typesafe",
     ),
     refresh: bool = Query(
         default=False,
@@ -323,7 +329,7 @@ async def list_available_models(
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     _user_id: str = Depends(get_current_user_id),
 ) -> AvailableModelsResponse:  # pyright: ignore[reportUnusedFunction]
-    if provider not in _PROVIDERS:
+    if provider not in _PROVIDERS and provider not in _DB_ONLY_PROVIDERS:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f"Unsupported provider: {provider}",
@@ -342,6 +348,12 @@ async def list_available_models(
             cached = _cache.get(provider)
             if cached and now - cached[0] < _CACHE_TTL_SECONDS:
                 return AvailableModelsResponse(provider=provider, models=cached[1])
+        if provider in _DB_ONLY_PROVIDERS:
+            # No live /models endpoint exists for this provider at all —
+            # go straight to the DB-curated fallback instead of trying
+            # (and failing) a live fetch first.
+            fallback = await _db_fallback(db, provider)
+            return AvailableModelsResponse(provider=provider, models=fallback)
         try:
             models = await _fetch_live(provider)
             _cache[provider] = (now, models)
