@@ -961,3 +961,159 @@ async def test_fan_out_to_independent_ends_captures_both_outputs() -> None:
     assert result["final_outputs"] == {"end-a": "shared-value", "end-b": "shared-value"}
     assert result["variables"]["a_marker"] == "shared-value"
     assert result["variables"]["b_marker"] == "shared-value"
+
+
+# ---------------------------------------------------------------------------
+# Task 5 (decision node): conditional-edge emission + routing
+# ---------------------------------------------------------------------------
+
+
+def test_conditional_edges_compile_for_decision_binary() -> None:
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from src.engine.graph_builder import build_graph
+    from src.engine.workflow import Workflow
+
+    wf = Workflow.model_validate(
+        {
+            "id": "w1",
+            "name": "decision binary test",
+            "nodes": [
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "d",
+                    "type": "decision",
+                    "position": {"x": 100, "y": 0},
+                    "data": {"label": "D", "mode": "binary", "instruction": "urgent?"},
+                },
+                {"id": "a", "type": "end", "position": {"x": 200, "y": 0}, "data": {"label": "A"}},
+                {
+                    "id": "b",
+                    "type": "end",
+                    "position": {"x": 200, "y": 100},
+                    "data": {"label": "B"},
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "s", "target": "d"},
+                {"id": "e2", "source": "d", "target": "a", "branch": "true"},
+                {"id": "e3", "source": "d", "target": "b", "branch": "false"},
+            ],
+        }
+    )
+    compiled = build_graph(wf, MemorySaver())
+    assert compiled is not None
+
+
+def test_conditional_edges_compile_for_decision_choice_three_way() -> None:
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from src.engine.graph_builder import build_graph
+    from src.engine.workflow import Workflow
+
+    wf = Workflow.model_validate(
+        {
+            "id": "w1",
+            "name": "decision choice test",
+            "nodes": [
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {
+                    "id": "d",
+                    "type": "decision",
+                    "position": {"x": 100, "y": 0},
+                    "data": {
+                        "label": "D",
+                        "mode": "choice",
+                        "instruction": "route it",
+                        "options": [
+                            {"label": "billing"},
+                            {"label": "technical"},
+                            {"label": "sales"},
+                        ],
+                    },
+                },
+                {"id": "a", "type": "end", "position": {"x": 200, "y": 0}, "data": {"label": "A"}},
+                {
+                    "id": "b",
+                    "type": "end",
+                    "position": {"x": 200, "y": 100},
+                    "data": {"label": "B"},
+                },
+                {
+                    "id": "c",
+                    "type": "end",
+                    "position": {"x": 200, "y": 200},
+                    "data": {"label": "C"},
+                },
+            ],
+            "edges": [
+                {"id": "e1", "source": "s", "target": "d"},
+                {"id": "e2", "source": "d", "target": "a", "branch": "billing"},
+                {"id": "e3", "source": "d", "target": "b", "branch": "technical"},
+                {"id": "e4", "source": "d", "target": "c", "branch": "sales"},
+            ],
+        }
+    )
+    compiled = build_graph(wf, MemorySaver())
+    assert compiled is not None
+
+
+def test_decision_router_falls_back_on_missing_result() -> None:
+    from src.engine.graph_builder import _route_decision  # pyright: ignore[reportPrivateUsage]
+    from src.engine.state import initial_state
+    from src.engine.workflow import DecisionNode
+
+    node = DecisionNode.model_validate(
+        {
+            "id": "d",
+            "type": "decision",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "D", "mode": "binary", "instruction": "x?"},
+        }
+    )
+    router = _route_decision(node)
+    state = initial_state()  # no node_results for "d" yet
+    assert router(state) == "false"
+
+
+def test_decision_router_reads_binary_result_from_state() -> None:
+    from src.engine.graph_builder import _route_decision  # pyright: ignore[reportPrivateUsage]
+    from src.engine.state import initial_state
+    from src.engine.workflow import DecisionNode
+
+    node = DecisionNode.model_validate(
+        {
+            "id": "d",
+            "type": "decision",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "D", "mode": "binary", "instruction": "x?"},
+        }
+    )
+    router = _route_decision(node)
+    state = initial_state()
+    state["node_results"]["d"] = {"output": {"decision": True, "confidence": 0.9}}
+    assert router(state) == "true"
+
+
+def test_decision_router_reads_choice_result_from_state() -> None:
+    from src.engine.graph_builder import _route_decision  # pyright: ignore[reportPrivateUsage]
+    from src.engine.state import initial_state
+    from src.engine.workflow import DecisionNode
+
+    node = DecisionNode.model_validate(
+        {
+            "id": "d",
+            "type": "decision",
+            "position": {"x": 0, "y": 0},
+            "data": {
+                "label": "D",
+                "mode": "choice",
+                "instruction": "x?",
+                "options": [{"label": "a"}, {"label": "b"}],
+            },
+        }
+    )
+    router = _route_decision(node)
+    state = initial_state()
+    state["node_results"]["d"] = {"output": {"decision": "b", "confidence": 0.5}}
+    assert router(state) == "b"

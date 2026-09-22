@@ -17,6 +17,7 @@ from langgraph.graph.state import CompiledStateGraph
 from src.engine.events_wrapper import wrap_executor_with_events
 from src.engine.state import WorkflowStateDict
 from src.engine.workflow import (
+    DecisionNode,
     IfElseNode,
     UserApprovalNode,
     WhileNode,
@@ -38,6 +39,9 @@ from src.executors import (
 )
 from src.executors import (
     data_transform as _data_transform_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
+)
+from src.executors import (
+    decision as _decision_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
 from src.executors import (
     download_pdf as _download_pdf_executor,  # noqa: F401  # pyright: ignore[reportUnusedImport]
@@ -288,7 +292,7 @@ def validate_workflow_shape(workflow: Workflow) -> None:
             )
 
     # Phase 4b/5a: branch labels must match source type.
-    _conditional_types = {"if-else", "while", "user-approval"}
+    _conditional_types = {"if-else", "while", "user-approval", "decision"}
     for edge in workflow.edges:
         source = nodes[edge.source]
         if source.type in _conditional_types:
@@ -307,7 +311,7 @@ def validate_workflow_shape(workflow: Workflow) -> None:
     _check_reachability(start_ids[0], nodes, workflow.edges)
 
 
-CONDITIONAL_SOURCE_TYPES = {"if-else", "while", "user-approval"}
+CONDITIONAL_SOURCE_TYPES = {"if-else", "while", "user-approval", "decision"}
 
 
 def _branch_mapping(
@@ -398,6 +402,37 @@ def _route_user_approval(
     return _router
 
 
+def _route_decision(node: DecisionNode) -> Callable[[WorkflowStateDict], str]:
+    """Router closure for a decision node. Reads the already-computed result
+    from node_results (an LLM/judgment call isn't free or idempotent enough
+    to repeat during routing, unlike if-else's simpleeval re-evaluation).
+    Falls back to the first branch on a missing/malformed result so a
+    provider hiccup can't wedge the graph.
+    """
+
+    def _fallback() -> str:
+        if node.data.mode == "binary":
+            return "false"
+        assert node.data.options is not None
+        return node.data.options[0].label
+
+    def _router(state: WorkflowStateDict) -> str:
+        node_results = state.get("node_results") or {}
+        result = node_results.get(node.id)
+        if not result or "output" not in result:
+            return _fallback()
+        decision = result["output"].get("decision")
+        if node.data.mode == "binary":
+            return "true" if decision else "false"
+        assert node.data.options is not None
+        labels = {o.label for o in node.data.options}
+        if isinstance(decision, str) and decision in labels:
+            return decision
+        return _fallback()
+
+    return _router
+
+
 def build_graph(
     workflow: Workflow,
     checkpointer: BaseCheckpointSaver[Any],
@@ -425,7 +460,7 @@ def build_graph(
     # Emit normal edges first; conditional edges handled in a second pass.
     for edge in workflow.edges:
         source_node = nodes_by_id[edge.source]
-        if source_node.type in {"if-else", "while", "user-approval"}:
+        if source_node.type in {"if-else", "while", "user-approval", "decision"}:
             continue  # handled by conditional-edges pass below
         # Skip edges whose source or target is a visual-only node
         if source_node.type in _VISUAL_ONLY_TYPES:
@@ -462,6 +497,20 @@ def build_graph(
             )
             builder.add_conditional_edges(  # pyright: ignore[reportUnknownMemberType]
                 node.id, _route_user_approval(node), mapping
+            )
+        elif node.type == "decision":
+            assert isinstance(node, DecisionNode)
+            if node.data.mode == "binary":
+                required = {"true", "false"}
+            else:
+                assert node.data.options is not None
+                required = {o.label for o in node.data.options}
+            mapping = cast(
+                "dict[Hashable, str]",
+                _branch_mapping(node, list(workflow.edges), required),
+            )
+            builder.add_conditional_edges(  # pyright: ignore[reportUnknownMemberType]
+                node.id, _route_decision(node), mapping
             )
 
     start_id = next(n.id for n in workflow.nodes if n.type == "start")
