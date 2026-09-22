@@ -51,6 +51,25 @@ by a model's judgment instead of a formula.
   note) found no case for TypeSafe in Guardrails and pricing is still unpublished — that finding
   stands, but the user chose to build the integration anyway rather than wait. Flagged once here
   for the record; not a blocker.
+- **TypeSafe is reachable from the Decision node only — never from Agent, Extract, Guardrails, or
+  any other node that takes a free-form `model` string.** Jev isn't a chat model (no free-form
+  generation, no tool use); plugging it into `build_chat_model` — the shared dispatcher every other
+  `model`-string field ultimately flows through — would silently break its contract for every
+  caller. The isolation is enforced in two places, both by omission, not by a runtime check:
+  - **Backend:** `src/llm/providers.py`'s `_build_raw_chat_model` dispatches on an explicit
+    `if provider == "anthropic"` / `"openai"` / `"google"` chain (confirmed by reading the file —
+    lines 78+). No `"typesafe"` branch is added, ever. A stray `"typesafe/jev-latest"` string
+    reaching `build_chat_model` from anywhere fails loudly (unrecognized provider) rather than
+    silently doing something wrong — that failure is the safety net, not a bug to fix later.
+  - **Frontend:** each node panel with a model dropdown hardcodes its own `PROVIDER_OPTIONS` array
+    (confirmed in `agent.tsx:14` — it's per-panel, not a shared/imported constant).
+    `agent.tsx`/`guardrails.tsx`/`extract.tsx` (and any other panel with a model field) are **not
+    touched** by this spec — "typesafe" is added to exactly one provider list: the new
+    `decision.tsx` panel's own selector.
+  Admin-side setup (key CRUD, activation, verify — the "Admin LLM catalog" section below) *is*
+  identical to the other four providers, per the user's explicit ask — that's purely
+  administrative and grants no reachability from any node by itself. The restriction is about
+  which node *executors* can ever construct a call to TypeSafe, not about hiding it from admins.
 - **TypeSafe examples are folded into `criteria` text, not true few-shot.** TypeSafe's API has no
   per-example (input→output pair) mechanism — only a static `criteria` description per option (or
   per true/false). `TypeSafeJudgmentProvider` formats `examples` into that description as
@@ -162,7 +181,12 @@ directly in the executor:
   "criteria": {<option label>: <description, with folded-in examples>, ...}}`. Response's
   `answers.<id>.choice` is the option label directly; `answers.<id>.confidence` is used as-is.
 - `model` param is passed through as TypeSafe's `model` field when set, else omitted (API defaults
-  to `jev-latest`).
+  to `jev-latest`). **Bare model id (`"jev-latest"`), never a `"typesafe/..."`-prefixed string** —
+  unlike `LLMJudgmentProvider`, which passes `node.data.model` straight to `build_chat_model` and
+  therefore needs Agent's `"<provider>/<modelId>"` convention, `TypeSafeJudgmentProvider` never
+  touches `build_chat_model` at all, so there's no prefix to parse. This is the concrete form of
+  the isolation boundary above: the two providers' `model` strings are different formats on
+  purpose, and normalizing them to look the same would be the mistake, not an improvement.
 - Network/HTTP errors surface as a `JudgmentProviderError` (new exception, raised by both
   providers on failure) — the executor doesn't need to know which provider it's talking to to
   handle a failure.
@@ -267,18 +291,24 @@ Six touch points, mirroring if-else's registration exactly:
    node is configured with). `BranchingNode` needs a conditional: for `type === "decision"`, compute
    branches from `data` (`mode === "binary" ? [true,false] : data.options.map(...)`) instead of
    looking up `BRANCH_SPECS`. Binary mode can still use the static table like if-else.
-5. **`frontend/components/composer/canvas/node-panels/decision.tsx`** — new panel: mode toggle
-   (binary/choice), a provider selector (two options — "LLM" and "TypeSafe (Jev)" — wired to
-   `data.provider`, defaulting to `"llm"`), a model selector that stays live for both providers —
-   it calls `GET /llm-models/available?provider=<data.provider>`, the same component and request
-   shape Agent/Guardrails already use, just parameterized by whichever provider is selected (backed
-   by the admin's live-fetch-or-DB-fallback catalog described above; for `"typesafe"` that's always
-   the DB-curated `jev-latest`-style rows an admin added, since there's no live discovery), an
-   examples list editor (add/remove rows: input text + expected result/option, following the
-   JSON-field stringify/parse pattern from `arcade.tsx` where applicable — shows a small note when
-   provider is `"typesafe"` that examples are folded into criteria text, not true few-shot), and —
-   choice mode only — an options list editor (add/remove rows: label + description). The zero-shot
-   hint text renders under the examples editor when the list is empty.
+5. **`frontend/components/composer/canvas/node-panels/decision.tsx`** — new panel, and the *only*
+   panel with "TypeSafe (Jev)" in a provider list: mode toggle (binary/choice), a provider selector
+   (two options — "LLM" and "TypeSafe (Jev)" — wired to `data.provider`, defaulting to `"llm"`), a
+   model selector that calls `GET /llm-models/available?provider=<data.provider>` for both — same
+   endpoint Agent/Guardrails use, parameterized by whichever provider is selected (for `"typesafe"`
+   that's always the DB-curated `jev-latest`-style rows an admin added, since there's no live
+   discovery). **The write format branches on provider**, matching the backend split above: LLM
+   mode writes `"<provider>/<modelId>"` into `data.model` (Agent's existing convention, since it
+   flows to `build_chat_model`); TypeSafe mode writes the bare `modelId` (no prefix — it never
+   reaches `build_chat_model`). An examples list editor (add/remove rows: input text + expected
+   result/option, following the JSON-field stringify/parse pattern from `arcade.tsx` where
+   applicable — shows a small note when provider is `"typesafe"` that examples are folded into
+   criteria text, not true few-shot), and — choice mode only — an options list editor (add/remove
+   rows: label + description). The zero-shot hint text renders under the examples editor when the
+   list is empty.
+   `agent.tsx`, `guardrails.tsx`, `extract.tsx`, and every other panel with a `PROVIDER_OPTIONS`
+   array are unmodified by this spec — confirming that at implementation time is part of the review,
+   not just an intent stated here.
 6. **`frontend/components/composer/canvas/property-panel.tsx`** — route `decision` node type to the
    new panel component, same dispatch pattern as every other typed node.
 
@@ -291,6 +321,11 @@ Six touch points, mirroring if-else's registration exactly:
   formatting; `TypeSafeJudgmentProvider`'s request body shape for both `noul` and `choice`
   questions (mocked HTTP), examples-folded-into-criteria formatting, response parsing (`noul`
   threshold, `choice`/`confidence` passthrough), and `JudgmentProviderError` on HTTP failure.
+- **Isolation regression test**: `build_chat_model("typesafe/jev-latest", ...)` raises (no
+  `"typesafe"` branch in `_build_raw_chat_model`) — this is the one test in the suite whose whole
+  job is to fail loudly if a future change accidentally wires TypeSafe into the shared LLM
+  dispatcher. A frontend test asserting `"typesafe"` is absent from `agent.tsx`/`guardrails.tsx`/
+  `extract.tsx`'s `PROVIDER_OPTIONS` arrays would be the equivalent guard on the UI side.
 - **Admin catalog unit tests**: `_test_typesafe` (mocked HTTP, auth-check shape);
   `_verify_typesafe` (mocked HTTP, `ok`/`unavailable`/`auth_error`/`error` classification matching
   the existing `_classify` buckets); `list_available_models(provider="typesafe")` skips
