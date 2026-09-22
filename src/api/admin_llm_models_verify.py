@@ -250,6 +250,25 @@ async def _verify_qwen(model_id: str, key: str) -> ModelVerifyResult:
     )
 
 
+async def _verify_typesafe(model_id: str, key: str) -> ModelVerifyResult:
+    resp = await _post(
+        "https://api.typesafe.ai/v1/systemone",
+        headers={"Authorization": f"Bearer {key}", "content-type": "application/json"},
+        json={
+            "state": "ping",
+            "model": model_id,
+            "questions": {"probe": {"type": "noul", "instructions": "Is this text non-empty?"}},
+        },
+    )
+    status = _classify(resp.status_code, resp.text)
+    msg = (
+        f"TypeSafe {model_id!r} OK."
+        if status == "ok"
+        else f"TypeSafe HTTP {resp.status_code}: {resp.text[:240]}"
+    )
+    return ModelVerifyResult(status=status, http_status=resp.status_code, message=msg)
+
+
 _VERIFIERS = {
     "anthropic": _verify_anthropic,
     "openai": _verify_openai,
@@ -257,6 +276,7 @@ _VERIFIERS = {
     "groq": _verify_groq,
     "deepseek": _verify_deepseek,
     "qwen": _verify_qwen,
+    "typesafe": _verify_typesafe,
 }
 
 

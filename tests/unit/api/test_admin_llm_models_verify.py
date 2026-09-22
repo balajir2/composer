@@ -3,6 +3,7 @@
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
+import httpx
 import pytest
 
 import src.api.admin_llm_models_verify as verify_mod
@@ -66,3 +67,42 @@ async def test_verify_openai_always_uses_max_completion_tokens_with_headroom(
     body = call_args.kwargs["json"]
     assert "max_tokens" not in body
     assert body["max_completion_tokens"] >= 16
+
+
+@pytest.mark.asyncio
+async def test_verify_typesafe_ok(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_post(
+        url: str, headers: dict[str, str], json: dict[str, object]
+    ) -> httpx.Response:
+        request = httpx.Request("POST", url)
+        return httpx.Response(200, json={"answers": {}}, request=request)
+
+    monkeypatch.setattr(verify_mod, "_post", _fake_post)
+    result = await verify_mod.run_model_verify("typesafe", "jev-latest", "sk-test")
+    assert result.status == "ok"
+
+
+@pytest.mark.asyncio
+async def test_verify_typesafe_unavailable_on_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_post(
+        url: str, headers: dict[str, str], json: dict[str, object]
+    ) -> httpx.Response:
+        request = httpx.Request("POST", url)
+        return httpx.Response(404, text="model not found", request=request)
+
+    monkeypatch.setattr(verify_mod, "_post", _fake_post)
+    result = await verify_mod.run_model_verify("typesafe", "jev-nonexistent", "sk-test")
+    assert result.status == "unavailable"
+
+
+@pytest.mark.asyncio
+async def test_verify_typesafe_auth_error_on_401(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def _fake_post(
+        url: str, headers: dict[str, str], json: dict[str, object]
+    ) -> httpx.Response:
+        request = httpx.Request("POST", url)
+        return httpx.Response(401, text="bad key", request=request)
+
+    monkeypatch.setattr(verify_mod, "_post", _fake_post)
+    result = await verify_mod.run_model_verify("typesafe", "jev-latest", "sk-bad")
+    assert result.status == "auth_error"
