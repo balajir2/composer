@@ -37,12 +37,18 @@ by a model's judgment instead of a formula.
   same branch-key shape as if-else. `choice` = pick one of N labeled options, one branch per
   option. A numeric `score` primitive (TypeSafe/Laya's third primitive) was considered and
   explicitly deferred — no concrete use case yet beyond the two branching shapes.
-- **No backend abstraction.** The executor calls Composer's existing LLM stack
-  (`src/llm/providers.py::build_chat_model` + `src/llm/structured_output.py::structured_invoke`)
-  directly — the same pattern Extract and Agent already use. No `JudgmentProvider` interface, no
-  TypeSafe/Laya wiring. If a second backend is ever justified (see the memory note above — revisit
-  Laya in a few weeks), refactor into an abstraction then; building one speculatively now is exactly
-  the premature-abstraction this codebase's conventions warn against.
+- **`JudgmentProvider` abstraction, ships now — reversed from the original "no abstraction" call.**
+  The executor talks to a small provider interface, not directly to `build_chat_model`/
+  `structured_invoke`. One implementation ships (`LLMJudgmentProvider`, wrapping Composer's existing
+  LLM stack exactly as the earlier no-abstraction draft described); TypeSafe/Laya remain unwired,
+  but adding either later is a new provider class + registry entry, not a refactor of the node,
+  executor contract, or frontend schema. This is a deliberate reversal of the earlier YAGNI call —
+  the user judged the interface cheap enough, and the future-optionality valuable enough, to build
+  ahead of a second real implementation.
+- **The provider choice is user-visible now, single-option today.** `DecisionNodeData.provider`
+  exists and the Designer panel shows a selector, even though `"llm"` is the only real choice —
+  avoids a schema migration when a second provider ships, at the cost of showing a dropdown with
+  one option today.
 - **Few-shot examples are optional, not required.** Zero-shot judgment is allowed — some decisions
   are unambiguous enough not to need it — but the Designer panel shows a non-blocking hint
   ("Zero-shot decisions can be inconsistent on edge cases. Consider adding 1-2 examples.") when
@@ -77,6 +83,7 @@ class DecisionNodeData(BaseNodeData):
     true_label: str | None = Field(default=None, alias="trueLabel")    # binary mode
     false_label: str | None = Field(default=None, alias="falseLabel")  # binary mode
     model: str | None = None
+    provider: str | None = None   # judgment backend name; defaults to "llm" at executor time
 
 
 class DecisionNode(BaseModel):
@@ -90,26 +97,64 @@ Validation: `mode="choice"` requires a non-empty `options` list (≥2 entries, u
 `mode="binary"` ignores `options`. Enforced in `DecisionNodeData` via a `model_validator`, mirroring
 how other node-data classes in this file validate cross-field invariants.
 
-### Executor (`src/executors/decision.py`)
+### Judgment provider abstraction (`src/llm/judgment.py`)
 
-New file, structured like `if_else.py` (produces the audit row; the router closure in
-`graph_builder.py` does the actual routing) but with an LLM call like `guardrails.py`'s `_run_check`:
+New file. Mirrors the existing `Executor`/`register_executor`/`build_executor` pattern in
+`src/executors/base.py:1-85` — same shape, applied one layer down (a *provider* a node's executor
+calls, not the node's executor itself):
 
-- Resolves input text the same way guardrails does: `lastOutput` → `input` → `""` (presence check,
-  not `or`, to preserve falsy-but-legitimate values).
-- Builds the model via `build_chat_model(node.data.model or DEFAULT_MODEL, temperature=0.0,
+```python
+@runtime_checkable
+class JudgmentProvider(Protocol):
+    async def decide_binary(
+        self, *, instruction: str, examples: list[DecisionExample], text: str, model: str | None,
+    ) -> tuple[bool, float]: ...   # (result, confidence)
+
+    async def decide_choice(
+        self, *, instruction: str, options: list[DecisionOption],
+        examples: list[DecisionExample], text: str, model: str | None,
+    ) -> tuple[str, float]: ...    # (chosen option label, confidence)
+
+
+_REGISTRY: dict[str, type[Any]] = {}
+
+def register_judgment_provider(name: str): ...   # decorator, same shape as register_executor
+def build_judgment_provider(name: str) -> JudgmentProvider: ...   # raises on unknown name
+```
+
+`LLMJudgmentProvider` (`register_judgment_provider("llm")`) is the only implementation shipped in
+this spec. It contains exactly the logic the original (pre-reversal) draft of this spec put
+directly in the executor:
+
+- Builds the model via `build_chat_model(model or DEFAULT_MODEL, temperature=0.0,
   langsmith_config=get_current_langsmith())`, reusing `guardrails.py`'s existing
   `DEFAULT_MODEL = "anthropic/claude-haiku-4-5-20251001"` constant (imported, not duplicated) —
   both nodes want the same cheap-classifier default.
-- Binary mode: schema `class BinaryDecision(BaseModel): result: bool; confidence: float`, calls
+- `decide_binary`: schema `class BinaryDecision(BaseModel): result: bool; confidence: float`, calls
   `structured_invoke(llm, messages, schema=BinaryDecision)`.
-- Choice mode: schema built dynamically per invocation — `option: Literal[<node's option labels>]`
-  + `confidence: float` — via `pydantic.create_model`, since the field's allowed values are node
-  config, not known at class-definition time.
-- Both modes format `node.data.examples` (if any) into the single user message ahead of the actual
-  judgment text, as a numbered few-shot block (`Examples:\n1. Text: "..." → true\n2. ...`), then
-  `Now decide:\nText: {state_text}`. This stays inside one `structured_invoke` call — no
-  alternating user/assistant example turns, no per-provider prefill handling to worry about.
+- `decide_choice`: schema built dynamically per invocation — `option: Literal[<option labels>]`
+  + `confidence: float` — via `pydantic.create_model`, since the allowed values are caller-supplied,
+  not known at class-definition time.
+- Both methods format `examples` (if any) into the single user message ahead of the judgment text,
+  as a numbered few-shot block (`Examples:\n1. Text: "..." → true\n2. ...`), then
+  `Now decide:\nText: {text}`. Stays inside one `structured_invoke` call — no alternating
+  user/assistant example turns, no per-provider prefill handling to worry about.
+
+A future `TypeSafeJudgmentProvider`/`LayaJudgmentProvider` would implement the same two methods
+against its own backend and register under its own name — no change to `DecisionNodeData`'s shape
+(just a new valid value for `provider`), the executor, or the frontend panel beyond adding the name
+to the selector's option list.
+
+### Executor (`src/executors/decision.py`)
+
+New file, structured like `if_else.py` (produces the audit row; the router closure in
+`graph_builder.py` does the actual routing), but thin — it resolves input and dispatches to the
+provider rather than calling the LLM stack itself:
+
+- Resolves input text the same way guardrails does: `lastOutput` → `input` → `""` (presence check,
+  not `or`, to preserve falsy-but-legitimate values).
+- `provider = build_judgment_provider(node.data.provider or "llm")`.
+- Calls `provider.decide_binary(...)` or `provider.decide_choice(...)` depending on `node.data.mode`.
 - Populates `node_results[node.id].output = {"decision": <bool|str>, "confidence": <float>}`.
   Does **not** overwrite `lastOutput` — same transparent-passthrough contract as guardrails, so
   Decision composes with whatever's downstream regardless of which branch was taken.
@@ -148,7 +193,8 @@ Six touch points, mirroring if-else's registration exactly:
    branches from `data` (`mode === "binary" ? [true,false] : data.options.map(...)`) instead of
    looking up `BRANCH_SPECS`. Binary mode can still use the static table like if-else.
 5. **`frontend/components/composer/canvas/node-panels/decision.tsx`** — new panel: mode toggle
-   (binary/choice), instruction textarea, model selector (reuse whatever component
+   (binary/choice), a provider selector (single option, "LLM", today — wired to `data.provider`,
+   defaulting to `"llm"`), instruction textarea, model selector (reuse whatever component
    agent/guardrails panels already use), an examples list editor (add/remove rows: input text +
    expected result/option, following the JSON-field stringify/parse pattern from `arcade.tsx` where
    applicable), and — choice mode only — an options list editor (add/remove rows: label +
@@ -158,10 +204,14 @@ Six touch points, mirroring if-else's registration exactly:
 
 ## Testing
 
-- **`src/executors/decision.py` unit tests**: binary mode schema + structured_invoke call shape;
-  choice mode dynamic schema construction (`pydantic.create_model` produces a `Literal` matching
-  the configured options); few-shot example formatting; `lastOutput`/`input`/`""` resolution
-  matches guardrails' existing tested behavior; `node_results` output shape; `lastOutput` untouched.
+- **`src/llm/judgment.py` unit tests**: `build_judgment_provider("llm")` returns a
+  `LLMJudgmentProvider`; unknown provider name raises; `LLMJudgmentProvider.decide_binary`'s schema
+  + `structured_invoke` call shape; `decide_choice`'s dynamic schema construction
+  (`pydantic.create_model` produces a `Literal` matching the passed-in options); few-shot example
+  formatting.
+- **`src/executors/decision.py` unit tests**: `lastOutput`/`input`/`""` resolution matches
+  guardrails' existing tested behavior; dispatches to `decide_binary`/`decide_choice` per
+  `node.data.mode`; `node_results` output shape; `lastOutput` untouched.
 - **`graph_builder.py` test**: choice-mode routing with a 3-option node — confirms
   `_branch_mapping` accepts the dynamic branch set with no changes, and that a malformed/missing
   decision result falls back to the first branch rather than raising.
@@ -175,8 +225,9 @@ Six touch points, mirroring if-else's registration exactly:
 
 ## Explicitly deferred / out of scope
 
-- Pluggable judgment backend (TypeSafe, Laya, or any non-LLM engine) — LLM-only for now; see the
-  standing memory note on revisiting Laya.
+- A second `JudgmentProvider` implementation (TypeSafe, Laya, or any non-LLM engine) — the
+  interface ships now, but only `LLMJudgmentProvider` is wired; see the standing memory note on
+  revisiting Laya before building either.
 - `score` primitive (numeric rubric, threshold-driven branching or plain output).
 - Refactoring `guardrails.py` to reuse Decision's binary-judgment code.
 - Required/minimum example counts, or any validation gating on example presence.
