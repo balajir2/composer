@@ -27,6 +27,7 @@ const CONDITIONAL_SOURCE_TYPES = new Set([
   "if-else",
   "while",
   "user-approval",
+  "decision",
 ]);
 
 export function toReactFlow(
