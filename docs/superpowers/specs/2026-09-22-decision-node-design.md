@@ -1,7 +1,7 @@
 # Design: Decision node — judgment-based branching for the palette
 
 **Date:** 2026-09-22
-**Status:** Approved (design phase) — implementation plan not yet written
+**Status:** Approved — implementation plan not yet written
 **Origin:** User request, arising from a spike evaluating TypeSafe AI (`jev-latest`) as a possible
 backend for Composer's Guardrails executor. The spike found no case for adopting TypeSafe there
 (see `project_typesafe_laya_decision_backend_eval.md` in the user's memory store), but the
@@ -345,6 +345,42 @@ Six touch points, mirroring if-else's registration exactly:
   hint appearing/disappearing as examples are added/removed.
 - **Playwright e2e**: one flow — add a binary Decision node, wire both branches, run a workflow,
   confirm the graph takes the correct branch for an unambiguous input.
+
+## Backward compatibility / open-source fork safety
+
+Composer is now open-sourced with active forks, so this section makes explicit what was checked
+to keep this change purely additive — nothing here should require a fork maintainer to do more
+than a clean merge:
+
+- **No database migration, at all.** `Workflow.nodes`/`Workflow.edges` are `Json` columns
+  (`prisma/schema.prisma:32-33`) — node types are validated at the Pydantic layer, not the SQL
+  layer. Adding `DecisionNode`/`DecisionNodeData` is a new variant in a discriminated union with
+  no `prisma migrate` step, no `ComposerBootstrap`-style placeholder concerns, nothing that can
+  fail or need rollback at the DB level. `LlmApiKey.provider` / `LlmModel.provider` are already
+  free `String` columns (no enum/check constraint), confirmed by reading both tables — adding
+  `"typesafe"` rows is data, not schema.
+- **Every code touchpoint is an addition, not a modification, of existing behavior.** Checked
+  against the actual files, not assumed: `graph_builder.py` gets a new `_route_decision` function
+  and a new `elif` branch — the existing `if-else`/`while`/`user-approval` branches are untouched.
+  `workflow.py` gets new classes inserted near `IfElseNode` — no existing class changes.
+  `key_sync.py`/`cli/keys.py`/`admin_llm_keys.py`/`admin_llm_models_verify.py`/`llm_models_live.py`
+  each get one new dict/set entry (`PROVIDER_TO_SETTINGS_FIELD`, `_PROVIDER_TO_ENV`,
+  `_ALLOWED_PROVIDERS`, `_TESTERS`, `_VERIFIERS`, the new `_DB_ONLY_PROVIDERS`) — no existing
+  provider's entry is touched, and no existing endpoint's request/response contract changes.
+  `workflow-canvas.tsx`'s `BranchingNode` gains a conditional for `type === "decision"`; the
+  existing `BRANCH_SPECS` lookup path for if-else/while/user-approval is unchanged.
+- **No new dependency.** `httpx` (for `TypeSafeJudgmentProvider`'s HTTP calls) and `pytest-httpx`
+  (for mocking it in tests) are both already declared in `pyproject.toml` — confirmed by reading
+  it, not assumed from general familiarity with the stack.
+- **New config is opt-in with a safe default.** `typesafe_api_key: str | None = None` — a
+  deployment (fork or otherwise) that never sets `TYPESAFE_API_KEY` sees no behavior change
+  anywhere; the field simply stays `None` and nothing references it outside
+  `TypeSafeJudgmentProvider`, which nothing calls unless a workflow author explicitly sets
+  `provider="typesafe"` on a Decision node.
+- **The isolation boundary (previous section) is itself a fork-safety property**, not just a
+  scoping decision: because TypeSafe never enters `build_chat_model`, a fork that has its own
+  Agent/Extract/Guardrails customizations can't be broken by this change touching shared LLM
+  dispatch code — that dispatch code isn't touched at all.
 
 ## Explicitly deferred / out of scope
 
