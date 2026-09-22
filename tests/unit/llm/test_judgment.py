@@ -50,7 +50,11 @@ async def test_decide_binary_returns_result_and_confidence(monkeypatch: pytest.M
         confidence = 0.92
 
     fake_model = _FakeChatModel(_Result())
-    monkeypatch.setattr(judgment_mod, "build_chat_model", lambda *a, **kw: fake_model)
+    monkeypatch.setattr(
+        judgment_mod,
+        "build_chat_model",
+        lambda *a, **kw: fake_model,  # pyright: ignore[reportUnknownLambdaType]
+    )
 
     provider = LLMJudgmentProvider()
     result, confidence = await provider.decide_binary(
@@ -77,7 +81,7 @@ async def test_decide_binary_folds_examples_into_prompt(monkeypatch: pytest.Monk
 
     real_structured_invoke = judgment_mod.structured_invoke
 
-    async def _capturing_invoke(chat_model, messages, **kw):
+    async def _capturing_invoke(chat_model: Any, messages: list[Any], **kw: Any) -> Any:
         captured["messages"] = messages
         return await real_structured_invoke(chat_model, messages, **kw)
 
@@ -106,7 +110,11 @@ async def test_decide_choice_builds_literal_schema_from_options(
         confidence = 0.8
 
     fake_model = _FakeChatModel(_Result())
-    monkeypatch.setattr(judgment_mod, "build_chat_model", lambda *a, **kw: fake_model)
+    monkeypatch.setattr(
+        judgment_mod,
+        "build_chat_model",
+        lambda *a, **kw: fake_model,  # pyright: ignore[reportUnknownLambdaType]
+    )
 
     provider = LLMJudgmentProvider()
     option, confidence = await provider.decide_choice(
