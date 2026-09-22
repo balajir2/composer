@@ -241,7 +241,30 @@ gets the same four touchpoints, not a special case:
 
 `TypeSafeJudgmentProvider` reads `get_settings().typesafe_api_key` at call time — same access
 pattern `build_chat_model` already uses for the other providers' keys. The Decision panel's model
-selector, when `provider="typesafe"`, calls `GET /llm-models/available?provider=typesafe` exactly
+selector, when `provider="typesafe"`, calls `GET /llm-models?provider=typesafe` (`src/api/llm_models.py`,
+via the frontend's `listEnabledLlmModels` — the same call Agent's panel makes, confirmed by reading
+`agent.tsx`) — this is the plain enabled-models-for-a-provider endpoint, already fully
+provider-agnostic (`db.llmmodel.find_many(where={"provider": provider, "enabled": True})`, no code
+change needed there at all. **`GET /llm-models/available` (point 4 above) is a different,
+admin-only endpoint** — the live-discovery query behind the Admin → LLM models "Add model" dialog,
+not anything a workflow's Decision panel calls.
+
+5. **The two admin frontend pages, not just their backend endpoints** — this is the actual
+   "activate Jev, same as other LLMs" surface, and it was missing from the plumbing above.
+   - **`frontend/app/admin/llm-keys/page.tsx`** — add `{ id: "typesafe", label: "TypeSafe (Jev)" }`
+     to its `PROVIDERS` array (line 33). Without this, the key CRUD backend exists but nothing on
+     the admin screen ever renders a TypeSafe row.
+   - **`frontend/app/admin/llm-models/page.tsx`** — add `{ value: "typesafe", label: "TypeSafe (Jev)" }`
+     to its `PROVIDER_OPTIONS` array (line 39). The dialog already has a `manualMode` toggle
+     ("Enter manually instead") an admin uses to type `jev-latest` directly rather than pick from a
+     live-fetched list — that path needs no further change. But the *live* path
+     (`listAvailableModels(provider)`, fired automatically on provider selection when not in manual
+     mode) hits `GET /llm-models/available?provider=typesafe`, which is exactly why point 4's
+     `_DB_ONLY_PROVIDERS` fix matters: without it, selecting "TypeSafe (Jev)" in this dialog 422s
+     immediately (`llm_models_live.py`'s `if provider not in _PROVIDERS: raise 422` — "typesafe" is
+     in neither set otherwise) instead of gracefully showing the (initially empty, then
+     admin-curated) DB-fallback list.
+
 like it does for `provider="llm"` — same component, same request shape, not a special case.
 
 ### Executor (`src/executors/decision.py`)
@@ -304,12 +327,14 @@ Six touch points, mirroring if-else's registration exactly:
    branches from `data` (`mode === "binary" ? [true,false] : data.options.map(...)`) instead of
    looking up `BRANCH_SPECS`. Binary mode can still use the static table like if-else.
 5. **`frontend/components/composer/canvas/node-panels/decision.tsx`** — new panel, and the *only*
-   panel with "TypeSafe (Jev)" in a provider list: mode toggle (binary/choice), a provider selector
-   (two options — "LLM" and "TypeSafe (Jev)" — wired to `data.provider`, defaulting to `"llm"`), a
-   model selector that calls `GET /llm-models/available?provider=<data.provider>` for both — same
-   endpoint Agent/Guardrails use, parameterized by whichever provider is selected (for `"typesafe"`
-   that's always the DB-curated `jev-latest`-style rows an admin added, since there's no live
-   discovery). **The write format branches on provider**, matching the backend split above: LLM
+   workflow-facing panel with "TypeSafe (Jev)" in a provider list (the admin pages in the "Admin
+   LLM catalog" section above are a separate, intentional exception to the isolation rule — see
+   there): mode toggle (binary/choice), a provider selector (two options — "LLM" and
+   "TypeSafe (Jev)" — wired to `data.provider`, defaulting to `"llm"`), a model selector that calls
+   `GET /llm-models?provider=<data.provider>` via `listEnabledLlmModels` for both — the exact same
+   call Agent's panel makes (confirmed in `agent.tsx`), parameterized by whichever provider is
+   selected (for `"typesafe"` that's whatever `jev-latest`-style rows an admin has added and
+   enabled via the Admin → LLM models page). **The write format branches on provider**, matching the backend split above: LLM
    mode writes `"<provider>/<modelId>"` into `data.model` (Agent's existing convention, since it
    flows to `build_chat_model`); TypeSafe mode writes the bare `modelId` (no prefix — it never
    reaches `build_chat_model`). An examples list editor (add/remove rows: input text + expected
@@ -338,6 +363,10 @@ Six touch points, mirroring if-else's registration exactly:
   job is to fail loudly if a future change accidentally wires TypeSafe into the shared LLM
   dispatcher. A frontend test asserting `"typesafe"` is absent from `agent.tsx`/`guardrails.tsx`/
   `extract.tsx`'s `PROVIDER_OPTIONS` arrays would be the equivalent guard on the UI side.
+- **Admin frontend tests**: `llm-keys/page.tsx` renders a TypeSafe row once `PROVIDERS` includes
+  it; `llm-models/page.tsx`'s Add-Model dialog shows "TypeSafe (Jev)" in `PROVIDER_OPTIONS` and,
+  with it selected and manual mode off, doesn't error when the live-fetch query returns the
+  DB-fallback shape.
 - **Admin catalog unit tests**: `_test_typesafe` (mocked HTTP, auth-check shape);
   `_verify_typesafe` (mocked HTTP, `ok`/`unavailable`/`auth_error`/`error` classification matching
   the existing `_classify` buckets); `list_available_models(provider="typesafe")` skips
