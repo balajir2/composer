@@ -351,9 +351,9 @@ export function WorkflowCanvas({
 
   // onConnect — ReactFlow calls this when the user drags a connection
   // between two handles.  addEdge appends a new RFEdge with a unique id.
-  // When the source is a branching node (if-else / while / user-approval)
-  // the sourceHandle carries the branch label; we mirror it onto the
-  // edge's `label` so the canvas reads naturally and `fromReactFlow`
+  // When the source is a branching node (if-else / while / user-approval /
+  // decision) the sourceHandle carries the branch label; we mirror it onto
+  // the edge's `label` so the canvas reads naturally and `fromReactFlow`
   // can serialize `branch` for the backend without extra plumbing.
   const handleConnect = useCallback(
     (params: Connection) => {
@@ -362,7 +362,8 @@ export function WorkflowCanvas({
         sourceNode &&
         (sourceNode.type === "if-else" ||
           sourceNode.type === "while" ||
-          sourceNode.type === "user-approval");
+          sourceNode.type === "user-approval" ||
+          sourceNode.type === "decision");
       const branchLabel =
         isBranching && typeof params.sourceHandle === "string"
           ? params.sourceHandle
