@@ -247,6 +247,50 @@ class IfElseNode(BaseModel):
     data: IfElseNodeData
 
 
+# ─── decision (Phase 6) ──────────────────────────────────────────────────
+
+
+class DecisionOption(BaseModel):
+    label: str
+    description: str | None = None
+
+
+class DecisionExample(BaseModel):
+    input: str
+    result: bool | None = None  # binary mode
+    option: str | None = None  # choice mode
+
+
+class DecisionNodeData(BaseNodeData):
+    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+
+    mode: Literal["binary", "choice"]
+    instruction: str
+    examples: list[DecisionExample] | None = None
+    options: list[DecisionOption] | None = None
+    true_label: str | None = Field(default=None, alias="trueLabel")
+    false_label: str | None = Field(default=None, alias="falseLabel")
+    model: str | None = None
+    provider: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_choice_options(self) -> "DecisionNodeData":
+        if self.mode == "choice":
+            if not self.options or len(self.options) < 2:
+                raise ValueError("decision node in 'choice' mode requires at least 2 options")
+            labels = [o.label for o in self.options]
+            if len(labels) != len(set(labels)):
+                raise ValueError("decision node options must have unique labels")
+        return self
+
+
+class DecisionNode(BaseModel):
+    id: str
+    type: Literal["decision"]
+    position: Position
+    data: DecisionNodeData
+
+
 # ─── while (Phase 4) ─────────────────────────────────────────────────────
 
 
@@ -733,6 +777,7 @@ WorkflowNode = Annotated[
     | AgentNode
     | McpNode
     | IfElseNode
+    | DecisionNode
     | WhileNode
     | UserApprovalNode
     | TransformNode
@@ -788,6 +833,10 @@ __all__ = [
     "ConfluenceNodeData",
     "DataTransformNode",
     "DataTransformNodeData",
+    "DecisionExample",
+    "DecisionNode",
+    "DecisionNodeData",
+    "DecisionOption",
     "DownloadPdfNode",
     "DownloadPdfNodeData",
     "EmailNode",
