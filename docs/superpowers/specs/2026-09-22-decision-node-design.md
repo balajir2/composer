@@ -334,15 +334,17 @@ Six touch points, mirroring if-else's registration exactly:
    `GET /llm-models?provider=<data.provider>` via `listEnabledLlmModels` for both — the exact same
    call Agent's panel makes (confirmed in `agent.tsx`), parameterized by whichever provider is
    selected (for `"typesafe"` that's whatever `jev-latest`-style rows an admin has added and
-   enabled via the Admin → LLM models page). **The write format branches on provider**, matching the backend split above: LLM
-   mode writes `"<provider>/<modelId>"` into `data.model` (Agent's existing convention, since it
-   flows to `build_chat_model`); TypeSafe mode writes the bare `modelId` (no prefix — it never
-   reaches `build_chat_model`). An examples list editor (add/remove rows: input text + expected
-   result/option, following the JSON-field stringify/parse pattern from `arcade.tsx` where
-   applicable — shows a small note when provider is `"typesafe"` that examples are folded into
-   criteria text, not true few-shot), and — choice mode only — an options list editor (add/remove
-   rows: label + description). The zero-shot hint text renders under the examples editor when the
-   list is empty.
+   enabled via the Admin → LLM models page). **The write format branches on provider**, matching
+   the backend split above: LLM mode writes `"<provider>/<modelId>"` into `data.model` (Agent's
+   existing convention, since it flows to `build_chat_model`); TypeSafe mode writes the bare
+   `modelId` (no prefix — it never reaches `build_chat_model`). An examples list editor (add/remove
+   rows: input text + expected result/option) follows `start.tsx`'s structured-list-editor pattern
+   (`commit`/`updateField`/`addField`/`removeField` over a typed array — the established
+   convention for this field shape; the JSON-stringify pattern is for `Any`-typed config blobs, a
+   different shape than Decision's typed `examples`/`options` arrays) — shows a small note when
+   provider is `"typesafe"` that examples are folded into criteria text, not true few-shot — and,
+   choice mode only, an options list editor with the same pattern (add/remove rows: label +
+   description). The zero-shot hint text renders under the examples editor when the list is empty.
    `agent.tsx`, `guardrails.tsx`, `extract.tsx`, and every other panel with a `PROVIDER_OPTIONS`
    array are unmodified by this spec — confirming that at implementation time is part of the review,
    not just an intent stated here.
