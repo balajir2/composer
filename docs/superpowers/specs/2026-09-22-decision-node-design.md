@@ -272,14 +272,26 @@ Branch-key set: binary mode uses the fixed `{"true", "false"}`. Choice mode pass
 already accepts an arbitrary `set[str]` (confirmed by reading `_branch_mapping`'s signature at
 graph_builder.py:313), so choice mode's dynamic, node-specific branch set needs **no change** to the
 validation function itself — only a new call-site branch in `build_graph`'s node-type dispatch,
-same shape as the existing `if"if-else"`/`elif "while"` chain (~line 440).
+same shape as the existing `if "if-else"`/`elif "while"` chain (~line 440).
+
+**"Conditional source" is a hardcoded type set in four places, not one — all four need
+`"decision"` added, or the change breaks silently rather than cleanly:**
+`CONDITIONAL_SOURCE_TYPES` (graph_builder.py:310, module-level), `_conditional_types` (line 291,
+inside `validate_workflow_shape`'s branch-label check), the normal-edge-skip check (line 428,
+`if source_node.type in {"if-else", "while", "user-approval"}`), and — this one is easy to
+miss because it's in a different file entirely — **`frontend/lib/workflow-to-rf.ts:26`**, which
+has its own `CONDITIONAL_SOURCE_TYPES` Set gating whether a drawn edge's `sourceHandle` gets saved
+as `branch` at all. Missing that one means every edge drawn from a Decision node saves with
+`branch: null` and the backend rejects it with "has no branch label" — a bug that only shows up
+when someone actually uses the Designer, not in a backend-only test pass.
 
 ### Frontend
 
 Six touch points, mirroring if-else's registration exactly:
 
-1. **`frontend/lib/workflow-to-rf.ts`** — pass `decision` nodes through like any other typed node
-   (no special-casing needed beyond what already exists for typed node data).
+1. **`frontend/lib/workflow-to-rf.ts`** — add `"decision"` to the module's own
+   `CONDITIONAL_SOURCE_TYPES` Set (line 26). This is required, not optional — see the routing
+   section above for why skipping it breaks edges drawn from a Decision node.
 2. **`frontend/components/composer/canvas/node-visuals.ts`** — new `"decision": { icon, ... }`
    entry (icon TBD at implementation time — something distinct from if-else's `GitBranch`).
 3. **`frontend/components/composer/canvas/tools-palette.tsx`** — new
