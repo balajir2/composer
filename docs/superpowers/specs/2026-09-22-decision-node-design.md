@@ -45,10 +45,18 @@ by a model's judgment instead of a formula.
   executor contract, or frontend schema. This is a deliberate reversal of the earlier YAGNI call —
   the user judged the interface cheap enough, and the future-optionality valuable enough, to build
   ahead of a second real implementation.
-- **The provider choice is user-visible now, single-option today.** `DecisionNodeData.provider`
-  exists and the Designer panel shows a selector, even though `"llm"` is the only real choice —
-  avoids a schema migration when a second provider ships, at the cost of showing a dropdown with
-  one option today.
+- **The provider choice is user-visible now, and TypeSafe ships as a real second option —
+  reversed again from "deferred."** The Designer panel's provider selector shows two choices:
+  "LLM" and "TypeSafe (Jev)". This is a deliberate re-reversal: the spike (see the standing memory
+  note) found no case for TypeSafe in Guardrails and pricing is still unpublished — that finding
+  stands, but the user chose to build the integration anyway rather than wait. Flagged once here
+  for the record; not a blocker.
+- **TypeSafe examples are folded into `criteria` text, not true few-shot.** TypeSafe's API has no
+  per-example (input→output pair) mechanism — only a static `criteria` description per option (or
+  per true/false). `TypeSafeJudgmentProvider` formats `examples` into that description as
+  illustrative lines. This is a best-effort approximation, not equivalent to the LLM provider's
+  real few-shot conversation turns, and is documented as a known limitation rather than presented
+  as equivalent behavior across providers.
 - **Few-shot examples are optional, not required.** Zero-shot judgment is allowed — some decisions
   are unambiguous enough not to need it — but the Designer panel shows a non-blocking hint
   ("Zero-shot decisions can be inconsistent on edge cases. Consider adding 1-2 examples.") when
@@ -140,10 +148,77 @@ directly in the executor:
   `Now decide:\nText: {text}`. Stays inside one `structured_invoke` call — no alternating
   user/assistant example turns, no per-provider prefill handling to worry about.
 
-A future `TypeSafeJudgmentProvider`/`LayaJudgmentProvider` would implement the same two methods
-against its own backend and register under its own name — no change to `DecisionNodeData`'s shape
-(just a new valid value for `provider`), the executor, or the frontend panel beyond adding the name
-to the selector's option list.
+`TypeSafeJudgmentProvider` (`register_judgment_provider("typesafe")`) ships alongside
+`LLMJudgmentProvider` in this spec:
+
+- Plain HTTP via `httpx` (already a project dependency — no new package) against
+  `POST https://api.typesafe.ai/v1/systemone`, `Authorization: Bearer <TYPESAFE_API_KEY>`. No
+  LangChain integration exists for TypeSafe, so this doesn't go through `build_chat_model`.
+- `decide_binary` → one `noul` question: `{"type": "noul", "instructions": instruction, "criteria":
+  {"true": ..., "false": ...}}` (examples folded into the `criteria` strings per the note above).
+  Response's `answers.<id>.noul` (0.0–1.0) is thresholded at ≥0.5 for `result`, and used directly as
+  `confidence` (distance from 0.5, normalized — exact formula at implementation time).
+- `decide_choice` → one `choice` question: `{"type": "choice", "instructions": instruction,
+  "criteria": {<option label>: <description, with folded-in examples>, ...}}`. Response's
+  `answers.<id>.choice` is the option label directly; `answers.<id>.confidence` is used as-is.
+- `model` param is passed through as TypeSafe's `model` field when set, else omitted (API defaults
+  to `jev-latest`).
+- Network/HTTP errors surface as a `JudgmentProviderError` (new exception, raised by both
+  providers on failure) — the executor doesn't need to know which provider it's talking to to
+  handle a failure.
+
+A future `LayaJudgmentProvider` would implement the same two methods against its own backend and
+register under its own name — no change to `DecisionNodeData`'s shape (just a new valid value for
+`provider`), the executor, or the frontend panel beyond adding the name to the selector's option
+list.
+
+### Admin LLM catalog — TypeSafe as a first-class provider
+
+The admin already has a full per-provider surface for the four LLM providers (key CRUD, a
+"test connection" probe, and a separate `LlmModel` catalog with per-model "verify" + enable/disable
+— the mechanism behind "Admin → LLM keys" and the recent "OpenAI model-verify probe" fix). TypeSafe
+gets the same four touchpoints, not a special case:
+
+1. **API key CRUD** (`src/config.py`, `src/security/key_sync.py`, `src/cli/keys.py`,
+   `src/api/admin_llm_keys.py`) — the four-touchpoint pattern every existing provider key uses:
+   - `src/config.py` — new `typesafe_api_key: str | None = None` field on `Settings`.
+   - `src/security/key_sync.py` — add `"typesafe": "typesafe_api_key"` to
+     `PROVIDER_TO_SETTINGS_FIELD` (line 41), so an admin-entered key synced from `llm_api_keys` at
+     boot populates `Settings` the same way every other provider's does.
+   - `src/cli/keys.py` — add `"typesafe": "TYPESAFE_API_KEY"` to `_PROVIDER_TO_ENV` (line 15), so
+     `composer keys sync --target vercel` pushes it to the cloud deployment env like the others.
+   - `src/api/admin_llm_keys.py` — add `"typesafe"` to `_ALLOWED_PROVIDERS` (line 20). No new
+     admin-UI code path — the admin frontend's LLM keys screen already renders whatever
+     `_ALLOWED_PROVIDERS` allows.
+   - `.env.example` — new `TYPESAFE_API_KEY=` entry in the LLM providers block, with a provisioning
+     comment (`https://console.typesafe.ai/keys`) matching the existing four providers' format.
+2. **Key test-connection** (`src/api/admin_llm_keys_test.py`) — new `_test_typesafe(key)`,
+   registered in `_TESTERS` (line 260): minimal `noul` question against a trivial state, same
+   auth-check-only shape as the other testers.
+3. **Model catalog + verify probe** (`src/api/admin_llm_models.py`,
+   `src/api/admin_llm_models_verify.py`) — this is the "activate / get the active model" surface.
+   `admin_llm_models.py`'s `LlmModelCreate`/CRUD endpoints are already provider-agnostic (no
+   `_ALLOWED_PROVIDERS`-style gate on `provider` — confirmed by reading the file), so an admin can
+   already `POST /admin/llm-models {"provider": "typesafe", "modelId": "jev-latest"}` today with no
+   code change to seed the catalog row and toggle `enabled`. The one real addition is a verify
+   probe: new `_verify_typesafe(model_id, key)` in `admin_llm_models_verify.py`, registered in
+   `_VERIFIERS` (line 253) — `POST /v1/systemone` with a single trivial `noul` question against
+   `model_id`, classified the same way the existing verifiers are (200 → `ok`, 401/403 →
+   `auth_error`, 404/model-shaped 4xx → `unavailable`).
+4. **Designer/Decision-panel model dropdown** (`src/api/llm_models_live.py`) — `_PROVIDERS` (the
+   live-`/models`-fetch spec table) is not extended for TypeSafe: it has no `/models` discovery
+   endpoint to call live. Instead, `"typesafe"` is added to a new small `_DB_ONLY_PROVIDERS` set
+   that `list_available_models` checks before `_fetch_live` — when a provider is in that set, it
+   skips straight to `_db_fallback(db, provider)`, which is the module's existing, already-tested
+   fallback path (today only reached on live-fetch failure for the other four providers). This
+   means the admin-curated `LlmModel` rows (from point 3) are the only source of TypeSafe models in
+   the dropdown — there's no live catalog to reconcile against, so nothing to probe-and-filter the
+   way `_probe_invocable` does for the other providers.
+
+`TypeSafeJudgmentProvider` reads `get_settings().typesafe_api_key` at call time — same access
+pattern `build_chat_model` already uses for the other providers' keys. The Decision panel's model
+selector, when `provider="typesafe"`, calls `GET /llm-models/available?provider=typesafe` exactly
+like it does for `provider="llm"` — same component, same request shape, not a special case.
 
 ### Executor (`src/executors/decision.py`)
 
@@ -193,22 +268,35 @@ Six touch points, mirroring if-else's registration exactly:
    branches from `data` (`mode === "binary" ? [true,false] : data.options.map(...)`) instead of
    looking up `BRANCH_SPECS`. Binary mode can still use the static table like if-else.
 5. **`frontend/components/composer/canvas/node-panels/decision.tsx`** — new panel: mode toggle
-   (binary/choice), a provider selector (single option, "LLM", today — wired to `data.provider`,
-   defaulting to `"llm"`), instruction textarea, model selector (reuse whatever component
-   agent/guardrails panels already use), an examples list editor (add/remove rows: input text +
-   expected result/option, following the JSON-field stringify/parse pattern from `arcade.tsx` where
-   applicable), and — choice mode only — an options list editor (add/remove rows: label +
-   description). The zero-shot hint text renders under the examples editor when the list is empty.
+   (binary/choice), a provider selector (two options — "LLM" and "TypeSafe (Jev)" — wired to
+   `data.provider`, defaulting to `"llm"`), a model selector that stays live for both providers —
+   it calls `GET /llm-models/available?provider=<data.provider>`, the same component and request
+   shape Agent/Guardrails already use, just parameterized by whichever provider is selected (backed
+   by the admin's live-fetch-or-DB-fallback catalog described above; for `"typesafe"` that's always
+   the DB-curated `jev-latest`-style rows an admin added, since there's no live discovery), an
+   examples list editor (add/remove rows: input text + expected result/option, following the
+   JSON-field stringify/parse pattern from `arcade.tsx` where applicable — shows a small note when
+   provider is `"typesafe"` that examples are folded into criteria text, not true few-shot), and —
+   choice mode only — an options list editor (add/remove rows: label + description). The zero-shot
+   hint text renders under the examples editor when the list is empty.
 6. **`frontend/components/composer/canvas/property-panel.tsx`** — route `decision` node type to the
    new panel component, same dispatch pattern as every other typed node.
 
 ## Testing
 
-- **`src/llm/judgment.py` unit tests**: `build_judgment_provider("llm")` returns a
-  `LLMJudgmentProvider`; unknown provider name raises; `LLMJudgmentProvider.decide_binary`'s schema
-  + `structured_invoke` call shape; `decide_choice`'s dynamic schema construction
+- **`src/llm/judgment.py` unit tests**: `build_judgment_provider("llm"/"typesafe")` returns the
+  right class; unknown provider name raises; `LLMJudgmentProvider.decide_binary`'s schema +
+  `structured_invoke` call shape; `decide_choice`'s dynamic schema construction
   (`pydantic.create_model` produces a `Literal` matching the passed-in options); few-shot example
-  formatting.
+  formatting; `TypeSafeJudgmentProvider`'s request body shape for both `noul` and `choice`
+  questions (mocked HTTP), examples-folded-into-criteria formatting, response parsing (`noul`
+  threshold, `choice`/`confidence` passthrough), and `JudgmentProviderError` on HTTP failure.
+- **Admin catalog unit tests**: `_test_typesafe` (mocked HTTP, auth-check shape);
+  `_verify_typesafe` (mocked HTTP, `ok`/`unavailable`/`auth_error`/`error` classification matching
+  the existing `_classify` buckets); `list_available_models(provider="typesafe")` skips
+  `_fetch_live` and goes straight to `_db_fallback` via the new `_DB_ONLY_PROVIDERS` set;
+  `POST /admin/llm-models` with `provider="typesafe"` succeeds with no code change (confirms the
+  existing provider-agnostic CRUD assumption this spec relies on).
 - **`src/executors/decision.py` unit tests**: `lastOutput`/`input`/`""` resolution matches
   guardrails' existing tested behavior; dispatches to `decide_binary`/`decide_choice` per
   `node.data.mode`; `node_results` output shape; `lastOutput` untouched.
@@ -225,10 +313,11 @@ Six touch points, mirroring if-else's registration exactly:
 
 ## Explicitly deferred / out of scope
 
-- A second `JudgmentProvider` implementation (TypeSafe, Laya, or any non-LLM engine) — the
-  interface ships now, but only `LLMJudgmentProvider` is wired; see the standing memory note on
-  revisiting Laya before building either.
-- `score` primitive (numeric rubric, threshold-driven branching or plain output).
+- A `LayaJudgmentProvider` (or any other non-LLM, non-TypeSafe engine) — the interface ships with
+  `llm` and `typesafe` wired; see the standing memory note on revisiting Laya before building it.
+- `score` primitive (numeric rubric, threshold-driven branching or plain output) — TypeSafe's
+  `score` primitive is unused here for the same reason it was deferred for the LLM provider: no
+  concrete use case yet beyond the two branching shapes.
 - Refactoring `guardrails.py` to reuse Decision's binary-judgment code.
 - Required/minimum example counts, or any validation gating on example presence.
 - Self-consistency / multi-call voting to reduce judgment variance — `temperature=0.0` +
