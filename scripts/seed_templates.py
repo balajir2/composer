@@ -2469,8 +2469,7 @@ def _approved_email_distribution() -> dict[str, Any]:
                     "label": "Approve Send",
                     "nodeName": "Approve Send",
                     "approvalMessage": (
-                        "Review the drafted email body before it is sent to "
-                        "{{recipient_email}}."
+                        "Review the drafted email body before it is sent to {{recipient_email}}."
                     ),
                 },
             },
@@ -2767,6 +2766,210 @@ def _file_watch_summarizer() -> dict[str, Any]:
     }
 
 
+# ─── Template 21 — Decision Node Routing (TypeSafe Jev) ─────────────────
+
+
+def _decision_typesafe_routing() -> dict[str, Any]:
+    """Routes a support ticket to billing/technical/sales with a single
+    Decision node running TypeSafe's Jev model — a purpose-built
+    classifier, not a general-purpose LLM prompted into JSON.
+
+    Contrast with Example 14 (Customer Support Triage), which solves a
+    similar problem with an Agent node's custom JSON schema plus an
+    if-else condition. The Decision node's choice mode gives one branch
+    handle per department directly — no schema to design, no condition
+    string to write.
+
+    Setup required (see Admin → LLM keys / Admin → LLM models docs):
+    a TypeSafe API key saved under Admin → LLM keys, and a `jev-latest`
+    model row added (and enabled) under Admin → LLM models. Without
+    those, the Decision node's provider call fails — this template still
+    documents the pattern even if you haven't set TypeSafe up yet."""
+    return {
+        "name": "Example 21: Decision Node Routing (TypeSafe Jev)",
+        "description": (
+            "A Decision node classifies an incoming support ticket into "
+            "billing, technical, or sales using TypeSafe's Jev model, "
+            "then a specialist agent drafts the response. Reference for "
+            "the Decision node's choice mode + the TypeSafe provider — "
+            "contrast with Example 14, which solves the same kind of "
+            "triage with a hand-rolled Agent JSON schema instead. "
+            "Requires a TypeSafe API key (Admin → LLM keys) and a "
+            "jev-latest model row (Admin → LLM models)."
+        ),
+        "category": "examples",
+        "tags": [
+            "example",
+            "intermediate",
+            "decision",
+            "typesafe",
+            "jev",
+            "branching",
+            "classification",
+        ],
+        "difficulty": "intermediate",
+        "estimatedTime": "2-3 minutes (plus one-time TypeSafe setup)",
+        "externalSlug": "template-21-decision-typesafe-routing",
+        "nodes": [
+            _start_node(
+                label="Start",
+                inputs=[
+                    {
+                        "name": "ticket",
+                        "type": "string",
+                        "required": True,
+                        "description": "The customer's message verbatim",
+                        "defaultValue": (
+                            "My card was charged twice for the same order "
+                            "last week and I still haven't been refunded "
+                            "for the duplicate charge."
+                        ),
+                    },
+                ],
+                pos_x=100,
+            ),
+            {
+                "id": "decision-1",
+                "type": "decision",
+                "position": {"x": 360, "y": 200},
+                "data": {
+                    "label": "Route Ticket",
+                    "nodeName": "Route Ticket",
+                    "mode": "choice",
+                    "provider": "typesafe",
+                    "model": "jev-latest",
+                    "instruction": (
+                        "Classify which department should handle this support ticket:\n\n{{ticket}}"
+                    ),
+                    "examples": [
+                        {
+                            "input": (
+                                "I want to cancel my subscription and get a refund for this month."
+                            ),
+                            "option": "billing",
+                        },
+                        {
+                            "input": ("The app crashes every time I try to upload a photo."),
+                            "option": "technical",
+                        },
+                    ],
+                    "options": [
+                        {
+                            "label": "billing",
+                            "description": ("Payments, refunds, invoices, subscription changes"),
+                        },
+                        {
+                            "label": "technical",
+                            "description": ("Bugs, errors, the product not working as expected"),
+                        },
+                        {
+                            "label": "sales",
+                            "description": ("Pricing questions, upgrades, new purchases"),
+                        },
+                    ],
+                },
+            },
+            {
+                "id": "agent-billing",
+                "type": "agent",
+                "position": {"x": 640, "y": 60},
+                "data": {
+                    "label": "Billing Response",
+                    "nodeName": "Billing Response",
+                    "instructions": (
+                        "Routed to Billing (confidence "
+                        "{{route_ticket.confidence}}).\n\n"
+                        "Draft a short, empathetic reply to this billing "
+                        "ticket:\n\n{{ticket}}\n\n"
+                        "Acknowledge the issue, explain the next step "
+                        "(e.g. refund timeline), and keep it under 100 "
+                        "words."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            {
+                "id": "agent-technical",
+                "type": "agent",
+                "position": {"x": 640, "y": 200},
+                "data": {
+                    "label": "Technical Response",
+                    "nodeName": "Technical Response",
+                    "instructions": (
+                        "Routed to Technical (confidence "
+                        "{{route_ticket.confidence}}).\n\n"
+                        "Draft a short, empathetic reply to this technical "
+                        "ticket:\n\n{{ticket}}\n\n"
+                        "Acknowledge the issue, ask for any details "
+                        "engineering would need to reproduce it, and keep "
+                        "it under 100 words."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            {
+                "id": "agent-sales",
+                "type": "agent",
+                "position": {"x": 640, "y": 340},
+                "data": {
+                    "label": "Sales Response",
+                    "nodeName": "Sales Response",
+                    "instructions": (
+                        "Routed to Sales (confidence "
+                        "{{route_ticket.confidence}}).\n\n"
+                        "Draft a short, friendly reply to this sales "
+                        "ticket:\n\n{{ticket}}\n\n"
+                        "Answer what you can, offer to connect them with "
+                        "the sales team for specifics, and keep it under "
+                        "100 words."
+                    ),
+                    "model": _DEFAULT_MODEL,
+                    "outputFormat": "Text",
+                    "selectedTools": [],
+                    "mcpServerIds": [],
+                },
+            },
+            _end_node(pos_x=920, pos_y=200),
+        ],
+        "edges": [
+            {"id": "e1", "source": "start-1", "target": "decision-1"},
+            {
+                "id": "e2-billing",
+                "source": "decision-1",
+                "target": "agent-billing",
+                "sourceHandle": "billing",
+                "branch": "billing",
+                "label": "billing",
+            },
+            {
+                "id": "e2-technical",
+                "source": "decision-1",
+                "target": "agent-technical",
+                "sourceHandle": "technical",
+                "branch": "technical",
+                "label": "technical",
+            },
+            {
+                "id": "e2-sales",
+                "source": "decision-1",
+                "target": "agent-sales",
+                "sourceHandle": "sales",
+                "branch": "sales",
+                "label": "sales",
+            },
+            {"id": "e3-billing", "source": "agent-billing", "target": "end-1"},
+            {"id": "e3-technical", "source": "agent-technical", "target": "end-1"},
+            {"id": "e3-sales", "source": "agent-sales", "target": "end-1"},
+        ],
+    }
+
+
 _TEMPLATES: list[dict[str, Any]] = [
     _simple_agent(),
     _web_research_agent(),
@@ -2788,6 +2991,7 @@ _TEMPLATES: list[dict[str, Any]] = [
     _approved_email_distribution(),
     _arcade_tool_call_demo(),
     _file_watch_summarizer(),
+    _decision_typesafe_routing(),
 ]
 
 
