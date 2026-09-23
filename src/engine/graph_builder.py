@@ -11,8 +11,8 @@ from typing import Any, cast
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import END, START
-from langgraph.graph import StateGraph
-from langgraph.graph.state import CompiledStateGraph
+from langgraph.graph import StateGraph  # pyright: ignore[reportMissingTypeStubs]
+from langgraph.graph.state import CompiledStateGraph  # pyright: ignore[reportMissingTypeStubs]
 
 from src.engine.events_wrapper import wrap_executor_with_events
 from src.engine.state import WorkflowStateDict

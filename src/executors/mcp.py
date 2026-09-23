@@ -18,7 +18,7 @@ a prompt directly on the MCP node.
 
 import asyncio
 import logging
-from typing import Any
+from typing import Any, cast
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -125,7 +125,7 @@ class McpExecutor:
             user_id=user_id,
             db=db,
         )
-        result = await tool.ainvoke(resolved_args)
+        result = await tool.ainvoke(resolved_args)  # pyright: ignore[reportUnknownMemberType]
 
         return {
             "variables": {"lastOutput": result},
@@ -163,15 +163,24 @@ async def _agentic_loop(
 ) -> str:
     """LLM + tool-call loop.  Mirrors the Agent executor's pattern but kept
     local so the MCP node stays self-contained and unit-testable."""
-    bound_model = chat_model.bind_tools(tools) if tools else chat_model
+    bound_model = (
+        chat_model.bind_tools(tools)  # pyright: ignore[reportUnknownMemberType]
+        if tools
+        else chat_model
+    )
     current: list[BaseMessage] = list(messages)
     tools_by_name = {t.name: t for t in tools}
 
     for _ in range(max_iterations + 1):
-        response = await bound_model.ainvoke(current)
+        response = await bound_model.ainvoke(current)  # pyright: ignore[reportUnknownMemberType]
         tool_calls: list[dict[str, Any]] = getattr(response, "tool_calls", []) or []
         if not tool_calls:
-            content = response.content if hasattr(response, "content") else str(response)
+            content = cast(
+                "str | list[Any]",
+                response.content  # pyright: ignore[reportUnknownMemberType]
+                if hasattr(response, "content")
+                else str(response),
+            )
             return content if isinstance(content, str) else str(content)
         tool_results = await asyncio.gather(*[_run_tool(tools_by_name, tc) for tc in tool_calls])
         current = [*current, response, *tool_results]
@@ -198,7 +207,9 @@ async def _run_tool(tools_by_name: dict[str, BaseTool], tool_call: dict[str, Any
         )
     tool = tools_by_name[name]
     try:
-        result = await tool.ainvoke(args)  # pyright: ignore[reportArgumentType]
+        result = await tool.ainvoke(  # pyright: ignore[reportArgumentType, reportUnknownMemberType]
+            args
+        )
     except Exception as exc:
         logger.exception("MCP tool %s raised", name)
         return ToolMessage(

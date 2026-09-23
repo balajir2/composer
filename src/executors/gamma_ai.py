@@ -126,12 +126,9 @@ class GammaAiExecutor:
             raise GammaNodeError(
                 f"gamma-ai node {self.node.id!r}: Gamma API error {resp.status_code}: {resp.text}"
             )
-        payload = resp.json()
-        generation_id = (
-            payload.get("id")
-            or payload.get("generationId")
-            or (payload.get("data") or {}).get("id")
-        )
+        payload: dict[str, Any] = resp.json()
+        nested_data: dict[str, Any] = payload.get("data") or {}
+        generation_id = payload.get("id") or payload.get("generationId") or nested_data.get("id")
         if not generation_id:
             raise GammaNodeError(
                 f"gamma-ai node {self.node.id!r}: no generation id in response: {payload}"

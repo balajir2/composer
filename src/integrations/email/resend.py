@@ -1,6 +1,6 @@
 """Resend email delivery integration."""
 
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -48,7 +48,10 @@ class ResendEmailProvider:
             )
 
         data = resp.json()
-        if not isinstance(data, dict) or not data.get("id"):
+        if not isinstance(data, dict):
+            raise ResendEmailProviderError(f"Resend response missing id: {data}")
+        data = cast("dict[str, Any]", data)
+        if not data.get("id"):
             raise ResendEmailProviderError(f"Resend response missing id: {data}")
         return data
 

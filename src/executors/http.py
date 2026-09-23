@@ -9,7 +9,7 @@ see P0-6 in docs/claude-improvement-backlog.md.
 """
 
 import logging
-from typing import Any
+from typing import Any, cast
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import httpx
@@ -44,11 +44,12 @@ class HttpNodeError(RuntimeError):
 
 def _dot_path(value: Any, path: str) -> Any:
     """Walk a dot-separated path into a nested dict/list.  Missing → None."""
-    cur = value
+    cur: Any = value
     for segment in path.split("."):
         if isinstance(cur, dict) and segment in cur:
-            cur = cur[segment]
+            cur = cast("dict[str, Any]", cur)[segment]
         elif isinstance(cur, list) and segment.isdigit():
+            cur = cast("list[Any]", cur)
             idx = int(segment)
             cur = cur[idx] if 0 <= idx < len(cur) else None
         else:

@@ -37,7 +37,7 @@ import asyncio
 import json as _json
 import logging
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from google.auth.exceptions import GoogleAuthError
@@ -93,7 +93,9 @@ class ClaimAndRunRequest(BaseModel):
 def _verify_oidc_token_sync(token: str, audience: str) -> Mapping[str, Any]:
     """Blocking call — see docstring on `_verify_internal_oidc` for why
     this is wrapped in `asyncio.to_thread` at the call site."""
-    return id_token.verify_oauth2_token(token, GoogleAuthRequest(), audience=audience)
+    return id_token.verify_oauth2_token(  # pyright: ignore[reportUnknownMemberType]
+        token, GoogleAuthRequest(), audience=audience
+    )
 
 
 async def _verify_internal_oidc(
@@ -350,7 +352,11 @@ async def claim_and_run_execution(
             row_data = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
                 where={"id": execution_id}
             )
-            decision = (row_data.variables or {}).get("_resume_decision") if row_data else None
+            decision = (
+                cast("dict[str, Any]", row_data.variables or {}).get("_resume_decision")
+                if row_data
+                else None
+            )
             if not decision:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -541,8 +547,11 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
     failed = 0
     for wf in workflows:
         try:
-            raw_nodes = wf.nodes or []
-            if not isinstance(raw_nodes, list):
+            raw_nodes: list[Any] = wf.nodes or []
+            # `cast(Any, ...)` only defeats pyright's now-always-true narrowing
+            # from the `list[Any]` annotation above; this isinstance check still
+            # runs at execution time as defensive handling of malformed JSON.
+            if not isinstance(cast("Any", raw_nodes), list):
                 raise TypeError(f"workflow.nodes is not a list (got {type(raw_nodes).__name__})")
         except Exception:
             logger.exception(
@@ -573,7 +582,11 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
                 # documents everywhere else. Prisma Python decodes `nodes`
                 # Json as plain Python values, so a hand-edited/corrupted
                 # entry can legitimately not be a dict here.
-                node_id = raw_node.get("id") if isinstance(raw_node, dict) else raw_node
+                node_id = (
+                    cast("dict[str, Any]", raw_node).get("id")
+                    if isinstance(raw_node, dict)
+                    else raw_node
+                )
                 logger.exception(
                     "poll_file_triggers: failed to parse file-trigger node %r in workflow %s; "
                     "skipping",

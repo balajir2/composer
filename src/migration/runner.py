@@ -29,9 +29,9 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class MigrationReport:
-    inserted: dict[str, int] = field(default_factory=dict)
-    skipped: dict[str, int] = field(default_factory=dict)
-    errors: list[str] = field(default_factory=list)
+    inserted: dict[str, int] = field(default_factory=dict[str, int])
+    skipped: dict[str, int] = field(default_factory=dict[str, int])
+    errors: list[str] = field(default_factory=list[str])
 
     def bump_inserted(self, table: str) -> None:
         self.inserted[table] = self.inserted.get(table, 0) + 1

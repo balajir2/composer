@@ -7,7 +7,7 @@ non-empty. Still implements the Phase 2 ToolProvider ABC.
 See Phase 3a spec §9.
 """
 
-from typing import Any
+from typing import Any, cast
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, create_model
@@ -84,11 +84,12 @@ class McpToolProvider(ToolProvider):
                 settings_field=f"mcp_server_{self._server.id}_token",
             )
         if auth_type == "oauth":
-            config = self._server.oauthConfig or {}
+            config: dict[str, Any] = self._server.oauthConfig or {}
+            scopes: list[Any] = config.get("scopes", []) or []
             return OAuthAuth(
                 authorize_url=config.get("authorizeUrl", ""),
                 token_url=config.get("tokenUrl", ""),
-                scopes=list(config.get("scopes", []) or []),
+                scopes=list(scopes),
                 include_rfc8707_resource=True,
             )
         raise ValueError(f"Unknown authType {auth_type!r} on MCP server {self._server.id!r}")
@@ -256,12 +257,16 @@ def _json_schema_to_pydantic(name: str, schema: dict[str, Any]) -> type[BaseMode
             __config__=args_config,
             value=(Any, ...),  # pyright: ignore[reportArgumentType]
         )
-    props = schema.get("properties", {})
+    props: dict[str, Any] = schema.get("properties", {})
     required = set(schema.get("required", []))
     fields: dict[str, Any] = {}
     for prop_name, prop_schema in props.items():
         py_type = _json_type_to_python(prop_schema)
-        description = prop_schema.get("description") if isinstance(prop_schema, dict) else None
+        description = (
+            cast("dict[str, Any]", prop_schema).get("description")
+            if isinstance(prop_schema, dict)
+            else None
+        )
         # Pydantic's Field() becomes the default in the tuple.  Use `...`
         # as its positional default for required fields, None for optional,
         # and attach description so LangChain → LLM passes it through.

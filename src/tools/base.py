@@ -47,7 +47,7 @@ class OAuthAuth(AuthRequirement):
 
     authorize_url: str
     token_url: str
-    scopes: list[str] = field(default_factory=list)
+    scopes: list[str] = field(default_factory=list[str])
     include_rfc8707_resource: bool = True
 
 

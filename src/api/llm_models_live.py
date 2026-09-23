@@ -16,7 +16,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -89,9 +89,10 @@ def _no_headers(_key: str) -> dict[str, str]:
 def _parse_anthropic(data: dict[str, Any]) -> list[LiveModel]:
     """Anthropic returns {data: [{id, display_name, type}, ...]}."""
     out: list[LiveModel] = []
-    for item in data.get("data") or []:
+    for item in cast("list[Any]", data.get("data") or []):
         if not isinstance(item, dict):
             continue
+        item = cast("dict[str, Any]", item)
         mid = item.get("id")
         if not isinstance(mid, str) or not mid:
             continue
@@ -114,9 +115,10 @@ def _parse_openai_compat(data: dict[str, Any]) -> list[LiveModel]:
         "omni-moderation",
     )
     out: list[LiveModel] = []
-    for item in data.get("data") or []:
+    for item in cast("list[Any]", data.get("data") or []):
         if not isinstance(item, dict):
             continue
+        item = cast("dict[str, Any]", item)
         mid = item.get("id")
         if not isinstance(mid, str) or not mid:
             continue
@@ -133,14 +135,18 @@ def _parse_google(data: dict[str, Any]) -> list[LiveModel]:
     Keep only models that support generateContent (chat-capable).
     """
     out: list[LiveModel] = []
-    for item in data.get("models") or []:
+    for item in cast("list[Any]", data.get("models") or []):
         if not isinstance(item, dict):
             continue
+        item = cast("dict[str, Any]", item)
         name = item.get("name")
         if not isinstance(name, str) or not name:
             continue
-        methods = item.get("supportedGenerationMethods") or []
-        if isinstance(methods, list) and "generateContent" not in methods:
+        methods: list[Any] = item.get("supportedGenerationMethods") or []
+        # `cast(Any, ...)` only defeats pyright's now-always-true narrowing
+        # from the `list[Any]` annotation above; this isinstance check still
+        # runs at execution time in case the raw value wasn't actually a list.
+        if isinstance(cast("Any", methods), list) and "generateContent" not in methods:
             continue
         # "models/gemini-1.5-pro" → "gemini-1.5-pro"
         mid = name.split("/", 1)[1] if "/" in name else name

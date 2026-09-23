@@ -9,7 +9,7 @@ See Phase 4a spec §10.
 
 import json
 import logging
-from typing import Any
+from typing import Any, cast
 
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 
@@ -33,7 +33,7 @@ class ExtractNodeError(RuntimeError):
 def _coerce_to_dict(result: Any) -> Any:
     """Pull a dict out of structured_invoke's result (may be AIMessage)."""
     if isinstance(result, AIMessage):
-        content = result.content
+        content = cast("str | list[Any]", result.content)  # pyright: ignore[reportUnknownMemberType]
         if isinstance(content, str):
             try:
                 return json.loads(content)

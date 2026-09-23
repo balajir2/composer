@@ -9,7 +9,7 @@ See ADR-0007 and Phase 2 spec §7.
 
 import json
 import re
-from typing import Any
+from typing import Any, cast
 
 from src.engine.state import WorkflowStateDict
 
@@ -69,7 +69,7 @@ def _walk(root: Any, segments: list[str]) -> Any:
         if seg in _UNSAFE_SEGMENTS:
             return None
         if isinstance(current, dict):
-            current = current.get(seg)
+            current = cast("dict[str, Any]", current).get(seg)
         else:
             return None
         if current is None:
@@ -89,8 +89,10 @@ def substitute_in_value(value: Any, state: WorkflowStateDict) -> Any:
     if isinstance(value, str):
         return substitute(value, state)
     if isinstance(value, dict):
+        value = cast("dict[str, Any]", value)
         return {k: substitute_in_value(v, state) for k, v in value.items()}
     if isinstance(value, list):
+        value = cast("list[Any]", value)
         return [substitute_in_value(item, state) for item in value]
     return value
 

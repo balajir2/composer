@@ -15,7 +15,7 @@ additions (spec §7.1):
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from src.config import get_settings
 from src.executors.base import register_executor
@@ -99,7 +99,7 @@ def _coerce_default(var: StartInputVariable) -> Any:
         return bool(raw)
     if var.type == "json":
         if isinstance(raw, (dict, list)):
-            return raw
+            return cast("dict[str, Any] | list[Any]", raw)
         if isinstance(raw, str):
             try:
                 return json.loads(raw)
@@ -128,7 +128,9 @@ class StartExecutor:
         # caller's input.
         variables_delta: dict[str, Any] = {}
         declared = self.node.data.input_variables or []
-        user_provided = parsed if isinstance(parsed, dict) else {}
+        user_provided: dict[str, Any] = (
+            cast("dict[str, Any]", parsed) if isinstance(parsed, dict) else {}
+        )
         _reject_reserved_keys(user_provided)
         _reject_undeclared_keys_in_strict_mode(user_provided, declared)
         missing_required: list[str] = []
@@ -150,7 +152,7 @@ class StartExecutor:
             )
 
         if isinstance(parsed, dict):
-            variables_delta.update(parsed)
+            variables_delta.update(cast("dict[str, Any]", parsed))
             variables_delta["lastOutput"] = parsed
         else:
             variables_delta["input"] = parsed

@@ -4,7 +4,7 @@ import json as _json
 import logging
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
@@ -597,9 +597,14 @@ async def resume_execution(
             detail=f"Execution is {execution.status!r}, not 'waiting_approval'.",
         )
 
-    variables = execution.variables or {}
+    variables = cast("dict[str, Any]", execution.variables or {})
+    # `cast(Any, ...)` below only defeats pyright's now-always-true narrowing
+    # (variables is annotated dict[str, Any] above); the isinstance check
+    # still runs at execution time as defensive handling of malformed JSON.
     pending_node_id = (
-        variables.get("_pending_approval_node") if isinstance(variables, dict) else None
+        variables.get("_pending_approval_node")
+        if isinstance(cast("Any", variables), dict)
+        else None
     )
     if pending_node_id is None:
         raise HTTPException(

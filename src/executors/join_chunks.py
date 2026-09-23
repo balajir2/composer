@@ -18,7 +18,7 @@ See Phase 6a spec §5.
 from __future__ import annotations
 
 import json
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from src.executors.base import register_executor
 
@@ -50,6 +50,7 @@ class JoinChunksExecutor:
                 f"join-chunks node {self.node.id!r}: variable {variable_name!r} "
                 f"is not a list; got {type(chunks_raw).__name__}"
             )
+        chunks_raw = cast("list[Any]", chunks_raw)
 
         rendered_items: list[str] = []
         for chunk in chunks_raw:
@@ -58,7 +59,7 @@ class JoinChunksExecutor:
             if (
                 self.node.data.include_metadata
                 and isinstance(chunk, dict)
-                and chunk.get("metadata")
+                and cast("dict[str, Any]", chunk).get("metadata")
             ):
                 rendered += f"\n[metadata: {json.dumps(chunk['metadata'])}]"
             rendered_items.append(rendered)
@@ -86,6 +87,7 @@ class JoinChunksExecutor:
         if isinstance(chunk, str):
             return chunk
         if isinstance(chunk, dict):
+            chunk = cast("dict[str, Any]", chunk)
             # Prefer `content`, fall back to `text` (the field vector-db
             # results emit) so a vector-db node's output can flow into
             # join-chunks without an intermediate reshape step.  Both

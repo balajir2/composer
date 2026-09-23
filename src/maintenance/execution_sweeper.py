@@ -89,7 +89,7 @@ import contextlib
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
@@ -224,9 +224,14 @@ async def sweep_expired_approvals(
 
     marked = 0
     for row in rows:
-        variables = getattr(row, "variables", None) or {}
+        variables: dict[str, Any] = getattr(row, "variables", None) or {}
+        # `cast(Any, ...)` only defeats pyright's now-always-true narrowing
+        # from the `dict[str, Any]` annotation above; this isinstance check
+        # still runs at execution time as defensive handling of malformed JSON.
         since_raw = (
-            variables.get("_pending_approval_since") if isinstance(variables, dict) else None
+            variables.get("_pending_approval_since")
+            if isinstance(cast("Any", variables), dict)
+            else None
         )
         if not since_raw:
             continue
@@ -326,10 +331,11 @@ async def sweep_expired_leases(
                 # mid-resume execution must be re-enqueued as a resume
                 # (so claim-and-run reads `_resume_decision` back out of
                 # variables, per Task 13), not restarted as a fresh run.
-                row_variables = getattr(row, "variables", None) or {}
+                row_variables: dict[str, Any] = getattr(row, "variables", None) or {}
                 kind = (
                     "resume"
-                    if isinstance(row_variables, dict) and "_resume_decision" in row_variables
+                    if isinstance(cast("Any", row_variables), dict)
+                    and "_resume_decision" in row_variables
                     else "run"
                 )
 

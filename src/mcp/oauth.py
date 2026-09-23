@@ -98,7 +98,7 @@ async def build_authorize_url(
         )
     authorize_url = config.get("authorizeUrl")
     client_id = config.get("clientId")
-    scopes = config.get("scopes") or []
+    scopes: list[Any] = config.get("scopes") or []
     if not authorize_url or not client_id:
         raise ValueError(f"MCP server {server.id!r} oauthConfig missing authorizeUrl or clientId.")
 
@@ -163,7 +163,7 @@ async def exchange_code_for_tokens(
     """
     state_row = await _validate_and_consume_state(state, db)
 
-    config = server.oauthConfig or {}
+    config: dict[str, Any] = server.oauthConfig or {}
     token_url = config["tokenUrl"]
     client_id = config["clientId"]
     # P0-5: clientSecret is encrypted at rest by the mcp-servers API;
@@ -172,7 +172,7 @@ async def exchange_code_for_tokens(
     # encryption existed too.
     client_secret = decrypt_marked(config.get("clientSecret", ""))
 
-    form = {
+    form: dict[str, Any] = {
         "grant_type": "authorization_code",
         "code": code,
         "redirect_uri": state_row.redirectUri,
@@ -242,7 +242,7 @@ async def refresh_token(
             f"Token for server {server.id!r} has no refresh token; user must re-authorize."
         )
 
-    config = server.oauthConfig or {}
+    config: dict[str, Any] = server.oauthConfig or {}
     token_url = config["tokenUrl"]
     client_id = config["clientId"]
     # P0-5: clientSecret is encrypted at rest by the mcp-servers API;
@@ -252,7 +252,7 @@ async def refresh_token(
     client_secret = decrypt_marked(config.get("clientSecret", ""))
     refresh_plaintext = decrypt(token_row.encryptedRefreshToken)
 
-    form = {
+    form: dict[str, Any] = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_plaintext,
         "client_id": client_id,

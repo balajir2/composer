@@ -13,7 +13,7 @@ See Phase 6d spec §3 + §5, ADR-0019.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 from langgraph.types import interrupt  # pyright: ignore[reportUnknownVariableType]
@@ -199,8 +199,10 @@ class ArcadeExecutor:
     @staticmethod
     def _extract_output(result: dict[str, Any]) -> Any:
         output = result.get("output")
-        if isinstance(output, dict) and "value" in output:
-            return output["value"]
+        if isinstance(output, dict):
+            output = cast("dict[str, Any]", output)
+            if "value" in output:
+                return output["value"]
         if output is not None:
             return output
         return result

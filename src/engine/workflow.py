@@ -9,7 +9,7 @@ See docs/superpowers/specs/2026-04-20-phase-1-execution-engine-design.md §5.
 OAB reference: lib/workflow/types.ts.
 """
 
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any, Literal, cast
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -52,15 +52,20 @@ class StartNodeData(BaseNodeData):
     # Canonical field: inputVariables.  Prior canvas builds saved under
     # `inputs` — read that as a fallback via a pre-validator so existing
     # saved workflows continue to resolve declared variables.
-    input_variables: list[StartInputVariable] = Field(default_factory=list, alias="inputVariables")
+    input_variables: list[StartInputVariable] = Field(
+        default_factory=list[StartInputVariable], alias="inputVariables"
+    )
 
     @model_validator(mode="before")
     @classmethod
     def _coerce_legacy_inputs(cls, data: Any) -> Any:
-        if isinstance(data, dict) and "inputVariables" not in data and "inputs" in data:
-            legacy = data.get("inputs")
-            if isinstance(legacy, list):
-                data = {**data, "inputVariables": legacy}
+        if isinstance(data, dict):
+            data = cast("dict[str, Any]", data)
+            if "inputVariables" not in data and "inputs" in data:
+                legacy = data.get("inputs")
+                if isinstance(legacy, list):
+                    legacy = cast("list[Any]", legacy)
+                    data = {**data, "inputVariables": legacy}
         return data
 
 
@@ -181,11 +186,11 @@ class AgentNodeData(BaseNodeData):
     instructions: str | None = None
     model: str | None = None
     include_chat_history: bool = Field(default=False, alias="includeChatHistory")
-    tools: list[AgentTool] = Field(default_factory=list)
+    tools: list[AgentTool] = Field(default_factory=list[AgentTool])
     output_format: str | None = Field(default=None, alias="outputFormat")
     reasoning_effort: str | None = Field(default=None, alias="reasoningEffort")
     json_schema: dict[str, Any] | None = Field(default=None, alias="jsonSchema")
-    mcp_tools: list[dict[str, Any]] = Field(default_factory=list, alias="mcpTools")
+    mcp_tools: list[dict[str, Any]] = Field(default_factory=list[dict[str, Any]], alias="mcpTools")
     mcp_server_ids: list[str] = Field(default_factory=list, alias="mcpServerIds")
     selected_tools: list[str] = Field(default_factory=list, alias="selectedTools")
     # Cap on the tool-call → LLM-response loop.  Default stays 10 (OAB

@@ -44,7 +44,8 @@ class WhileExecutor:
             raise ValueError(f"while node {self.node.id!r} requires condition")
 
         # Bump iteration counter; enforce cap BEFORE evaluating condition.
-        existing = (state.get("variables") or {}).get(ITER_STATE_KEY) or {}
+        state_variables: dict[str, Any] = state.get("variables") or {}
+        existing: dict[str, Any] = state_variables.get(ITER_STATE_KEY) or {}
         counts: dict[str, int] = dict(existing)
         counts[self.node.id] = int(counts.get(self.node.id, 0)) + 1
         if counts[self.node.id] > self.node.data.max_iterations:

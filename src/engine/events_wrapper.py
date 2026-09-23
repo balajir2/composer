@@ -66,11 +66,11 @@ def _extract_output(node_id: str, result: dict[str, Any]) -> Any:
     Prefer the per-node record so each node's panel entry shows exactly
     what it produced, not whatever the preceding node left behind.
     """
-    node_results = result.get("node_results") or {}
-    node_rec = node_results.get(node_id) or {}
+    node_results: dict[str, Any] = result.get("node_results") or {}
+    node_rec: dict[str, Any] = node_results.get(node_id) or {}
     if "output" in node_rec:
         return node_rec["output"]
-    variables = result.get("variables") or {}
+    variables: dict[str, Any] = result.get("variables") or {}
     return variables.get("lastOutput")
 
 
@@ -79,8 +79,8 @@ def _extract_input(node_id: str, result: dict[str, Any]) -> Any:
     write `node_results[node.id]["input"]` with the exact prompt / args /
     URL the node actually consumed.  Useful in the execution panel so
     designers can spot unresolved `{{var}}` placeholders immediately."""
-    node_results = result.get("node_results") or {}
-    node_rec = node_results.get(node_id) or {}
+    node_results: dict[str, Any] = result.get("node_results") or {}
+    node_rec: dict[str, Any] = node_results.get(node_id) or {}
     return node_rec.get("input")
 
 

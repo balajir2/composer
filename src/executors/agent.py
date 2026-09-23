@@ -10,7 +10,7 @@ See spec §10; ADRs 0006-0008.
 import asyncio
 import json
 import logging
-from typing import Any
+from typing import Any, cast
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
@@ -57,15 +57,17 @@ def unwrap_message_content(content: Any) -> str:
         return content
     if isinstance(content, list):
         parts: list[str] = []
-        for block in content:
+        for block in cast("list[Any]", content):
             if isinstance(block, str):
                 parts.append(block)
-            elif isinstance(block, dict) and block.get("type") == "text":
-                # Both LangChain (`type` field) and OpenAI vision
-                # (`type: "text"`) wrap text the same way.
-                text_value = block.get("text", "")
-                if isinstance(text_value, str):
-                    parts.append(text_value)
+            elif isinstance(block, dict):
+                block = cast("dict[str, Any]", block)
+                if block.get("type") == "text":
+                    # Both LangChain (`type` field) and OpenAI vision
+                    # (`type: "text"`) wrap text the same way.
+                    text_value = block.get("text", "")
+                    if isinstance(text_value, str):
+                        parts.append(text_value)
         return "\n".join(p for p in parts if p)
     # Anything else (None, dict, etc.) — fall back to str() so we
     # never propagate a non-string to a downstream node that's
@@ -184,7 +186,11 @@ class AgentExecutor:
         """Drive the LLM + tools until a turn produces text with no tool_calls.
         Caps at the node's configured max_iterations (default 10, hard
         clamp 100).  Returns the final assistant text."""
-        bound_model = chat_model.bind_tools(tools) if tools else chat_model
+        bound_model = (
+            chat_model.bind_tools(tools)  # pyright: ignore[reportUnknownMemberType]
+            if tools
+            else chat_model
+        )
         current: list[BaseMessage] = list(messages)
         tools_by_name = {t.name: t for t in tools}
         cap = min(
@@ -193,7 +199,7 @@ class AgentExecutor:
         )
 
         for _ in range(cap + 1):
-            response = await bound_model.ainvoke(current)
+            response = await bound_model.ainvoke(current)  # pyright: ignore[reportUnknownMemberType]
             tool_calls = getattr(response, "tool_calls", [])
 
             if not tool_calls:
@@ -204,7 +210,9 @@ class AgentExecutor:
                 # dicts, which downstream nodes and external callers
                 # would have to parse.
                 if hasattr(response, "content"):
-                    return unwrap_message_content(response.content)
+                    return unwrap_message_content(
+                        response.content  # pyright: ignore[reportUnknownMemberType]
+                    )
                 return str(response)
 
             # Execute all tool calls in parallel, append results as ToolMessages.
@@ -232,7 +240,9 @@ class AgentExecutor:
             )
         tool = tools_by_name[name]
         try:
-            result = await tool.ainvoke(args)  # pyright: ignore[reportArgumentType]
+            result = await tool.ainvoke(  # pyright: ignore[reportArgumentType, reportUnknownMemberType]
+                args
+            )
         except Exception as exc:
             logger.exception("Tool %s raised", name)
             return ToolMessage(
@@ -269,7 +279,9 @@ class AgentExecutor:
             # land here too), then attempt json.loads so callers always get
             # a dict / clean string.
             if isinstance(result, AIMessage):
-                text = unwrap_message_content(result.content)
+                text = unwrap_message_content(
+                    result.content  # pyright: ignore[reportUnknownMemberType]
+                )
                 try:
                     return json.loads(text)
                 except (json.JSONDecodeError, ValueError):

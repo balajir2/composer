@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 if TYPE_CHECKING:
     from src.engine.workflow import Workflow
@@ -58,9 +58,11 @@ def _extract_references(value: Any) -> list[str]:
     if isinstance(value, str):
         refs.extend(match.group(1).strip() for match in _PATTERN.finditer(value))
     elif isinstance(value, dict):
+        value = cast("dict[str, Any]", value)
         for v in value.values():
             refs.extend(_extract_references(v))
     elif isinstance(value, list):
+        value = cast("list[Any]", value)
         for item in value:
             refs.extend(_extract_references(item))
     return refs

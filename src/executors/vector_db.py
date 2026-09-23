@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Awaitable, Callable
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from src.config import get_settings
 from src.executors._eval import EvalError, evaluate
@@ -104,7 +104,7 @@ class VectorDbExecutor:
             try:
                 parsed = json.loads(substitute(data.metadata_filter, state))
                 if isinstance(parsed, dict):
-                    metadata_filter = parsed
+                    metadata_filter = cast("dict[str, Any]", parsed)
             except (json.JSONDecodeError, TypeError):
                 logger.warning(
                     "vector-db node %r: could not parse metadata_filter JSON; "
@@ -364,11 +364,12 @@ class VectorDbExecutor:
             return self._chunk_string(raw, chunk_size, chunk_overlap)
         if isinstance(raw, list):
             chunks: list[dict[str, Any]] = []
-            for item in raw:
+            for item in cast("list[Any]", raw):
                 if isinstance(item, str):
                     if item.strip():
                         chunks.append({"text": item})
                 elif isinstance(item, dict):
+                    item = cast("dict[str, Any]", item)
                     text = item.get("text") or item.get("content") or ""
                     if not isinstance(text, str) or not text.strip():
                         continue
@@ -376,7 +377,7 @@ class VectorDbExecutor:
                     if "id" in item and isinstance(item["id"], str):
                         chunk["id"] = item["id"]
                     if "metadata" in item and isinstance(item["metadata"], dict):
-                        chunk["metadata"] = dict(item["metadata"])
+                        chunk["metadata"] = dict(cast("dict[str, Any]", item["metadata"]))
                     chunks.append(chunk)
                 else:
                     raise VectorDbNodeError(

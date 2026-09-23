@@ -7,7 +7,7 @@ Reduce additionally exposes `acc` in scope.
 See Phase 4a spec §9.
 """
 
-from typing import Any
+from typing import Any, cast
 
 from src.engine.state import WorkflowStateDict
 from src.engine.workflow import DataTransformNode
@@ -79,6 +79,7 @@ class DataTransformExecutor:
                 f"non-iterable type {type(coll).__name__}"
             )
 
+        coll = cast("list[Any] | tuple[Any, ...]", coll)
         item_var = self.node.data.item_var
         expr = self.node.data.expression
 

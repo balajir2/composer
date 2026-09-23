@@ -33,7 +33,7 @@ class ExecutionEvent:
     execution_id: str = field(metadata={"alias": "executionId"})
     tenant_id: str | None = field(default=None, metadata={"alias": "tenantId"})
     timestamp: str = field(default_factory=_now_iso)
-    payload: dict[str, Any] = field(default_factory=dict)
+    payload: dict[str, Any] = field(default_factory=dict[str, Any])
     # P1-4: populated by PostgresEventStore.list_since when reconstructing
     # a persisted event; None for a freshly-constructed event that hasn't
     # been assigned a sequence number yet (PostgresEventStore.append

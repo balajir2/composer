@@ -7,9 +7,10 @@ for why this was chosen over a pandoc-based approach.
 """
 
 import io
+from typing import Any, cast
 
 from markdown_it import MarkdownIt
-from xhtml2pdf import pisa
+from xhtml2pdf import pisa  # pyright: ignore[reportMissingTypeStubs]
 
 from src.conversion._pdf_security import deny_all_resources
 
@@ -41,7 +42,12 @@ def markdown_to_pdf(content: str) -> bytes:
     full_html = f"<html><head>{_PDF_STYLE}</head><body>{html_body}</body></html>"
 
     buf = io.BytesIO()
-    result = pisa.CreatePDF(io.StringIO(full_html), dest=buf, link_callback=deny_all_resources)
+    result = cast(
+        "Any",
+        pisa.CreatePDF(  # pyright: ignore[reportUnknownMemberType]
+            io.StringIO(full_html), dest=buf, link_callback=deny_all_resources
+        ),
+    )
     # pisaDocument() (aliased as pisa.CreatePDF) only returns raw `bytes` when
     # called with dest_bytes=True, which we never pass; with `dest` supplied
     # it returns a pisaContext exposing `.err`. xhtml2pdf ships no type stubs,
@@ -51,8 +57,9 @@ def markdown_to_pdf(content: str) -> bytes:
         raise MarkdownToPdfError(
             "xhtml2pdf unexpectedly returned raw bytes instead of a status object"
         )
-    if result.err:
-        raise MarkdownToPdfError(f"xhtml2pdf failed with err={result.err}")
+    err = cast("int", result.err)
+    if err:
+        raise MarkdownToPdfError(f"xhtml2pdf failed with err={err}")
     return buf.getvalue()
 
 

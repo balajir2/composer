@@ -14,8 +14,9 @@ file (viewed in a real browser) but may render incorrectly here.
 """
 
 import io
+from typing import Any, cast
 
-from xhtml2pdf import pisa
+from xhtml2pdf import pisa  # pyright: ignore[reportMissingTypeStubs]
 
 from src.conversion._pdf_security import deny_all_resources
 
@@ -26,7 +27,12 @@ class HtmlToPdfError(RuntimeError):
 
 def html_to_pdf(content: str) -> bytes:
     buf = io.BytesIO()
-    result = pisa.CreatePDF(io.StringIO(content), dest=buf, link_callback=deny_all_resources)
+    result = cast(
+        "Any",
+        pisa.CreatePDF(  # pyright: ignore[reportUnknownMemberType]
+            io.StringIO(content), dest=buf, link_callback=deny_all_resources
+        ),
+    )
     # pisaDocument() (aliased as pisa.CreatePDF) only returns raw `bytes` when
     # called with dest_bytes=True, which we never pass; with `dest` supplied
     # it returns a pisaContext exposing `.err`. xhtml2pdf ships no type stubs,
@@ -34,8 +40,9 @@ def html_to_pdf(content: str) -> bytes:
     # narrow explicitly rather than suppressing the check.
     if isinstance(result, bytes):
         raise HtmlToPdfError("xhtml2pdf unexpectedly returned raw bytes instead of a status object")
-    if result.err:
-        raise HtmlToPdfError(f"xhtml2pdf failed with err={result.err}")
+    err = cast("int", result.err)
+    if err:
+        raise HtmlToPdfError(f"xhtml2pdf failed with err={err}")
     return buf.getvalue()
 
 

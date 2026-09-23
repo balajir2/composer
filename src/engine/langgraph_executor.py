@@ -9,7 +9,7 @@ Responsibilities:
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Command  # pyright: ignore[reportUnknownVariableType]
@@ -45,7 +45,7 @@ def _extract_pending_info(snapshot: Any) -> dict[str, Any]:
         for interrupt_obj in interrupts:
             value = getattr(interrupt_obj, "value", None)
             if isinstance(value, dict):
-                return value
+                return cast("dict[str, Any]", value)
     return {}
 
 

@@ -18,7 +18,7 @@ near-simultaneous requests (a duplicate click, or two reviewers racing)
 both pass the check before either commits.
 """
 
-from typing import Any
+from typing import Any, cast
 from urllib.parse import urlencode
 
 from fastapi import APIRouter, Depends, Request
@@ -86,12 +86,19 @@ async def _validate_token_and_execution(
     # a `while`-loop user-approval node can pause repeatedly at the same
     # node_id, so a node_id-only check would let a stale token from an
     # earlier iteration resolve a later one.
-    variables = execution.variables or {}
+    variables = cast("dict[str, Any]", execution.variables or {})
+    # Runtime defensiveness against malformed stored JSON: `cast(Any, ...)`
+    # only defeats pyright's now-always-true narrowing above, it does not
+    # change the isinstance check that still runs at execution time.
     pending_node_id = (
-        variables.get("_pending_approval_node") if isinstance(variables, dict) else None
+        variables.get("_pending_approval_node")
+        if isinstance(cast("Any", variables), dict)
+        else None
     )
     pending_since = (
-        variables.get("_pending_approval_since") if isinstance(variables, dict) else None
+        variables.get("_pending_approval_since")
+        if isinstance(cast("Any", variables), dict)
+        else None
     )
     if pending_node_id != claims.node_id or pending_since != claims.pending_since:
         return None

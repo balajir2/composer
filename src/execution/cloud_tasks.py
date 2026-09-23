@@ -177,7 +177,9 @@ async def enqueue_execution(execution_id: str, *, kind: _TaskKind, db: Any) -> N
             },
         }
     }
-    await client.create_task(request={"parent": queue_path, "task": task})
+    await client.create_task(  # pyright: ignore[reportUnknownMemberType]
+        request={"parent": queue_path, "task": task}
+    )
 
 
 __all__ = ["close_cloud_tasks_client", "enqueue_execution"]

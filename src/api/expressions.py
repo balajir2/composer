@@ -13,7 +13,7 @@ See docs/superpowers/specs/2026-07-22-transform-expression-preview-design.md.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field
@@ -154,6 +154,7 @@ async def evaluate_data_transform_expression(
             ),
         )
 
+    coll = cast("list[Any] | tuple[Any, ...]", coll)
     truncated = len(coll) > _MAX_TEST_ITEMS
     sample = list(coll[:_MAX_TEST_ITEMS])
 

@@ -1,7 +1,7 @@
 """POST /workflows — create a workflow from JSON."""
 
 import re
-from typing import Any
+from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
@@ -104,11 +104,13 @@ def _redact_jira_tokens(nodes: list[Any]) -> list[Any]:
     """Never let a Jira node's encrypted apiToken leave the server."""
     redacted: list[Any] = []
     for node in nodes:
-        if isinstance(node, dict) and node.get("type") == "jira":
-            data = dict(node.get("data") or {})
-            if data.get("apiToken"):
-                data["apiToken"] = JIRA_TOKEN_REDACTED
-            node = {**node, "data": data}
+        if isinstance(node, dict):
+            node = cast("dict[str, Any]", node)
+            if node.get("type") == "jira":
+                data = dict(node.get("data") or {})
+                if data.get("apiToken"):
+                    data["apiToken"] = JIRA_TOKEN_REDACTED
+                node = {**node, "data": data}
         redacted.append(node)
     return redacted
 
@@ -118,12 +120,14 @@ def _redact_vector_db_keys(nodes: list[Any]) -> list[Any]:
     the server (P0-5) — same treatment as _redact_jira_tokens above."""
     redacted: list[Any] = []
     for node in nodes:
-        if isinstance(node, dict) and node.get("type") == "vector-db":
-            data = dict(node.get("data") or {})
-            for field in _VECTOR_DB_SECRET_FIELDS:
-                if data.get(field):
-                    data[field] = REDACTED_MARKER
-            node = {**node, "data": data}
+        if isinstance(node, dict):
+            node = cast("dict[str, Any]", node)
+            if node.get("type") == "vector-db":
+                data = dict(node.get("data") or {})
+                for field in _VECTOR_DB_SECRET_FIELDS:
+                    if data.get(field):
+                        data[field] = REDACTED_MARKER
+                node = {**node, "data": data}
         redacted.append(node)
     return redacted
 
@@ -133,12 +137,14 @@ def _redact_confluence_tokens(nodes: list[Any]) -> list[Any]:
     same treatment as _redact_vector_db_keys above."""
     redacted: list[Any] = []
     for node in nodes:
-        if isinstance(node, dict) and node.get("type") == "confluence":
-            data = dict(node.get("data") or {})
-            for field in _CONFLUENCE_SECRET_FIELDS:
-                if data.get(field):
-                    data[field] = REDACTED_MARKER
-            node = {**node, "data": data}
+        if isinstance(node, dict):
+            node = cast("dict[str, Any]", node)
+            if node.get("type") == "confluence":
+                data = dict(node.get("data") or {})
+                for field in _CONFLUENCE_SECRET_FIELDS:
+                    if data.get(field):
+                        data[field] = REDACTED_MARKER
+                node = {**node, "data": data}
         redacted.append(node)
     return redacted
 
@@ -150,12 +156,15 @@ def _redact_http_headers(nodes: list[Any]) -> list[Any]:
     redact_sensitive_headers rather than a single fixed field."""
     redacted: list[Any] = []
     for node in nodes:
-        if isinstance(node, dict) and node.get("type") == "http":
-            data = dict(node.get("data") or {})
-            headers = data.get("httpHeaders")
-            if isinstance(headers, dict):
-                data["httpHeaders"] = redact_sensitive_headers(headers)
-            node = {**node, "data": data}
+        if isinstance(node, dict):
+            node = cast("dict[str, Any]", node)
+            if node.get("type") == "http":
+                data = dict(node.get("data") or {})
+                headers = data.get("httpHeaders")
+                if isinstance(headers, dict):
+                    headers = cast("dict[str, Any]", headers)
+                    data["httpHeaders"] = redact_sensitive_headers(headers)
+                node = {**node, "data": data}
         redacted.append(node)
     return redacted
 
@@ -176,17 +185,22 @@ def _encrypt_jira_tokens(nodes_json: list[dict[str, Any]], existing_nodes: list[
     prior GET returned, unchanged), keep whatever was already stored for that
     node id instead of overwriting it with the literal marker string.
     """
-    existing_by_id = {node.get("id"): node for node in existing_nodes if isinstance(node, dict)}
+    existing_by_id: dict[Any, dict[str, Any]] = {
+        cast("dict[str, Any]", node).get("id"): cast("dict[str, Any]", node)
+        for node in existing_nodes
+        if isinstance(node, dict)
+    }
     for node in nodes_json:
         if node.get("type") != "jira":
             continue
-        data = node.get("data") or {}
+        data: dict[str, Any] = node.get("data") or {}
         token = data.get("apiToken")
         if not token:
             continue
         if token == JIRA_TOKEN_REDACTED:
             prior = existing_by_id.get(node.get("id")) or {}
-            data["apiToken"] = (prior.get("data") or {}).get("apiToken")
+            prior_data: dict[str, Any] = prior.get("data") or {}
+            data["apiToken"] = prior_data.get("apiToken")
         elif not is_jira_api_token_encrypted(token):
             data["apiToken"] = encrypt_jira_api_token(token)
 
@@ -195,18 +209,23 @@ def _encrypt_vector_db_keys(nodes_json: list[dict[str, Any]], existing_nodes: li
     """Encrypt plaintext vector-db apiKey/embeddingApiKey values in-place
     before persisting (P0-5) — same preserve-on-redacted-marker treatment
     as _encrypt_jira_tokens above."""
-    existing_by_id = {node.get("id"): node for node in existing_nodes if isinstance(node, dict)}
+    existing_by_id: dict[Any, dict[str, Any]] = {
+        cast("dict[str, Any]", node).get("id"): cast("dict[str, Any]", node)
+        for node in existing_nodes
+        if isinstance(node, dict)
+    }
     for node in nodes_json:
         if node.get("type") != "vector-db":
             continue
-        data = node.get("data") or {}
+        data: dict[str, Any] = node.get("data") or {}
         for field in _VECTOR_DB_SECRET_FIELDS:
             value = data.get(field)
             if not value:
                 continue
             if value == REDACTED_MARKER:
                 prior = existing_by_id.get(node.get("id")) or {}
-                data[field] = (prior.get("data") or {}).get(field)
+                prior_data: dict[str, Any] = prior.get("data") or {}
+                data[field] = prior_data.get(field)
             elif not is_marked_encrypted(value):
                 data[field] = encrypt_marked(value)
 
@@ -215,18 +234,23 @@ def _encrypt_confluence_tokens(nodes_json: list[dict[str, Any]], existing_nodes:
     """Encrypt plaintext confluence apiToken values in-place before
     persisting — same preserve-on-redacted-marker treatment as
     _encrypt_vector_db_keys above."""
-    existing_by_id = {node.get("id"): node for node in existing_nodes if isinstance(node, dict)}
+    existing_by_id: dict[Any, dict[str, Any]] = {
+        cast("dict[str, Any]", node).get("id"): cast("dict[str, Any]", node)
+        for node in existing_nodes
+        if isinstance(node, dict)
+    }
     for node in nodes_json:
         if node.get("type") != "confluence":
             continue
-        data = node.get("data") or {}
+        data: dict[str, Any] = node.get("data") or {}
         for field in _CONFLUENCE_SECRET_FIELDS:
             value = data.get(field)
             if not value:
                 continue
             if value == REDACTED_MARKER:
                 prior = existing_by_id.get(node.get("id")) or {}
-                data[field] = (prior.get("data") or {}).get(field)
+                prior_data: dict[str, Any] = prior.get("data") or {}
+                data[field] = prior_data.get(field)
             elif not is_marked_encrypted(value):
                 data[field] = encrypt_marked(value)
 
@@ -235,18 +259,27 @@ def _encrypt_http_headers(nodes_json: list[dict[str, Any]], existing_nodes: list
     """Encrypt plaintext sensitive http-node header values in-place before
     persisting (P0-5) — same preserve-on-redacted-marker treatment as
     _encrypt_jira_tokens above, applied per-header-name."""
-    existing_by_id = {node.get("id"): node for node in existing_nodes if isinstance(node, dict)}
+    existing_by_id: dict[Any, dict[str, Any]] = {
+        cast("dict[str, Any]", node).get("id"): cast("dict[str, Any]", node)
+        for node in existing_nodes
+        if isinstance(node, dict)
+    }
     for node in nodes_json:
         if node.get("type") != "http":
             continue
-        data = node.get("data") or {}
+        data: dict[str, Any] = node.get("data") or {}
         headers = data.get("httpHeaders")
         if not isinstance(headers, dict):
             continue
+        headers = cast("dict[str, Any]", headers)
         prior = existing_by_id.get(node.get("id")) or {}
-        prior_headers = (prior.get("data") or {}).get("httpHeaders")
+        prior_data: dict[str, Any] = prior.get("data") or {}
+        prior_headers = prior_data.get("httpHeaders")
+        resolved_prior_headers = (
+            cast("dict[str, Any]", prior_headers) if isinstance(prior_headers, dict) else None
+        )
         data["httpHeaders"] = encrypt_sensitive_headers(
-            headers, prior_headers=prior_headers if isinstance(prior_headers, dict) else None
+            headers, prior_headers=resolved_prior_headers
         )
 
 

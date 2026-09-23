@@ -4,7 +4,7 @@ See ADR-0008; spec §6.
 """
 
 import json
-from typing import Any
+from typing import Any, cast
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import BaseMessage
@@ -47,7 +47,12 @@ async def structured_invoke(
             pass
 
     response = await chat_model.ainvoke(messages)
-    content = response.content if hasattr(response, "content") else str(response)
+    content = cast(
+        "str | list[Any]",
+        response.content  # pyright: ignore[reportUnknownMemberType]
+        if hasattr(response, "content")
+        else str(response),
+    )
     if json_mode:
         if isinstance(content, str):
             try:

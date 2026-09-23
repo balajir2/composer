@@ -29,7 +29,7 @@ import asyncio
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from langchain_core.language_models import BaseChatModel
@@ -287,16 +287,25 @@ async def _agentic_loop(
     tools: list[BaseTool],
     max_iterations: int,
 ) -> tuple[str, list[ToolCallRecord]]:
-    bound_model = chat_model.bind_tools(tools) if tools else chat_model
+    bound_model = (
+        chat_model.bind_tools(tools)  # pyright: ignore[reportUnknownMemberType]
+        if tools
+        else chat_model
+    )
     current: list[BaseMessage] = list(messages)
     tools_by_name = {t.name: t for t in tools}
     all_records: list[ToolCallRecord] = []
 
     for _ in range(max_iterations + 1):
-        response = await bound_model.ainvoke(current)
+        response = await bound_model.ainvoke(current)  # pyright: ignore[reportUnknownMemberType]
         tool_calls: list[dict[str, Any]] = getattr(response, "tool_calls", []) or []
         if not tool_calls:
-            content = response.content if hasattr(response, "content") else str(response)
+            content = cast(
+                "str | list[Any]",
+                response.content  # pyright: ignore[reportUnknownMemberType]
+                if hasattr(response, "content")
+                else str(response),
+            )
             return (content if isinstance(content, str) else str(content)), all_records
         # Mutating Jira calls run sequentially, not concurrently
         # (asyncio.gather previously) — dependency ordering within a
@@ -358,7 +367,9 @@ async def _run_tool(
         )
     tool = tools_by_name[name]
     try:
-        result = await tool.ainvoke(args)  # pyright: ignore[reportArgumentType]
+        result = await tool.ainvoke(  # pyright: ignore[reportArgumentType, reportUnknownMemberType]
+            args
+        )
     except Exception as exc:
         logger.exception("Jira tool %s raised", name)
         content = f"Error: tool {name!r} raised {type(exc).__name__}: {exc}"

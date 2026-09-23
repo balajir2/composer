@@ -22,7 +22,7 @@ Tools offered:
 
 import base64
 import json
-from typing import Any
+from typing import Any, cast
 
 import httpx
 from langchain_core.tools import BaseTool
@@ -233,13 +233,14 @@ class _JiraGetIssueTool(BaseTool):
         fields = issue.get("fields", {})
         status_obj = fields.get("status", {})
         assignee_obj: Any = fields.get("assignee") or {}
+        priority_obj: Any = fields.get("priority") or {}
         issue_type_obj = fields.get("issuetype", {})
 
         lines = [
             f"## {issue.get('key')}: {fields.get('summary', '')}",
             f"- **Status:** {status_obj.get('name', 'N/A')}",
             f"- **Type:** {issue_type_obj.get('name', 'N/A')}",
-            f"- **Priority:** {(fields.get('priority') or {}).get('name', 'N/A')}",
+            f"- **Priority:** {priority_obj.get('name', 'N/A')}",
             f"- **Assignee:** {assignee_obj.get('displayName', 'Unassigned')}",
             f"- **Labels:** {', '.join(fields.get('labels', [])) or 'None'}",
         ]
@@ -248,6 +249,7 @@ class _JiraGetIssueTool(BaseTool):
             lines.append("")
             lines.append("### Description")
             if isinstance(desc, dict):
+                desc = cast("dict[str, Any]", desc)
                 for item in desc.get("content", []):
                     for inner in item.get("content", []):
                         if inner.get("type") == "text":
@@ -318,9 +320,12 @@ class _JiraSearchIssuesTool(BaseTool):
             flds = iss.get("fields", {})
             key = iss.get("key", "?")
             summary = flds.get("summary", "")
-            status = (flds.get("status") or {}).get("name", "")
-            priority = (flds.get("priority") or {}).get("name", "")
-            assignee = (flds.get("assignee") or {}).get("displayName", "Unassigned")
+            status_obj: Any = flds.get("status") or {}
+            priority_obj: Any = flds.get("priority") or {}
+            assignee_obj: Any = flds.get("assignee") or {}
+            status = status_obj.get("name", "")
+            priority = priority_obj.get("name", "")
+            assignee = assignee_obj.get("displayName", "Unassigned")
             lines.append(f"- [{key}] {summary}  | {status} | {priority} | {assignee}")
         return "\n".join(lines)
 

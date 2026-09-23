@@ -17,7 +17,7 @@ See Phase 3a spec §6.
 import itertools
 import json
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -151,9 +151,10 @@ class MCPClient:
             payload = resp.json()
         except json.JSONDecodeError:
             return False
-        err = payload.get("error") if isinstance(payload, dict) else None
+        err = cast("dict[str, Any]", payload).get("error") if isinstance(payload, dict) else None
         if not isinstance(err, dict):
             return False
+        err = cast("dict[str, Any]", err)
         message = str(err.get("message", "")).lower()
         return "initialize request" in message and "session id" in message
 
