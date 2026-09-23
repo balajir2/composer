@@ -77,6 +77,27 @@ async def test_typesafe_key_test_ok_on_200(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.asyncio
+async def test_typesafe_key_test_sends_model_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression guard: TypeSafe's live API rejects a request with no `model`
+    field with a 422 ("Field required"), contradicting the docs' claim that it
+    defaults to jev-latest server-side. Found via a real admin "test connection"
+    click against the live API — see judgment.py's TypeSafeJudgmentProvider for
+    the same fix."""
+    captured: dict[str, object] = {}
+
+    async def _fake_post(
+        url: str, headers: dict[str, str], json: dict[str, object]
+    ) -> httpx.Response:
+        captured["json"] = json
+        request = httpx.Request("POST", url)
+        return httpx.Response(200, json={"answers": {}}, request=request)
+
+    monkeypatch.setattr(key_tests, "_post", _fake_post)
+    await key_tests.run_key_test("typesafe", "sk-test")
+    assert captured["json"]["model"] == "jev-latest"  # type: ignore[index]
+
+
+@pytest.mark.asyncio
 async def test_typesafe_key_test_fails_on_401(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _fake_post(
         url: str, headers: dict[str, str], json: dict[str, object]

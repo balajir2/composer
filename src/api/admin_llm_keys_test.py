@@ -266,6 +266,7 @@ async def _test_typesafe(key: str) -> KeyTestResult:
         headers={"Authorization": f"Bearer {key}", "content-type": "application/json"},
         json={
             "state": "ping",
+            "model": "jev-latest",
             "questions": {"probe": {"type": "noul", "instructions": "Is this text non-empty?"}},
         },
     )

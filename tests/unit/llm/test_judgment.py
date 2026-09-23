@@ -208,6 +208,41 @@ async def test_typesafe_decide_binary_sends_noul_question(monkeypatch: pytest.Mo
     assert captured["headers"]["Authorization"] == "Bearer sk-test"
 
 
+async def test_typesafe_decide_binary_defaults_model_when_unset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression guard: TypeSafe's live API rejects a request with no `model`
+    field with a 422 ("Field required"), contradicting the docs' claim that it
+    defaults to jev-latest server-side. Found via a real admin "test
+    connection" click against the live API."""
+    from src.llm import judgment as judgment_mod
+
+    def _fake_settings():
+        class _S:
+            typesafe_api_key = "sk-test"
+
+        return _S()
+
+    monkeypatch.setattr(judgment_mod, "get_settings", _fake_settings)
+
+    captured: dict[str, Any] = {}
+
+    async def _fake_post(
+        self: httpx.AsyncClient, url: str, json: dict[str, Any], headers: dict[str, str]
+    ) -> httpx.Response:
+        captured["json"] = json
+        request = httpx.Request("POST", url)
+        return httpx.Response(
+            200, json={"answers": {"decision": {"type": "noul", "noul": 0.9}}}, request=request
+        )
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _fake_post)
+
+    provider = TypeSafeJudgmentProvider()
+    await provider.decide_binary(instruction="x?", examples=[], text="y", model=None)
+    assert captured["json"]["model"] == "jev-latest"
+
+
 async def test_typesafe_decide_binary_low_noul_means_false_with_inverted_confidence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -284,6 +319,9 @@ async def test_typesafe_decide_choice_sends_choice_question_with_criteria(
     assert confidence == 0.8
     q = captured["json"]["questions"]["decision"]
     assert q["type"] == "choice"
+    # Regression guard: TypeSafe's live API 422s on a missing `model` field,
+    # so it must always default to jev-latest when the caller didn't set one.
+    assert captured["json"]["model"] == "jev-latest"
     assert q["criteria"] == {"billing": "money stuff"}
 
 

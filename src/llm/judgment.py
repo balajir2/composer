@@ -27,6 +27,13 @@ if TYPE_CHECKING:
 
 _SYSTEM_PROMPT = "You are a decision-making assistant. Follow the schema exactly."
 
+# TypeSafe's /v1/systemone rejects a request with no `model` field (422
+# "Field required") — the docs claim the Python SDK defaults to jev-latest,
+# but that default is client-side only, not applied by the raw HTTP API.
+# Confirmed live 2026-09-23. Always send this when the caller didn't supply
+# their own model string.
+_DEFAULT_TYPESAFE_MODEL = "jev-latest"
+
 
 class JudgmentProviderError(RuntimeError):
     """Raised by a JudgmentProvider on backend failure (network, bad response, etc.)."""
@@ -183,8 +190,7 @@ class TypeSafeJudgmentProvider:
                 }
             },
         }
-        if model:
-            body["model"] = model
+        body["model"] = model or _DEFAULT_TYPESAFE_MODEL
         data = await self._post(body)
         noul = data["answers"]["decision"]["noul"]
         result = noul >= 0.5
@@ -208,8 +214,7 @@ class TypeSafeJudgmentProvider:
         if criteria:
             question["criteria"] = criteria
         body: dict[str, Any] = {"state": text, "questions": {"decision": question}}
-        if model:
-            body["model"] = model
+        body["model"] = model or _DEFAULT_TYPESAFE_MODEL
         data = await self._post(body)
         answer = data["answers"]["decision"]
         return answer["choice"], answer["confidence"]
