@@ -7,8 +7,8 @@ Everything you need to build workflows on the canvas. If this is your first time
 - [Concepts](#concepts) — Workflows, executions, runs, drafts
 - [The canvas](#the-canvas) — Editing nodes, drawing edges, the property panel
 - [Variables and references](#variables-and-references) — `{{name}}` substitution and the eval scope
-- [Node reference](#node-reference) — All 24 node types
-- [Templates](#templates) — The 20 reference workflows and what each demonstrates
+- [Node reference](#node-reference) — All 25 node types
+- [Templates](#templates) — The 21 reference workflows and what each demonstrates
 - [Publishing workflows](#publishing-workflows) — External invoke API
 - [Document uploads](#document-uploads) — PDF / DOCX / Markdown / TXT inputs
 - [Patterns and recipes](#patterns-and-recipes) — Common idioms
@@ -84,7 +84,7 @@ What's *not* available: `import`, `eval`, `exec`, list comprehensions, dict lite
 
 ## Node reference
 
-The twenty-four node types, grouped by what they do.
+The twenty-five node types, grouped by what they do.
 
 ### Flow control
 
@@ -131,6 +131,21 @@ The reviewer's note (if any) is available downstream as `{{node_results.<id>.out
 Set **Approver email** (`approverEmail`) and, optionally, **Approver CC** (`approverCc`) — both support `{{variable}}` substitution — to also notify the reviewer by email the moment the node pauses. The email contains two signed one-click links, Approve and Reject; clicking either resolves the decision directly, with no Composer login required, so an external reviewer with no account can still act. Each emailed link is valid for 72 hours by default (`approval_link_ttl_hours`); after it expires, the in-app Approve/Reject controls on the runs page still work exactly as before — the emailed link is a convenience shortcut, not the only way to decide. Independent of that link TTL, a `waiting_approval` execution that sits with no decision at all for 7 days (168h, `approval_wait_timeout_hours`) is automatically failed by a background sweeper, purely to bound database row growth — a paused execution costs zero compute while waiting (its full state is checkpointed to Postgres), so this outer limit is hygiene, not a resource necessity.
 
 Optionally set **Attachment path** (`attachmentPath`), substituted from workflow state — typically `{{lastOutput}}` from an upstream `file-write` node — to attach that file to the approval email. The path is bounded to a server-side directory (`approval_attachment_root`, default `/tmp/composer-attachments`) and size cap (`approval_attachment_max_bytes`, default 10 MiB); a path outside that root, a missing file, an oversized file, or any other read failure is silently skipped and the email still sends without the attachment.
+
+#### `decision`
+
+Branches on a **judgment call**, not a formula — the LLM/judgment-provider counterpart to `if-else`'s deterministic `simpleeval` condition. Two modes:
+
+- **Binary** — two outgoing handles, `true` / `false`. Set **Instruction** to the yes/no question.
+- **Choice** — one outgoing handle per configured **Option** (label + optional description). No condition string to write; the number and names of handles come directly from the options list.
+
+**Provider** picks the backend: `llm` (default — routes through Composer's existing model stack, same `provider/model` convention as `agent`) or `typesafe` (TypeSafe's Jev, a purpose-built structured-decision model — reachable only from this node, never from any other node's model field). **Model** follows the selected provider's own catalog (Admin → LLM models).
+
+Optionally add **Examples** — `{input, result}` pairs for binary mode, `{input, option}` for choice mode — folded into the judgment call as few-shot guidance. For the `llm` provider these become real few-shot conversation turns; TypeSafe has no native few-shot mechanism, so its provider folds them into descriptive `criteria` text instead — a weaker signal, not equivalent behavior.
+
+Output: `{{<node>.decision}}` (the chosen `true`/`false` or option label) and `{{<node>.confidence}}` (0–1). `lastOutput` passes through untouched, same transparent-filter contract as `guardrails` — branching reads `decision`/`confidence`, not `lastOutput`.
+
+See Template 21 for the reference pattern (TypeSafe-backed ticket routing) and the note at the end of [Classify and branch](#classify-and-branch) for when to reach for this instead of an `agent` + `if-else` chain.
 
 ### Compute
 
@@ -425,7 +440,7 @@ Output: `{lastOutput}` is the full path written — `drive://<folderId>/<filenam
 
 ## Templates
 
-The 20 templates seeded by `scripts/seed_templates.py`. Open the gallery at [/designer/templates](http://localhost:3000/designer/templates). For a walkthrough of exactly which parameters to set on each one, see [user-training-flow-setup.md](user-training-flow-setup.md).
+The 21 templates seeded by `scripts/seed_templates.py`. Open the gallery at [/designer/templates](http://localhost:3000/designer/templates). For a walkthrough of exactly which parameters to set on each one, see [user-training-flow-setup.md](user-training-flow-setup.md).
 
 | # | Name | Demonstrates | External deps |
 |---|---|---|---|
@@ -449,6 +464,7 @@ The 20 templates seeded by `scripts/seed_templates.py`. Open the gallery at [/de
 | 18 | Approved Email Distribution | Agent drafts HTML → human approval → Resend email delivery | LLM + Resend |
 | 19 | Arcade Tool Call | `arcade` node OAuth pause/resume against Arcade.dev | LLM + Arcade |
 | 20 | File Watch to Summarize and Email | `file-trigger` (visual) + `composer watch` CLI → Agent → Email | LLM + Resend + `composer watch` |
+| 21 | Decision Node Routing (TypeSafe Jev) | `decision` choice mode → per-department agents, TypeSafe provider | TypeSafe key + `jev-latest` model row |
 
 Templates are owned by `userId=null` so no one can edit them through the API — clicking "Use template" creates a private user-owned copy. Edit the seed script + re-run to update the gallery.
 
@@ -507,9 +523,9 @@ set-state index=0  →  set-state results=[]  →  while (index < len(items))
 
 ### Classify and branch
 
-Template 14 is the cleanest reference. Pattern: agent in JSON mode emits a classification → if-else condition is `{{<classifier>.<some_boolean>}}` → specialist agents on each branch.
+Template 14 is the cleanest reference for the hand-rolled version. Pattern: agent in JSON mode emits a classification → if-else condition is `{{<classifier>.<some_boolean>}}` → specialist agents on each branch.
 
-For multi-category routing, chain if-else nodes (binary routing only is built in; nested if-else covers any tree).
+For multi-category routing this way, chain if-else nodes (binary routing only is built into `if-else`; nested if-else covers any tree) — or reach for `decision` in choice mode instead (Template 21): one node, one handle per category, no JSON schema to design and no condition string to write. Use the hand-rolled agent+if-else version when the classification needs to *do* more than classify (e.g. also produce a summary or extracted fields alongside the verdict, as Template 14's classifier does); use `decision` when the judgment call is the whole job.
 
 ### Output-side guardrails
 

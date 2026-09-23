@@ -1,7 +1,7 @@
 # Design: Decision node — judgment-based branching for the palette
 
 **Date:** 2026-09-22
-**Status:** Approved — implementation plan not yet written
+**Status:** Shipped (2026-09-23) — implemented per `docs/superpowers/plans/2026-09-22-decision-node.md`, merged to `main`, live in production. Post-merge findings (live-testing bugs, doc gaps) are tracked in `CHANGELOG.md`, not backfilled into this design record.
 **Origin:** User request, arising from a spike evaluating TypeSafe AI (`jev-latest`) as a possible
 backend for Composer's Guardrails executor. The spike found no case for adopting TypeSafe there
 (see `project_typesafe_laya_decision_backend_eval.md` in the user's memory store), but the
