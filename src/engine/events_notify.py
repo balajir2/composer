@@ -19,7 +19,6 @@ LISTEN callback API.
 from __future__ import annotations
 
 import asyncio
-from typing import cast
 
 import asyncpg
 
@@ -40,9 +39,7 @@ async def _get_notify_connection() -> asyncpg.Connection:
         # Double-check inside the lock in case another concurrent caller
         # already established the connection while we were waiting.
         if _notify_connection is None or _notify_connection.is_closed():
-            _notify_connection = cast(
-                "asyncpg.Connection", await asyncpg.connect(get_settings().database_url)
-            )
+            _notify_connection = await asyncpg.connect(get_settings().database_url)
         return _notify_connection
 
 

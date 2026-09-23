@@ -25,7 +25,6 @@ can't reintroduce that problem.
 """
 
 import os
-from typing import cast
 
 import asyncpg
 
@@ -33,7 +32,7 @@ import asyncpg
 async def reset_rate_limit_buckets() -> None:
     if not os.environ.get("TEST_DATABASE_URL"):
         return
-    conn = cast("asyncpg.Connection", await asyncpg.connect(os.environ["TEST_DATABASE_URL"]))
+    conn = await asyncpg.connect(os.environ["TEST_DATABASE_URL"])
     try:
         await conn.execute("DELETE FROM rate_limit_buckets")
     finally:

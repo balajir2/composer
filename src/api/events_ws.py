@@ -10,7 +10,7 @@ import asyncio
 import contextlib
 import json
 import logging
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any
 
 import asyncpg
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
@@ -151,7 +151,7 @@ async def events_ws(  # pyright: ignore[reportUnusedFunction]
 
     conn: asyncpg.Connection | None = None
     try:
-        conn = cast("asyncpg.Connection", await asyncpg.connect(get_settings().database_url))
+        conn = await asyncpg.connect(get_settings().database_url)
         await conn.add_listener(NOTIFY_CHANNEL, _on_notify)
 
         while True:
