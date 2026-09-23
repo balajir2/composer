@@ -46,6 +46,12 @@ const PROVIDER_OPTIONS = [
   { value: "typesafe", label: "TypeSafe (Jev)" },
 ];
 
+// Mirrors src/api/llm_models_live.py's _DB_ONLY_PROVIDERS — purely for
+// wording the empty-state message correctly. The backend already enforces
+// the actual DB-only-fallback behavior regardless of this list; this copy
+// only decides which sentence the admin sees when there's nothing to show.
+const DB_ONLY_PROVIDERS = new Set(["typesafe"]);
+
 export default function AdminLlmModelsPage() {
   const qc = useQueryClient();
   const { data, isLoading, isError } = useQuery({
@@ -398,6 +404,12 @@ function CreateModelDialog({ existing }: { existing: LlmModelSummary[] }) {
                   {provider} API key
                 </a>{" "}
                 or switch to manual entry.
+              </p>
+            ) : modelOptions.length === 0 && DB_ONLY_PROVIDERS.has(provider) ? (
+              <p className="text-xs text-muted-foreground">
+                {provider} has no live model catalog to discover from — models
+                are admin-curated only. Switch to manual entry to add your
+                first one.
               </p>
             ) : modelOptions.length === 0 ? (
               <p className="text-xs text-muted-foreground">
