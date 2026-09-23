@@ -52,11 +52,11 @@ async def test_decide_binary_returns_result_and_confidence(monkeypatch: pytest.M
         confidence = 0.92
 
     fake_model = _FakeChatModel(_Result())
-    monkeypatch.setattr(
-        judgment_mod,
-        "build_chat_model",
-        lambda *a, **kw: fake_model,  # pyright: ignore[reportUnknownLambdaType]
-    )
+
+    def _build_fake_model(*a: Any, **kw: Any) -> Any:
+        return fake_model
+
+    monkeypatch.setattr(judgment_mod, "build_chat_model", _build_fake_model)
 
     provider = LLMJudgmentProvider()
     result, confidence = await provider.decide_binary(
@@ -112,11 +112,11 @@ async def test_decide_choice_builds_literal_schema_from_options(
         confidence = 0.8
 
     fake_model = _FakeChatModel(_Result())
-    monkeypatch.setattr(
-        judgment_mod,
-        "build_chat_model",
-        lambda *a, **kw: fake_model,  # pyright: ignore[reportUnknownLambdaType]
-    )
+
+    def _build_fake_model(*a: Any, **kw: Any) -> Any:
+        return fake_model
+
+    monkeypatch.setattr(judgment_mod, "build_chat_model", _build_fake_model)
 
     provider = LLMJudgmentProvider()
     option, confidence = await provider.decide_choice(
@@ -271,7 +271,7 @@ async def test_typesafe_decide_binary_low_noul_means_false_with_inverted_confide
         instruction="x?", examples=[], text="y", model=None
     )
     assert result is False
-    assert confidence == pytest.approx(0.9)
+    assert confidence == pytest.approx(0.9)  # pyright: ignore[reportUnknownMemberType]
 
 
 async def test_typesafe_decide_choice_sends_choice_question_with_criteria(
