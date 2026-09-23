@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -37,13 +37,18 @@ class EmbeddingConfig:
 def _format_openai_error(status_code: int, response_text: str) -> str:
     """Return a concise error message for OpenAI-compatible failures."""
     try:
-        body = json.loads(response_text)
+        raw_body: Any = json.loads(response_text)
     except json.JSONDecodeError:
         return f"embeddings error {status_code}: {response_text}"
 
-    error = body.get("error") if isinstance(body, dict) else None
-    if not isinstance(error, dict):
+    if not isinstance(raw_body, dict):
         return f"embeddings error {status_code}: {response_text}"
+    body = cast("dict[str, Any]", raw_body)
+
+    raw_error = body.get("error")
+    if not isinstance(raw_error, dict):
+        return f"embeddings error {status_code}: {response_text}"
+    error = cast("dict[str, Any]", raw_error)
 
     code = error.get("code")
     message = error.get("message")
@@ -66,16 +71,20 @@ def _normalise_base_url(base_url: str) -> str:
 def _embedding_from_openai_compatible_body(body: Any) -> list[float]:
     if not isinstance(body, dict):
         raise EmbeddingError(f"embeddings response was not an object: {body}")
-    data = body.get("data")
+    body_dict = cast("dict[str, Any]", body)
+    data = body_dict.get("data")
     if not data or not isinstance(data, list):
         raise EmbeddingError(f"embeddings response missing 'data' array: {body}")
-    first = data[0]
+    data_list = cast("list[Any]", data)
+    first = data_list[0]
     if not isinstance(first, dict):
         raise EmbeddingError(f"embeddings response item was not an object: {body}")
-    vector = first.get("embedding")
+    first_dict = cast("dict[str, Any]", first)
+    vector = first_dict.get("embedding")
     if not isinstance(vector, list):
         raise EmbeddingError(f"embeddings response missing 'embedding': {body}")
-    return vector
+    vector_list = cast("list[Any]", vector)
+    return cast("list[float]", vector_list)
 
 
 async def _post_json(
@@ -145,13 +154,18 @@ async def embed_text_cohere(text: str, *, config: EmbeddingConfig) -> list[float
         payload=payload,
         provider_label="cohere",
     )
-    embeddings = body.get("embeddings") if isinstance(body, dict) else None
+    embeddings: dict[str, Any] | list[Any] | None = None
+    if isinstance(body, dict):
+        body_dict = cast("dict[str, Any]", body)
+        embeddings = body_dict.get("embeddings")
     if isinstance(embeddings, dict):
         vectors = embeddings.get("float")
         if isinstance(vectors, list) and vectors and isinstance(vectors[0], list):
-            return vectors[0]
+            first_vector = cast("list[Any]", vectors[0])
+            return cast("list[float]", first_vector)
     if isinstance(embeddings, list) and embeddings and isinstance(embeddings[0], list):
-        return embeddings[0]
+        first_item = cast("list[Any]", embeddings[0])
+        return cast("list[float]", first_item)
     raise EmbeddingError(f"cohere embeddings response missing vector: {body}")
 
 
@@ -172,11 +186,18 @@ async def embed_text_pinecone_inference(text: str, *, config: EmbeddingConfig) -
         payload=payload,
         provider_label="pinecone-inference",
     )
-    data = body.get("data") if isinstance(body, dict) else None
-    if isinstance(data, list) and data and isinstance(data[0], dict):
-        values = data[0].get("values") or data[0].get("embedding")
+    data: list[Any] | None = None
+    if isinstance(body, dict):
+        body_dict = cast("dict[str, Any]", body)
+        raw_data = body_dict.get("data")
+        if isinstance(raw_data, list):
+            data = cast("list[Any]", raw_data)
+    if data and isinstance(data[0], dict):
+        first_item = cast("dict[str, Any]", data[0])
+        values = first_item.get("values") or first_item.get("embedding")
         if isinstance(values, list):
-            return values
+            values_list = cast("list[Any]", values)
+            return cast("list[float]", values_list)
     raise EmbeddingError(f"pinecone-inference embeddings response missing vector: {body}")
 
 

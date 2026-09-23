@@ -11,7 +11,7 @@ See Phase 6e spec §6.4.
 from __future__ import annotations
 
 import json as _json
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -68,16 +68,20 @@ async def query(
     if resp.status_code >= 400:
         raise VectorDbProviderError(f"Weaviate query error {resp.status_code}: {resp.text}")
 
-    payload = resp.json()
+    payload: dict[str, Any] = resp.json()
     if payload.get("errors"):
+        errors = cast("list[Any]", payload["errors"])
+        first_error = cast("dict[str, Any]", errors[0])
         raise VectorDbProviderError(
-            f"Weaviate GraphQL error: {payload['errors'][0].get('message', 'unknown')}"
+            f"Weaviate GraphQL error: {first_error.get('message', 'unknown')}"
         )
 
-    items: list[dict[str, Any]] = (payload.get("data") or {}).get("Get", {}).get(class_name, [])
+    data_obj = cast("dict[str, Any]", payload.get("data") or {})
+    get_obj = cast("dict[str, Any]", data_obj.get("Get") or {})
+    items = cast("list[dict[str, Any]]", get_obj.get(class_name) or [])
     results: list[VectorDbResult] = []
     for item in items:
-        additional_obj: dict[str, Any] = item.get("_additional", {}) or {}
+        additional_obj = cast("dict[str, Any]", item.get("_additional") or {})
         distance = float(additional_obj.get("distance") or 0.0)
         text = item.get(text_field) or item.get("content") or item.get("page_content") or ""
         metadata = {k: v for k, v in item.items() if k != "_additional"}
@@ -156,11 +160,15 @@ async def upsert(
     if isinstance(payload, list):
         # When all succeed Weaviate returns the list directly; if any
         # fail each item carries a `result.errors` key.
-        successful = sum(
-            1
-            for item in payload
-            if isinstance(item, dict) and (item.get("result") or {}).get("errors") in (None, {})
-        )
+        payload_list = cast("list[Any]", payload)
+        successful = 0
+        for item in payload_list:
+            if not isinstance(item, dict):
+                continue
+            item_dict = cast("dict[str, Any]", item)
+            result_obj = cast("dict[str, Any]", item_dict.get("result") or {})
+            if result_obj.get("errors") in (None, {}):
+                successful += 1
     else:
         successful = len(out_ids)
     return UpsertResult(inserted_count=successful, ids=out_ids[:successful])

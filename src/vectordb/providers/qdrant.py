@@ -11,7 +11,7 @@ See Phase 6e spec §6.2.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -53,13 +53,15 @@ async def query(
     if resp.status_code >= 400:
         raise VectorDbProviderError(f"Qdrant query error {resp.status_code}: {resp.text}")
 
-    payload = resp.json()
-    raw_results = payload.get("result") or []
+    payload: dict[str, Any] = resp.json()
+    raw_results = cast("list[Any]", payload.get("result") or [])
     text_key = config.text_field or "text"
     results: list[VectorDbResult] = []
     for item in raw_results:
-        payload_raw = item.get("payload") or {}
-        md = dict(payload_raw) if isinstance(payload_raw, dict) else {}
+        payload_raw = cast("Any", item.get("payload") or {})
+        md: dict[str, Any] = (
+            dict(cast("dict[str, Any]", payload_raw)) if isinstance(payload_raw, dict) else {}
+        )
         text = md.get(text_key) or md.get("content") or md.get("page_content") or ""
         results.append(
             VectorDbResult(

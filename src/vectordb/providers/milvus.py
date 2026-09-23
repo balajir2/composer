@@ -14,7 +14,7 @@ See Phase 6e spec §6.5.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -64,12 +64,14 @@ async def query(
     if resp.status_code >= 400:
         raise VectorDbProviderError(f"Milvus query error {resp.status_code}: {resp.text}")
 
-    payload = resp.json()
-    items = payload.get("data") or []
+    payload: dict[str, Any] = resp.json()
+    items = cast("list[Any]", payload.get("data") or [])
     text_key = config.text_field or "text"
     results: list[VectorDbResult] = []
     for item in items:
-        item_dict = dict(item) if isinstance(item, dict) else {}
+        item_dict: dict[str, Any] = (
+            dict(cast("dict[str, Any]", item)) if isinstance(item, dict) else {}
+        )
         text = item_dict.get(text_key) or item_dict.get("content") or ""
         results.append(
             VectorDbResult(
@@ -149,14 +151,15 @@ async def upsert(
     if resp.status_code >= 400:
         raise VectorDbProviderError(f"Milvus upsert error {resp.status_code}: {resp.text}")
 
-    payload = resp.json()
+    payload: dict[str, Any] = resp.json()
     # Milvus returns {"code": 0, "data": {"insertCount": N, "insertIds": [...]}}
-    data = payload.get("data") or {}
+    data = cast("dict[str, Any]", payload.get("data") or {})
     insert_count = int(data.get("insertCount") or len(rows))
     insert_ids = data.get("insertIds")
     if isinstance(insert_ids, list) and insert_ids:
         # Server-generated ids — return what Milvus actually wrote.
-        out_ids = [str(x) for x in insert_ids]
+        insert_ids_list = cast("list[Any]", insert_ids)
+        out_ids = [str(x) for x in insert_ids_list]
     return UpsertResult(inserted_count=insert_count, ids=out_ids)
 
 

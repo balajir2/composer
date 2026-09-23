@@ -10,7 +10,7 @@ See Phase 6e spec §6.3.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -52,31 +52,34 @@ async def query(
     if resp.status_code >= 400:
         raise VectorDbProviderError(f"Chroma query error {resp.status_code}: {resp.text}")
 
-    payload = resp.json()
-    ids_batch = payload.get("ids") or []
+    payload: dict[str, Any] = resp.json()
+    ids_batch: list[list[Any]] = payload.get("ids") or []
     if not ids_batch or not ids_batch[0]:
         return []
-    ids = ids_batch[0]
-    distances = (payload.get("distances") or [[]])[0]
-    metadatas = (payload.get("metadatas") or [[]])[0]
-    documents = (payload.get("documents") or [[]])[0]
-    embeddings_batch = (payload.get("embeddings") or [[]])[0] if config.include_vector else []
+    ids: list[Any] = ids_batch[0]
+    distances = cast("list[Any]", (payload.get("distances") or [[]])[0])
+    metadatas = cast("list[Any]", (payload.get("metadatas") or [[]])[0])
+    documents = cast("list[Any]", (payload.get("documents") or [[]])[0])
+    embeddings_batch = cast(
+        "list[Any]", (payload.get("embeddings") or [[]])[0] if config.include_vector else []
+    )
 
     results: list[VectorDbResult] = []
     for i, doc_id in enumerate(ids):
-        distance = distances[i] if i < len(distances) else 0.0
-        metadata = metadatas[i] if i < len(metadatas) else {}
-        text = documents[i] if i < len(documents) else ""
-        vector = embeddings_batch[i] if i < len(embeddings_batch) else None
+        distance: Any = distances[i] if i < len(distances) else 0.0
+        metadata: Any = metadatas[i] if i < len(metadatas) else {}
+        text: Any = documents[i] if i < len(documents) else ""
+        vector: Any = embeddings_batch[i] if i < len(embeddings_batch) else None
         if config.text_field and isinstance(metadata, dict) and config.text_field in metadata:
-            text = metadata[config.text_field]
+            metadata_dict = cast("dict[str, Any]", metadata)
+            text = metadata_dict[config.text_field]
         results.append(
             VectorDbResult(
                 id=str(doc_id),
                 score=float(1.0 - (distance or 0.0)),
                 text=str(text or ""),
                 metadata=(
-                    dict(metadata)
+                    dict(cast("dict[str, Any]", metadata))
                     if (config.include_metadata and isinstance(metadata, dict))
                     else {}
                 ),

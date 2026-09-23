@@ -10,7 +10,7 @@ See Phase 6e spec §6.1.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -52,13 +52,15 @@ async def query(
     if resp.status_code >= 400:
         raise VectorDbProviderError(f"Pinecone query error {resp.status_code}: {resp.text}")
 
-    payload = resp.json()
-    matches = payload.get("matches") or []
+    payload: dict[str, Any] = resp.json()
+    matches = cast("list[Any]", payload.get("matches") or [])
     text_key = config.text_field or "text"
     results: list[VectorDbResult] = []
     for match in matches:
-        metadata_raw = match.get("metadata") or {}
-        metadata = dict(metadata_raw) if isinstance(metadata_raw, dict) else {}
+        metadata_raw = cast("Any", match.get("metadata") or {})
+        metadata: dict[str, Any] = (
+            dict(cast("dict[str, Any]", metadata_raw)) if isinstance(metadata_raw, dict) else {}
+        )
         text = metadata.get(text_key) or metadata.get("content") or ""
         results.append(
             VectorDbResult(

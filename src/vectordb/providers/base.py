@@ -24,7 +24,7 @@ class VectorDbResult:
     id: str
     score: float
     text: str
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict[str, Any])
     vector: list[float] | None = None
 
 
@@ -74,7 +74,7 @@ class UpsertDocument:
     text: str
     embedding: list[float]
     id: str | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict[str, Any])
 
 
 @dataclass(frozen=True)
