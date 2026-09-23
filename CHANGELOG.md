@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Chore — pyright strict-mode warning cleanup, test files + vectordb providers (2026-09-23)
+
+A full-project `pyright src tests` audit (the exact command CI runs) found 552 strict-mode warnings split across 43 test files (147) and 46 production `src/` files (405) — dominated by `Any`/untyped JSON payloads (Prisma `Json` columns, raw HTTP responses, third-party SDK returns) cascading `Unknown` types through downstream `.get()`/iteration/argument-passing once pyright loses the concrete type. Scoped as: fix the mechanical, low-risk test-file warnings first; treat production files as a separate pass given the higher blast radius. Three commits so far, all type-annotation-only — no behavior change intended or reviewed for:
+
+- `cc7923d` — added `asyncpg-stubs` (matches pinned `asyncpg==0.31.0` exactly) as a dev dependency, eliminating the zero-stubs cascade through every `asyncpg.Connection` call site; removed 3 now-redundant `cast("asyncpg.Connection", ...)` calls this made unnecessary (2 in `src/`, 1 in `tests/_rate_limit_reset.py`).
+- `dfbced5` — fixed all remaining warnings in the 42 other test files (143 → 0): bare lambdas in `monkeypatch.setattr(...)` converted to named functions with typed signatures; `pytest.approx(...)` (ships no stubs) given a narrow inline ignore; Prisma/`Any`-cascade values given explicit `cast()`/annotations at first use; a couple of genuinely stub-less third-party calls (LangGraph `.ainvoke()`, LangChain's `@tool` decorator, `xhtml2pdf`) given narrow ignores as last resort.
+- `0cf784c` — first production-file batch: all 7 vectordb-provider files (Chroma/Qdrant/Pinecone/Weaviate/Milvus + `embedding.py` + `providers/base.py`), 130 → 0 warnings, entirely via `cast()`/annotations at the SDK-response boundary — no ignores needed.
+
+Remaining: 266 warnings across 37 other production files (API routes, engine, executors, MCP, tools) — same root-cause pattern, next batch.
+
+While fixing `src/vectordb/providers/weaviate.py`, found (but did not fix — out of scope for a type-only pass) a pre-existing behavioral bug: `upsert()`'s `UpsertResult` slices `out_ids[:successful]` on partial batch failure, which returns the *first* N ids by position rather than the ids that actually succeeded. If Weaviate reports a failure anywhere other than the tail of a batch, the returned `ids` will be wrong. Not yet fixed; needs its own task with a regression test reproducing a non-tail partial failure.
+
 ### Added — Decision node + TypeSafe Jev provider (2026-09-22)
 
 A new `decision` node type: branches a workflow on a judgment call instead of a deterministic formula — the LLM/judgment-provider counterpart to `if-else`'s `simpleeval` condition. Two modes: **binary** (`true`/`false` handles) and **choice** (one handle per configured option, no condition string to write). Built as a `JudgmentProvider` abstraction (`src/llm/judgment.py`, mirroring `src/executors/base.py`'s `Executor`/`register_executor` pattern one layer down) with two implementations: `LLMJudgmentProvider` (wraps the existing `build_chat_model`/`structured_invoke` stack) and `TypeSafeJudgmentProvider` (raw `httpx` against TypeSafe's `jev` model's `/v1/systemone` API — no LangChain, since Jev isn't a chat model).
