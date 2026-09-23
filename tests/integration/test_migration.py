@@ -47,7 +47,7 @@ async def test_migration_and_reconciliation_cycle(
     oab_users = [
         {"_id": "oab-u-a", "clerkId": "user_2A", "email": email_a.upper(), "name": "Alice"},
     ]
-    oab_wfs = [
+    oab_wfs: list[dict[str, Any]] = [
         {
             "_id": f"oab-wf-{secrets.token_hex(4)}",
             "userId": "user_2A",
@@ -69,7 +69,7 @@ async def test_migration_and_reconciliation_cycle(
             "isTemplate": False,
         },
     ]
-    oab_execs = [
+    oab_execs: list[dict[str, Any]] = [
         {
             "_id": f"oab-exec-{secrets.token_hex(4)}",
             "workflowId": oab_wfs[0]["_id"],

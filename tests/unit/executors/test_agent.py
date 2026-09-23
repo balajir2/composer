@@ -38,7 +38,10 @@ async def test_agent_text_output_no_tools(monkeypatch: pytest.MonkeyPatch) -> No
     fake = FakeListChatModel(responses=["Hello!"])
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(model_string: str, **kw: Any) -> FakeListChatModel:
+        return fake
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
 
     node = _agent_node()
     state = initial_state("Who are you?")
@@ -57,7 +60,10 @@ async def test_agent_renders_instructions_via_substitution(
     fake = FakeListChatModel(responses=["ok"])
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(model_string: str, **kw: Any) -> FakeListChatModel:
+        return fake
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
 
     node = _agent_node(instructions="Hello, {{user.name}}")
     state = initial_state()
@@ -86,7 +92,10 @@ async def test_agent_json_output_parses(monkeypatch: pytest.MonkeyPatch) -> None
     fake = _JsonFake()
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(model_string: str, **kw: Any) -> _JsonFake:
+        return fake
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
 
     node = _agent_node(output_format="JSON")
     state = initial_state("give JSON")
@@ -107,7 +116,7 @@ async def test_agent_calls_tool_and_loops_back(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """First LLM turn returns a tool_call; tool returns text; second turn returns final text."""
-    from langchain_core.tools import tool
+    from langchain_core.tools import tool  # pyright: ignore[reportUnknownVariableType]
 
     @tool
     async def echo_tool(message: str) -> str:
@@ -142,7 +151,10 @@ async def test_agent_calls_tool_and_loops_back(
     fake = _ToolCallingFake()
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(model_string: str, **kw: Any) -> _ToolCallingFake:
+        return fake
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
 
     # Register a test-scoped provider with echo_tool
     from src.tools import registry
@@ -163,7 +175,7 @@ async def test_agent_respects_max_iterations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """If the LLM keeps emitting tool calls, we cap at MAX_ITERATIONS."""
-    from langchain_core.tools import tool
+    from langchain_core.tools import tool  # pyright: ignore[reportUnknownVariableType]
 
     @tool
     async def always_tool() -> str:
@@ -190,7 +202,10 @@ async def test_agent_respects_max_iterations(
     fake = _InfiniteLoopFake()
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(model_string: str, **kw: Any) -> _InfiniteLoopFake:
+        return fake
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
 
     from src.tools import registry
 
@@ -256,7 +271,7 @@ def test_unwrap_message_content_text_block_array() -> None:
 
 def test_unwrap_message_content_skips_non_text_blocks() -> None:
     """Thinking/tool_use blocks are dropped — only text survives."""
-    blocks = [
+    blocks: list[dict[str, Any]] = [
         {"type": "thinking", "thinking": "internal monologue"},
         {"type": "text", "text": "answer"},
         {"type": "tool_use", "name": "search", "input": {}},

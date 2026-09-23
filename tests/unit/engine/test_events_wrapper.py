@@ -290,7 +290,9 @@ async def test_build_graph_wraps_executors() -> None:
     )
     compiled = build_graph(wf, MemorySaver())
     try:
-        await compiled.ainvoke(initial_state(), config={"configurable": {"thread_id": "t1"}})
+        await compiled.ainvoke(  # pyright: ignore[reportUnknownMemberType]
+            initial_state(), config={"configurable": {"thread_id": "t1"}}
+        )
     finally:
         set_current_execution_id(None)
         set_current_event_bus(None)

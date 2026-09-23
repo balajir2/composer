@@ -38,7 +38,7 @@ async def test_milvus_happy_path(httpx_mock: HTTPXMock) -> None:  # pyright: ign
     results = await milvus.query([0.1], _config())
     assert len(results) == 1
     assert results[0].id == "1"
-    assert results[0].score == pytest.approx(0.9)
+    assert results[0].score == pytest.approx(0.9)  # pyright: ignore[reportUnknownMemberType]
     assert results[0].text == "hello"
     assert results[0].metadata == {"id": "1", "distance": 0.9, "text": "hello", "category": "doc"}
 

@@ -169,7 +169,10 @@ async def test_http_blocks_ssrf_target(monkeypatch: pytest.MonkeyPatch) -> None:
 async def test_http_blocks_ssrf_target_via_dns(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.security.ssrf as ssrf_mod
 
-    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["10.0.0.5"])  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_resolve(host: str) -> list[str]:
+        return ["10.0.0.5"]
+
+    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", _fake_resolve)
     node = _http_node(httpMethod="GET", httpUrl="https://internal.corp.example/api")
     with pytest.raises(HttpNodeError, match=r"[Bb]locked"):
         await HttpExecutor(node).arun(initial_state())

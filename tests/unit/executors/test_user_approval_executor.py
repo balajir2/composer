@@ -49,7 +49,10 @@ async def test_user_approval_returns_delta_on_resume_approved(
 
     import src.executors.user_approval as ua_mod
 
-    monkeypatch.setattr(ua_mod, "interrupt", lambda value: "approved")  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_interrupt(value: Any) -> str:
+        return "approved"
+
+    monkeypatch.setattr(ua_mod, "interrupt", _fake_interrupt)
 
     delta = await UserApprovalExecutor(node).arun(initial_state())
     assert delta["variables"]["_approval_ua"] == "approved"
@@ -64,7 +67,10 @@ async def test_user_approval_returns_delta_on_resume_rejected(
 
     import src.executors.user_approval as ua_mod
 
-    monkeypatch.setattr(ua_mod, "interrupt", lambda value: "rejected")  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_interrupt(value: Any) -> str:
+        return "rejected"
+
+    monkeypatch.setattr(ua_mod, "interrupt", _fake_interrupt)
 
     delta = await UserApprovalExecutor(node).arun(initial_state())
     assert delta["variables"]["_approval_ua"] == "rejected"
@@ -78,7 +84,10 @@ async def test_user_approval_invalid_decision_raises(
 
     import src.executors.user_approval as ua_mod
 
-    monkeypatch.setattr(ua_mod, "interrupt", lambda value: "maybe")  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_interrupt(value: Any) -> str:
+        return "maybe"
+
+    monkeypatch.setattr(ua_mod, "interrupt", _fake_interrupt)
 
     with pytest.raises(UserApprovalNodeError, match="maybe"):
         await UserApprovalExecutor(node).arun(initial_state())

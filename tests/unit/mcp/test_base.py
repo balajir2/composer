@@ -128,7 +128,7 @@ async def test_build_tool_returns_invocable(
     provider = McpToolProvider(_server_row())
     node = _agent_node()
     tool = await provider.build_tool("echo", BuildContext(node=node, state=initial_state()))
-    result = await tool.ainvoke({"q": "hello"})
+    result = await tool.ainvoke({"q": "hello"})  # pyright: ignore[reportUnknownMemberType]
     assert "echoed: hello" in result
 
 

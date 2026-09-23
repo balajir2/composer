@@ -71,7 +71,7 @@ def test_examples_round_trip():
 
 
 def test_decision_node_is_in_workflow_node_union():
-    adapter = TypeAdapter(WorkflowNode)
+    adapter: TypeAdapter[WorkflowNode] = TypeAdapter(WorkflowNode)
     node = adapter.validate_python(
         {
             "id": "d1",

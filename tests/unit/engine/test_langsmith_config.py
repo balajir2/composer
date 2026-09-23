@@ -2,6 +2,7 @@
 
 from collections.abc import Iterator
 from contextvars import copy_context
+from typing import Any
 
 import pytest
 
@@ -58,11 +59,10 @@ def test_build_chat_model_wraps_when_config_given(monkeypatch: pytest.MonkeyPatc
     wrapped = MagicMock()
     inner_model.with_config = MagicMock(return_value=wrapped)
 
-    monkeypatch.setattr(
-        providers_mod,
-        "_build_raw_chat_model",
-        lambda model_string, **kw: inner_model,  # pyright: ignore[reportUnknownLambdaType]
-    )
+    def _fake_build_raw_chat_model(model_string: str, **kw: Any) -> MagicMock:
+        return inner_model
+
+    monkeypatch.setattr(providers_mod, "_build_raw_chat_model", _fake_build_raw_chat_model)
 
     cfg = LangSmithConfig(tracing_v2=True, project="p1", endpoint="https://smith", api_key="k")
     result = providers_mod.build_chat_model(
@@ -82,11 +82,11 @@ def test_build_chat_model_no_wrap_when_config_none(monkeypatch: pytest.MonkeyPat
 
     inner_model = MagicMock()
     inner_model.with_config = MagicMock()
-    monkeypatch.setattr(
-        providers_mod,
-        "_build_raw_chat_model",
-        lambda model_string, **kw: inner_model,  # pyright: ignore[reportUnknownLambdaType]
-    )
+
+    def _fake_build_raw_chat_model(model_string: str, **kw: Any) -> MagicMock:
+        return inner_model
+
+    monkeypatch.setattr(providers_mod, "_build_raw_chat_model", _fake_build_raw_chat_model)
 
     result = providers_mod.build_chat_model("anthropic/claude-haiku-4-5-20251001")
     assert result is inner_model

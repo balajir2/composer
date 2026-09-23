@@ -46,7 +46,7 @@ async def test_weaviate_happy_path(httpx_mock: HTTPXMock) -> None:  # pyright: i
     assert len(results) == 1
     assert results[0].id == "abc"
     assert results[0].text == "hello"
-    assert results[0].score == pytest.approx(0.9)
+    assert results[0].score == pytest.approx(0.9)  # pyright: ignore[reportUnknownMemberType]
 
 
 async def test_weaviate_graphql_error_raises(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]

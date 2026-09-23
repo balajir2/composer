@@ -1,5 +1,7 @@
 """Tests for MCP schema adapter."""
 
+from typing import Any
+
 import pytest
 
 from src.mcp.schema_adapter import (
@@ -21,7 +23,7 @@ def test_normalize_prefers_input_schema_camel() -> None:
 
 
 def test_normalize_falls_back_to_schema() -> None:
-    tool = {"name": "t", "schema": {"type": "object", "properties": {}}}
+    tool: dict[str, Any] = {"name": "t", "schema": {"type": "object", "properties": {}}}
     assert normalize_input_schema(tool) == {"type": "object", "properties": {}}
 
 

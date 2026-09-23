@@ -346,7 +346,7 @@ async def test_resume_clears_stale_lease_and_reclaim_succeeds(
         final_row = await db.workflowexecution.find_unique(where={"id": execution.id})
         assert final_row is not None
         assert final_row.status == "completed", final_row.status
-        final_vars = final_row.variables or {}
+        final_vars: dict[str, Any] = final_row.variables or {}
         assert final_vars.get("result") == "approved"
 
         approvals = await db.approval.find_many(where={"executionId": execution.id})

@@ -80,6 +80,6 @@ async def test_join_chunks_concatenates_list_from_upstream(client: AsyncClient) 
     done = await _poll_until_status(client, execution_id, {"completed", "failed"})
     assert done["status"] == "completed", f"Got: {done}"
 
-    variables = done.get("variables") or {}
+    variables: dict[str, Any] = done.get("variables") or {}
     assert isinstance(variables, dict)
     assert variables.get("lastOutput") == "alpha | beta | gamma"

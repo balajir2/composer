@@ -32,11 +32,11 @@ async def test_binary_mode_calls_decide_binary(monkeypatch: pytest.MonkeyPatch) 
     from src.executors import decision as dec_mod
 
     fake = _FakeProvider(binary_result=(True, 0.9))
-    monkeypatch.setattr(
-        dec_mod,
-        "build_judgment_provider",
-        lambda name: fake,  # pyright: ignore[reportUnknownLambdaType]
-    )
+
+    def _fake_build_judgment_provider(name: str) -> _FakeProvider:
+        return fake
+
+    monkeypatch.setattr(dec_mod, "build_judgment_provider", _fake_build_judgment_provider)
 
     state = initial_state()
     state["variables"]["lastOutput"] = "server is down"
@@ -56,11 +56,11 @@ async def test_choice_mode_calls_decide_choice(monkeypatch: pytest.MonkeyPatch) 
     from src.executors import decision as dec_mod
 
     fake = _FakeProvider(choice_result=("billing", 0.7))
-    monkeypatch.setattr(
-        dec_mod,
-        "build_judgment_provider",
-        lambda name: fake,  # pyright: ignore[reportUnknownLambdaType]
-    )
+
+    def _fake_build_judgment_provider(name: str) -> _FakeProvider:
+        return fake
+
+    monkeypatch.setattr(dec_mod, "build_judgment_provider", _fake_build_judgment_provider)
 
     state = initial_state()
     state["variables"]["lastOutput"] = "I was overcharged"
@@ -97,11 +97,11 @@ async def test_last_output_precedence_over_input(monkeypatch: pytest.MonkeyPatch
     from src.executors import decision as dec_mod
 
     fake = _FakeProvider(binary_result=(True, 1.0))
-    monkeypatch.setattr(
-        dec_mod,
-        "build_judgment_provider",
-        lambda name: fake,  # pyright: ignore[reportUnknownLambdaType]
-    )
+
+    def _fake_build_judgment_provider(name: str) -> _FakeProvider:
+        return fake
+
+    monkeypatch.setattr(dec_mod, "build_judgment_provider", _fake_build_judgment_provider)
 
     state = initial_state()
     state["variables"]["input"] = "INPUT_VAL"
@@ -115,11 +115,11 @@ async def test_falsy_last_output_not_replaced_by_input(monkeypatch: pytest.Monke
     from src.executors import decision as dec_mod
 
     fake = _FakeProvider(binary_result=(False, 1.0))
-    monkeypatch.setattr(
-        dec_mod,
-        "build_judgment_provider",
-        lambda name: fake,  # pyright: ignore[reportUnknownLambdaType]
-    )
+
+    def _fake_build_judgment_provider(name: str) -> _FakeProvider:
+        return fake
+
+    monkeypatch.setattr(dec_mod, "build_judgment_provider", _fake_build_judgment_provider)
 
     state = initial_state()
     state["variables"]["input"] = "INPUT_FALLBACK"
@@ -141,11 +141,11 @@ async def test_node_result_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.executors import decision as dec_mod
 
     fake = _FakeProvider(binary_result=(True, 0.5))
-    monkeypatch.setattr(
-        dec_mod,
-        "build_judgment_provider",
-        lambda name: fake,  # pyright: ignore[reportUnknownLambdaType]
-    )
+
+    def _fake_build_judgment_provider(name: str) -> _FakeProvider:
+        return fake
+
+    monkeypatch.setattr(dec_mod, "build_judgment_provider", _fake_build_judgment_provider)
 
     state = initial_state()
     state["variables"]["lastOutput"] = "x"

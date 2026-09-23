@@ -216,12 +216,14 @@ async def test_get_rate_limited(monkeypatch: pytest.MonkeyPatch) -> None:
     """Burst of requests from the same client IP eventually 429s, mirroring
     the auth_forgot_password precedent required by the endpoint's own design
     spec (docs/archive/phase-history/specs/2026-07-11-approval-email-notifications-design.md §D)."""
+    from typing import cast
+
     from src.config import get_settings
     from src.security.rate_limit import RateLimiter, per_minute_config
 
     client, _db = _client(monkeypatch)
 
-    limiter: RateLimiter = client.app.state.rate_limiter  # type: ignore[attr-defined]
+    limiter = cast("RateLimiter", client.app.state.rate_limiter)  # type: ignore[attr-defined]
     config = per_minute_config(get_settings().rate_limit_approval_email_per_minute)
     # TestClient's synthetic requests report this as request.client.host.
     ip = "testclient"
@@ -378,12 +380,14 @@ def test_post_confirm_enqueues_cloud_task_instead_of_background_task(
 
 
 async def test_post_confirm_rate_limited(monkeypatch: pytest.MonkeyPatch) -> None:
+    from typing import cast
+
     from src.config import get_settings
     from src.security.rate_limit import RateLimiter, per_minute_config
 
     client, _db = _client(monkeypatch)
 
-    limiter: RateLimiter = client.app.state.rate_limiter  # type: ignore[attr-defined]
+    limiter = cast("RateLimiter", client.app.state.rate_limiter)  # type: ignore[attr-defined]
     config = per_minute_config(get_settings().rate_limit_approval_email_per_minute)
     ip = "testclient"
     for _ in range(config.capacity):

@@ -6,7 +6,7 @@ Assert Approval row exists with decision=approved.
 """
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi import FastAPI
@@ -78,7 +78,7 @@ async def test_user_approval_approved_path(client: AsyncClient, app: FastAPI) ->
     )
     assert paused["status"] == "waiting_approval", f"Got: {paused}"
 
-    variables = paused.get("variables") or {}
+    variables = cast("dict[str, Any]", paused.get("variables") or {})
     assert isinstance(variables, dict)
     assert variables.get("_pending_approval_node") == "ua"
 
@@ -91,7 +91,7 @@ async def test_user_approval_approved_path(client: AsyncClient, app: FastAPI) ->
     done = await _poll_until_status(client, execution_id, {"completed", "failed"})
     assert done["status"] == "completed", f"Got: {done}"
 
-    final_vars = done.get("variables") or {}
+    final_vars = cast("dict[str, Any]", done.get("variables") or {})
     assert isinstance(final_vars, dict)
     assert final_vars.get("result") == "approved"
 

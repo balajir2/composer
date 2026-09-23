@@ -17,4 +17,7 @@ def _stub_dns_resolution(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: i
     """
     import src.security.ssrf as ssrf_mod
 
-    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", lambda host: ["8.8.8.8"])  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_resolve(host: str) -> list[str]:
+        return ["8.8.8.8"]
+
+    monkeypatch.setattr(ssrf_mod, "_resolve_addresses", _fake_resolve)

@@ -82,7 +82,10 @@ async def test_arun_decrypts_stored_token_before_use(monkeypatch: pytest.MonkeyP
     fake = _TextOnlyFake("done")
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> _TextOnlyFake:
+        return fake
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
 
     state = initial_state()
     delta = await JiraExecutor(node).arun(state)
@@ -120,7 +123,10 @@ async def test_node_configured_domain_wins_over_state_variable(
     fake = _TextOnlyFake("done")
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> _TextOnlyFake:
+        return fake
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
 
     state = initial_state()
     state["variables"]["jira_domain"] = "attacker-controlled.atlassian.net"
@@ -155,7 +161,10 @@ async def test_falls_back_to_state_variable_when_node_has_no_domain_configured(
     fake = _TextOnlyFake("done")
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> _TextOnlyFake:
+        return fake
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
 
     state = initial_state()
     state["variables"]["jira_domain"] = "set-state-configured.atlassian.net"
@@ -232,7 +241,10 @@ async def test_best_effort_policy_allows_response_with_no_tool_calls(
     fake = _TextOnlyFake("just a clarifying question, no action taken")
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> _TextOnlyFake:
+        return fake
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
     delta = await JiraExecutor(node).arun(initial_state())
     assert delta["node_results"]["j1"]["status"] == "completed"
 
@@ -248,7 +260,10 @@ async def test_require_tool_call_raises_when_no_tool_calls_made(
     fake = _TextOnlyFake("I couldn't find enough information to create the issue.")
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> _TextOnlyFake:
+        return fake
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
     with pytest.raises(JiraActionPolicyError, match="no tool call"):
         await JiraExecutor(node).arun(initial_state())
 
@@ -268,7 +283,10 @@ async def test_require_successful_tool_call_raises_when_all_calls_failed(
     fake = _ToolCallThenTextFake("jira_create_issue", {"project_key": "PROJ", "summary": "x"})
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> _ToolCallThenTextFake:
+        return fake
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
     with pytest.raises(JiraActionPolicyError, match="0 of 1"):
         await JiraExecutor(node).arun(initial_state())
 
@@ -285,7 +303,10 @@ async def test_require_successful_tool_call_passes_and_extracts_issue_key(
     fake = _ToolCallThenTextFake("jira_create_issue", {"project_key": "PROJ", "summary": "x"})
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> _ToolCallThenTextFake:
+        return fake
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
     delta = await JiraExecutor(node).arun(initial_state())
 
     output = delta["node_results"]["j1"]["output"]
@@ -310,7 +331,10 @@ async def test_minimum_successful_calls_enforced(monkeypatch: pytest.MonkeyPatch
     fake = _ToolCallThenTextFake("jira_create_issue", {"project_key": "PROJ", "summary": "x"})
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> _ToolCallThenTextFake:
+        return fake
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
     with pytest.raises(JiraActionPolicyError, match="1 of 1"):
         await JiraExecutor(node).arun(initial_state())
 
@@ -349,7 +373,10 @@ async def test_arun_tolerates_legacy_plaintext_token(monkeypatch: pytest.MonkeyP
     fake = _TextOnlyFake("done")
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: fake)  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> _TextOnlyFake:
+        return fake
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
 
     delta = await JiraExecutor(node).arun(initial_state())
     assert captured_tokens == ["legacy-plaintext-token"] * len(captured_tokens)

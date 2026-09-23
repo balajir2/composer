@@ -7,6 +7,7 @@ Real Neon; no LLM.  Verifies:
 """
 
 import asyncio
+from typing import Any, cast
 
 import pytest
 from httpx import AsyncClient
@@ -79,12 +80,12 @@ async def test_while_countdown_from_three(client: AsyncClient) -> None:
     )
     final = await _poll_until_terminal(client, start.json()["id"])
     assert final["status"] == "completed", f"Got: {final}"
-    variables = final.get("variables") or {}
+    variables = cast("dict[str, Any]", final.get("variables") or {})
     assert isinstance(variables, dict)
     # After countdown, n should be 0 (may be int or str depending on substitution)
     n = variables.get("n")
     assert n == 0 or n == "0", f"Expected n=0 after countdown, got {n!r}"
     # Iteration counter: 3 body traversals + 1 exit check = 4
-    iter_counts = variables.get("_while_iterations") or {}
+    iter_counts = cast("dict[str, Any]", variables.get("_while_iterations") or {})
     assert isinstance(iter_counts, dict)
     assert iter_counts.get("w") == 4, f"Expected 4 while iterations, got {iter_counts}"

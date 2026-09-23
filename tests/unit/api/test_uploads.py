@@ -134,11 +134,10 @@ def test_extract_pdf_dispatches(monkeypatch: pytest.MonkeyPatch) -> None:
     can break under refactoring."""
     import src.api.uploads as uploads_mod
 
-    monkeypatch.setattr(
-        uploads_mod,
-        "_extract_text_pdf",
-        lambda data: f"PDF text ({len(data)} bytes)",  # pyright: ignore[reportUnknownLambdaType]
-    )
+    def _fake_extract_text_pdf(data: bytes) -> str:
+        return f"PDF text ({len(data)} bytes)"
+
+    monkeypatch.setattr(uploads_mod, "_extract_text_pdf", _fake_extract_text_pdf)
     client = _client(monkeypatch)
     pdf = _build_pdf_bytes()
     resp = client.post(

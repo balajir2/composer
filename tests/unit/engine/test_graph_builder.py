@@ -619,7 +619,9 @@ async def test_build_graph_skips_file_trigger_node() -> None:
         }
     )
     compiled = build_graph(wf, MemorySaver())
-    result = await compiled.ainvoke(initial_state(), config={"configurable": {"thread_id": "t1"}})
+    result = await compiled.ainvoke(  # pyright: ignore[reportUnknownMemberType]
+        initial_state(), config={"configurable": {"thread_id": "t1"}}
+    )
     assert "ft1" not in (result.get("node_results") or {})
 
 
@@ -901,7 +903,9 @@ async def test_fan_out_through_join_converges_safely() -> None:
         ],
     )
     compiled = build_graph(wf, MemorySaver())
-    result = await compiled.ainvoke(initial_state(), config={"configurable": {"thread_id": "t1"}})
+    result = await compiled.ainvoke(  # pyright: ignore[reportUnknownMemberType]
+        initial_state(), config={"configurable": {"thread_id": "t1"}}
+    )
 
     # Both branches' distinctly-named work survived the merge into the
     # single join/End path -- no data loss on the variables side.
@@ -952,7 +956,9 @@ async def test_fan_out_to_independent_ends_captures_both_outputs() -> None:
         ],
     )
     compiled = build_graph(wf, MemorySaver())
-    result = await compiled.ainvoke(initial_state(), config={"configurable": {"thread_id": "t1"}})
+    result = await compiled.ainvoke(  # pyright: ignore[reportUnknownMemberType]
+        initial_state(), config={"configurable": {"thread_id": "t1"}}
+    )
 
     # Both End nodes' own contributions are present -- this is the exact
     # assertion that would have been flaky/lossy before this fix (one of

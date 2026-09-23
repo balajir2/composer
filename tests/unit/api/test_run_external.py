@@ -82,7 +82,10 @@ def _build_client(
     # Bypass bcrypt verify — patch at the usage site (api_key_auth already bound the name).
     from src.security import api_key_auth as _aka
 
-    monkeypatch.setattr(_aka, "verify_api_key", lambda key, hashed: True)  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_verify_api_key(key: str, hashed: str) -> bool:
+        return True
+
+    monkeypatch.setattr(_aka, "verify_api_key", _fake_verify_api_key)
 
     app = create_app()
     db = MagicMock()

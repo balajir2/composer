@@ -1,7 +1,7 @@
 """Integration — Start → UserApproval → End (rejected path)."""
 
 import asyncio
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from fastapi import FastAPI
@@ -82,7 +82,7 @@ async def test_user_approval_rejected_path(client: AsyncClient, app: FastAPI) ->
     done = await _poll_until_status(client, execution_id, {"completed", "failed"})
     assert done["status"] == "completed", f"Got: {done}"
 
-    final_vars = done.get("variables") or {}
+    final_vars = cast("dict[str, Any]", done.get("variables") or {})
     assert isinstance(final_vars, dict)
     assert final_vars.get("result") == "rejected"
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 from src.migration.transformers import (
     execution_row,
     mcp_server_row,
@@ -9,7 +11,7 @@ from src.migration.transformers import (
 )
 
 
-def _users_fixture() -> list[dict]:  # type: ignore[type-arg]
+def _users_fixture() -> list[dict[str, Any]]:
     return [
         {"_id": "u1", "clerkId": "user_2alice", "email": "alice@example.com", "name": "Alice"},
         {"_id": "u2", "clerkId": "user_2bob", "email": "bob@example.com", "name": "Bob"},

@@ -218,10 +218,12 @@ async def test_picker_token_rate_limited(monkeypatch: pytest.MonkeyPatch) -> Non
         AsyncMock(return_value="at-1"),
     )
 
+    from typing import cast
+
     from src.config import get_settings
     from src.security.rate_limit import per_minute_config
 
-    limiter: RateLimiter = client.app.state.rate_limiter  # type: ignore[attr-defined]
+    limiter = cast("RateLimiter", client.app.state.rate_limiter)  # type: ignore[attr-defined]
     config = per_minute_config(get_settings().rate_limit_picker_token_per_minute)
     # Drain the bucket for this route+user key before the real request lands.
     for _ in range(config.capacity):

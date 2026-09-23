@@ -5,6 +5,8 @@ docx's object model is — these tests check for a well-formed PDF (correct
 magic bytes, non-trivial size) rather than parsing rendered content.
 """
 
+import pytest
+
 
 def test_produces_valid_pdf_bytes() -> None:
     from src.conversion.markdown_to_pdf import markdown_to_pdf
@@ -29,7 +31,7 @@ def test_table_content_does_not_raise() -> None:
     assert result.startswith(b"%PDF-")
 
 
-def test_conversion_failure_raises_clear_error(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_conversion_failure_raises_clear_error(monkeypatch: pytest.MonkeyPatch) -> None:
     import src.conversion.markdown_to_pdf as mod
     from src.conversion.markdown_to_pdf import MarkdownToPdfError, markdown_to_pdf
 
@@ -40,13 +42,14 @@ def test_conversion_failure_raises_clear_error(monkeypatch) -> None:  # type: ig
     monkeypatch.setattr(
         mod, "pisa", type("P", (), {"CreatePDF": staticmethod(lambda *a, **kw: _FakeStatus())})
     )
-    import pytest
 
     with pytest.raises(MarkdownToPdfError):
         markdown_to_pdf("# Title")
 
 
-def test_ssrf_image_reference_does_not_trigger_network_call(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_ssrf_image_reference_does_not_trigger_network_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A markdown image pointing at a cloud-metadata-style address (the same
     169.254.169.254 target the HTTP node's SSRF guard blocks, kept here for a
     consistent threat-model reference) must not cause any outbound network
@@ -57,7 +60,7 @@ def test_ssrf_image_reference_does_not_trigger_network_call(monkeypatch) -> None
     <img>-tag resolution (files.py: FileNetworkManager/NetworkFileUri) would
     reach this exact method and perform a real GET.
     """
-    from xhtml2pdf.files import NetworkFileUri
+    from xhtml2pdf.files import NetworkFileUri  # pyright: ignore[reportMissingTypeStubs]
 
     from src.conversion.markdown_to_pdf import markdown_to_pdf
 
@@ -76,7 +79,9 @@ def test_ssrf_image_reference_does_not_trigger_network_call(monkeypatch) -> None
     assert result.startswith(b"%PDF-")
 
 
-def test_bracket_placeholder_survives_in_rendered_html(monkeypatch) -> None:  # type: ignore[no-untyped-def]
+def test_bracket_placeholder_survives_in_rendered_html(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """`<Client Name>`-style bracket placeholders (common in the BRDs this
     node targets) must not be swallowed by CommonMark's raw-HTML passthrough
     grammar -- they should reach xhtml2pdf as literal, HTML-escaped text

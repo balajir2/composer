@@ -80,7 +80,7 @@ async def test_enforce_raises_429_on_empty_bucket() -> None:
 def test_per_minute_config_derivation() -> None:
     config = per_minute_config(60)
     assert config.capacity == 60
-    assert config.refill_per_second == pytest.approx(1.0)
+    assert config.refill_per_second == pytest.approx(1.0)  # pyright: ignore[reportUnknownMemberType]
 
 
 async def test_enforce_under_capacity_passes() -> None:

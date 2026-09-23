@@ -36,7 +36,10 @@ async def test_extract_with_schema(monkeypatch: pytest.MonkeyPatch) -> None:
         async def ainvoke(self, *a: Any, **kw: Any) -> Any:  # pragma: no cover
             return AIMessage(content="{}")
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: _StubModel())  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> _StubModel:
+        return _StubModel()
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
 
     node = _extract_node(
         input="Hello 3",
@@ -57,7 +60,10 @@ async def test_extract_uses_last_output_by_default(monkeypatch: pytest.MonkeyPat
     monkeypatch.setattr(so, "structured_invoke", _fake_invoke)
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: object())  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> object:
+        return object()
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
 
     node = _extract_node(jsonSchema={"type": "object"})
     state = initial_state()
@@ -73,7 +79,10 @@ async def test_extract_empty_input_raises(monkeypatch: pytest.MonkeyPatch) -> No
     monkeypatch.setattr(so, "structured_invoke", AsyncMock())
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: object())  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> object:
+        return object()
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
 
     node = _extract_node(jsonSchema={"type": "object"})
     with pytest.raises(ExtractNodeError, match="empty input"):
@@ -89,7 +98,10 @@ async def test_extract_coerces_aimessage_to_dict(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(so, "structured_invoke", _fake_invoke)
     from src.llm import providers
 
-    monkeypatch.setattr(providers, "build_chat_model", lambda *a, **kw: object())  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> object:
+        return object()
+
+    monkeypatch.setattr(providers, "build_chat_model", _fake_build_chat_model)
 
     node = _extract_node(input="irrelevant", jsonSchema=None)
     delta = await ExtractExecutor(node).arun(initial_state())

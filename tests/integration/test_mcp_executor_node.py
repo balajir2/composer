@@ -5,6 +5,7 @@ Uses DeepWiki's first available tool with a hardcoded question (no LLM).
 """
 
 import asyncio
+from typing import Any
 
 import pytest
 from httpx import AsyncClient
@@ -49,10 +50,10 @@ async def test_mcp_standalone_node(client: AsyncClient) -> None:
         # Discover one tool name from the cached tools
         server_list = await client.get("/mcp-servers")
         srv = next(s for s in server_list.json() if s["id"] == server_id)
-        available = srv.get("tools") or []
+        available: list[Any] = srv.get("tools") or []
         if not available:
             pytest.skip("DeepWiki returned no tools")
-        tool_name = available[0]["name"]
+        tool_name: str = available[0]["name"]
 
         wf = await client.post(
             "/workflows",

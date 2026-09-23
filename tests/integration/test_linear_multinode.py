@@ -5,6 +5,7 @@ Real Neon + real Anthropic + public jsonplaceholder HTTP endpoint.
 
 import asyncio
 import os
+from typing import Any, cast
 
 import pytest
 from httpx import AsyncClient
@@ -101,7 +102,7 @@ async def test_linear_workflow_http_extract_set_state(client: AsyncClient) -> No
     )
     final = await _poll_until_terminal(client, start.json()["id"])
     assert final["status"] == "completed", f"Got: {final}"
-    variables = final.get("variables") or {}
+    variables = cast("dict[str, Any]", final.get("variables") or {})
     assert isinstance(variables, dict)
     summary = variables.get("todoSummary")
     assert isinstance(summary, str) and len(summary) > 0

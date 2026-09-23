@@ -12,6 +12,7 @@ someone's live workflow.
 
 import asyncio
 import os
+from typing import Any, cast
 
 import pytest
 from httpx import AsyncClient
@@ -103,9 +104,11 @@ async def test_jira_extract_against_real_api(client: AsyncClient) -> None:
 
     output = final.get("output")
     assert isinstance(output, dict), f"Expected a dict output, got: {output!r}"
-    issues = output.get("issues")
+    output_typed = cast("dict[str, Any]", output)
+    issues = output_typed.get("issues")
     assert isinstance(issues, list), f"Expected output['issues'] to be a list, got: {issues!r}"
-    for issue in issues:
+    issues_list = cast("list[dict[str, Any]]", issues)
+    for issue in issues_list:
         assert isinstance(issue, dict)
         assert "key" in issue
         assert "fields" in issue

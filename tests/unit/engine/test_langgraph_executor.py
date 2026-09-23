@@ -283,7 +283,10 @@ async def test_run_marks_waiting_approval_on_interrupt(
         async def aget_state(self, *args: Any, **kwargs: Any) -> Any:
             return _fake_snapshot
 
-    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_graph(*a: Any, **kw: Any) -> _FakeCompiled:
+        return _FakeCompiled()
+
+    monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
     orchestrator = LangGraphExecutor(db, MagicMock())
     await orchestrator.run("e1")
@@ -347,7 +350,10 @@ async def test_resume_approved_continues_to_completion(
         async def aget_state(self, *args: Any, **kwargs: Any) -> Any:
             return _completed_snapshot
 
-    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_graph(*a: Any, **kw: Any) -> _FakeCompiled:
+        return _FakeCompiled()
+
+    monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
     orchestrator = LangGraphExecutor(db, MagicMock())
     await orchestrator.resume("e1", "approved")
@@ -405,7 +411,10 @@ async def test_run_emits_status_change_on_start_and_complete(
         async def aget_state(self, *a: _Any, **kw: _Any) -> _Any:
             return _FakeSnap()
 
-    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_graph(*a: Any, **kw: Any) -> _FakeCompiled:
+        return _FakeCompiled()
+
+    monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
     orch = LangGraphExecutor(db, MagicMock(), event_bus=store)  # pyright: ignore[reportArgumentType]
     await orch.run("e1")
@@ -489,7 +498,10 @@ async def test_run_emits_approval_pending_on_pause(
         async def aget_state(self, *a: _Any, **kw: _Any) -> _Any:
             return _FakeSnapPaused()
 
-    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_graph(*a: Any, **kw: Any) -> _FakeCompiled:
+        return _FakeCompiled()
+
+    monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
     orch = LangGraphExecutor(db, MagicMock(), event_bus=store)  # pyright: ignore[reportArgumentType]
     await orch.run("e1")
@@ -604,7 +616,10 @@ async def test_run_sends_approval_email_when_approver_email_set(
         async def aget_state(self, *a: Any, **kw: Any) -> Any:
             return _FakeSnapPaused()
 
-    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_graph(*a: Any, **kw: Any) -> _FakeCompiled:
+        return _FakeCompiled()
+
+    monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
     orch = LangGraphExecutor(db, MagicMock())
     await orch.run("e1")
@@ -699,7 +714,10 @@ async def test_run_pending_since_matches_persisted_and_emailed(
         async def aget_state(self, *a: Any, **kw: Any) -> Any:
             return _FakeSnapPaused()
 
-    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_graph(*a: Any, **kw: Any) -> _FakeCompiled:
+        return _FakeCompiled()
+
+    monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
     orch = LangGraphExecutor(db, MagicMock())
     await orch.run("e1")
@@ -809,7 +827,10 @@ async def test_resume_chained_pause_stamps_consistent_pending_since(
         async def aget_state(self, *a: Any, **kw: Any) -> Any:
             return _FakeSnapPaused()
 
-    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_graph(*a: Any, **kw: Any) -> _FakeCompiled:
+        return _FakeCompiled()
+
+    monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
     orchestrator = LangGraphExecutor(db, MagicMock())
     await orchestrator.resume("e1", "approved")
@@ -892,7 +913,10 @@ async def test_run_completed_status_survives_emit_failure(
         async def aget_state(self, *a: Any, **kw: Any) -> Any:
             return _FakeSnap()
 
-    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_graph(*a: Any, **kw: Any) -> _FakeCompiled:
+        return _FakeCompiled()
+
+    monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
     orch = LangGraphExecutor(db, MagicMock(), event_bus=_RaisingEventStore())  # pyright: ignore[reportArgumentType]
     await orch.run("e1")
@@ -992,7 +1016,10 @@ async def test_resume_waiting_approval_status_survives_emit_failure(
         async def aget_state(self, *a: Any, **kw: Any) -> Any:
             return _FakeSnapPaused()
 
-    monkeypatch.setattr(lge_mod, "build_graph", lambda *a, **kw: _FakeCompiled())  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_graph(*a: Any, **kw: Any) -> _FakeCompiled:
+        return _FakeCompiled()
+
+    monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
     orchestrator = LangGraphExecutor(db, MagicMock(), event_bus=_RaisingEventStore())  # pyright: ignore[reportArgumentType]
     await orchestrator.resume("e1", "approved")

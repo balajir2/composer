@@ -37,8 +37,8 @@ async def test_chroma_happy_path(httpx_mock: HTTPXMock) -> None:  # pyright: ign
     results = await chroma.query([0.1, 0.2], _config())
     assert len(results) == 2
     # Score = 1 - distance
-    assert results[0].score == pytest.approx(0.9)
-    assert results[1].score == pytest.approx(0.7)
+    assert results[0].score == pytest.approx(0.9)  # pyright: ignore[reportUnknownMemberType]
+    assert results[1].score == pytest.approx(0.7)  # pyright: ignore[reportUnknownMemberType]
     assert results[0].text == "hello"
     assert results[0].metadata == {"source": "x"}
 

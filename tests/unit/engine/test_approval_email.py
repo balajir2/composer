@@ -2,6 +2,7 @@
 
 import base64
 from pathlib import Path
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -188,9 +189,10 @@ async def test_send_approval_email_attaches_file_inside_root(
 
     attachments = captured["attachments"]
     assert isinstance(attachments, list)
-    assert len(attachments) == 1
-    assert attachments[0]["filename"] == "brd.pdf"
-    assert base64.b64decode(attachments[0]["content"]) == file_bytes
+    attachments_list = cast("list[dict[str, Any]]", attachments)
+    assert len(attachments_list) == 1
+    assert attachments_list[0]["filename"] == "brd.pdf"
+    assert base64.b64decode(attachments_list[0]["content"]) == file_bytes
 
     get_settings.cache_clear()
 

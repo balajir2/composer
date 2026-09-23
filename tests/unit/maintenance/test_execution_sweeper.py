@@ -36,9 +36,11 @@ class _Row:
 
 @dataclass
 class _ExecutionTable:
-    rows: list[_Row] = field(default_factory=list)
-    update_calls: list[tuple[str, dict[str, Any]]] = field(default_factory=list)
-    fail_update_for_ids: set[str] = field(default_factory=set)
+    rows: list[_Row] = field(default_factory=list[_Row])
+    update_calls: list[tuple[str, dict[str, Any]]] = field(
+        default_factory=list[tuple[str, dict[str, Any]]]
+    )
+    fail_update_for_ids: set[str] = field(default_factory=set[str])
 
     async def find_many(self, *, where: dict[str, Any]) -> list[_Row]:
         out: list[_Row] = []

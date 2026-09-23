@@ -5,6 +5,7 @@ to end for the if-else node type.
 """
 
 import asyncio
+from typing import Any, cast
 
 import pytest
 from httpx import AsyncClient
@@ -77,7 +78,7 @@ async def test_if_else_takes_true_branch(client: AsyncClient) -> None:
     )
     final = await _poll_until_terminal(client, start.json()["id"])
     assert final["status"] == "completed", f"Got: {final}"
-    variables = final.get("variables") or {}
+    variables = cast("dict[str, Any]", final.get("variables") or {})
     assert isinstance(variables, dict)
     assert variables.get("result") == "A"
 
@@ -132,6 +133,6 @@ async def test_if_else_takes_false_branch(client: AsyncClient) -> None:
     )
     final = await _poll_until_terminal(client, start.json()["id"])
     assert final["status"] == "completed", f"Got: {final}"
-    variables = final.get("variables") or {}
+    variables = cast("dict[str, Any]", final.get("variables") or {})
     assert isinstance(variables, dict)
     assert variables.get("result") == "B"

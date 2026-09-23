@@ -66,7 +66,10 @@ async def test_no_checks_enabled_returns_passed_true(monkeypatch: pytest.MonkeyP
 async def test_single_check_no_violation(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.executors import guardrails as gr_mod
 
-    monkeypatch.setattr(gr_mod, "build_chat_model", lambda *a, **kw: _stub_llm(["NO"]))  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> MagicMock:
+        return _stub_llm(["NO"])
+
+    monkeypatch.setattr(gr_mod, "build_chat_model", _fake_build_chat_model)
 
     state = initial_state()
     state["variables"]["lastOutput"] = "Hello world"
@@ -84,7 +87,10 @@ async def test_single_check_no_violation(monkeypatch: pytest.MonkeyPatch) -> Non
 async def test_single_check_violation_warn(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.executors import guardrails as gr_mod
 
-    monkeypatch.setattr(gr_mod, "build_chat_model", lambda *a, **kw: _stub_llm(["YES"]))  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> MagicMock:
+        return _stub_llm(["YES"])
+
+    monkeypatch.setattr(gr_mod, "build_chat_model", _fake_build_chat_model)
 
     state = initial_state()
     state["variables"]["lastOutput"] = "Hello world"
@@ -102,7 +108,10 @@ async def test_single_check_violation_warn(monkeypatch: pytest.MonkeyPatch) -> N
 async def test_violation_block_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.executors import guardrails as gr_mod
 
-    monkeypatch.setattr(gr_mod, "build_chat_model", lambda *a, **kw: _stub_llm(["YES"]))  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> MagicMock:
+        return _stub_llm(["YES"])
+
+    monkeypatch.setattr(gr_mod, "build_chat_model", _fake_build_chat_model)
 
     state = initial_state()
     state["variables"]["lastOutput"] = "Hello world"
@@ -114,11 +123,10 @@ async def test_multiple_checks_some_violate(monkeypatch: pytest.MonkeyPatch) -> 
     from src.executors import guardrails as gr_mod
 
     # Order is (pii, moderation, jailbreak, hallucination) per _enabled_checks()
-    monkeypatch.setattr(
-        gr_mod,
-        "build_chat_model",
-        lambda *a, **kw: _stub_llm(["NO", "YES", "NO"]),  # pyright: ignore[reportUnknownLambdaType]
-    )
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> MagicMock:
+        return _stub_llm(["NO", "YES", "NO"])
+
+    monkeypatch.setattr(gr_mod, "build_chat_model", _fake_build_chat_model)
 
     state = initial_state()
     state["variables"]["lastOutput"] = "Hello world"
@@ -134,11 +142,10 @@ async def test_ambiguous_llm_response_treated_as_no(monkeypatch: pytest.MonkeyPa
     """If the LLM returns an ambiguous non-YES response, treat as NO (no false positives)."""
     from src.executors import guardrails as gr_mod
 
-    monkeypatch.setattr(
-        gr_mod,
-        "build_chat_model",
-        lambda *a, **kw: _stub_llm(["Well, it depends..."]),  # pyright: ignore[reportUnknownLambdaType]
-    )
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> MagicMock:
+        return _stub_llm(["Well, it depends..."])
+
+    monkeypatch.setattr(gr_mod, "build_chat_model", _fake_build_chat_model)
 
     state = initial_state()
     state["variables"]["lastOutput"] = "Hello"
@@ -149,7 +156,10 @@ async def test_ambiguous_llm_response_treated_as_no(monkeypatch: pytest.MonkeyPa
 async def test_empty_llm_response_treated_as_no(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.executors import guardrails as gr_mod
 
-    monkeypatch.setattr(gr_mod, "build_chat_model", lambda *a, **kw: _stub_llm([""]))  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> MagicMock:
+        return _stub_llm([""])
+
+    monkeypatch.setattr(gr_mod, "build_chat_model", _fake_build_chat_model)
 
     state = initial_state()
     state["variables"]["lastOutput"] = "Hello"
@@ -164,7 +174,11 @@ async def test_llm_raises_wrapped_as_guardrails_node_error(
 
     llm = MagicMock()
     llm.ainvoke = AsyncMock(side_effect=RuntimeError("llm boom"))
-    monkeypatch.setattr(gr_mod, "build_chat_model", lambda *a, **kw: llm)  # pyright: ignore[reportUnknownLambdaType]
+
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> MagicMock:
+        return llm
+
+    monkeypatch.setattr(gr_mod, "build_chat_model", _fake_build_chat_model)
 
     state = initial_state()
     state["variables"]["lastOutput"] = "Hello"
@@ -183,7 +197,10 @@ async def test_last_output_precedence_over_input(monkeypatch: pytest.MonkeyPatch
             captured_prompts.append(human.content)
             return _FakeResponse("NO")
 
-    monkeypatch.setattr(gr_mod, "build_chat_model", lambda *a, **kw: _CapturingLLM())  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> _CapturingLLM:
+        return _CapturingLLM()
+
+    monkeypatch.setattr(gr_mod, "build_chat_model", _fake_build_chat_model)
 
     state = initial_state()
     state["variables"]["input"] = "INPUT_VAL"
@@ -208,7 +225,10 @@ async def test_falsy_last_output_not_replaced_by_input(monkeypatch: pytest.Monke
             captured_prompts.append(messages[1].content)
             return _FakeResponse("NO")
 
-    monkeypatch.setattr(gr_mod, "build_chat_model", lambda *a, **kw: _CapturingLLM())  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> _CapturingLLM:
+        return _CapturingLLM()
+
+    monkeypatch.setattr(gr_mod, "build_chat_model", _fake_build_chat_model)
 
     state = initial_state()
     state["variables"]["input"] = "INPUT_FALLBACK"
@@ -229,7 +249,10 @@ async def test_non_string_input_coerced(monkeypatch: pytest.MonkeyPatch) -> None
             captured_prompts.append(messages[1].content)
             return _FakeResponse("NO")
 
-    monkeypatch.setattr(gr_mod, "build_chat_model", lambda *a, **kw: _CapturingLLM())  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> _CapturingLLM:
+        return _CapturingLLM()
+
+    monkeypatch.setattr(gr_mod, "build_chat_model", _fake_build_chat_model)
 
     state = initial_state()
     state["variables"]["lastOutput"] = {"nested": "dict"}
@@ -250,7 +273,10 @@ async def test_executor_is_registered() -> None:
 async def test_node_result_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.executors import guardrails as gr_mod
 
-    monkeypatch.setattr(gr_mod, "build_chat_model", lambda *a, **kw: _stub_llm(["NO"]))  # pyright: ignore[reportUnknownLambdaType]
+    def _fake_build_chat_model(*a: Any, **kw: Any) -> MagicMock:
+        return _stub_llm(["NO"])
+
+    monkeypatch.setattr(gr_mod, "build_chat_model", _fake_build_chat_model)
 
     state = initial_state()
     state["variables"]["lastOutput"] = "Hello"

@@ -88,7 +88,7 @@ async def test_guardrails_flags_pii_real_llm(client: AsyncClient) -> None:
     done = await _poll_until_status(client, execution_id, {"completed", "failed"})
     assert done["status"] == "completed", f"Got: {done}"
 
-    variables = done.get("variables") or {}
+    variables: dict[str, Any] = done.get("variables") or {}
     assert isinstance(variables, dict)
     result = variables.get("_guardrails_result")
     assert isinstance(result, dict), f"_guardrails_result missing: {variables}"
