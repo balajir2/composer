@@ -114,7 +114,7 @@ async def upsert(
     if not documents:
         return UpsertResult(inserted_count=0, ids=[])
 
-    _NS = uuid.UUID("00000000-0000-0000-0000-00636f6d706f73")  # stable namespace
+    _NS = uuid.UUID("00000000-0000-0000-0000-636f6d706f73")  # stable namespace ("compos")
     class_name = _format_class_name(config.collection)
 
     objects: list[dict[str, Any]] = []
@@ -154,24 +154,27 @@ async def upsert(
     if resp.status_code >= 400:
         raise VectorDbProviderError(f"Weaviate upsert error {resp.status_code}: {resp.text}")
 
-    # Weaviate's batch endpoint returns a per-object result with
-    # individual success/failure status — count only successes.
+    # Weaviate's batch endpoint returns a per-object result, in the same
+    # order as the request, with individual success/failure status — a
+    # failure anywhere but the tail means the ids of the objects that
+    # actually succeeded are NOT the same as the first N of out_ids, so
+    # match each result to its object by position rather than slicing by
+    # count.
     payload = resp.json()
     if isinstance(payload, list):
         # When all succeed Weaviate returns the list directly; if any
         # fail each item carries a `result.errors` key.
         payload_list = cast("list[Any]", payload)
-        successful = 0
-        for item in payload_list:
+        successful_ids: list[str] = []
+        for obj_id, item in zip(out_ids, payload_list, strict=False):
             if not isinstance(item, dict):
                 continue
             item_dict = cast("dict[str, Any]", item)
             result_obj = cast("dict[str, Any]", item_dict.get("result") or {})
             if result_obj.get("errors") in (None, {}):
-                successful += 1
-    else:
-        successful = len(out_ids)
-    return UpsertResult(inserted_count=successful, ids=out_ids[:successful])
+                successful_ids.append(obj_id)
+        return UpsertResult(inserted_count=len(successful_ids), ids=successful_ids)
+    return UpsertResult(inserted_count=len(out_ids), ids=out_ids)
 
 
 __all__ = ["query", "upsert"]
