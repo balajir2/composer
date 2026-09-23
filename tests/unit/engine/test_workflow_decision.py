@@ -1,21 +1,23 @@
 """Tests for the Decision node's Pydantic models (src/engine/workflow.py)."""
 
+from typing import Any
+
 import pytest
 from pydantic import TypeAdapter, ValidationError
 
 from src.engine.workflow import DecisionNode, WorkflowNode
 
 
-def _binary_node(**data_overrides):
-    data = {"label": "D", "mode": "binary", "instruction": "Is this urgent?"}
+def _binary_node(**data_overrides: Any) -> DecisionNode:
+    data: dict[str, Any] = {"label": "D", "mode": "binary", "instruction": "Is this urgent?"}
     data.update(data_overrides)
     return DecisionNode.model_validate(
         {"id": "d1", "type": "decision", "position": {"x": 0, "y": 0}, "data": data}
     )
 
 
-def _choice_node(**data_overrides):
-    data = {
+def _choice_node(**data_overrides: Any) -> DecisionNode:
+    data: dict[str, Any] = {
         "label": "D",
         "mode": "choice",
         "instruction": "Route this ticket.",
@@ -37,6 +39,7 @@ def test_binary_node_minimal_valid():
 
 def test_choice_node_valid():
     node = _choice_node()
+    assert node.data.options is not None
     assert [o.label for o in node.data.options] == ["billing", "technical"]
 
 
@@ -62,6 +65,7 @@ def test_examples_round_trip():
             {"input": "nice weather", "result": False},
         ]
     )
+    assert node.data.examples is not None
     assert node.data.examples[0].input == "server is down"
     assert node.data.examples[0].result is True
 
