@@ -17,7 +17,14 @@ A full-project `pyright src tests` audit (the exact command CI runs) found 552 s
 
 `pyright src tests` now reports **0 errors, 0 warnings project-wide**. Full offline suite (`pytest tests -m "not integration"`) stayed at the same 1300 passed / 49 deselected throughout all four commits — independently re-run and confirmed after each batch, not just taken on the implementing agent's word.
 
-While fixing `src/vectordb/providers/weaviate.py`, found (but did not fix — out of scope for a type-only pass) a pre-existing behavioral bug: `upsert()`'s `UpsertResult` slices `out_ids[:successful]` on partial batch failure, which returns the *first* N ids by position rather than the ids that actually succeeded. If Weaviate reports a failure anywhere other than the tail of a batch, the returned `ids` will be wrong. Not yet fixed; needs its own task with a regression test reproducing a non-tail partial failure.
+### Fixed — Weaviate upsert reported wrong ids on partial batch failure, and crashed unconditionally (2026-09-23)
+
+Follow-up to the pyright cleanup above, which surfaced this while adding type annotations to `src/vectordb/providers/weaviate.py` — a file with zero upsert tests before now (only `query` was tested), so neither bug had ever been caught:
+
+1. `upsert()`'s `UpsertResult` sliced `out_ids[:successful]` on partial batch failure — the *first* N ids by position, not the ids of the objects that actually succeeded. Weaviate's batch endpoint returns one result per submitted object in request order, each with its own success/failure status; a failure anywhere but the tail silently returned wrong/missing ids. Fixed by matching each result to its object by position and collecting only the ids whose result had no errors.
+2. The stable namespace UUID literal (`_NS = uuid.UUID("00000000-0000-0000-0000-00636f6d706f73")`) was malformed — 14 hex digits in the last segment instead of 12 — which made every single call to `upsert()` raise `ValueError` before it ever reached the batch request. Fixed to the valid 32-hex-digit form.
+
+Regression tests added: `test_weaviate_upsert_all_success` and `test_weaviate_upsert_partial_failure_matches_ids_by_position` (the latter reproduces the exact non-tail-failure scenario — middle object fails, asserts the surviving ids are correctly `["doc-a", "doc-c"]`, not the `["doc-a", "doc-b"]` the old slice-by-count logic would have returned).
 
 ### Added — Decision node + TypeSafe Jev provider (2026-09-22)
 
