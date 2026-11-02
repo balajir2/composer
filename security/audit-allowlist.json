@@ -1,0 +1,23 @@
+{
+  "_comment": "Time-boxed exceptions for the dependency-audit gate (src/security/dependency_audit.py). Every entry needs an owner, rationale, affected surface and an expiry at most 365 days out; an expired entry fails CI again until re-reviewed. Do not add an entry without reading the advisory and checking reachability in THIS codebase.",
+  "entries": [
+    {
+      "id": "PYSEC-2026-1325",
+      "ecosystem": "pypi",
+      "package": "ecdsa",
+      "owner": "balajirajan@gmail.com",
+      "rationale": "CVE-2024-23342 (Minerva timing attack) affects ECDSA signing/key generation/ECDH; upstream declares side channels out of scope and will not fix. Composer never signs with ECDSA: tokens are signed HS256 (src/security/jwt.py) and the only asymmetric use is RS256 signature VERIFICATION of Azure SSO tokens (src/security/sso_azure.py), which the advisory states is unaffected. ecdsa is present only as a transitive dependency of python-jose.",
+      "surface": "python-jose -> ecdsa (transitive); no ES256/ES384/ES512 code path.",
+      "expires": "2027-02-01"
+    },
+    {
+      "id": "PYSEC-2026-4298",
+      "ecosystem": "pypi",
+      "package": "python-jose",
+      "owner": "balajirajan@gmail.com",
+      "rationale": "CVE-2026-85394: HS256 verification accepts a DER public key as the HMAC secret, so an attacker holding a public key could forge tokens when `algorithms` is not restricted. Not exploitable here: every decode call pins `algorithms` explicitly (src/security/jwt.py uses settings.jwt_algorithm, src/security/auth.py defaults to HS256, src/api/auth_common.py HS256, src/security/sso_azure.py RS256 only), and the HS256 keys are random secrets (JWT_SECRET, IEP_SHARED_SECRET), never a public key. No fixed release exists; revisit replacing python-jose (e.g. PyJWT) before expiry.",
+      "surface": "src/security/jwt.py, src/security/auth.py, src/api/auth_common.py, src/security/sso_azure.py",
+      "expires": "2027-02-01"
+    }
+  ]
+}
