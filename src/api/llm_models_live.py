@@ -337,7 +337,7 @@ async def list_available_models(
 ) -> AvailableModelsResponse:  # pyright: ignore[reportUnusedFunction]
     if provider not in _PROVIDERS and provider not in _DB_ONLY_PROVIDERS:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"Unsupported provider: {provider}",
         )
 

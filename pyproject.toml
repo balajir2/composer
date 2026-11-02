@@ -142,6 +142,11 @@ minversion = "8.0"
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+# New application-owned deprecations fail CI. Later entries win.
+filterwarnings = [
+    "error::DeprecationWarning:src",
+    "error::pydantic.warnings.PydanticDeprecatedSince20",
+]
 addopts = [
     "--strict-markers",
     "--strict-config",

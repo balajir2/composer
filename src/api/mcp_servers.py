@@ -178,18 +178,18 @@ async def create_mcp_server(
         _ = substitute_url_placeholders(payload.url)
     except UnresolvedUrlTemplateError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=str(exc),
         ) from exc
 
     if payload.auth_type not in {"none", "api-key", "bearer", "oauth"}:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"authType must be one of none/api-key/bearer/oauth, got {payload.auth_type!r}",
         )
     if payload.auth_type in {"api-key", "bearer"} and not payload.access_token:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"authType={payload.auth_type!r} requires accessToken",
         )
 
@@ -365,7 +365,7 @@ async def update_oauth_config(
         )
     if existing.authType != "oauth":
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"MCP server authType must be 'oauth' (got {existing.authType!r}).",
         )
     updated = await db.mcpserver.update(  # pyright: ignore[reportAttributeAccessIssue]
@@ -393,7 +393,7 @@ async def oauth_authorize(
         )
     if server.authType != "oauth":
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=f"MCP server authType must be 'oauth' (got {server.authType!r}).",
         )
     url = await build_authorize_url(

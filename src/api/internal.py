@@ -376,7 +376,7 @@ async def claim_and_run_execution(
             )
             if not decision:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="decision is required when kind='resume'",
                 )
             await executor.resume(execution_id, decision)
