@@ -309,8 +309,9 @@ class Settings(BaseSettings):
     gcp_region: str = "us-central1"
     cloud_tasks_queue: str = "composer-executions"
     # Service account Cloud Tasks uses to mint the OIDC token it presents
-    # to the claim-and-run endpoint. Empty in dev (auth skipped when unset
-    # — see src/api/internal.py's _verify_internal_oidc).
+    # to the claim-and-run endpoint. May be empty only when ENVIRONMENT=
+    # development (auth skipped — see src/api/internal.py's
+    # _verify_internal_oidc); required in production (src/config_validation.py).
     cloud_tasks_service_account: str = ""
     # DESIGN DECISION (P1-2, "lease and heartbeat behavior"): rather than a
     # short lease with periodic mid-execution heartbeat renewal (the usual

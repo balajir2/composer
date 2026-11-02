@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security — `/internal/*` authentication now fails closed (audit P0-1, 2026-11-02)
+
+Finding 1 of `docs/claude-system-audit-fix-list.md`. `_verify_internal_oidc` (`src/api/internal.py`) returned without authenticating whenever `CLOUD_TASKS_SERVICE_ACCOUNT` was empty, in **any** environment — so a production deployment whose service-account variable was missing or cleared exposed `/internal/claim-and-run`, `/internal/sweep` and `/internal/poll-file-triggers` (claim/run executions, run maintenance, poll Drive) to unauthenticated callers. The deploy workflow compounded it: an unset repo variable resolved to an empty string and was written over the live Cloud Run value on every push, documented as a "safe default". Production was not exposed at the time of the audit (the variable is set on `composer-backend` and in the repo), but nothing prevented it.
+
+- **Runtime:** the no-auth path is allowed only when `ENVIRONMENT == "development"`; any other value (production, staging, a typo, empty) with no service account now returns 401 and logs an error. Valid-token, wrong-email, invalid-token and missing-header behavior is unchanged.
+- **Startup:** `validate_production_config` (`src/config_validation.py`) refuses to boot production without `CLOUD_TASKS_SERVICE_ACCOUNT`.
+- **Deploy:** `.github/workflows/deploy-gcp.yml` gains a preflight step before the build/deploy, and the env-var step itself, that fail when `vars.CLOUD_TASKS_SERVICE_ACCOUNT` is empty, so a deploy can no longer blank the live value. The variable is now documented as **required**, not optional.
+
+Regression tests (`tests/unit/api/test_internal_fail_closed.py`, plus a case in `tests/unit/test_config_validation.py`): every `/internal/*` route returns 401 for production/staging/`prod`/empty environments with no service account, including when a junk `Authorization` header is sent; wrong-audience tokens are rejected and the audience handed to Google's verifier is derived from the request path; explicit development still skips the check. Written first and watched fail — the unauthenticated `POST /internal/sweep` in production ran the sweeps and returned 200. The shared `_settings()` fixture in `test_config_validation.py` now sets the service account, as a valid production config requires it.
+
+**Operational note:** any non-development deployment that previously relied on the empty-variable bypass (e.g. a staging Cloud Run service) must now set `CLOUD_TASKS_SERVICE_ACCOUNT` or it will fail to start (production) / reject internal calls (other environments).
+
+### Fixed — Neon compute never suspended: scheduler + in-process sweeper kept it awake 24/7 (2026-10-18)
+
+Production hit Neon's monthly compute allowance (2026-10-17, "Limit reached" banner) with a flat, always-active compute graph and near-zero CPU — i.e. nothing doing real work, just something holding the endpoint open. Root cause: two Cloud Scheduler jobs on `composer-497608` each fired every 5 minutes (`composer-sweep` → `/internal/sweep`, `composer-poll-file-triggers` → `/internal/poll-file-triggers`), and both query the DB. Neon suspends compute after 5 idle minutes, so a query every 5 minutes means it never suspends. The in-process sweeper (`EXECUTION_SWEEPER_INTERVAL_SECONDS=300` on `composer-backend`) duplicated the scheduler's sweep and queried on the same cadence.
+
+**Production changes (GCP only — no code change, no rebuild; new Cloud Run revision `composer-backend-00256-9g8`):**
+
+- `composer-sweep`: `*/5` → `*/30 * * * *`. The stuck-execution threshold is 15 minutes, so a stuck run is still marked failed within 15–45 minutes of sticking.
+- `composer-poll-file-triggers`: `*/5` → `*/15 * * * *`. Drive file-trigger latency is now up to 15 minutes. The sweep ticks (:00/:30) coincide with poll ticks, so both share one wake-up.
+- `EXECUTION_SWEEPER_INTERVAL_SECONDS=300` → `0` on `composer-backend`, disabling the in-process sweeper (the scheduler endpoint is the replacement, per Task 11 of the durable-execution plan).
+
+**These cadences live only in GCP, not in the repo — re-apply them if the scheduler jobs are ever recreated or the service is redeployed from scratch** (the deploy workflow's `--update-env-vars` calls don't touch the sweeper interval, so day-to-day pushes preserve it). Compute still wakes briefly at each tick; expect gaps in the Neon "active time" graph, not zero usage.
+
+**Follow-on outage (2026-10-27):** with the allowance exhausted, a fresh Cloud Run instance could not connect at startup (`prisma.engine.errors.EngineConnectionError: Could not connect to the query engine` from `_connect_with_retry`), exited with code 3, and logins failed. Not caused by the changes above; resolved once the DB was reachable again (confirmed `/health` 200 and login working 2026-11-02).
+
+**Still open, unrelated:** `/internal/poll-file-triggers` logs `TokenRefreshError: Google token refresh failed (HTTP 400)` on every run (`src/integrations/google_drive/oauth.py`), most likely a revoked/expired Drive authorization needing re-auth. Drive file triggers do not fire until that connection is re-authorized.
+
 ### Chore — pyright strict-mode warning cleanup, project-wide: 552 → 0 (2026-09-23)
 
 A full-project `pyright src tests` audit (the exact command CI runs) found 552 strict-mode warnings split across 43 test files (147) and 46 production `src/` files (405) — dominated by `Any`/untyped JSON payloads (Prisma `Json` columns, raw HTTP responses, third-party SDK returns) cascading `Unknown` types through downstream `.get()`/iteration/argument-passing once pyright loses the concrete type. Scoped as: fix the mechanical, low-risk test-file warnings first; treat production files as a separate pass given the higher blast radius. Four commits, all type-annotation-only — no behavior change intended anywhere:

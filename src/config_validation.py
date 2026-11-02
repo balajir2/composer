@@ -59,6 +59,11 @@ def validate_production_config(settings: Settings) -> None:
         problems.append("DATABASE_URL is unset or still the local development default.")
     if not settings.encryption_key:
         problems.append("ENCRYPTION_KEY is unset — stored secrets cannot be encrypted.")
+    if not settings.cloud_tasks_service_account:
+        problems.append(
+            "CLOUD_TASKS_SERVICE_ACCOUNT is unset — /internal/* (claim-and-run, sweep, "
+            "poll-file-triggers) cannot authenticate Cloud Tasks/Scheduler callers."
+        )
 
     if problems:
         raise ProductionConfigError(

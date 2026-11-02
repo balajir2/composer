@@ -22,6 +22,7 @@ def _settings(**overrides: Any) -> Settings:
         "jwt_secret": "a-real-production-secret-not-the-dev-default",
         "database_url": "postgresql://user:pass@prod-host:5432/composer",
         "encryption_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+        "cloud_tasks_service_account": "composer-tasks@example-project.iam.gserviceaccount.com",
     }
     base.update(overrides)
     return Settings(**base)  # pyright: ignore[reportCallIssue]
@@ -64,6 +65,13 @@ def test_dev_database_url_blocks_startup() -> None:
 def test_missing_encryption_key_blocks_startup() -> None:
     with pytest.raises(ProductionConfigError, match="ENCRYPTION_KEY"):
         validate_production_config(_settings(encryption_key=""))
+
+
+def test_missing_cloud_tasks_service_account_blocks_startup() -> None:
+    """Without it /internal/* cannot authenticate callers (audit P0-1) —
+    refuse to boot instead of serving those routes unprotected."""
+    with pytest.raises(ProductionConfigError, match="CLOUD_TASKS_SERVICE_ACCOUNT"):
+        validate_production_config(_settings(cloud_tasks_service_account=""))
 
 
 def test_multiple_problems_all_reported_together() -> None:
