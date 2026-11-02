@@ -5,3 +5,5 @@ public
 components/ui
 lib/api/generated
 package-lock.json
+test-results
+playwright-report

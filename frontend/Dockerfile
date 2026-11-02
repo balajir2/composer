@@ -58,6 +58,17 @@ RUN npm run build
 # ─── runner ─────────────────────────────────────────────────────────
 FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS runner
 WORKDIR /app
+# The base image is pinned by digest (reproducible), which also freezes its OS
+# packages; patch them at build time so known-fixed CVEs (e.g. OpenSSL) don't ride
+# along until the next deliberate digest bump. CI's Trivy scan enforces this.
+RUN apk upgrade --no-cache
+
+# The runtime only runs `node server.js`. npm/npx/corepack/yarn are not needed and
+# ship their own vendored dependencies (tar, glob, minimatch, ...) that scanners
+# flag; removing them shrinks the image and the attack surface.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack \
+    /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+    /opt/yarn-* /usr/local/bin/yarn /usr/local/bin/yarnpkg
 
 ENV NODE_ENV=production \
     NEXT_TELEMETRY_DISABLED=1 \

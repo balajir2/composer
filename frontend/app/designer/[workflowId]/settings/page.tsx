@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
+import { useParams } from "next/navigation";
 import { useSession } from "next-auth/react";
 import { ArrowLeft } from "lucide-react";
 import { getWorkflow, updateWorkflow } from "@/lib/api/workflows";
@@ -16,12 +17,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
 
-interface PageProps {
-  params: { workflowId: string };
-}
-
-export default function WorkflowSettingsPage({ params }: PageProps) {
-  const { workflowId } = params;
+export default function WorkflowSettingsPage() {
+  const { workflowId } = useParams<{ workflowId: string }>();
   const queryClient = useQueryClient();
   const { data: session } = useSession();
   const currentUserId = (session?.user as { id?: string } | undefined)?.id;

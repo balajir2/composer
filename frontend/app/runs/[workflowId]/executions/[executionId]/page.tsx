@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useParams } from "next/navigation";
 import { AlertCircle, CheckCircle2, Clock, Loader2 } from "lucide-react";
 import { getExecution } from "@/lib/api/executions";
 import { ExecutionProgress } from "@/components/composer/execution-progress";
@@ -32,12 +33,8 @@ function renderValue(v: unknown): string {
   }
 }
 
-export default function ExecutionPage({
-  params,
-}: {
-  params: { workflowId: string; executionId: string };
-}) {
-  const { executionId } = params;
+export default function ExecutionPage() {
+  const { executionId } = useParams<{ workflowId: string; executionId: string }>();
   const queryClient = useQueryClient();
   const [finalStatus, setFinalStatus] = useState<string | null>(null);
   const [finalOutput, setFinalOutput] = useState<unknown>(null);

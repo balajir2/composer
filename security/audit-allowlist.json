@@ -18,6 +18,33 @@
       "rationale": "CVE-2026-85394: HS256 verification accepts a DER public key as the HMAC secret, so an attacker holding a public key could forge tokens when `algorithms` is not restricted. Not exploitable here: every decode call pins `algorithms` explicitly (src/security/jwt.py uses settings.jwt_algorithm, src/security/auth.py defaults to HS256, src/api/auth_common.py HS256, src/security/sso_azure.py RS256 only), and the HS256 keys are random secrets (JWT_SECRET, IEP_SHARED_SECRET), never a public key. No fixed release exists; revisit replacing python-jose (e.g. PyJWT) before expiry.",
       "surface": "src/security/jwt.py, src/security/auth.py, src/api/auth_common.py, src/security/sso_azure.py",
       "expires": "2027-02-01"
+    },
+    {
+      "id": "GHSA-6G55-P6WH-862Q",
+      "ecosystem": "npm",
+      "package": "postcss",
+      "owner": "balajirajan@gmail.com",
+      "rationale": "PostCSS <8.5.10 reads an arbitrary .map file named by an attacker-controlled sourceMappingURL comment while PROCESSING CSS. The copy flagged is the one Next.js 15.5.28 bundles privately (next/node_modules/postcss 8.4.31); it only processes this project's own CSS at build time, and the server never feeds it request-supplied CSS. The top-level postcss in this project is already patched. The only npm-offered fix is a jump to Next 16, which is a separate, larger migration (params/proxy renames); revisit then.",
+      "surface": "next/node_modules/postcss (build-time CSS pipeline of our own stylesheets)",
+      "expires": "2027-02-01"
+    },
+    {
+      "id": "GHSA-R28C-9Q8G-F849",
+      "ecosystem": "npm",
+      "package": "postcss",
+      "owner": "balajirajan@gmail.com",
+      "rationale": "Same exposure as GHSA-6G55-P6WH-862Q: path traversal in previous-source-map auto-loading, which requires PostCSS to process attacker-controlled CSS. Not reachable — it only builds our own stylesheets.",
+      "surface": "next/node_modules/postcss (build-time CSS pipeline of our own stylesheets)",
+      "expires": "2027-02-01"
+    },
+    {
+      "id": "GHSA-MRHX-C7XC-M3W5",
+      "ecosystem": "npm",
+      "package": "zod",
+      "owner": "balajirajan@gmail.com",
+      "rationale": "Memory exhaustion when zod 3.x validates an oversized collection against a constrained schema. Our schemas are z.object of strings/numbers (lib/start-node-schema.ts) and two react-hook-form resolvers validating the signed-in user's own form input in their own browser; no server path validates attacker-sized arrays with zod. The fix is zod 4 (major), which also requires @hookform/resolvers 5 - deferred to a deliberate migration.",
+      "surface": "frontend/lib/start-node-schema.ts and zodResolver forms (client-side input validation)",
+      "expires": "2027-02-01"
     }
   ]
 }

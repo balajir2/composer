@@ -43,9 +43,10 @@ test("login with valid credentials lands on /runs", async ({ page }) => {
   // After successful login the app redirects to / which re-directs to /runs
   await expect(page).toHaveURL(/\/runs/, { timeout: 15_000 });
   // Page heading confirms it loaded
-  await expect(page.locator("h2")).toContainText(["Run a workflow", "No workflows to run yet"], {
-    timeout: 10_000,
-  });
+  // (EmptyState renders an h3, the populated list an h2.)
+  await expect(
+    page.getByRole("heading", { name: /Run a workflow|No workflows to run yet/ })
+  ).toBeVisible({ timeout: 10_000 });
 });
 
 test("login with wrong password shows error toast", async ({ page }) => {
@@ -67,7 +68,8 @@ test("logout returns to /login", async ({ page }) => {
   await expect(page).toHaveURL(/\/runs/, { timeout: 15_000 });
 
   // Find and click Sign out (the app shell renders a sign-out button)
-  const signOutBtn = page.getByRole("button", { name: /sign out/i });
+  // The shell renders Sign out in both the sidebar and the header; use the header one.
+  const signOutBtn = page.getByRole("banner").getByRole("button", { name: /sign out/i });
   await signOutBtn.click();
 
   await expect(page).toHaveURL(/\/login/, { timeout: 10_000 });

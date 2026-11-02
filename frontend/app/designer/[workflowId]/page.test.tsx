@@ -5,6 +5,13 @@ import { useEffect } from "react";
 import type { Node as RFNode, Edge as RFEdge } from "reactflow";
 import DesignerCanvasPage from "./page";
 
+// The page reads its route param via next/navigation's useParams(); the test
+// drives it through this mutable holder instead of a `params` prop.
+const routeParams = vi.hoisted(() => ({ current: { workflowId: "" } }));
+vi.mock("next/navigation", () => ({
+  useParams: () => routeParams.current,
+}));
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
@@ -137,10 +144,11 @@ function workflowFixture(id: string) {
 }
 
 function renderPage(workflowId: string) {
+  routeParams.current = { workflowId };
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <DesignerCanvasPage params={{ workflowId }} />
+      <DesignerCanvasPage />
     </QueryClientProvider>
   );
 }
@@ -205,9 +213,10 @@ describe("DesignerCanvasPage autosave dirty-tracking", () => {
     // nodesRef/edgesRef) instead of leaking wf-a's state into wf-b.
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     getWorkflow.mockResolvedValueOnce(workflowFixture("wf-b"));
+    routeParams.current = { workflowId: "wf-b" };
     rerender(
       <QueryClientProvider client={qc}>
-        <DesignerCanvasPage params={{ workflowId: "wf-b" }} />
+        <DesignerCanvasPage />
       </QueryClientProvider>
     );
 
