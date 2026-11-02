@@ -49,9 +49,7 @@ export function SaveControls({
       await onSave();
       setDialogOpen(true);
     } catch (err) {
-      toast.error(
-        err instanceof Error ? err.message : "Failed to save before running."
-      );
+      toast.error(err instanceof Error ? err.message : "Failed to save before running.");
     } finally {
       setIsPreparing(false);
     }
@@ -71,12 +69,7 @@ export function SaveControls({
                 : ""}
       </span>
       <div className="flex items-center gap-2">
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleSave}
-          disabled={isSaving || isPreparing}
-        >
+        <Button variant="outline" size="sm" onClick={handleSave} disabled={isSaving || isPreparing}>
           {isSaving ? "Saving…" : "Save"}
         </Button>
         <Button size="sm" onClick={handleRunDraft} disabled={isSaving || isPreparing}>

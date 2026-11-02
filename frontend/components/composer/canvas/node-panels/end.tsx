@@ -14,8 +14,7 @@ export default function EndPanel(_props: {
   return (
     <p className="text-sm text-muted-foreground">
       End has no configurable fields — it surfaces{" "}
-      <code className="font-mono">variables.lastOutput</code> as the workflow&apos;s final
-      output.
+      <code className="font-mono">variables.lastOutput</code> as the workflow&apos;s final output.
     </p>
   );
 }

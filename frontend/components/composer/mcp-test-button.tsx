@@ -6,13 +6,7 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { testMcpConnection } from "@/lib/api/mcp-servers";
 
-export function McpTestButton({
-  serverId,
-  serverName,
-}: {
-  serverId: string;
-  serverName: string;
-}) {
+export function McpTestButton({ serverId, serverName }: { serverId: string; serverName: string }) {
   const qc = useQueryClient();
   const mutation = useMutation({
     mutationFn: () => testMcpConnection(serverId),
@@ -25,8 +19,7 @@ export function McpTestButton({
       void qc.invalidateQueries({ queryKey: ["admin-mcp-servers"] });
       void qc.invalidateQueries({ queryKey: ["mcp-servers"] });
     },
-    onError: (err) =>
-      toast.error(err instanceof Error ? err.message : "Test failed."),
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Test failed."),
   });
 
   return (

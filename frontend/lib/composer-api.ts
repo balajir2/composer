@@ -53,9 +53,7 @@ function normalize(body: TokenPairWire): ComposerTokens {
   const accessExp =
     body.accessTokenExpiresAt ?? extractJwtExp(body.accessToken) ?? nowSec + 60 * 30;
   const refreshExp =
-    body.refreshTokenExpiresAt ??
-    extractJwtExp(body.refreshToken) ??
-    nowSec + 60 * 60 * 24 * 7;
+    body.refreshTokenExpiresAt ?? extractJwtExp(body.refreshToken) ?? nowSec + 60 * 60 * 24 * 7;
   return {
     accessToken: body.accessToken,
     refreshToken: body.refreshToken,

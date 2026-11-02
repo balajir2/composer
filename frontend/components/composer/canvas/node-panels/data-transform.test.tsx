@@ -59,7 +59,13 @@ describe("DataTransformPanel", () => {
   it("shows the initial-value field only when operation is reduce, and calls onChange with initial", () => {
     const onChange = vi.fn();
     render(
-      wrap(<DataTransformPanel data={{ operation: "reduce" }} onChange={onChange} currentNodeId="dt-1" />)
+      wrap(
+        <DataTransformPanel
+          data={{ operation: "reduce" }}
+          onChange={onChange}
+          currentNodeId="dt-1"
+        />
+      )
     );
     fireEvent.change(screen.getByLabelText(/Initial value/), {
       target: { value: "0" },
@@ -99,7 +105,9 @@ describe("DataTransformPanel", () => {
       )
     );
     fireEvent.click(screen.getByRole("button", { name: "Test" }));
-    await waitFor(() => expect(screen.getByText(/\[.*2.*4.*6.*\]|2,\s*4,\s*6/s)).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText(/\[.*2.*4.*6.*\]|2,\s*4,\s*6/s)).toBeInTheDocument()
+    );
     expect(evaluateDataTransformExpression).toHaveBeenCalledWith({
       operation: "map",
       collection: "variables['nums']",

@@ -60,9 +60,7 @@ export function PublishedEndpoint({
         >
           Published
         </Badge>
-        <code className="font-mono text-xs text-emerald-900">
-          /api/run/{externalSlug}
-        </code>
+        <code className="font-mono text-xs text-emerald-900">/api/run/{externalSlug}</code>
         <Button
           variant="ghost"
           size="icon-sm"
@@ -92,12 +90,7 @@ export function PublishedEndpoint({
         <code className="flex-1 break-all rounded bg-white px-2 py-1 font-mono text-xs text-emerald-900">
           POST {fullUrl}
         </code>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={handleCopy}
-          aria-label="Copy endpoint URL"
-        >
+        <Button variant="outline" size="sm" onClick={handleCopy} aria-label="Copy endpoint URL">
           {copied ? (
             <>
               <Check className="mr-1.5 h-3.5 w-3.5" /> Copied

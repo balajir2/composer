@@ -244,8 +244,8 @@ export default function WorkflowSettingsPage({ params }: PageProps) {
           <div>
             <p className="text-sm font-medium">Mark as template</p>
             <p className="text-xs text-muted-foreground">
-              Show this workflow on the Templates page so other designers
-              can clone it as a reference implementation.
+              Show this workflow on the Templates page so other designers can clone it as a
+              reference implementation.
             </p>
           </div>
           <Button

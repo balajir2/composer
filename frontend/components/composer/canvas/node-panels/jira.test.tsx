@@ -60,12 +60,7 @@ describe("JiraPanel — operation toggle", () => {
   it("toggling expand changelog calls onChange with expandChangelog", () => {
     const onChange = vi.fn();
     render(
-      wrap(
-        <JiraPanel
-          data={{ operation: "extract", expandChangelog: true }}
-          onChange={onChange}
-        />
-      )
+      wrap(<JiraPanel data={{ operation: "extract", expandChangelog: true }} onChange={onChange} />)
     );
     fireEvent.click(screen.getByLabelText("Expand changelog"));
     expect(onChange).toHaveBeenCalledWith({ expandChangelog: false });
@@ -147,9 +142,7 @@ describe("JiraPanel — operation toggle", () => {
         />
       )
     );
-    expect((screen.getByLabelText("Fields") as HTMLInputElement).value).toBe(
-      "summary, status"
-    );
+    expect((screen.getByLabelText("Fields") as HTMLInputElement).value).toBe("summary, status");
 
     // Simulate the Designer selecting a different Jira node — same
     // operation, different underlying data, panel stays mounted in place.
@@ -163,8 +156,6 @@ describe("JiraPanel — operation toggle", () => {
       )
     );
 
-    expect((screen.getByLabelText("Fields") as HTMLInputElement).value).toBe(
-      "priority"
-    );
+    expect((screen.getByLabelText("Fields") as HTMLInputElement).value).toBe("priority");
   });
 });

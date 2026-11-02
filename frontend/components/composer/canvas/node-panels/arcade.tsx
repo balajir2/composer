@@ -124,16 +124,16 @@ export default function ArcadePanel({
         />
         <p className="text-[10px] text-muted-foreground">
           Identifies which end user&apos;s Arcade OAuth connection to use. Supports{" "}
-          <code className="font-mono">{"{{variable}}"}</code> templating, same as Args —
-          use this to give each user their own authorization instead of sharing one
-          identity across everyone running this workflow.
+          <code className="font-mono">{"{{variable}}"}</code> templating, same as Args — use this to
+          give each user their own authorization instead of sharing one identity across everyone
+          running this workflow.
         </p>
       </div>
 
       <p className="text-[10px] text-muted-foreground">
-        Requires <code className="font-mono">ARCADE_API_KEY</code> to be configured on the
-        backend. On first use of a tool, the workflow will pause and wait for the user to
-        authorize it via Arcade&apos;s OAuth flow before continuing.
+        Requires <code className="font-mono">ARCADE_API_KEY</code> to be configured on the backend.
+        On first use of a tool, the workflow will pause and wait for the user to authorize it via
+        Arcade&apos;s OAuth flow before continuing.
       </p>
     </div>
   );

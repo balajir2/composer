@@ -48,9 +48,7 @@ export interface AvailableModelsResponse {
 export async function listAvailableModels(provider: string, refresh = false) {
   const params = new URLSearchParams({ provider });
   if (refresh) params.set("refresh", "1");
-  return apiFetch<AvailableModelsResponse>(
-    `/llm-models/available?${params.toString()}`
-  );
+  return apiFetch<AvailableModelsResponse>(`/llm-models/available?${params.toString()}`);
 }
 
 /** Admin: list ALL models (including disabled). */

@@ -32,9 +32,7 @@ export function WorkflowVisibilityToggle({
       className="cursor-pointer disabled:cursor-wait disabled:opacity-60"
       title="Click to toggle visibility"
     >
-      <Badge variant={isPublic ? "default" : "secondary"}>
-        {isPublic ? "Public" : "Private"}
-      </Badge>
+      <Badge variant={isPublic ? "default" : "secondary"}>{isPublic ? "Public" : "Private"}</Badge>
     </button>
   );
 }

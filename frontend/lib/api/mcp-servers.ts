@@ -63,8 +63,7 @@ export async function updateMcpOauthConfig(
 export async function testMcpConnection(
   serverId: string
 ): Promise<{ ok: boolean; message: string }> {
-  return apiFetch<{ ok: boolean; message: string }>(
-    `/mcp-servers/${serverId}/test-connection`,
-    { method: "POST" }
-  );
+  return apiFetch<{ ok: boolean; message: string }>(`/mcp-servers/${serverId}/test-connection`, {
+    method: "POST",
+  });
 }

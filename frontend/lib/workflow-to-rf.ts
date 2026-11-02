@@ -23,12 +23,7 @@ export type ComposerEdge = {
   branch?: string | null;
 };
 
-const CONDITIONAL_SOURCE_TYPES = new Set([
-  "if-else",
-  "while",
-  "user-approval",
-  "decision",
-]);
+const CONDITIONAL_SOURCE_TYPES = new Set(["if-else", "while", "user-approval", "decision"]);
 
 export function toReactFlow(
   nodes: ComposerNode[],
@@ -68,9 +63,7 @@ export function fromReactFlow(
   // Build a lookup so we can derive `branch` per outgoing edge from the
   // source node's type — branch is only valid (and required) when the
   // source is a conditional node.
-  const nodeTypeById = new Map<string, string>(
-    rfNodes.map((n) => [n.id, n.type ?? ""])
-  );
+  const nodeTypeById = new Map<string, string>(rfNodes.map((n) => [n.id, n.type ?? ""]));
   return {
     nodes: rfNodes.map((n) => ({
       id: n.id,

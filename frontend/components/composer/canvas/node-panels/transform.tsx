@@ -32,10 +32,8 @@ function describeOutputKeyError(value: string): string | null {
   if (!trimmed) return null; // empty = unset, valid
   if (!IDENT.test(trimmed))
     return "Must be a valid identifier (letters, digits, underscore; can't start with a digit).";
-  if (trimmed.startsWith("_"))
-    return "Names starting with '_' are reserved for engine internals.";
-  if (RESERVED.has(trimmed))
-    return `'${trimmed}' is reserved — it's a built-in scope alias.`;
+  if (trimmed.startsWith("_")) return "Names starting with '_' are reserved for engine internals.";
+  if (RESERVED.has(trimmed)) return `'${trimmed}' is reserved — it's a built-in scope alias.`;
   return null;
 }
 
@@ -85,29 +83,23 @@ export default function TransformPanel({
         <p className="text-xs text-muted-foreground">
           A simpleeval expression. Read state via{" "}
           <code className="font-mono">variables[&quot;x&quot;]</code>,{" "}
-          <code className="font-mono">lastOutput</code>, top-level
-          variable names directly (e.g.{" "}
+          <code className="font-mono">lastOutput</code>, top-level variable names directly (e.g.{" "}
           <code className="font-mono">counter</code>), or Mustache style{" "}
-          <code className="font-mono">&#123;&#123;path.to.field&#125;&#125;</code>.
-          Functions: <code className="font-mono">int</code>,{" "}
-          <code className="font-mono">float</code>,{" "}
-          <code className="font-mono">str</code>,{" "}
-          <code className="font-mono">bool</code>,{" "}
+          <code className="font-mono">&#123;&#123;path.to.field&#125;&#125;</code>. Functions:{" "}
+          <code className="font-mono">int</code>, <code className="font-mono">float</code>,{" "}
+          <code className="font-mono">str</code>, <code className="font-mono">bool</code>,{" "}
           <code className="font-mono">len</code>.
         </p>
       </div>
 
       <div className="space-y-2">
         <Label htmlFor="transform-output-key">
-          Output variable name{" "}
-          <span className="font-normal text-muted-foreground">(optional)</span>
+          Output variable name <span className="font-normal text-muted-foreground">(optional)</span>
         </Label>
         <Input
           id="transform-output-key"
           value={outputKey}
-          onChange={(e) =>
-            onChange({ outputKey: e.target.value || undefined })
-          }
+          onChange={(e) => onChange({ outputKey: e.target.value || undefined })}
           placeholder="counter"
           aria-invalid={outputKeyError !== null}
           className="font-mono text-xs"
@@ -117,17 +109,12 @@ export default function TransformPanel({
         ) : (
           <p className="text-xs text-muted-foreground">
             Save the result to a named state variable in addition to{" "}
-            <code className="font-mono">lastOutput</code>. Lets a single
-            transform serve as both compute and persist — essential for
-            loop counters, accumulators, and any pipeline where multiple
-            transforms run in sequence without clobbering each other.
-            Reference downstream as{" "}
-            <code className="font-mono">
-              &#123;&#123;{outputKey || "name"}&#125;&#125;
-            </code>{" "}
-            or directly as{" "}
-            <code className="font-mono">{outputKey || "name"}</code> in
-            another expression.
+            <code className="font-mono">lastOutput</code>. Lets a single transform serve as both
+            compute and persist — essential for loop counters, accumulators, and any pipeline where
+            multiple transforms run in sequence without clobbering each other. Reference downstream
+            as <code className="font-mono">&#123;&#123;{outputKey || "name"}&#125;&#125;</code> or
+            directly as <code className="font-mono">{outputKey || "name"}</code> in another
+            expression.
           </p>
         )}
       </div>

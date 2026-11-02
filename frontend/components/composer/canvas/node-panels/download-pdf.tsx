@@ -49,7 +49,7 @@ export default function DownloadPdfPanel({
         placeholder="Reference an upstream node's output, e.g. {{narrative_agent}}"
       />
 
-      <div className="rounded-md border bg-muted/20 p-3">
+      <div className="bg-muted/20 rounded-md border p-3">
         <p className="mb-2 text-xs font-semibold text-muted-foreground">Destination</p>
         <div className="space-y-2">
           <div className="space-y-1">
@@ -101,8 +101,8 @@ export default function DownloadPdfPanel({
               className="font-mono text-xs"
             />
             <p className="text-[10px] text-muted-foreground">
-              The .pdf extension is added automatically. Must be a bare filename — no
-              path separators or &quot;..&quot;.
+              The .pdf extension is added automatically. Must be a bare filename — no path
+              separators or &quot;..&quot;.
             </p>
           </div>
         </div>

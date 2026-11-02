@@ -46,8 +46,7 @@ export function WorkflowProductionToggle({
   });
 
   const unpublishMutation = useMutation({
-    mutationFn: () =>
-      adminUpdateWorkflowFlags(workflowId, { isProduction: false }),
+    mutationFn: () => adminUpdateWorkflowFlags(workflowId, { isProduction: false }),
     onSuccess: () => {
       toast.success("Workflow unpublished.");
       void qc.invalidateQueries({ queryKey: ["admin-all-workflows"] });
@@ -93,9 +92,8 @@ export function WorkflowProductionToggle({
               <DialogTitle>Publish workflow</DialogTitle>
               <DialogDescription>
                 Publishing makes the workflow invokable at{" "}
-                <code>POST /api/run/&#123;slug&#125;</code> using an API key.
-                Choose a URL-safe identifier (2–64 chars, lowercase alphanumeric
-                + hyphens).
+                <code>POST /api/run/&#123;slug&#125;</code> using an API key. Choose a URL-safe
+                identifier (2–64 chars, lowercase alphanumeric + hyphens).
               </DialogDescription>
             </DialogHeader>
             <form
@@ -128,10 +126,7 @@ export function WorkflowProductionToggle({
                 >
                   Cancel
                 </Button>
-                <Button
-                  type="submit"
-                  disabled={publishMutation.isPending || !slug.trim()}
-                >
+                <Button type="submit" disabled={publishMutation.isPending || !slug.trim()}>
                   {publishMutation.isPending ? "Publishing…" : "Publish"}
                 </Button>
               </DialogFooter>

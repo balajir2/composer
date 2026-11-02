@@ -119,23 +119,18 @@ export default function EmailPanel({
         currentNodeId={currentNodeId ?? ""}
         rows={10}
         placeholder={
-          bodyType === "html"
-            ? "<h1>Report</h1><p>{{lastOutput}}</p>"
-            : "Report\n\n{{lastOutput}}"
+          bodyType === "html" ? "<h1>Report</h1><p>{{lastOutput}}</p>" : "Report\n\n{{lastOutput}}"
         }
       />
 
       <div className="space-y-2">
         <Label htmlFor="email-idempotency-key">
-          Idempotency key{" "}
-          <span className="font-normal text-muted-foreground">(optional)</span>
+          Idempotency key <span className="font-normal text-muted-foreground">(optional)</span>
         </Label>
         <Input
           id="email-idempotency-key"
           value={(data.emailIdempotencyKey as string) ?? ""}
-          onChange={(e) =>
-            onChange({ emailIdempotencyKey: e.target.value || undefined })
-          }
+          onChange={(e) => onChange({ emailIdempotencyKey: e.target.value || undefined })}
           placeholder="workflow-{{execution_id}}"
         />
         <p className="text-xs text-muted-foreground">

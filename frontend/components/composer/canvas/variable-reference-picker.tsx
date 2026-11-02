@@ -46,9 +46,7 @@ export function VariableReferencePicker({
   buttonLabel?: string;
 }) {
   const [open, setOpen] = useState(false);
-  const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(
-    null
-  );
+  const [anchor, setAnchor] = useState<{ top: number; right: number } | null>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
 
@@ -67,10 +65,7 @@ export function VariableReferencePicker({
     if (!open) return;
     function onPointerDown(e: MouseEvent) {
       const t = e.target as Node;
-      if (
-        buttonRef.current?.contains(t) ||
-        popoverRef.current?.contains(t)
-      ) {
+      if (buttonRef.current?.contains(t) || popoverRef.current?.contains(t)) {
         return;
       }
       setOpen(false);
@@ -107,8 +102,7 @@ export function VariableReferencePicker({
         label: String(v.name),
         path: String(v.name),
         description:
-          (typeof v.description === "string" && v.description) ||
-          `Input: ${String(v.name)}`,
+          (typeof v.description === "string" && v.description) || `Input: ${String(v.name)}`,
         kind: typeof v.type === "string" ? v.type : undefined,
       }));
 
@@ -116,10 +110,7 @@ export function VariableReferencePicker({
       const d = (n.data ?? {}) as Record<string, unknown>;
       if (n.type === "start") return [];
       const rawNodeName = typeof d.nodeName === "string" ? d.nodeName : "";
-      const display =
-        rawNodeName ||
-        (typeof d.label === "string" && d.label) ||
-        n.id;
+      const display = rawNodeName || (typeof d.label === "string" && d.label) || n.id;
       // Prefer the user-given Name (snake-cased) as the variable path —
       // reads much better than `agent_1` and matches the backend alias
       // registered in events_wrapper.py.  Falls back to sanitized ID.
@@ -140,8 +131,7 @@ export function VariableReferencePicker({
       // Backend canonical: `jsonSchema` (Pydantic alias on AgentNodeData).
       // Also accept the legacy `jsonOutputSchema` key from older canvases
       // and both string- and object-shaped schemas.
-      const schemaRaw: unknown =
-        (d.jsonSchema as unknown) ?? (d.jsonOutputSchema as unknown);
+      const schemaRaw: unknown = (d.jsonSchema as unknown) ?? (d.jsonOutputSchema as unknown);
       let schema: { properties?: Record<string, { type?: string; description?: string }> } | null =
         null;
       if (typeof schemaRaw === "string" && schemaRaw.trim()) {
@@ -158,8 +148,7 @@ export function VariableReferencePicker({
           vars.push({
             label: `${display}.${propName}`,
             path: `${varName}.${propName}`,
-            description:
-              propSchema.description ?? `${propName} from ${display}`,
+            description: propSchema.description ?? `${propName} from ${display}`,
             kind: propSchema.type ?? "any",
             isField: true,
           });
@@ -208,14 +197,13 @@ export function VariableReferencePicker({
             <div className="border-b px-3 py-2">
               <p className="text-xs font-semibold">Available variables</p>
               <p className="text-xs text-muted-foreground">
-                Click or drag to insert{" "}
-                <code className="font-mono">{"{{name}}"}</code>
+                Click or drag to insert <code className="font-mono">{"{{name}}"}</code>
               </p>
             </div>
             <div className="max-h-80 overflow-y-auto">
               {groups.map((group) => (
                 <div key={group.category}>
-                  <div className="sticky top-0 bg-muted/80 px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  <div className="bg-muted/80 sticky top-0 px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
                     {group.category}
                   </div>
                   {group.items.map((item) => (
@@ -234,9 +222,7 @@ export function VariableReferencePicker({
                     >
                       <div className="min-w-0 flex-1">
                         <div className="flex items-center gap-1">
-                          {item.isField && (
-                            <span className="text-muted-foreground">↳</span>
-                          )}
+                          {item.isField && <span className="text-muted-foreground">↳</span>}
                           <span className="truncate font-medium">{item.label}</span>
                         </div>
                         <div className="truncate font-mono text-[10px] text-muted-foreground">
@@ -270,10 +256,7 @@ export function VariableReferencePicker({
         type="button"
         onClick={() => (open ? setOpen(false) : openPopover())}
         title="Insert a reference to an upstream variable"
-        className={cn(
-          buttonVariants({ variant: "outline", size: "sm" }),
-          "h-7 px-2 text-xs"
-        )}
+        className={cn(buttonVariants({ variant: "outline", size: "sm" }), "h-7 px-2 text-xs")}
       >
         <Braces className="mr-1 h-3.5 w-3.5" />
         {buttonLabel}

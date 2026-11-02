@@ -95,14 +95,9 @@ export function DesignerWorkflowCard({
       // server's canonical shape.
       const full = await getWorkflow(wf.id);
       const ts = new Date().toISOString().slice(0, 10);
-      downloadString(
-        `${filenameSlug}-${ts}.json`,
-        "application/json",
-        exportWorkflowAsJson(full)
-      );
+      downloadString(`${filenameSlug}-${ts}.json`, "application/json", exportWorkflowAsJson(full));
     },
-    onError: (err) =>
-      toast.error(err instanceof Error ? err.message : "Download failed."),
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Download failed."),
   });
 
   const downloadMarkdownMutation = useMutation({
@@ -115,8 +110,7 @@ export function DesignerWorkflowCard({
         exportWorkflowAsMarkdown(full)
       );
     },
-    onError: (err) =>
-      toast.error(err instanceof Error ? err.message : "Download failed."),
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Download failed."),
   });
 
   const deleteMutation = useMutation({

@@ -62,12 +62,12 @@ describe("TransformPanel", () => {
       error: "simpleeval failed evaluating 'bad': NameNotDefined: bad is not defined",
     });
     render(
-      wrap(<TransformPanel data={{ transformScript: "bad" }} onChange={vi.fn()} workflowId="wf-1" />)
+      wrap(
+        <TransformPanel data={{ transformScript: "bad" }} onChange={vi.fn()} workflowId="wf-1" />
+      )
     );
     fireEvent.click(screen.getByRole("button", { name: "Test" }));
-    await waitFor(() =>
-      expect(screen.getByText(/NameNotDefined/)).toBeInTheDocument()
-    );
+    await waitFor(() => expect(screen.getByText(/NameNotDefined/)).toBeInTheDocument());
   });
 
   it("Test button is disabled when the expression is only whitespace", () => {

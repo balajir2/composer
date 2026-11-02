@@ -66,11 +66,10 @@ export default function AdminMcpServersPage() {
         <div>
           <h2 className="text-2xl font-semibold">MCP servers</h2>
           <p className="text-sm text-muted-foreground">
-            Model Context Protocol servers that expose tools to agents. For
-            OAuth servers, click <strong>Authorize</strong> to sign in, then{" "}
-            <strong>Test</strong> to verify the connection and refresh the tool
-            list. Mark as &ldquo;shared&rdquo; to make them visible in every
-            designer&apos;s Tools palette.
+            Model Context Protocol servers that expose tools to agents. For OAuth servers, click{" "}
+            <strong>Authorize</strong> to sign in, then <strong>Test</strong> to verify the
+            connection and refresh the tool list. Mark as &ldquo;shared&rdquo; to make them visible
+            in every designer&apos;s Tools palette.
           </p>
         </div>
         <CreateMcpDialog />
@@ -111,11 +110,7 @@ export default function AdminMcpServersPage() {
                 : "—";
               const status = server.connectionStatus ?? "untested";
               const variant: "default" | "outline" | "destructive" =
-                status === "connected"
-                  ? "default"
-                  : status === "error"
-                    ? "destructive"
-                    : "outline";
+                status === "connected" ? "default" : status === "error" ? "destructive" : "outline";
               const isOauth = server.authType === "oauth";
               const serverAny = server as unknown as {
                 hasOauthConfig?: boolean;
@@ -125,18 +120,13 @@ export default function AdminMcpServersPage() {
                 <TableRow key={server.id}>
                   <TableCell className="font-medium">{server.name}</TableCell>
                   <TableCell>
-                    <code className="break-all text-xs text-muted-foreground">
-                      {server.url}
-                    </code>
+                    <code className="break-all text-xs text-muted-foreground">{server.url}</code>
                   </TableCell>
                   <TableCell>
                     <Badge variant="secondary">{server.authType}</Badge>
                   </TableCell>
                   <TableCell>
-                    <Badge
-                      variant={variant}
-                      title={server.lastError ?? undefined}
-                    >
+                    <Badge variant={variant} title={server.lastError ?? undefined}>
                       {status}
                     </Badge>
                     {server.lastError && (
@@ -148,9 +138,7 @@ export default function AdminMcpServersPage() {
                       </div>
                     )}
                   </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">
-                    {lastTested}
-                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{lastTested}</TableCell>
                   <TableCell>
                     <McpSharedToggle
                       serverId={server.id}
@@ -167,19 +155,12 @@ export default function AdminMcpServersPage() {
                         hasOauthToken={Boolean(serverAny.hasOauthToken)}
                       />
                     )}
-                    <McpTestButton
-                      serverId={server.id}
-                      serverName={server.name}
-                    />
+                    <McpTestButton serverId={server.id} serverName={server.name} />
                     <Button
                       size="sm"
                       variant="outline"
                       onClick={() => {
-                        if (
-                          window.confirm(
-                            `Delete "${server.name}"? This cannot be undone.`
-                          )
-                        ) {
+                        if (window.confirm(`Delete "${server.name}"? This cannot be undone.`)) {
                           deleteMutation.mutate(server.id);
                         }
                       }}

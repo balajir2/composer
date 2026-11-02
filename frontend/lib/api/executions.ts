@@ -28,10 +28,7 @@ export async function getExecution(id: string): Promise<ExecutionRead> {
 
 type ResumeRequest = components["schemas"]["ResumeRequest"];
 
-export async function resumeExecution(
-  id: string,
-  body: ResumeRequest
-): Promise<ExecutionRead> {
+export async function resumeExecution(id: string, body: ResumeRequest): Promise<ExecutionRead> {
   return apiFetch<ExecutionRead>(`/executions/${id}/resume`, {
     method: "POST",
     body: JSON.stringify(body),

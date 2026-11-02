@@ -83,22 +83,38 @@ async function dropPaletteNode(
         throw new Error(`dropPaletteNode: could not find palette item "${label}" or canvas pane`);
       }
       const dt = new DataTransfer();
-      item.dispatchEvent(new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: dt }));
+      item.dispatchEvent(
+        new DragEvent("dragstart", { bubbles: true, cancelable: true, dataTransfer: dt })
+      );
       const rect = pane.getBoundingClientRect();
       const clientX = rect.left + x;
       const clientY = rect.top + y;
       pane.dispatchEvent(
-        new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer: dt, clientX, clientY })
+        new DragEvent("dragover", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: dt,
+          clientX,
+          clientY,
+        })
       );
       pane.dispatchEvent(
-        new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer: dt, clientX, clientY })
+        new DragEvent("drop", {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: dt,
+          clientX,
+          clientY,
+        })
       );
     },
     { label, x, y }
   );
 }
 
-test("Decision node (binary) wires both branches and the true branch executes", async ({ page }) => {
+test("Decision node (binary) wires both branches and the true branch executes", async ({
+  page,
+}) => {
   // Generous budget: this test drives ~10 real UI interactions (drag/drop,
   // panel edits, handle wiring) plus a real Anthropic call and an
   // execution poll, well beyond the config's default 60s.
@@ -180,9 +196,15 @@ test("Decision node (binary) wires both branches and the true branch executes", 
     .locator('.react-flow__handle[data-nodeid="decision-1"][data-handleid="false"]')
     .dragTo(page.locator('.react-flow__handle[data-nodeid="end-2"][data-handlepos="left"]'));
 
-  await expect(page.locator('.react-flow__edge[aria-label="Edge from start-1 to decision-1"]')).toBeVisible();
-  await expect(page.locator('.react-flow__edge[aria-label="Edge from decision-1 to end-1"]')).toBeVisible();
-  await expect(page.locator('.react-flow__edge[aria-label="Edge from decision-1 to end-2"]')).toBeVisible();
+  await expect(
+    page.locator('.react-flow__edge[aria-label="Edge from start-1 to decision-1"]')
+  ).toBeVisible();
+  await expect(
+    page.locator('.react-flow__edge[aria-label="Edge from decision-1 to end-1"]')
+  ).toBeVisible();
+  await expect(
+    page.locator('.react-flow__edge[aria-label="Edge from decision-1 to end-2"]')
+  ).toBeVisible();
 
   // --- Save --------------------------------------------------------------
   await page.getByRole("button", { name: /^save$/i }).click();
@@ -245,7 +267,9 @@ test("Decision node (binary) wires both branches and the true branch executes", 
   // --- Also assert at the UI level: the in-designer execution panel -------
   // The execution panel's status Badge renders the bare word "completed"
   // and nothing else on the page does, so this needs no extra scoping.
-  await expect(page.getByText("completed", { exact: true }).last()).toBeVisible({ timeout: 60_000 });
+  await expect(page.getByText("completed", { exact: true }).last()).toBeVisible({
+    timeout: 60_000,
+  });
   // The panel's per-node result list is the page's only <ol>/<li> list
   // (`designer-execution-panel.tsx`'s `orderedNodeEntries.map`), and only
   // gets an entry for a node that actually ran — "end_false" is always

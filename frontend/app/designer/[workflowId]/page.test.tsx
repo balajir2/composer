@@ -80,7 +80,10 @@ vi.mock("@/components/composer/canvas/workflow-canvas", () => ({
       <div>
         <button
           onClick={() =>
-            onNodesChange?.([...initialNodes, { id: "new", type: "agent", position: { x: 0, y: 0 }, data: {} }])
+            onNodesChange?.([
+              ...initialNodes,
+              { id: "new", type: "agent", position: { x: 0, y: 0 }, data: {} },
+            ])
           }
         >
           edit-nodes
@@ -121,9 +124,7 @@ function workflowFixture(id: string) {
     tags: [],
     difficulty: null,
     estimatedTime: null,
-    nodes: [
-      { id: "start-1", type: "start", position: { x: 0, y: 0 }, data: {} },
-    ],
+    nodes: [{ id: "start-1", type: "start", position: { x: 0, y: 0 }, data: {} }],
     edges: [],
     version: 1,
     isTemplate: false,
@@ -174,9 +175,7 @@ describe("DesignerCanvasPage autosave dirty-tracking", () => {
 
     // A genuinely different edit afterward must still flip it dirty.
     fireEvent.click(screen.getByText("edit-nodes"));
-    await waitFor(() =>
-      expect(screen.getByTestId("save-status").textContent).toBe("dirty")
-    );
+    await waitFor(() => expect(screen.getByTestId("save-status").textContent).toBe("dirty"));
   });
 
   it("marks dirty on a real edit after mount", async () => {
@@ -188,9 +187,7 @@ describe("DesignerCanvasPage autosave dirty-tracking", () => {
 
     fireEvent.click(screen.getByText("edit-nodes"));
 
-    await waitFor(() =>
-      expect(screen.getByTestId("save-status").textContent).toBe("dirty")
-    );
+    await waitFor(() => expect(screen.getByTestId("save-status").textContent).toBe("dirty"));
   });
 
   it("re-arms mount-vs-edit tracking when navigating to a different workflowId", async () => {
@@ -215,8 +212,6 @@ describe("DesignerCanvasPage autosave dirty-tracking", () => {
     );
 
     await waitFor(() => expect(getWorkflow).toHaveBeenCalledWith("wf-b"));
-    await waitFor(() =>
-      expect(screen.getByTestId("save-status").textContent).toBe("idle")
-    );
+    await waitFor(() => expect(screen.getByTestId("save-status").textContent).toBe("idle"));
   });
 });

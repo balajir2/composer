@@ -47,8 +47,8 @@ export default function UserApprovalPanel({
           placeholder="approver@example.com"
         />
         <p className="text-[10px] text-muted-foreground">
-          If set, this person gets an email with one-click Approve/Reject links — no
-          Composer login required. In-app approval always still works too.
+          If set, this person gets an email with one-click Approve/Reject links — no Composer login
+          required. In-app approval always still works too.
         </p>
       </div>
 
@@ -73,10 +73,10 @@ export default function UserApprovalPanel({
           className="font-mono text-xs"
         />
         <p className="text-[10px] text-muted-foreground">
-          Attaches a file to the approval email — typically an upstream File Write
-          node&apos;s output, e.g. <code>{"{{lastOutput}}"}</code>. Only files under the
-          server&apos;s configured attachment directory are attached; anything else is
-          silently skipped and the email still sends.
+          Attaches a file to the approval email — typically an upstream File Write node&apos;s
+          output, e.g. <code>{"{{lastOutput}}"}</code>. Only files under the server&apos;s
+          configured attachment directory are attached; anything else is silently skipped and the
+          email still sends.
         </p>
       </div>
     </div>

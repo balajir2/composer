@@ -60,8 +60,7 @@ export default function AdminLlmModelsPage() {
   });
 
   const toggleEnabled = useMutation({
-    mutationFn: (m: LlmModelSummary) =>
-      adminUpdateLlmModel(m.id, { enabled: !m.enabled }),
+    mutationFn: (m: LlmModelSummary) => adminUpdateLlmModel(m.id, { enabled: !m.enabled }),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["admin-llm-models"] }),
     onError: (err) => toast.error(err instanceof Error ? err.message : "Failed."),
   });
@@ -95,15 +94,12 @@ export default function AdminLlmModelsPage() {
             : `${resp.model.modelId}: not available for this key. ${resp.message}`
         );
       } else if (resp.status === "auth_error") {
-        toast.error(
-          `${resp.model.provider} key rejected — fix the key, then re-verify.`
-        );
+        toast.error(`${resp.model.provider} key rejected — fix the key, then re-verify.`);
       } else {
         toast.error(`Probe failed: ${resp.message}`);
       }
     },
-    onError: (err) =>
-      toast.error(err instanceof Error ? err.message : "Verify failed."),
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Verify failed."),
     onSettled: () => setVerifyingId(null),
   });
 
@@ -113,8 +109,7 @@ export default function AdminLlmModelsPage() {
         <div>
           <h2 className="text-2xl font-semibold">LLM models</h2>
           <p className="text-sm text-muted-foreground">
-            Available models per provider. Designers pick from this list on
-            agent nodes.
+            Available models per provider. Designers pick from this list on agent nodes.
           </p>
         </div>
         <CreateModelDialog existing={data ?? []} />
@@ -227,9 +222,7 @@ function VerificationCell({ model }: { model: LlmModelSummary }) {
         >
           verified
         </Badge>
-        <span className="text-xs text-muted-foreground">
-          {relativeTime(model.verifiedAt)}
-        </span>
+        <span className="text-xs text-muted-foreground">{relativeTime(model.verifiedAt)}</span>
       </div>
     );
   }
@@ -240,9 +233,7 @@ function VerificationCell({ model }: { model: LlmModelSummary }) {
       <Badge variant="destructive" className="w-fit" title={model.verificationMessage ?? ""}>
         unavailable
       </Badge>
-      <span className="text-xs text-muted-foreground">
-        {relativeTime(model.verifiedAt)}
-      </span>
+      <span className="text-xs text-muted-foreground">{relativeTime(model.verifiedAt)}</span>
     </div>
   );
 }
@@ -280,9 +271,7 @@ function CreateModelDialog({ existing }: { existing: LlmModelSummary[] }) {
   const alreadyAddedIds = new Set(
     existing.filter((m) => m.provider === provider).map((m) => m.modelId)
   );
-  const liveModels = (liveResp?.models ?? []).filter(
-    (m) => !alreadyAddedIds.has(m.modelId)
-  );
+  const liveModels = (liveResp?.models ?? []).filter((m) => !alreadyAddedIds.has(m.modelId));
   const fellBackToDb =
     !liveLoading &&
     !liveError &&
@@ -407,15 +396,14 @@ function CreateModelDialog({ existing }: { existing: LlmModelSummary[] }) {
               </p>
             ) : modelOptions.length === 0 && DB_ONLY_PROVIDERS.has(provider) ? (
               <p className="text-xs text-muted-foreground">
-                {provider} has no live model catalog to discover from — models
-                are admin-curated only. Switch to manual entry to add your
-                first one.
+                {provider} has no live model catalog to discover from — models are admin-curated
+                only. Switch to manual entry to add your first one.
               </p>
             ) : modelOptions.length === 0 ? (
               <p className="text-xs text-muted-foreground">
-                No new {provider} models to add — everything the provider
-                exposes is already in the table. Switch to manual entry if
-                you need a model the provider hasn&apos;t listed yet.
+                No new {provider} models to add — everything the provider exposes is already in the
+                table. Switch to manual entry if you need a model the provider hasn&apos;t listed
+                yet.
               </p>
             ) : (
               <>

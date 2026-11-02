@@ -67,7 +67,7 @@ export function ResetPasswordDialog({ user }: { user: AdminUser }) {
             </DialogDescription>
           </DialogHeader>
           {tempPassword && (
-            <div className="rounded-md border bg-muted/40 p-3">
+            <div className="bg-muted/40 rounded-md border p-3">
               <code className="break-all text-sm font-medium">{tempPassword}</code>
             </div>
           )}

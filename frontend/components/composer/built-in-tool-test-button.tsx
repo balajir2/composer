@@ -5,17 +5,9 @@ import { useMutation } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { testBuiltInTool } from "@/lib/api/admin";
-import {
-  InlineTestResult,
-  type InlineTestState,
-} from "@/components/composer/inline-test-result";
+import { InlineTestResult, type InlineTestState } from "@/components/composer/inline-test-result";
 
-export function BuiltInToolTestButton({
-  toolId,
-}: {
-  toolId: string;
-  toolLabel?: string;
-}) {
+export function BuiltInToolTestButton({ toolId }: { toolId: string; toolLabel?: string }) {
   const [state, setState] = useState<InlineTestState>({ kind: "idle" });
 
   const mutation = useMutation({
@@ -23,9 +15,7 @@ export function BuiltInToolTestButton({
     onMutate: () => setState({ kind: "pending" }),
     onSuccess: (res) => {
       setState(
-        res.ok
-          ? { kind: "success", message: res.message }
-          : { kind: "error", message: res.message }
+        res.ok ? { kind: "success", message: res.message } : { kind: "error", message: res.message }
       );
     },
     onError: (err) =>

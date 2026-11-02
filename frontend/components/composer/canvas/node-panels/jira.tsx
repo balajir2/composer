@@ -88,10 +88,8 @@ export default function JiraPanel({
   return (
     <div className="space-y-4">
       {/* Credentials */}
-      <div className="rounded-md border bg-muted/20 p-3">
-        <p className="mb-2 text-xs font-semibold text-muted-foreground">
-          Jira Connection
-        </p>
+      <div className="bg-muted/20 rounded-md border p-3">
+        <p className="mb-2 text-xs font-semibold text-muted-foreground">Jira Connection</p>
         <div className="space-y-2">
           <div className="space-y-1">
             <Label htmlFor="jira-domain" className="text-xs">
@@ -192,8 +190,8 @@ export default function JiraPanel({
                 <p className="text-xs text-muted-foreground">Loading models…</p>
               ) : modelOptions.length === 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  No models enabled for this provider. Ask an admin to add one
-                  under Admin → LLM models.
+                  No models enabled for this provider. Ask an admin to add one under Admin → LLM
+                  models.
                 </p>
               ) : (
                 <NativeSelect
@@ -215,11 +213,7 @@ export default function JiraPanel({
               min={1}
               max={100}
               placeholder="10 (default)"
-              value={
-                typeof data.maxIterations === "number"
-                  ? String(data.maxIterations)
-                  : ""
-              }
+              value={typeof data.maxIterations === "number" ? String(data.maxIterations) : ""}
               onChange={(e) => {
                 const v = e.target.value;
                 if (v === "") {
@@ -231,8 +225,8 @@ export default function JiraPanel({
               }}
             />
             <p className="text-xs text-muted-foreground">
-              How many LLM ↔ tool round-trips the node is allowed before giving
-              up. Default 10, hard ceiling 100.
+              How many LLM ↔ tool round-trips the node is allowed before giving up. Default 10, hard
+              ceiling 100.
             </p>
           </div>
         </>
@@ -246,7 +240,7 @@ export default function JiraPanel({
               id="jira-jql"
               value={jql}
               onChange={(e) => onChange({ jql: e.target.value })}
-              placeholder="project = ABC AND status = &quot;In Progress&quot;"
+              placeholder='project = ABC AND status = "In Progress"'
               rows={2}
               className="font-mono text-xs"
             />
@@ -271,8 +265,8 @@ export default function JiraPanel({
               className="font-mono text-xs"
             />
             <p className="text-xs text-muted-foreground">
-              Comma-separated Jira field names/IDs to request. No default —
-              every workflow specifies exactly what it needs.
+              Comma-separated Jira field names/IDs to request. No default — every workflow specifies
+              exactly what it needs.
             </p>
           </div>
 
@@ -280,8 +274,8 @@ export default function JiraPanel({
             <div>
               <p className="text-sm font-medium">Expand changelog</p>
               <p className="text-xs text-muted-foreground">
-                Include status-transition history per issue (needed for
-                blocker-age/staleness calculations downstream).
+                Include status-transition history per issue (needed for blocker-age/staleness
+                calculations downstream).
               </p>
             </div>
             <input
@@ -302,11 +296,7 @@ export default function JiraPanel({
               min={1}
               max={5000}
               placeholder="1000 (default)"
-              value={
-                typeof data.maxIssues === "number"
-                  ? String(data.maxIssues)
-                  : ""
-              }
+              value={typeof data.maxIssues === "number" ? String(data.maxIssues) : ""}
               onChange={(e) => {
                 const v = e.target.value;
                 if (v === "") {

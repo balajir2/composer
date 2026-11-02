@@ -84,8 +84,8 @@ export function SampleStateField({
         <p className="text-xs text-destructive">{error}</p>
       ) : (
         <p className="text-xs text-muted-foreground">
-          Pre-filled from the workflow&apos;s most recent execution, if any. Edit
-          freely before testing.
+          Pre-filled from the workflow&apos;s most recent execution, if any. Edit freely before
+          testing.
         </p>
       )}
     </div>

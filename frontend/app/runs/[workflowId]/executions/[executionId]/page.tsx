@@ -75,11 +75,7 @@ export default function ExecutionPage({
     // whether the WS terminal event already pinned finalStatus.  The WS
     // event only carries status, so without this branch a finalStatus that
     // arrived via WS would gate the output-from-DB path forever.
-    if (
-      finalOutput === null &&
-      execution.output !== null &&
-      execution.output !== undefined
-    ) {
+    if (finalOutput === null && execution.output !== null && execution.output !== undefined) {
       setFinalOutput(execution.output);
     }
   }, [execution, finalStatus, finalOutput]);
@@ -112,9 +108,7 @@ export default function ExecutionPage({
   // Surface either the WS-delivered output or the polled execution row's
   // output — whichever fired first.
   const resolvedOutput =
-    finalOutput !== null && finalOutput !== undefined
-      ? finalOutput
-      : (execution.output ?? null);
+    finalOutput !== null && finalOutput !== undefined ? finalOutput : (execution.output ?? null);
   const hasResolvedOutput = resolvedOutput !== null && resolvedOutput !== undefined;
 
   // Per-node outputs straight from the persisted execution row — works
@@ -147,7 +141,7 @@ export default function ExecutionPage({
       />
 
       {status === "failed" && execution.error && (
-        <div className="flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        <div className="border-destructive/40 bg-destructive/10 flex items-start gap-2 rounded-md border px-3 py-2 text-sm text-destructive">
           <AlertCircle className="mt-0.5 size-4 shrink-0" />
           <div className="min-w-0 flex-1">
             <div className="font-semibold">Execution failed</div>
@@ -173,11 +167,10 @@ export default function ExecutionPage({
             </CardHeader>
             <CardContent>
               <p className="text-sm text-muted-foreground">
-                The workflow completed but didn&apos;t set a final output.
-                Expand the node trace below to see intermediate values, or
-                add an End node connected after your last useful node so
-                its <code className="font-mono">lastOutput</code> propagates
-                as the final result.
+                The workflow completed but didn&apos;t set a final output. Expand the node trace
+                below to see intermediate values, or add an End node connected after your last
+                useful node so its <code className="font-mono">lastOutput</code> propagates as the
+                final result.
               </p>
             </CardContent>
           </Card>
@@ -192,7 +185,7 @@ export default function ExecutionPage({
             Show input
           </summary>
           <div className="border-t px-4 py-3">
-            <pre className="max-h-48 overflow-auto rounded-md bg-muted/30 p-3 text-xs">
+            <pre className="bg-muted/30 max-h-48 overflow-auto rounded-md p-3 text-xs">
               {renderValue(execution.input)}
             </pre>
           </div>
@@ -238,7 +231,7 @@ export default function ExecutionPage({
                       <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
                         input
                       </summary>
-                      <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/40 px-2 py-1 font-mono text-muted-foreground">
+                      <pre className="bg-muted/40 mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded px-2 py-1 font-mono text-muted-foreground">
                         {renderValue(nr.input)}
                       </pre>
                     </details>
@@ -248,7 +241,7 @@ export default function ExecutionPage({
                       <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
                         output
                       </summary>
-                      <pre className="mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/60 px-2 py-1 font-mono text-muted-foreground">
+                      <pre className="bg-muted/60 mt-1 max-h-60 overflow-auto whitespace-pre-wrap break-words rounded px-2 py-1 font-mono text-muted-foreground">
                         {renderValue(nr.output)}
                       </pre>
                     </details>
@@ -259,7 +252,6 @@ export default function ExecutionPage({
           </div>
         </details>
       )}
-
     </div>
   );
 }

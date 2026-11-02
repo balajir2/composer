@@ -107,13 +107,17 @@ export default function DataTransformPanel({
           onChange={(e) => onChange({ expression: e.target.value })}
           rows={4}
           placeholder={
-            operation === "filter" ? "item.active" : operation === "reduce" ? "acc + item.value" : "item.name"
+            operation === "filter"
+              ? "item.active"
+              : operation === "reduce"
+                ? "acc + item.value"
+                : "item.name"
           }
           className="font-mono text-xs"
         />
         <p className="text-xs text-muted-foreground">
-          A simpleeval expression, evaluated once per item — plain Python-like syntax, not
-          a templating language.
+          A simpleeval expression, evaluated once per item — plain Python-like syntax, not a
+          templating language.
           {operation === "map" && " Its result becomes that item's output."}
           {operation === "filter" && " Items where this evaluates truthy are kept."}
           {operation === "reduce" &&
@@ -174,8 +178,8 @@ export default function DataTransformPanel({
             <div className="space-y-1">
               {testMutation.data.truncated && (
                 <p className="text-xs text-amber-600">
-                  Tested against the first {testMutation.data.itemCount} items — the
-                  full collection has more.
+                  Tested against the first {testMutation.data.itemCount} items — the full collection
+                  has more.
                 </p>
               )}
               <pre className="overflow-x-auto rounded bg-muted p-2 text-xs">

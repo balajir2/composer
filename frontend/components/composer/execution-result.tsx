@@ -38,9 +38,7 @@ function escapeHtml(s: string): string {
 function downloadAsPdf(content: string, title: string): void {
   const w = window.open("", "_blank", "width=900,height=700");
   if (!w) {
-    alert(
-      "Couldn't open the print window — check that pop-ups are allowed for this site."
-    );
+    alert("Couldn't open the print window — check that pop-ups are allowed for this site.");
     return;
   }
   const html = `<!doctype html>
@@ -63,13 +61,7 @@ function downloadAsPdf(content: string, title: string): void {
   w.document.close();
 }
 
-export function ExecutionResult({
-  output,
-  title = "Result",
-}: {
-  output: unknown;
-  title?: string;
-}) {
+export function ExecutionResult({ output, title = "Result" }: { output: unknown; title?: string }) {
   const pretty = toText(output);
   const ts = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const slug = title
@@ -85,9 +77,7 @@ export function ExecutionResult({
           <Button
             variant="outline"
             size="sm"
-            onClick={() =>
-              downloadBlob(`${slug}-${ts}.md`, "text/markdown;charset=utf-8", pretty)
-            }
+            onClick={() => downloadBlob(`${slug}-${ts}.md`, "text/markdown;charset=utf-8", pretty)}
             title="Download as Markdown (.md)"
           >
             <FileText className="mr-1 h-3.5 w-3.5" />

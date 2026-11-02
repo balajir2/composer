@@ -259,8 +259,8 @@ export default function HttpPanel({
         />
         <p className="text-[10px] text-muted-foreground">
           Dot-separated path into the JSON response to use as this node&apos;s output (e.g.{" "}
-          <code className="font-mono">data.items.0.id</code>). Leave blank to use the full
-          response body.
+          <code className="font-mono">data.items.0.id</code>). Leave blank to use the full response
+          body.
         </p>
       </div>
     </div>

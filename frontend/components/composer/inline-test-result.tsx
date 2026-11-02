@@ -39,7 +39,7 @@ export function InlineTestResult({
         type="button"
         onClick={onDismiss}
         aria-label="Dismiss"
-        className="shrink-0 rounded p-0.5 hover:bg-current/10"
+        className="hover:bg-current/10 shrink-0 rounded p-0.5"
       >
         <X className="size-3" />
       </button>

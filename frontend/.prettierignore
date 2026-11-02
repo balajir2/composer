@@ -4,3 +4,4 @@ out
 public
 components/ui
 lib/api/generated
+package-lock.json
