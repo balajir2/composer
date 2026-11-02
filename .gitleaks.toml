@@ -1,0 +1,23 @@
+# Secret-scanning config (audit P1-4). Extends gitleaks' default ruleset.
+#
+# The allowlist below is deliberately NARROW — specific, documented placeholder
+# strings only — never whole directories, so a real secret committed next to
+# them is still caught. Each entry was reviewed against the full history on
+# 2026-11-02 (24 findings, all placeholders). Add to it only after verifying
+# a finding is fake, and say why here.
+title = "composer gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Reviewed placeholder strings"
+regexes = [
+  # Doc examples: `curl -H "Authorization: Bearer ck_YOUR_KEY"`.
+  '''ck_YOUR_KEY''',
+  # Unit/integration test signing secrets and passwords (never real credentials).
+  '''test-secret-at-least-32-chars-long-for-hs256''',
+  '''iep-test-secret-[a-z0-9-]+''',
+  '''other-pass-12345''',
+  '''wrong-secret-padded-to-32chars-xx''',
+]
