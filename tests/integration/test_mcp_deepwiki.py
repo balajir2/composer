@@ -10,7 +10,7 @@ import os
 import pytest
 from httpx import AsyncClient
 
-pytestmark = pytest.mark.integration
+pytestmark = [pytest.mark.integration, pytest.mark.live]
 
 
 async def _poll_until_terminal(
