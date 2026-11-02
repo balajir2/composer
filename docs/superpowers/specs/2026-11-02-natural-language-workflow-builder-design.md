@@ -48,9 +48,17 @@ These are the product-level constraints agreed before design, and this spec trea
   agent reads the failure context itself (failed node, error, `node_results`, variables), explains
   it, and proposes a concrete node/edge patch. The user reviews a before/after diff and approves
   before anything is applied. No silent auto-fix.
-- **The build conversation is ephemeral.** Chat history, plan cards, and patch history live only in
-  the browser and are lost on reload. There is **no new conversation/session table**. The *workflow*
-  itself is persisted normally (it is a normal workflow row), but the transcript is not.
+- **The builder's workflow persists even while invalid.** A partial build is never discarded: at
+  each turn boundary the nodes/edges are saved as-is, and any structural violations (unreachable
+  node, missing end node, dangling edge, wrong branch label) are collected and reported as
+  `validation_errors` to be rectified — by the agent on a later turn or by the user on the canvas.
+  Shape invalidity is a *rectifiable state*, not a reason to reject a save. Publishing stays gated
+  on a fully valid workflow.
+- **The build conversation is ephemeral.** Chat history, plan cards, and patch history are **not
+  persisted to any table** and are lost on reload or server restart. The server holds the agent's
+  conversation context **in process memory** for the lifetime of the build (see "Turn model" below),
+  discarded once the workflow is built or the session goes idle. The *workflow* itself is persisted
+  normally (it is a normal workflow row), but the conversation is not.
 - **Approach: tool-calling builder agent** (chosen over one-shot structured-output regeneration and
   over modeling the builder as its own LangGraph state machine). The agent is a single LLM loop —
   mirroring `src/executors/agent.py`'s existing hand-rolled tool-call loop — armed with a small set
@@ -64,39 +72,43 @@ These are the product-level constraints agreed before design, and this spec trea
 
 | File | Responsibility |
 |---|---|
-| `builder_agent.py` | The agent loop. Given a turn (message + transcript + optional `execution_id`), binds the builder tools, iterates tool-call → result (bounded, like `agent.py`'s max-iterations), and returns typed events + a final reply + the updated workflow. **Stateless between turns** — see "Turn model" below. |
-| `builder_tools.py` | LangChain `StructuredTool` definitions: `plan_workflow`, `create_node`, `update_node`, `remove_node`, `connect_nodes`, `set_start_inputs`, `request_credential`, `diagnose`, `propose_patch`. Each returns a structured result; invalid mutations return a `WorkflowValidationError` message as the tool *result* so the model can self-correct. |
+| `builder_agent.py` | The agent loop. Given a turn (message + in-memory session + optional `execution_id`), binds the builder tools, iterates tool-call → result (bounded, like `agent.py`'s max-iterations), and returns typed events + a final reply + the updated workflow. The session holds the agent's message history between turns — see "Turn model" below. |
+| `builder_tools.py` | LangChain `StructuredTool` definitions: `plan_workflow`, `create_node`, `update_node`, `remove_node`, `connect_nodes`, `set_start_inputs`, `request_credential`, `diagnose`, `propose_patch`. Each returns a structured result; an invalid mutation returns the violation text (schema *or* shape) as the tool *result* so the model can self-correct. |
 | `node_catalog.py` | Builds a compact LLM-friendly catalog of all node types (type, purpose, key fields, credential dependencies) by reflecting over `src/engine/workflow.py`'s Pydantic models. Injected into the system prompt every turn so the agent knows the valid vocabulary. |
 | `diagnostics.py` | Assembles a diagnosis context from an `execution_id` (reads `db.workflowexecution`, extracts `status`, `error`, `nodeResults`, a bounded tail of `variables`). Redacts secrets before the context reaches the model. |
 | `layout.py` | Dependency-free deterministic layered layout (topological depth → column/row with fixed spacing). Advisory only — positions are ordinary `Position{x,y}` values the user can drag afterward. |
 | `prompts.py` | System-prompt templates (builder, planner, patcher personas) + the node-catalog splice. |
 
-### Turn model and transport (stateless server)
+### Turn model and transport (in-memory session)
 
-The conversation is ephemeral, so the server holds **no** session state between turns — this is
-both the simplest way to honor "no persistence" and the correct choice for the Cloud Run topology
-(multiple instances; a subsequent turn may land on a different instance, so in-memory session state
-would be unsafe). The browser owns the transcript:
+The conversation is ephemeral — not persisted to any table — but the agent still needs its full
+message history (the approved plan, pending patch, and prior tool calls) across turns. So the server
+holds that context **in process memory** for the lifetime of the build, in a `BuildSession` object
+keyed by a random `session_id` and stored on `app.state` (the same pattern the existing checkpointer
+and event bus use):
 
-- Each `POST /builder/{workflowId}/message` carries `{ message, transcript?, execution_id? }`.
-  `transcript` is the compact client-held history (user/assistant text + the structured plan and
-  patch proposals the agent previously emitted) so the agent has multi-turn context. `execution_id`
-  is set when the user is asking for help with a specific failed run.
-- The server reconstructs agent context from **transcript + current workflow row (read from DB) +
-  node catalog**. It does not need to re-fetch or replay anything else.
+- First call: `POST /builder/{workflowId}/message` (`{ message }`) creates a session and returns its
+  `session_id`. Subsequent calls send `{ message, session_id?, execution_id? }`. `execution_id` is set
+  when the user is asking for help with a specific failed run.
+- The `BuildSession` holds the LangChain message list (user/assistant/tool messages), the current
+  plan, and any pending patch proposal. The client holds only the `session_id` (plus a display
+  transcript for the UI, which is *not* round-tripped as agent context).
+- The session is discarded when the build completes or after an idle TTL (e.g. 30 minutes) to bound
+  memory. Because it is process-local, a turn that lands on a **different instance** (Cloud Run) or
+  after a restart finds no session and returns a typed `session_expired` event; the client clears its
+  `session_id` and offers "start over". This only loses the chat thread — the workflow itself is
+  already persisted per stage, matching the agreed ephemeral semantics.
 
-The workflow state itself *is* persisted — at **turn boundaries**. Within a turn the agent may make
-several tool calls whose intermediate graph states are invalid (a node placed before it is
-connected). The server applies deltas to an in-memory copy and, at end of turn, validates the result
-with `validate_workflow_shape`; only a valid result is committed. This deliberately sidesteps the
-autosave-vs-partial-build problem: builder edits are committed by the builder endpoint, while the
-user's subsequent *manual* edits continue to flow through the existing 3s-debounced autosave
-(`frontend/lib/use-autosave.ts` → `PUT /workflows/{id}`).
+The workflow state *is* persisted — at **turn boundaries**, even when still structurally invalid
+(see "Persistence of builder edits" below). Within a turn the agent may make several tool calls whose
+intermediate graph states are invalid (a node placed before it is connected); those intermediate
+states are not persisted, but the end-of-turn state is, valid or not, so no progress is ever
+discarded and the remaining errors are surfaced for rectification.
 
 ### API: `src/api/builder.py` (new)
 
-- `POST /builder/{workflowId}/message` — request `{ message, transcript?, execution_id? }`; response
-  `{ events: BuilderEvent[], reply: str, workflow: WorkflowRead }`.
+- `POST /builder/{workflowId}/message` — request `{ message, session_id?, execution_id? }`; response
+  `{ session_id: str, events: BuilderEvent[], reply: str, workflow: WorkflowRead, validation_errors: string[] }`.
   - `events` is a list of a discriminated `BuilderEvent` union:
     - `plan` — `{ stages: [{ id, summary, credential_requirements?: ... }] }`
     - `stage_applied` — `{ stage_id, summary, node_count, edge_count }`
@@ -104,6 +116,10 @@ user's subsequent *manual* edits continue to flow through the existing 3s-deboun
     - `patch_proposal` — `{ diff: { added_nodes, removed_nodes, changed_nodes, added_edges, removed_edges }, explanation }`
     - `message` — plain assistant prose
     - `error` — a failed turn (structured, standard error shape)
+    - `session_expired` — the in-memory session was not found (instance switch or restart)
+  - `validation_errors` is the (possibly non-empty) list of structural violations in the current
+    workflow, from `collect_workflow_violations` — surfaced to the user and fed back to the agent as
+    rectification targets. Empty once the workflow is fully valid.
   - `workflow` is the (possibly updated) workflow, returned through the same `_to_workflow_read`
     redaction path `src/api/workflows.py` already uses, so secrets never reach the client.
 - Auth mirrors `workflows.py`: `Depends(get_current_role)` + the same owner/assignee authorization
@@ -114,13 +130,35 @@ user's subsequent *manual* edits continue to flow through the existing 3s-deboun
 
 ### Persistence of builder edits
 
-The builder endpoint reuses `src/api/workflows.py`'s write path rather than duplicating it: it
-mutates the workflow in memory, calls `validate_workflow_shape` + `_check_workflow_size_limits`,
-runs the `_encrypt_jira_tokens` / `_encrypt_vector_db_keys` / `_encrypt_http_headers` /
-`_encrypt_confluence_tokens` helpers against the existing row (preserving redacted-marker
-semantics), and persists via `db.workflow.update`. This is the single most important correctness
-decision in the spec: builder-generated workflows are indistinguishable from hand-built ones, and
-every existing secret-encryption/redaction guarantee applies automatically.
+The builder persists at **every turn boundary, valid or not**, so a partial build is never discarded.
+This requires a builder-scoped write path that is distinct from `update_workflow` in exactly one
+respect — it skips the shape-validation gate:
+
+- The builder mutates the workflow in memory, then persists via `db.workflow.update`, running the
+  same `_encrypt_jira_tokens` / `_encrypt_vector_db_keys` / `_encrypt_http_headers` /
+  `_encrypt_confluence_tokens` helpers against the existing row (preserving redacted-marker
+  semantics). Secrets are encrypted **even in structurally-invalid intermediate states** — the
+  `_encrypt_*` helpers operate on node dicts, independent of graph shape.
+- Instead of rejecting on `validate_workflow_shape` (which raises on the first violation), the
+  builder calls a new `collect_workflow_violations(workflow) -> list[str]` helper in
+  `src/engine/graph_builder.py` that gathers **all** structural violations. It reports them in
+  `validation_errors`, feeds them back into the agent's next-turn context as rectification targets,
+  and surfaces them in the UI ("N issues to fix").
+- `_check_workflow_size_limits` still applies: the builder may not exceed the 100-node/200-edge caps
+  (that is a hard resource bound, not a rectifiable shape error).
+
+`validate_workflow_shape` itself is refactored to be implemented in terms of
+`collect_workflow_violations` (raise on the first collected violation), preserving its exact
+raise-on-first contract for existing callers — this keeps the helper and the validator from drifting
+apart.
+
+The reconciliation with the existing save path is deliberate and correct: the **normal** autosave
+(`frontend/lib/use-autosave.ts` → `PUT /workflows/{id}`) continues to reject invalid workflows —
+that is the existing product contract, and it is why the builder must bypass it while a build is in
+flight. Publishing (`isProduction`) also stays gated on full validity + clean variable references.
+Once the builder (or the user) rectifies the last error, the workflow is valid and the normal path
+accepts it again. A workflow left invalid is still visible and editable on the canvas — React Flow
+renders it — with its errors surfaced until resolved.
 
 ### Model configuration
 
@@ -133,8 +171,9 @@ uses `src/llm/structured_output.py`'s `structured_invoke`.
 
 ### Frontend: `frontend/components/composer/builder-chat/` (new)
 
-- `builder-panel.tsx` — the collapsible/resizable chat panel mounted in the designer page; owns the
-  ephemeral transcript + event list.
+- `builder-panel.tsx` — the collapsible/resizable chat panel mounted in the designer page; holds the
+  `session_id` and a display transcript for rendering (the agent's context lives server-side in the
+  `BuildSession`).
 - Card components: assistant text; **plan card** (stages with status, Approve/Edit); **credential
   request card** (button → opens the existing flow); **patch-diff card** (before/after with
   Approve/Reject).
@@ -172,13 +211,15 @@ surface the currently-available resources so the agent can reference them.
 
 1. User types a description in the chat panel.
 2. `POST /builder/{id}/message` (`{ message }`). Server reads the workflow, injects the node catalog,
-   runs the agent → emits a `plan` event + a prose summary, returns control. No workflow mutation.
+   runs the agent → emits a `plan` event + a prose summary, returns a new `session_id`. No workflow
+   mutation.
 3. Frontend renders the plan card with Approve/Edit. (Edit lets the user annotate stages before
    approving.)
-4. User approves → `POST /builder/{id}/message` (`{ message: "approve", transcript: [plan…] }`).
-5. Agent applies stage 1 (several `create_node`/`connect_nodes` tool calls), validates at stage end,
-   persists, emits `stage_applied` + the updated `workflow`. Frontend renders the new nodes on the
-   canvas and asks for the next confirmation.
+4. User approves → `POST /builder/{id}/message` (`{ message: "approve", session_id }`).
+5. Agent applies stage 1 (several `create_node`/`connect_nodes` tool calls), persists the end-of-turn
+   state at the stage boundary — even if still invalid, with `validation_errors` reported — and emits
+   `stage_applied` + the updated `workflow`. Frontend renders the new nodes on the canvas and asks
+   for the next confirmation.
 6. Repeat per stage. At any point a `credential_request` may appear; the frontend shows the card and
    opens the relevant existing flow; once resolved, the user says "done" and the agent continues.
 7. When the flow is complete, the user runs it through the existing inline-test path.
@@ -188,24 +229,28 @@ surface the currently-available resources so the agent can reference them.
 1. User runs the workflow (existing `POST /executions` + `designer-execution-panel.tsx`); it fails
    (`ExecutionRead.status = "failed"`, populated `error` + `nodeResults`).
 2. User clicks "ask builder" (or types into the panel) with the failed `execution_id` attached.
-3. `POST /builder/{id}/message` (`{ message, execution_id }`). Agent calls `diagnose(execution_id)`,
-   reads the redacted failure context, explains it, and emits a `patch_proposal` (concrete diff).
-4. Frontend renders the patch-diff card; user **Approves** → next turn applies the patch (validates +
-   persists, emits `stage_applied`). **Rejects** → agent stands down.
+3. `POST /builder/{id}/message` (`{ message, execution_id, session_id }`). Agent calls
+   `diagnose(execution_id)`, reads the redacted failure context, explains it, and emits a
+   `patch_proposal` (concrete diff).
+4. Frontend renders the patch-diff card; user **Approves** → next turn applies the patch (persists
+   the updated workflow — even if other errors remain — emits `stage_applied`). **Rejects** → agent
+   stands down.
 
 ---
 
 ## Error handling
 
 - **Tool-level:** a `create_node`/`update_node`/`connect_nodes` call that yields an invalid graph
-  returns `WorkflowValidationError` text as the tool result, so the agent self-corrects within its
-  iteration budget; it is not surfaced to the user as a hard failure.
-- **Turn-level:** if the agent exhausts its iteration budget without reaching a valid, savable state,
-  the turn returns an `error` event with the standard structured error shape and the workflow is left
-  untouched (the in-memory copy is discarded; nothing partial is committed).
-- **Validation is the contract:** the builder never produces a graph that bypasses
-  `validate_workflow_shape`, the 100-node/200-edge caps, or the secret-encryption path — because it
-  persists through `workflows.py`'s logic, it inherits all of those guarantees.
+  returns the violation text as the tool result, so the agent self-corrects within its iteration
+  budget; it is not surfaced to the user as a hard failure.
+- **Turn-level:** if the agent exhausts its iteration budget, the turn still returns the workflow as
+  it stands (persisted with its `validation_errors` reported) rather than throwing work away — the
+  remaining errors become the explicit rectification targets for the next turn or the user.
+- **Schema is the hard contract; shape is a rectifiable state.** Node/edge *schema* violations (a
+  field that doesn't match the Pydantic model) are rejected before they ever land — the builder can
+  only produce well-typed nodes. *Shape* violations (unreachable node, missing end, branch-label
+  mismatch) are collected and reported via `collect_workflow_violations`, never silently persisted
+  without being surfaced. Secrets are always encrypted via the `_encrypt_*` helpers, valid or not.
 
 ## Security
 
@@ -217,7 +262,7 @@ surface the currently-available resources so the agent can reference them.
 - **Generated `http` nodes** are subject to the same SSRF guard as hand-built ones at execution time
   (the guard lives in the HTTP executor, not the builder).
 - **Prompt-injection posture.** User natural language is untrusted input, but the agent's action
-  space is bounded to node/edge mutations that must pass schema + shape validation; it cannot execute
+  space is bounded to node/edge mutations that must pass *schema* validation; it cannot execute
   arbitrary code or reach outside the workflow schema at build time. No filesystem or shell tools are
   exposed to the builder.
 - **Cost/abuse.** New per-user rate limit on the builder endpoint (above); each turn is iteration-
@@ -231,7 +276,12 @@ surface the currently-available resources so the agent can reference them.
   (mocked LLM emitting a bad `create_node` then a corrected one).
 - **Endpoint tests:** `POST /builder/{id}/message` authz (owner/assignee/admin allowed, other → 404);
   a build turn persists a valid workflow through the encryption helpers; an invalid end-of-turn
-  state is discarded; rate-limit enforcement.
+  state is persisted **with** `validation_errors` reported (not discarded); a turn with an unknown
+  `session_id` returns `session_expired`; rate-limit enforcement.
+- **`collect_workflow_violations` tests:** each shape-violation class (missing/duplicate start,
+  missing end, unreachable node, dangling edge, branch-label mismatch, end/join incoming-outgoing
+  rules) is collected; `validate_workflow_shape` still raises on the first, matching its existing
+  tested contract.
 - **Agent tests with mocked LLM:** deterministic tool-call sequences for plan→approve→build and
   diagnose→propose→apply, mirroring the existing executor test pattern.
 - **Frontend:** Vitest for plan/credential/patch-diff cards and the transcript reducer; Playwright
@@ -245,9 +295,14 @@ surface the currently-available resources so the agent can reference them.
   data-model touchpoint is a new `DeploymentSetting` *row* (`builder_model`), which is data, not
   schema. `prisma/schema.prisma` is unchanged.
 - **Purely additive.** New `src/builder/` module + new `src/api/builder.py` router + new frontend
-  components. `src/api/workflows.py`, `src/engine/graph_builder.py`, and `src/engine/workflow.py` are
-  consumed as-is (the builder *calls* `validate_workflow_shape`, it does not modify it). No existing
-  endpoint's contract changes.
+  components. `src/engine/workflow.py` is consumed as-is (unchanged). `src/engine/graph_builder.py`
+  gains one new `collect_workflow_violations` helper; `validate_workflow_shape` is refactored to
+  delegate to it while preserving its exact raise-on-first contract, so no existing caller's behavior
+  changes. `src/api/workflows.py` is consumed by the builder for its `_encrypt_*` / `_to_workflow_read`
+  helpers, but its `update_workflow` endpoint is not modified. No existing endpoint's contract changes.
+- **No new table; the in-memory session is not shared state.** The `BuildSession` dict lives on
+  `app.state` (process-local, like the checkpointer and event bus) and holds no secrets — it
+  references the workflow by id, it never duplicates encrypted values.
 - **No new dependency.** LangChain tools + `structured_invoke` + `build_chat_model` are all already
   in the project; layout is hand-rolled (no dagre). `pyproject.toml` is unchanged.
 - **Feature-off by default.** The builder is inert until the chat panel is opened; the
