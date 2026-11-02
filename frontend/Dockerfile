@@ -14,7 +14,10 @@
 # syntax=docker/dockerfile:1.7
 
 # ─── deps ───────────────────────────────────────────────────────────
-FROM node:20-alpine AS deps
+# Base image pinned by multi-arch index digest (captured 2026-11-02 via
+# `docker buildx imagetools inspect`).  Bump tag AND digest together,
+# deliberately.
+FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS deps
 WORKDIR /app
 
 # Copy lockfile + manifest first so this layer caches independently of
@@ -25,7 +28,7 @@ COPY package.json package-lock.json* ./
 RUN npm ci
 
 # ─── builder ────────────────────────────────────────────────────────
-FROM node:20-alpine AS builder
+FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS builder
 WORKDIR /app
 
 # Bring in the cached node_modules.
@@ -53,7 +56,7 @@ ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
 # ─── runner ─────────────────────────────────────────────────────────
-FROM node:20-alpine AS runner
+FROM node:20-alpine@sha256:fb4cd12c85ee03686f6af5362a0b0d56d50c58a04632e6c0fb8363f609372293 AS runner
 WORKDIR /app
 
 ENV NODE_ENV=production \
