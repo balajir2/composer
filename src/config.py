@@ -303,6 +303,7 @@ class Settings(BaseSettings):
     # plus headroom for transient email-security-scanner prefetches (e.g.
     # Microsoft Safe Links) both need to fit without tripping the limiter.
     rate_limit_approval_email_per_minute: int = 20
+    rate_limit_builder_per_minute: int = 20
 
     # ─── Reverse proxy ──────────────────────────────────────────────
     # Number of proxy-appended X-Forwarded-For entries (counted from the
