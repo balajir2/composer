@@ -284,7 +284,10 @@ jobs:
   # candidates for a nightly job rather than every PR.
   e2e-smoke:
     name: E2E smoke (Playwright)
-    runs-on: ubuntu-latest
+    # Pinned, not ubuntu-latest: `latest` moved to Ubuntu 26.04, which Playwright
+    # 1.59 cannot install browser dependencies for. Move this back (or bump
+    # Playwright) once the supported-OS list includes it.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
 
     services:
