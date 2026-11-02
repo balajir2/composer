@@ -96,7 +96,7 @@ async def upsert(
 
     # Stable namespace UUID — anything constant works; the value matters
     # only for the uuid5 derivation function being deterministic.
-    _NS = uuid.UUID("00000000-0000-0000-0000-00636f6d706f73")  # 'compos' suffix
+    _NS = uuid.UUID("00000000-0000-0000-0000-636f6d706f73")  # "compos" suffix
 
     points: list[dict[str, Any]] = []
     out_ids: list[str] = []
