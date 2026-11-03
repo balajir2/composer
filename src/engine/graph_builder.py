@@ -113,7 +113,7 @@ class WorkflowValidationError(ValueError):
 _VISUAL_ONLY_TYPES = {"note", "file-trigger"}
 
 
-def _nodes_by_id(nodes: Iterable[WorkflowNode]) -> dict[str, WorkflowNode]:
+def _nodes_by_id(nodes: Iterable[WorkflowNode]) -> dict[str, WorkflowNode]:  # pyright: ignore[reportUnusedFunction]
     seen: dict[str, WorkflowNode] = {}
     for node in nodes:
         if node.id in seen:
@@ -122,7 +122,7 @@ def _nodes_by_id(nodes: Iterable[WorkflowNode]) -> dict[str, WorkflowNode]:
     return seen
 
 
-def _check_edges(edges: Iterable[WorkflowEdge], ids: set[str]) -> None:
+def _check_edges(edges: Iterable[WorkflowEdge], ids: set[str]) -> None:  # pyright: ignore[reportUnusedFunction]
     for edge in edges:
         if edge.source not in ids:
             raise WorkflowValidationError(
@@ -134,7 +134,7 @@ def _check_edges(edges: Iterable[WorkflowEdge], ids: set[str]) -> None:
             )
 
 
-def _check_reachability(
+def _check_reachability(  # pyright: ignore[reportUnusedFunction]
     start_id: str, nodes: dict[str, WorkflowNode], edges: list[WorkflowEdge]
 ) -> None:
     """BFS from start; every non-visual-only node must be reachable.
@@ -227,88 +227,138 @@ def _mutually_exclusive(markers_a: set[tuple[str, str]], markers_b: set[tuple[st
     return False
 
 
-def validate_workflow_shape(workflow: Workflow) -> None:
-    """Validate a workflow's structural invariants. Raises WorkflowValidationError on failure."""
-    nodes = _nodes_by_id(workflow.nodes)
+def collect_workflow_violations(workflow: Workflow) -> list[str]:
+    """Return every structural violation as human-readable strings (empty = valid).
 
+    Unlike validate_workflow_shape (raise-on-first), this gathers all so the
+    builder can report them and the agent can rectify them incrementally.
+    Check order mirrors the original raise order so `violations[0]` preserves
+    the historical first-error message.
+    """
+    violations: list[str] = []
+
+    # 1. Duplicate node ids.
+    nodes: dict[str, WorkflowNode] = {}
+    for node in workflow.nodes:
+        if node.id in nodes:
+            violations.append(f"Node id {node.id!r} is duplicated.")
+        else:
+            nodes[node.id] = node
+
+    # 2. Start cardinality.
     start_ids = [n.id for n in workflow.nodes if n.type == "start"]
     if len(start_ids) != 1:
-        raise WorkflowValidationError(
+        violations.append(
             f"Workflow must contain exactly one start node (found: {len(start_ids)})."
         )
 
+    # 3. End cardinality.
     end_ids = [n.id for n in workflow.nodes if n.type == "end"]
     if not end_ids:
-        raise WorkflowValidationError("Workflow must contain at least one end node.")
+        violations.append("Workflow must contain at least one end node.")
 
-    # _check_edges must run before the End/join edge-count checks below --
-    # those checks index into `nodes` by edge.source/edge.target, which
-    # assumes every edge id is already known to reference a real node.
-    # Running edge-existence validation first keeps a malformed edge
-    # (unknown source/target id) reported as exactly that, rather than a
-    # KeyError or a misleading "wrong incoming/outgoing count" error.
-    _check_edges(workflow.edges, set(nodes.keys()))
+    # 4. Edge endpoints reference known nodes (drop bad edges for later checks).
+    known_ids = set(nodes.keys())
+    clean_edges: list[WorkflowEdge] = []
+    for edge in workflow.edges:
+        if edge.source not in known_ids:
+            violations.append(
+                f"Edge {edge.id!r} references unknown source node id {edge.source!r}."
+            )
+            continue
+        if edge.target not in known_ids:
+            violations.append(
+                f"Edge {edge.id!r} references unknown target node id {edge.target!r}."
+            )
+            continue
+        clean_edges.append(edge)
 
-    branch_markers = _branch_markers(nodes, workflow.edges)
+    if len(start_ids) != 1:
+        return violations
+    start_id = start_ids[0]
+
+    # 5. End incoming-edge rule.
+    branch_markers = _branch_markers(nodes, clean_edges)
     for end_id in end_ids:
         incoming = [
-            e
-            for e in workflow.edges
+            e for e in clean_edges
             if e.target == end_id and nodes[e.source].type not in _VISUAL_ONLY_TYPES
         ]
         if len(incoming) == 1:
             continue
         if len(incoming) > 1:
             sources = [e.source for e in incoming]
-            # Multiple incoming edges are fine when they're all mutually
-            # exclusive branches of a shared if-else/while/user-approval
-            # ancestor (only one ever fires per run) -- e.g. an if-else's
-            # true/false branches both reconverging on one End through their
-            # own set-state nodes. Only genuine concurrent fan-out (two
-            # branches that could BOTH execute in the same run) needs a
-            # join node.
             if all(
                 _mutually_exclusive(branch_markers[sources[i]], branch_markers[sources[j]])
                 for i in range(len(sources))
                 for j in range(i + 1, len(sources))
             ):
                 continue
-        raise WorkflowValidationError(
+        violations.append(
             f"End node {end_id!r} must have exactly one incoming edge from an "
-            f"executable node (found {len(incoming)}). Converge multiple branches "
-            "through a join node before reaching a single End."
+            f"executable node (found {len(incoming)})."
         )
 
-    join_ids = [n.id for n in workflow.nodes if n.type == "join"]
-    for join_id in join_ids:
+    # 6. Join outgoing-edge rule.
+    for node in nodes.values():
+        if node.type != "join":
+            continue
         outgoing = [
-            e
-            for e in workflow.edges
-            if e.source == join_id and nodes[e.target].type not in _VISUAL_ONLY_TYPES
+            e for e in clean_edges
+            if e.source == node.id and nodes[e.target].type not in _VISUAL_ONLY_TYPES
         ]
         if len(outgoing) != 1:
-            raise WorkflowValidationError(
-                f"Join node {join_id!r} must have exactly one outgoing edge (found {len(outgoing)})."
+            violations.append(
+                f"Join node {node.id!r} must have exactly one outgoing edge (found {len(outgoing)})."
             )
 
-    # Phase 4b/5a: branch labels must match source type.
-    _conditional_types = {"if-else", "while", "user-approval", "decision"}
-    for edge in workflow.edges:
+    # 7. Branch-label rules.
+    for edge in clean_edges:
         source = nodes[edge.source]
-        if source.type in _conditional_types:
+        if source.type in CONDITIONAL_SOURCE_TYPES:
             if edge.branch is None:
-                raise WorkflowValidationError(
+                violations.append(
                     f"Edge {edge.id!r} leaves {source.type} node {source.id!r} "
                     f"but has no branch label."
                 )
-        else:
-            if edge.branch is not None:
-                raise WorkflowValidationError(
-                    f"Edge {edge.id!r} has branch={edge.branch!r} but its source "
-                    f"{source.id!r} is not a conditional node."
-                )
+        elif edge.branch is not None:
+            violations.append(
+                f"Edge {edge.id!r} has branch={edge.branch!r} but its source "
+                f"{source.id!r} is not a conditional node."
+            )
 
-    _check_reachability(start_ids[0], nodes, workflow.edges)
+    # 8. Reachability.
+    outgoing_map: dict[str, list[str]] = {node_id: [] for node_id in nodes}
+    for edge in clean_edges:
+        if nodes[edge.source].type in _VISUAL_ONLY_TYPES:
+            continue
+        if nodes[edge.target].type in _VISUAL_ONLY_TYPES:
+            continue
+        outgoing_map[edge.source].append(edge.target)
+    reachable: set[str] = set()
+    queue: deque[str] = deque([start_id])
+    while queue:
+        current = queue.popleft()
+        if current in reachable:
+            continue
+        reachable.add(current)
+        queue.extend(outgoing_map[current])
+    for node_id, node in nodes.items():
+        if node.type in _VISUAL_ONLY_TYPES:
+            continue
+        if node_id not in reachable:
+            violations.append(
+                f"Node {node_id!r} ({node.type!r}) is unreachable from the start node."
+            )
+
+    return violations
+
+
+def validate_workflow_shape(workflow: Workflow) -> None:
+    """Validate a workflow's structural invariants. Raises WorkflowValidationError on failure."""
+    violations = collect_workflow_violations(workflow)
+    if violations:
+        raise WorkflowValidationError(violations[0])
 
 
 CONDITIONAL_SOURCE_TYPES = {"if-else", "while", "user-approval", "decision"}
@@ -526,5 +576,6 @@ def build_graph(
 __all__ = [
     "WorkflowValidationError",
     "build_graph",
+    "collect_workflow_violations",
     "validate_workflow_shape",
 ]
