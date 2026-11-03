@@ -96,19 +96,14 @@ export default function VectorDbPanel({
   const topK = (data.vectorDbTopK as number) ?? 5;
   const scoreThreshold = (data.vectorDbScoreThreshold as number) ?? 0;
   const dimension = (data.vectorDbDimension as number) ?? 1536;
-  const embeddingProvider =
-    (data.vectorDbEmbeddingProvider as string) ?? "openai";
-  const embeddingModel =
-    (data.vectorDbEmbeddingModel as string) ?? "text-embedding-3-small";
+  const embeddingProvider = (data.vectorDbEmbeddingProvider as string) ?? "openai";
+  const embeddingModel = (data.vectorDbEmbeddingModel as string) ?? "text-embedding-3-small";
   const embeddingApiKey = (data.vectorDbEmbeddingApiKey as string) ?? "";
   const embeddingBaseUrl = (data.vectorDbEmbeddingBaseUrl as string) ?? "";
-  const outputVariable =
-    (data.vectorDbOutputVariable as string) ?? "vectorDbResults";
+  const outputVariable = (data.vectorDbOutputVariable as string) ?? "vectorDbResults";
   const textField = (data.vectorDbTextField as string) ?? "";
-  const includeMetadata =
-    (data.vectorDbIncludeMetadata as boolean | undefined) ?? true;
-  const includeVector =
-    (data.vectorDbIncludeVector as boolean | undefined) ?? false;
+  const includeMetadata = (data.vectorDbIncludeMetadata as boolean | undefined) ?? true;
+  const includeVector = (data.vectorDbIncludeVector as boolean | undefined) ?? false;
   const metadataFilter = (data.vectorDbMetadataFilter as string) ?? "";
 
   return (
@@ -122,9 +117,9 @@ export default function VectorDbPanel({
           options={OPERATION_OPTIONS}
         />
         <p className="text-xs text-muted-foreground">
-          <strong>Query</strong>: embed the prompt and retrieve top-k
-          matches. <strong>Upsert</strong>: embed each chunk in the
-          documents expression and insert into the collection.
+          <strong>Query</strong>: embed the prompt and retrieve top-k matches.{" "}
+          <strong>Upsert</strong>: embed each chunk in the documents expression and insert into the
+          collection.
         </p>
       </div>
 
@@ -146,9 +141,7 @@ export default function VectorDbPanel({
           id="vdb-endpoint"
           value={endpoint}
           onChange={(e) => onChange({ vectorDbEndpoint: e.target.value })}
-          placeholder={
-            ENDPOINT_PLACEHOLDERS[provider] ?? "https://my-vector-db.example.com"
-          }
+          placeholder={ENDPOINT_PLACEHOLDERS[provider] ?? "https://my-vector-db.example.com"}
         />
         <p className="text-xs text-muted-foreground">
           Full URL to your {provider} instance. Required.
@@ -182,16 +175,12 @@ export default function VectorDbPanel({
         <div className="space-y-2">
           <Label htmlFor="vdb-namespace">
             Namespace{" "}
-            <span className="font-normal text-muted-foreground">
-              (Pinecone, optional)
-            </span>
+            <span className="font-normal text-muted-foreground">(Pinecone, optional)</span>
           </Label>
           <Input
             id="vdb-namespace"
             value={namespace}
-            onChange={(e) =>
-              onChange({ vectorDbNamespace: e.target.value || null })
-            }
+            onChange={(e) => onChange({ vectorDbNamespace: e.target.value || null })}
             placeholder="default"
           />
         </div>
@@ -210,8 +199,8 @@ export default function VectorDbPanel({
               rows={3}
             />
             <p className="text-xs text-muted-foreground">
-              Embedded with the configured embedding model, then matched
-              against vectors in the collection.
+              Embedded with the configured embedding model, then matched against vectors in the
+              collection.
             </p>
           </div>
 
@@ -224,9 +213,7 @@ export default function VectorDbPanel({
                 min={1}
                 max={100}
                 value={topK}
-                onChange={(e) =>
-                  onChange({ vectorDbTopK: parseInt(e.target.value, 10) || 5 })
-                }
+                onChange={(e) => onChange({ vectorDbTopK: parseInt(e.target.value, 10) || 5 })}
               />
             </div>
             <div className="space-y-2">
@@ -257,9 +244,7 @@ export default function VectorDbPanel({
             <Textarea
               id="vdb-documents"
               value={documents}
-              onChange={(e) =>
-                onChange({ vectorDbDocuments: e.target.value || undefined })
-              }
+              onChange={(e) => onChange({ vectorDbDocuments: e.target.value || undefined })}
               placeholder="lastOutput  ←  raw text from upstream node (auto-chunked)
 chunks  ←  pre-chunked list [{text, metadata?}, ...]
 {{my_var}}  ←  Mustache resolves before eval"
@@ -267,11 +252,10 @@ chunks  ←  pre-chunked list [{text, metadata?}, ...]
               className="font-mono text-xs"
             />
             <p className="text-xs text-muted-foreground">
-              A simpleeval expression. Three accepted shapes: a single
-              string (auto-chunked using the values below), a list of
-              strings, or a list of <code className="font-mono">{"{id?, text, metadata?}"}</code>{" "}
-              dicts (pre-chunked — recommended for production where you
-              want stable ids).
+              A simpleeval expression. Three accepted shapes: a single string (auto-chunked using
+              the values below), a list of strings, or a list of{" "}
+              <code className="font-mono">{"{id?, text, metadata?}"}</code> dicts (pre-chunked —
+              recommended for production where you want stable ids).
             </p>
           </div>
 
@@ -308,9 +292,8 @@ chunks  ←  pre-chunked list [{text, metadata?}, ...]
             </div>
           </div>
           <p className="-mt-2 text-xs text-muted-foreground">
-            Char-window chunking only kicks in when the expression
-            yields a single string. Pre-chunked lists are stored
-            verbatim — chunk size is ignored.
+            Char-window chunking only kicks in when the expression yields a single string.
+            Pre-chunked lists are stored verbatim — chunk size is ignored.
           </p>
         </>
       )}
@@ -325,8 +308,7 @@ chunks  ←  pre-chunked list [{text, metadata?}, ...]
             onValueChange={(v) =>
               onChange({
                 vectorDbEmbeddingProvider: v,
-                vectorDbEmbeddingModel:
-                  DEFAULT_EMBEDDING_MODELS[v] || embeddingModel,
+                vectorDbEmbeddingModel: DEFAULT_EMBEDDING_MODELS[v] || embeddingModel,
               })
             }
             options={EMBEDDING_PROVIDER_OPTIONS}
@@ -339,9 +321,7 @@ chunks  ←  pre-chunked list [{text, metadata?}, ...]
             type="number"
             min={1}
             value={dimension}
-            onChange={(e) =>
-              onChange({ vectorDbDimension: parseInt(e.target.value, 10) || 1536 })
-            }
+            onChange={(e) => onChange({ vectorDbDimension: parseInt(e.target.value, 10) || 1536 })}
           />
         </div>
       </div>
@@ -355,23 +335,20 @@ chunks  ←  pre-chunked list [{text, metadata?}, ...]
           placeholder="text-embedding-3-small"
         />
         <p className="text-xs text-muted-foreground">
-          Must match the model used to embed your collection — mismatched
-          dimensions return zero results.
+          Must match the model used to embed your collection — mismatched dimensions return zero
+          results.
         </p>
       </div>
 
       <div className="space-y-2">
         <Label htmlFor="vdb-emb-api-key">
-          Embedding API key{" "}
-          <span className="font-normal text-muted-foreground">(optional)</span>
+          Embedding API key <span className="font-normal text-muted-foreground">(optional)</span>
         </Label>
         <Input
           id="vdb-emb-api-key"
           type="password"
           value={embeddingApiKey}
-          onChange={(e) =>
-            onChange({ vectorDbEmbeddingApiKey: e.target.value })
-          }
+          onChange={(e) => onChange({ vectorDbEmbeddingApiKey: e.target.value })}
           placeholder="leave blank to use backend environment key"
           autoComplete="off"
         />
@@ -379,18 +356,14 @@ chunks  ←  pre-chunked list [{text, metadata?}, ...]
 
       <div className="space-y-2">
         <Label htmlFor="vdb-emb-base-url">
-          Embedding base URL{" "}
-          <span className="font-normal text-muted-foreground">(optional)</span>
+          Embedding base URL <span className="font-normal text-muted-foreground">(optional)</span>
         </Label>
         <Input
           id="vdb-emb-base-url"
           value={embeddingBaseUrl}
-          onChange={(e) =>
-            onChange({ vectorDbEmbeddingBaseUrl: e.target.value })
-          }
+          onChange={(e) => onChange({ vectorDbEmbeddingBaseUrl: e.target.value })}
           placeholder={
-            EMBEDDING_BASE_URL_PLACEHOLDERS[embeddingProvider] ??
-            "https://provider.example.com/v1"
+            EMBEDDING_BASE_URL_PLACEHOLDERS[embeddingProvider] ?? "https://provider.example.com/v1"
           }
         />
       </div>
@@ -406,29 +379,23 @@ chunks  ←  pre-chunked list [{text, metadata?}, ...]
         />
         <p className="text-xs text-muted-foreground">
           Downstream nodes reference results as{" "}
-          <code className="font-mono">
-            &#123;&#123;{outputVariable}.results&#125;&#125;
-          </code>
-          .
+          <code className="font-mono">&#123;&#123;{outputVariable}.results&#125;&#125;</code>.
         </p>
       </div>
 
       <div className="space-y-2">
         <Label htmlFor="vdb-text-field">
-          Text field{" "}
-          <span className="font-normal text-muted-foreground">(optional)</span>
+          Text field <span className="font-normal text-muted-foreground">(optional)</span>
         </Label>
         <Input
           id="vdb-text-field"
           value={textField}
-          onChange={(e) =>
-            onChange({ vectorDbTextField: e.target.value || null })
-          }
+          onChange={(e) => onChange({ vectorDbTextField: e.target.value || null })}
           placeholder="content"
         />
         <p className="text-xs text-muted-foreground">
-          Which metadata key holds the raw chunk text. Default tries
-          common names (text, content, body).
+          Which metadata key holds the raw chunk text. Default tries common names (text, content,
+          body).
         </p>
       </div>
 
@@ -440,9 +407,7 @@ chunks  ←  pre-chunked list [{text, metadata?}, ...]
         <Textarea
           id="vdb-meta-filter"
           value={metadataFilter}
-          onChange={(e) =>
-            onChange({ vectorDbMetadataFilter: e.target.value || null })
-          }
+          onChange={(e) => onChange({ vectorDbMetadataFilter: e.target.value || null })}
           placeholder='{"source": "docs"}'
           rows={2}
           className="font-mono text-xs"
@@ -459,9 +424,7 @@ chunks  ←  pre-chunked list [{text, metadata?}, ...]
         <input
           type="checkbox"
           checked={includeMetadata}
-          onChange={(e) =>
-            onChange({ vectorDbIncludeMetadata: e.target.checked })
-          }
+          onChange={(e) => onChange({ vectorDbIncludeMetadata: e.target.checked })}
           className="h-4 w-4"
         />
       </div>
@@ -476,9 +439,7 @@ chunks  ←  pre-chunked list [{text, metadata?}, ...]
         <input
           type="checkbox"
           checked={includeVector}
-          onChange={(e) =>
-            onChange({ vectorDbIncludeVector: e.target.checked })
-          }
+          onChange={(e) => onChange({ vectorDbIncludeVector: e.target.checked })}
           className="h-4 w-4"
         />
       </div>

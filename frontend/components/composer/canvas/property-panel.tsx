@@ -133,7 +133,13 @@ function sanitizeVarAlias(raw: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
-export function PropertyPanel({ node, allNodes, onChange, onClose, workflowId }: PropertyPanelProps) {
+export function PropertyPanel({
+  node,
+  allNodes,
+  onChange,
+  onClose,
+  workflowId,
+}: PropertyPanelProps) {
   const PanelContent = PANEL_MAP[node.type ?? ""];
   const typeLabel = TYPE_LABELS[node.type ?? ""] ?? node.type ?? "Node";
   const nodeData = (node.data ?? {}) as Record<string, unknown>;
@@ -148,9 +154,7 @@ export function PropertyPanel({ node, allNodes, onChange, onClose, workflowId }:
           <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
             {typeLabel}
           </p>
-          <p className="truncate font-mono text-[10px] text-muted-foreground">
-            {node.id}
-          </p>
+          <p className="truncate font-mono text-[10px] text-muted-foreground">{node.id}</p>
         </div>
         <Button
           variant="ghost"
@@ -177,11 +181,8 @@ export function PropertyPanel({ node, allNodes, onChange, onClose, workflowId }:
           placeholder={`e.g. ${typeLabel.toLowerCase().replace(/\s+/g, "_")}`}
         />
         <p className="text-[10px] text-muted-foreground">
-          Reference in prompts as{" "}
-          <code className="font-mono">{`{{${varAlias}}}`}</code>
-          {" "}or{" "}
-          <code className="font-mono">{`{{${varAlias}.<field>}}`}</code>{" "}
-          if this node returns JSON.
+          Reference in prompts as <code className="font-mono">{`{{${varAlias}}}`}</code> or{" "}
+          <code className="font-mono">{`{{${varAlias}.<field>}}`}</code> if this node returns JSON.
         </p>
       </div>
 

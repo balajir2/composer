@@ -59,9 +59,7 @@ export default function AdminUsersPage() {
               return (
                 <TableRow key={user.id}>
                   <TableCell>{user.email}</TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {user.displayName ?? "—"}
-                  </TableCell>
+                  <TableCell className="text-muted-foreground">{user.displayName ?? "—"}</TableCell>
                   <TableCell>
                     <Badge variant={user.role === "admin" ? "default" : "secondary"}>
                       {user.role}

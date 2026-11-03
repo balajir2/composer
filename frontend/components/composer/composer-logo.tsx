@@ -1,12 +1,6 @@
 import { Music3, Waypoints } from "lucide-react";
 
-export function ComposerLogo({
-  size = 32,
-  className,
-}: {
-  size?: number;
-  className?: string;
-}) {
+export function ComposerLogo({ size = 32, className }: { size?: number; className?: string }) {
   return (
     <span
       className={className}

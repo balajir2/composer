@@ -176,7 +176,7 @@ async def extract_text(
 
     if not file.filename:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="upload missing filename",
         )
 
@@ -192,7 +192,7 @@ async def extract_text(
         total += len(chunk)
         if total > MAX_UPLOAD_BYTES:
             raise HTTPException(
-                status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                status_code=status.HTTP_413_CONTENT_TOO_LARGE,
                 detail=(
                     f"file exceeds {MAX_UPLOAD_BYTES // (1024 * 1024)}MB cap; "
                     "split or compress upstream."
@@ -203,7 +203,7 @@ async def extract_text(
 
     if not data:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="uploaded file is empty",
         )
 

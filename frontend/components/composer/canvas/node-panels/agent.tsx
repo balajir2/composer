@@ -80,8 +80,7 @@ export default function AgentPanel({
   allNodes?: RFNode[];
   currentNodeId?: string;
 }) {
-  const provider =
-    (data.provider as string) || providerFromModel(data.model as string | undefined);
+  const provider = (data.provider as string) || providerFromModel(data.model as string | undefined);
 
   const { data: catalog = [] } = useQuery({
     queryKey: ["catalog"],
@@ -172,10 +171,7 @@ export default function AgentPanel({
   // surface their content in the single field; the next Save rewrites them
   // onto `instructions` and clears the legacy keys.
   const instructions =
-    (data.instructions as string) ??
-    (data.systemPrompt as string) ??
-    (data.prompt as string) ??
-    "";
+    (data.instructions as string) ?? (data.systemPrompt as string) ?? (data.prompt as string) ?? "";
 
   function handleInstructionsChange(next: string) {
     onChange({ instructions: next, systemPrompt: undefined, prompt: undefined });
@@ -251,8 +247,8 @@ export default function AgentPanel({
             <p className="text-xs text-muted-foreground">Loading models…</p>
           ) : modelOptions.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              No models configured for this provider. Ask an admin to add one under
-              Admin → LLM models.
+              No models configured for this provider. Ask an admin to add one under Admin → LLM
+              models.
             </p>
           ) : (
             <>
@@ -265,9 +261,8 @@ export default function AgentPanel({
               />
               {storedNotInList && (
                 <p className="text-xs text-destructive">
-                  This model is no longer available — an admin has disabled
-                  it (e.g. the provider retired it). Pick a replacement
-                  before saving, or the next run will fail.
+                  This model is no longer available — an admin has disabled it (e.g. the provider
+                  retired it). Pick a replacement before saving, or the next run will fail.
                 </p>
               )}
             </>
@@ -298,12 +293,10 @@ export default function AgentPanel({
           options={OUTPUT_FORMAT_OPTIONS}
         />
         <p className="text-xs text-muted-foreground">
-          <strong>Verbose</strong> returns free-form prose — good for
-          summaries and answers. Pick <strong>JSON</strong> when downstream
-          nodes need to reference individual fields like{" "}
-          <code className="font-mono">&#123;&#123;nodeId.place&#125;&#125;</code>.
-          The schema below both validates the agent&apos;s output and tells
-          the variable picker what fields exist.
+          <strong>Verbose</strong> returns free-form prose — good for summaries and answers. Pick{" "}
+          <strong>JSON</strong> when downstream nodes need to reference individual fields like{" "}
+          <code className="font-mono">&#123;&#123;nodeId.place&#125;&#125;</code>. The schema below
+          both validates the agent&apos;s output and tells the variable picker what fields exist.
         </p>
       </div>
 
@@ -320,13 +313,12 @@ export default function AgentPanel({
           />
           {!jsonSchemaValid && (
             <p className="text-xs text-destructive">
-              Not valid JSON — downstream field references won&apos;t resolve
-              until this parses.
+              Not valid JSON — downstream field references won&apos;t resolve until this parses.
             </p>
           )}
           <p className="text-xs text-muted-foreground">
-            Standard JSON-schema. Leave blank for free-form JSON (no
-            per-field references in the picker).
+            Standard JSON-schema. Leave blank for free-form JSON (no per-field references in the
+            picker).
           </p>
         </div>
       )}
@@ -373,11 +365,7 @@ export default function AgentPanel({
           min={1}
           max={100}
           placeholder="10 (default)"
-          value={
-            typeof data.maxIterations === "number"
-              ? String(data.maxIterations)
-              : ""
-          }
+          value={typeof data.maxIterations === "number" ? String(data.maxIterations) : ""}
           onChange={(e) => {
             const v = e.target.value;
             if (v === "") {
@@ -389,8 +377,8 @@ export default function AgentPanel({
           }}
         />
         <p className="text-xs text-muted-foreground">
-          How many LLM ↔ tool round-trips before giving up. Default 10,
-          hard ceiling 100. Bump for long research flows.
+          How many LLM ↔ tool round-trips before giving up. Default 10, hard ceiling 100. Bump for
+          long research flows.
         </p>
       </div>
     </div>

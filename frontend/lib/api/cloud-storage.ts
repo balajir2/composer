@@ -7,9 +7,7 @@ export interface CloudStorageConnection {
 }
 
 export async function getGoogleDriveAuthorizeUrl(): Promise<string> {
-  const res = await apiFetch<{ authorizeUrl: string }>(
-    "/cloud-storage/google-drive/authorize"
-  );
+  const res = await apiFetch<{ authorizeUrl: string }>("/cloud-storage/google-drive/authorize");
   return res.authorizeUrl;
 }
 

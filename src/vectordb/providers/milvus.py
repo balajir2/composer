@@ -30,6 +30,15 @@ from src.vectordb.providers.base import (
 logger = logging.getLogger(__name__)
 
 
+def _raise_on_api_error(payload: dict[str, Any], op: str) -> None:
+    """Milvus/Zilliz REST reports failures as HTTP 200 + a non-zero `code`."""
+    code = payload.get("code")
+    if code not in (None, 0, 200):
+        raise VectorDbProviderError(
+            f"Milvus {op} error code {code}: {payload.get('message', 'unknown')}"
+        )
+
+
 async def query(
     embedding: list[float],
     config: QueryConfig,
@@ -65,6 +74,7 @@ async def query(
         raise VectorDbProviderError(f"Milvus query error {resp.status_code}: {resp.text}")
 
     payload: dict[str, Any] = resp.json()
+    _raise_on_api_error(payload, "query")
     items = cast("list[Any]", payload.get("data") or [])
     text_key = config.text_field or "text"
     results: list[VectorDbResult] = []
@@ -152,6 +162,7 @@ async def upsert(
         raise VectorDbProviderError(f"Milvus upsert error {resp.status_code}: {resp.text}")
 
     payload: dict[str, Any] = resp.json()
+    _raise_on_api_error(payload, "upsert")
     # Milvus returns {"code": 0, "data": {"insertCount": N, "insertIds": [...]}}
     data = cast("dict[str, Any]", payload.get("data") or {})
     insert_count = int(data.get("insertCount") or len(rows))

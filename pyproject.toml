@@ -142,6 +142,11 @@ minversion = "8.0"
 testpaths = ["tests"]
 pythonpath = ["."]
 asyncio_mode = "auto"
+# New application-owned deprecations fail CI. Later entries win.
+filterwarnings = [
+    "error::DeprecationWarning:src",
+    "error::pydantic.warnings.PydanticDeprecatedSince20",
+]
 addopts = [
     "--strict-markers",
     "--strict-config",
@@ -151,7 +156,8 @@ addopts = [
     "--cov-report=xml",
 ]
 markers = [
-    "integration: end-to-end tests that require external services",
+    "integration: end-to-end tests that require a provisioned Postgres (run on every PR)",
+    "live: tests that call credentialed third-party services (LLM providers, MCP servers); run on a schedule by live-provider-smoke.yml, not on every PR",
     "slow: tests that take longer than a few seconds",
 ]
 

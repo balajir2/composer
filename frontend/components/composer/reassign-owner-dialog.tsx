@@ -74,8 +74,7 @@ export function ReassignOwnerDialog({
           <DialogHeader>
             <DialogTitle>Reassign workflow owner</DialogTitle>
             <DialogDescription>
-              Assign &quot;{workflowName}&quot; to a new owner. Search by email
-              or display name.
+              Assign &quot;{workflowName}&quot; to a new owner. Search by email or display name.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-2">
@@ -113,9 +112,7 @@ export function ReassignOwnerDialog({
                       >
                         <div className="font-medium">{u.email}</div>
                         {u.displayName && (
-                          <div className="text-xs text-muted-foreground">
-                            {u.displayName}
-                          </div>
+                          <div className="text-xs text-muted-foreground">{u.displayName}</div>
                         )}
                       </button>
                     </li>
@@ -125,17 +122,10 @@ export function ReassignOwnerDialog({
             </div>
           </div>
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setOpen(false)}
-              disabled={mutation.isPending}
-            >
+            <Button variant="outline" onClick={() => setOpen(false)} disabled={mutation.isPending}>
               Cancel
             </Button>
-            <Button
-              onClick={() => mutation.mutate()}
-              disabled={mutation.isPending || !selected}
-            >
+            <Button onClick={() => mutation.mutate()} disabled={mutation.isPending || !selected}>
               {mutation.isPending ? "Reassigning…" : "Reassign"}
             </Button>
           </DialogFooter>

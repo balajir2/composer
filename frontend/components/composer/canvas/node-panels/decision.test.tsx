@@ -59,7 +59,10 @@ describe("DecisionPanel", () => {
     render(
       wrap(
         <DecisionPanel
-          data={baseData({ mode: "choice", options: [{ label: "billing" }, { label: "technical" }] })}
+          data={baseData({
+            mode: "choice",
+            options: [{ label: "billing" }, { label: "technical" }],
+          })}
           onChange={vi.fn()}
         />
       )

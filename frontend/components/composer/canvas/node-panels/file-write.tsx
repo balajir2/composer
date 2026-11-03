@@ -20,10 +20,8 @@ export default function FileWritePanel({
 }) {
   return (
     <div className="space-y-4">
-      <div className="rounded-md border bg-muted/20 p-3">
-        <p className="mb-2 text-xs font-semibold text-muted-foreground">
-          Destination
-        </p>
+      <div className="bg-muted/20 rounded-md border p-3">
+        <p className="mb-2 text-xs font-semibold text-muted-foreground">Destination</p>
         <div className="space-y-2">
           <div className="space-y-1">
             <Label htmlFor="fw-provider" className="text-xs">
@@ -60,8 +58,8 @@ export default function FileWritePanel({
               className="font-mono text-xs"
             />
             <p className="text-[10px] text-muted-foreground">
-              The extension is added automatically based on Format below. Must be a bare
-              filename — no path separators or &quot;..&quot;.
+              The extension is added automatically based on Format below. Must be a bare filename —
+              no path separators or &quot;..&quot;.
             </p>
           </div>
           <div className="space-y-1">

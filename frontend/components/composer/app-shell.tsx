@@ -20,15 +20,13 @@ export function AppShell({
     <div className="flex min-h-screen">
       {/* Branded sidebar: vertical deep-purple gradient, white
           text, pink active indicator. */}
-      <aside className="flex w-64 flex-col bg-brand-gradient">
+      <aside className="bg-brand-gradient flex w-64 flex-col">
         <Link
           href="/"
           className="flex items-center gap-3 border-b border-white/10 px-5 pb-5 pt-6 text-white"
         >
           <ComposerLogo size={28} />
-          <span className="text-[0.8rem] font-extrabold tracking-[1.5px]">
-            COMPOSER
-          </span>
+          <span className="text-[0.8rem] font-extrabold tracking-[1.5px]">COMPOSER</span>
         </Link>
 
         <div className="flex-1 overflow-y-auto py-4">
@@ -36,9 +34,7 @@ export function AppShell({
         </div>
 
         <div className="border-t border-white/10 px-5 py-4 text-xs">
-          <div className="truncate font-semibold text-white/65">
-            {session?.user?.email}
-          </div>
+          <div className="truncate font-semibold text-white/65">{session?.user?.email}</div>
           <Link
             href="/change-password"
             className="mt-1 block text-[0.7rem] text-white/40 hover:text-white/90"
@@ -60,11 +56,7 @@ export function AppShell({
           <h1 className="text-sm font-semibold capitalize">{role}</h1>
           <div className="flex items-center gap-3 text-sm">
             <span className="text-muted-foreground">{session?.user?.email}</span>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => signOut({ callbackUrl: "/login" })}
-            >
+            <Button variant="outline" size="sm" onClick={() => signOut({ callbackUrl: "/login" })}>
               Sign out
             </Button>
           </div>

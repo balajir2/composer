@@ -1,0 +1,41 @@
+# Controlled dependency updates (audit P1-5).
+#
+# Everything that enters a build is pinned — GitHub Actions by commit SHA,
+# container base images + the uv binary by digest, Python by uv.lock, npm by
+# package-lock.json. Pins only move through a reviewed Dependabot PR that CI
+# (tests, dependency/secret/container scans) has to pass; nothing floats.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns: ["*"]
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directory: /frontend
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: uv
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      python-minor-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    groups:
+      npm-minor-patch:
+        update-types: [minor, patch]

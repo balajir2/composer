@@ -39,8 +39,8 @@ function ApprovalConfirmContent() {
           <AlertTriangle className="size-12 text-amber-600" aria-hidden />
           <CardTitle className="text-2xl">Link no longer valid</CardTitle>
           <CardDescription>
-            This link has expired or the decision may already have been made. If you still
-            need to act on this, open the run in Composer directly.
+            This link has expired or the decision may already have been made. If you still need to
+            act on this, open the run in Composer directly.
           </CardDescription>
         </CardHeader>
       </Card>
@@ -59,8 +59,8 @@ function ApprovalConfirmContent() {
         <Icon className={`size-12 ${color}`} aria-hidden />
         <CardTitle className="text-2xl capitalize">Confirm {verb}</CardTitle>
         <CardDescription>
-          You&apos;re about to <strong>{verb}</strong> this workflow step. This action resumes
-          the workflow and can&apos;t be undone from this page.
+          You&apos;re about to <strong>{verb}</strong> this workflow step. This action resumes the
+          workflow and can&apos;t be undone from this page.
         </CardDescription>
       </CardHeader>
       <CardFooter className="justify-center">

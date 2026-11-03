@@ -304,13 +304,22 @@ class Settings(BaseSettings):
     # Microsoft Safe Links) both need to fit without tripping the limiter.
     rate_limit_approval_email_per_minute: int = 20
 
+    # ─── Reverse proxy ──────────────────────────────────────────────
+    # Number of proxy-appended X-Forwarded-For entries (counted from the
+    # right) to trust — see src/security/proxy_headers.py. 1 = Cloud Run's
+    # front end directly in front of the container (this project's
+    # production topology); raise it if a load balancer is ever added in
+    # front; 0 = ignore forwarded headers entirely.
+    trusted_proxy_hops: int = Field(default=1, ge=0)
+
     # ─── Cloud Tasks (P1-2 durable execution) ──────────────────────
     gcp_project_id: str = ""
     gcp_region: str = "us-central1"
     cloud_tasks_queue: str = "composer-executions"
     # Service account Cloud Tasks uses to mint the OIDC token it presents
-    # to the claim-and-run endpoint. Empty in dev (auth skipped when unset
-    # — see src/api/internal.py's _verify_internal_oidc).
+    # to the claim-and-run endpoint. May be empty only when ENVIRONMENT=
+    # development (auth skipped — see src/api/internal.py's
+    # _verify_internal_oidc); required in production (src/config_validation.py).
     cloud_tasks_service_account: str = ""
     # DESIGN DECISION (P1-2, "lease and heartbeat behavior"): rather than a
     # short lease with periodic mid-execution heartbeat renewal (the usual

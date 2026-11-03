@@ -108,9 +108,7 @@ export function ManageAssigneesDialog({
               {assignmentsQ.isLoading ? (
                 <div className="p-3 text-sm text-muted-foreground">Loading…</div>
               ) : (assignmentsQ.data ?? []).length === 0 ? (
-                <div className="p-3 text-sm text-muted-foreground">
-                  No one else has access yet.
-                </div>
+                <div className="p-3 text-sm text-muted-foreground">No one else has access yet.</div>
               ) : (
                 <ul className="divide-y">
                   {(assignmentsQ.data ?? []).map((a) => (
@@ -123,9 +121,7 @@ export function ManageAssigneesDialog({
                         variant="ghost"
                         size="icon-sm"
                         aria-label="Revoke access"
-                        onClick={() =>
-                          withPending(a.userId, () => revokeMutation.mutate(a.userId))
-                        }
+                        onClick={() => withPending(a.userId, () => revokeMutation.mutate(a.userId))}
                         disabled={pendingIds.has(a.userId)}
                       >
                         <X className="h-3.5 w-3.5" />
@@ -162,9 +158,7 @@ export function ManageAssigneesDialog({
                       <div>
                         <div className="text-sm font-medium">{u.email}</div>
                         {u.displayName && (
-                          <div className="text-xs text-muted-foreground">
-                            {u.displayName}
-                          </div>
+                          <div className="text-xs text-muted-foreground">{u.displayName}</div>
                         )}
                       </div>
                       <Button

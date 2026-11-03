@@ -86,8 +86,7 @@ export function exportWorkflowAsMarkdown(wf: WorkflowRead): string {
   // tidy when the workflow doesn't use them.
   const config: string[] = [];
   if (wf.category) config.push(`- **Category:** ${wf.category}`);
-  if (wf.tags && wf.tags.length > 0)
-    config.push(`- **Tags:** ${wf.tags.join(", ")}`);
+  if (wf.tags && wf.tags.length > 0) config.push(`- **Tags:** ${wf.tags.join(", ")}`);
   if (wf.difficulty) config.push(`- **Difficulty:** ${wf.difficulty}`);
   if (wf.estimatedTime) config.push(`- **Estimated time:** ${wf.estimatedTime}`);
   if (wf.version) config.push(`- **Version:** ${wf.version}`);
@@ -129,11 +128,7 @@ export function exportWorkflowAsMarkdown(wf: WorkflowRead): string {
   return lines.join("\n");
 }
 
-export function downloadString(
-  filename: string,
-  mime: string,
-  content: string
-): void {
+export function downloadString(filename: string, mime: string, content: string): void {
   const blob = new Blob([content], { type: mime });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
@@ -149,10 +144,7 @@ export function downloadString(
 
 const FENCE_PATTERN = /```(?:json|JSON)?\s*\n([\s\S]*?)\n```/;
 
-export function parseWorkflowFromText(
-  text: string,
-  filename: string
-): WorkflowImportPayload {
+export function parseWorkflowFromText(text: string, filename: string): WorkflowImportPayload {
   const lower = filename.toLowerCase();
   const looksJson = lower.endsWith(".json") || text.trim().startsWith("{");
   const looksMarkdown = lower.endsWith(".md") || lower.endsWith(".markdown");
@@ -178,8 +170,7 @@ export function parseWorkflowFromText(
     parsed = JSON.parse(jsonText);
   } catch (e) {
     throw new Error(
-      "File doesn't contain valid JSON: " +
-        (e instanceof Error ? e.message : String(e))
+      "File doesn't contain valid JSON: " + (e instanceof Error ? e.message : String(e))
     );
   }
 
@@ -204,8 +195,7 @@ export function parseWorkflowFromText(
     category: typeof obj.category === "string" ? obj.category : null,
     tags: Array.isArray(obj.tags) ? (obj.tags as string[]) : [],
     difficulty: typeof obj.difficulty === "string" ? obj.difficulty : null,
-    estimatedTime:
-      typeof obj.estimatedTime === "string" ? obj.estimatedTime : null,
+    estimatedTime: typeof obj.estimatedTime === "string" ? obj.estimatedTime : null,
     nodes,
     edges,
     version: typeof obj.version === "string" ? obj.version : null,

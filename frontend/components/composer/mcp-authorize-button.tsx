@@ -35,8 +35,7 @@ export function McpAuthorizeButton({
       // Backend route mounted at /oauth/callback (GET).  Browsers must hit
       // the backend origin here, not the frontend, so the env var has to
       // point at the backend URL (e.g. http://localhost:8002).
-      const apiBase =
-        process.env.NEXT_PUBLIC_COMPOSER_API_URL ?? "http://localhost:8000";
+      const apiBase = process.env.NEXT_PUBLIC_COMPOSER_API_URL ?? "http://localhost:8000";
       return oauthAuthorize(serverId, {
         redirectUri: `${apiBase}/oauth/callback`,
       });
@@ -78,11 +77,7 @@ export function McpAuthorizeButton({
           : `Sign in to ${serverName}`
       }
     >
-      {mutation.isPending
-        ? "Redirecting…"
-        : hasOauthToken
-          ? "Re-authorize"
-          : "Authorize"}
+      {mutation.isPending ? "Redirecting…" : hasOauthToken ? "Re-authorize" : "Authorize"}
     </Button>
   );
 }

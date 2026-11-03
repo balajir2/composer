@@ -44,7 +44,7 @@ _SLUG_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{1,63}$")
 def _validate_slug(slug: str) -> None:
     if not _SLUG_PATTERN.match(slug):
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 "external_slug must be lowercase alphanumeric + hyphens, "
                 "start with alphanumeric, and be 2-64 chars"
@@ -62,7 +62,7 @@ def _reject_unknown_variable_references(workflow: Workflow) -> None:
     problems = find_unknown_variable_references(workflow)
     if problems:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail={
                 "message": "Workflow references undeclared variables and cannot be published.",
                 "problems": [
@@ -84,7 +84,7 @@ def _check_workflow_size_limits(workflow: Workflow) -> None:
     settings = get_settings()
     if len(workflow.nodes) > settings.max_workflow_nodes:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 f"workflow exceeds max_nodes={settings.max_workflow_nodes}; "
                 f"got {len(workflow.nodes)}"
@@ -92,7 +92,7 @@ def _check_workflow_size_limits(workflow: Workflow) -> None:
         )
     if len(workflow.edges) > settings.max_workflow_edges:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail=(
                 f"workflow exceeds max_edges={settings.max_workflow_edges}; "
                 f"got {len(workflow.edges)}"
@@ -365,7 +365,7 @@ async def create_workflow(
         validate_workflow_shape(workflow)
     except WorkflowValidationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
     _check_workflow_size_limits(workflow)
 
@@ -547,7 +547,7 @@ async def update_workflow(
         validate_workflow_shape(workflow)
     except WorkflowValidationError as exc:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
         ) from exc
     _check_workflow_size_limits(workflow)
 
@@ -568,7 +568,7 @@ async def update_workflow(
     if payload.is_production is True:
         if not payload.external_slug:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="external_slug is required when isProduction=True",
             )
         _validate_slug(payload.external_slug)
@@ -679,7 +679,7 @@ async def admin_update_workflow_flags(
         slug = payload.external_slug or getattr(existing, "externalSlug", None)
         if not slug:
             raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                 detail="external_slug is required when isProduction=True",
             )
         _validate_slug(slug)

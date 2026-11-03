@@ -39,8 +39,7 @@ export default function TemplatesPage() {
       void queryClient.invalidateQueries({ queryKey: ["designer-workflows"] });
       router.push(`/designer/${created.id}`);
     },
-    onError: (err) =>
-      toast.error(err instanceof Error ? err.message : "Failed to clone template."),
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Failed to clone template."),
   });
 
   const items = data?.items ?? [];
@@ -65,9 +64,8 @@ export default function TemplatesPage() {
       </div>
 
       <p className="max-w-2xl text-sm text-muted-foreground">
-        Reference implementations to crib from. Click <strong>Use template</strong>{" "}
-        and you&apos;ll get a private copy in your workflow list — the original
-        stays untouched.
+        Reference implementations to crib from. Click <strong>Use template</strong> and you&apos;ll
+        get a private copy in your workflow list — the original stays untouched.
       </p>
 
       {isLoading ? (

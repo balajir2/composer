@@ -1,13 +1,14 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { useParams } from "next/navigation";
 import { getWorkflow } from "@/lib/api/workflows";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/composer/empty-state";
 import { WorkflowInputForm } from "@/components/composer/workflow-input-form";
 
-export default function WorkflowDetails({ params }: { params: { workflowId: string } }) {
-  const { workflowId } = params;
+export default function WorkflowDetails() {
+  const { workflowId } = useParams<{ workflowId: string }>();
   const { data, isLoading, isError } = useQuery({
     queryKey: ["workflow", workflowId],
     queryFn: () => getWorkflow(workflowId),

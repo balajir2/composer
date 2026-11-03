@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
+import { useParams } from "next/navigation";
 import { ArrowLeft, Download, FileText, Settings } from "lucide-react";
 import { Button, buttonVariants } from "@/components/ui/button";
 import { getWorkflow, updateWorkflow } from "@/lib/api/workflows";
@@ -22,10 +23,6 @@ import { toReactFlow, fromReactFlow } from "@/lib/workflow-to-rf";
 import type { ComposerNode, ComposerEdge } from "@/lib/workflow-to-rf";
 import type { Node as RFNode, Edge as RFEdge } from "reactflow";
 import { useAutosave } from "@/lib/use-autosave";
-
-interface PageProps {
-  params: { workflowId: string };
-}
 
 // ---------------------------------------------------------------------------
 // Mount-vs-edit content comparison
@@ -89,7 +86,8 @@ function edgesMatchInitial(current: RFEdge[], initial: RFEdge[] | null): boolean
   });
 }
 
-export default function DesignerCanvasPage({ params }: PageProps) {
+export default function DesignerCanvasPage() {
+  const params = useParams<{ workflowId: string }>();
   // `key` forces a full remount (resetting every ref/state below) whenever
   // workflowId changes. Next.js's App Router does NOT guarantee an unmount
   // when navigating client-side between two instances of the same dynamic

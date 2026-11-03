@@ -87,9 +87,7 @@ function NodeChip({ type, id, data }: NodeChipProps) {
             {visual.label}
           </div>
         )}
-        <div className="mt-0.5 truncate font-mono text-[9px] text-muted-foreground/70">
-          {id}
-        </div>
+        <div className="text-muted-foreground/70 mt-0.5 truncate font-mono text-[9px]">{id}</div>
       </div>
     </div>
   );
@@ -183,11 +181,10 @@ function BranchingNode({ id, data, type }: NodeProps<NodeData>) {
           id: opt.label,
           label: opt.label,
           color:
-            CHOICE_BRANCH_COLORS[idx % CHOICE_BRANCH_COLORS.length] ??
-            CHOICE_BRANCH_COLORS[0]!,
+            CHOICE_BRANCH_COLORS[idx % CHOICE_BRANCH_COLORS.length] ?? CHOICE_BRANCH_COLORS[0]!,
         })
       )
-    : BRANCH_SPECS[type ?? ""] ?? [];
+    : (BRANCH_SPECS[type ?? ""] ?? []);
   return (
     <>
       <Handle type="target" position={Position.Left} style={HANDLE_STYLE} />
@@ -197,10 +194,7 @@ function BranchingNode({ id, data, type }: NodeProps<NodeData>) {
         // branches that's 33% and 67%, leaving room for the label tag.
         const topPercent = ((idx + 1) * 100) / (branches.length + 1);
         return (
-          <div
-            key={b.id}
-            style={{ position: "absolute", right: -4, top: `${topPercent}%` }}
-          >
+          <div key={b.id} style={{ position: "absolute", right: -4, top: `${topPercent}%` }}>
             <Handle
               id={b.id}
               type="source"
@@ -322,9 +316,7 @@ export function WorkflowCanvas({
     if (!runState) {
       setNodes((nds) =>
         nds.map((n) =>
-          n.className?.startsWith("composer-node-")
-            ? { ...n, className: undefined }
-            : n
+          n.className?.startsWith("composer-node-") ? { ...n, className: undefined } : n
         )
       );
       return;
@@ -365,9 +357,7 @@ export function WorkflowCanvas({
           sourceNode.type === "user-approval" ||
           sourceNode.type === "decision");
       const branchLabel =
-        isBranching && typeof params.sourceHandle === "string"
-          ? params.sourceHandle
-          : undefined;
+        isBranching && typeof params.sourceHandle === "string" ? params.sourceHandle : undefined;
       setEdges((prev) =>
         addEdge(
           {
@@ -434,33 +424,27 @@ export function WorkflowCanvas({
 
   // ── Right-click context menu ───────────────────────────────────────────────
 
-  const handleNodeContextMenu = useCallback(
-    (event: React.MouseEvent, node: RFNode) => {
-      event.preventDefault();
-      const rect = rfWrapperRef.current?.getBoundingClientRect();
-      setContextMenu({
-        kind: "node",
-        id: node.id,
-        x: rect ? event.clientX - rect.left : event.clientX,
-        y: rect ? event.clientY - rect.top : event.clientY,
-      });
-    },
-    []
-  );
+  const handleNodeContextMenu = useCallback((event: React.MouseEvent, node: RFNode) => {
+    event.preventDefault();
+    const rect = rfWrapperRef.current?.getBoundingClientRect();
+    setContextMenu({
+      kind: "node",
+      id: node.id,
+      x: rect ? event.clientX - rect.left : event.clientX,
+      y: rect ? event.clientY - rect.top : event.clientY,
+    });
+  }, []);
 
-  const handleEdgeContextMenu = useCallback(
-    (event: React.MouseEvent, edge: RFEdge) => {
-      event.preventDefault();
-      const rect = rfWrapperRef.current?.getBoundingClientRect();
-      setContextMenu({
-        kind: "edge",
-        id: edge.id,
-        x: rect ? event.clientX - rect.left : event.clientX,
-        y: rect ? event.clientY - rect.top : event.clientY,
-      });
-    },
-    []
-  );
+  const handleEdgeContextMenu = useCallback((event: React.MouseEvent, edge: RFEdge) => {
+    event.preventDefault();
+    const rect = rfWrapperRef.current?.getBoundingClientRect();
+    setContextMenu({
+      kind: "edge",
+      id: edge.id,
+      x: rect ? event.clientX - rect.left : event.clientX,
+      y: rect ? event.clientY - rect.top : event.clientY,
+    });
+  }, []);
 
   function handleContextDelete() {
     if (!contextMenu) return;

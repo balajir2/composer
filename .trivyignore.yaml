@@ -1,0 +1,23 @@
+# Time-boxed exceptions for the Trivy container scan (see .github/workflows/ci.yml).
+# Every entry MUST carry a statement and an expired_at date (at most one year out) so
+# an exception can never be permanent. Prefer fixing/upgrading over adding entries here.
+#
+# Mirrors the reviewed npm exceptions in security/audit-allowlist.json: Next.js 15.5.28
+# bundles a private PostCSS 8.4.31; the only upstream fix is a jump to Next 16.
+vulnerabilities:
+  - id: CVE-2026-45623
+    paths:
+      - "app/node_modules/next/node_modules/postcss/package.json"
+    expired_at: 2027-02-01
+    statement: >-
+      PostCSS source-map/stringify issue requires PostCSS to process attacker-controlled
+      CSS. This copy only builds the project's own stylesheets at build time; the server
+      never feeds it request-supplied CSS. Fix needs Next 16 (separate migration).
+      Owner: balajirajan@gmail.com.
+  - id: CVE-2026-73646
+    paths:
+      - "app/node_modules/next/node_modules/postcss/package.json"
+    expired_at: 2027-02-01
+    statement: >-
+      Same exposure as CVE-2026-45623 (Next-bundled PostCSS, build-time only, no
+      attacker-controlled CSS). Owner: balajirajan@gmail.com.

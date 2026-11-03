@@ -103,8 +103,8 @@ export default function ExtractPanel({
         />
         {schemaError && <p className="text-xs text-destructive">{schemaError}</p>}
         <p className="text-[10px] text-muted-foreground">
-          JSON schema describing the fields to extract. Leave blank to let the model
-          return JSON without a fixed shape.
+          JSON schema describing the fields to extract. Leave blank to let the model return JSON
+          without a fixed shape.
         </p>
       </div>
 

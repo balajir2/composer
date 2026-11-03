@@ -177,7 +177,9 @@ export default function GoogleDriveConnect({
       }
     } catch (err) {
       setConnecting(false);
-      toast.error(err instanceof Error ? err.message : "Failed to start Google Drive authorization.");
+      toast.error(
+        err instanceof Error ? err.message : "Failed to start Google Drive authorization."
+      );
     }
   }
 
@@ -212,9 +214,13 @@ export default function GoogleDriveConnect({
         // stored token is expired/unrefreshable (see
         // src/api/cloud_storage_oauth.py) — surface a reconnect prompt
         // rather than a generic error.
-        toast.error("Your Google Drive connection expired — click Connect Google Drive to reconnect.");
+        toast.error(
+          "Your Google Drive connection expired — click Connect Google Drive to reconnect."
+        );
       } else {
-        toast.error(err instanceof Error ? err.message : "Failed to open the Google Drive folder picker.");
+        toast.error(
+          err instanceof Error ? err.message : "Failed to open the Google Drive folder picker."
+        );
       }
     } finally {
       setPickerBusy(null);
@@ -258,7 +264,11 @@ export default function GoogleDriveConnect({
                 disabled={pickerBusy !== null}
                 onClick={() => handlePickFolder("watch")}
               >
-                {pickerBusy === "watch" ? "Opening…" : driveFolderId ? "Change folder" : "Select folder"}
+                {pickerBusy === "watch"
+                  ? "Opening…"
+                  : driveFolderId
+                    ? "Change folder"
+                    : "Select folder"}
               </Button>
               {/* The connection row can exist (so `connected` is truthy) while
                   its stored token is expired/unrefreshable — the picker-token
@@ -313,7 +323,11 @@ export default function GoogleDriveConnect({
                 disabled={pickerBusy !== null}
                 onClick={() => handlePickFolder("error")}
               >
-                {pickerBusy === "error" ? "Opening…" : driveErrorFolderId ? "Change folder" : "Select folder"}
+                {pickerBusy === "error"
+                  ? "Opening…"
+                  : driveErrorFolderId
+                    ? "Change folder"
+                    : "Select folder"}
               </Button>
             </div>
           )}

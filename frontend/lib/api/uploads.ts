@@ -2,8 +2,7 @@ import { getSession } from "next-auth/react";
 
 import { ComposerApiError } from "./client";
 
-const baseUrl =
-  process.env.NEXT_PUBLIC_COMPOSER_API_URL ?? "http://localhost:8000";
+const baseUrl = process.env.NEXT_PUBLIC_COMPOSER_API_URL ?? "http://localhost:8000";
 
 /**
  * Result of POST /uploads/extract-text.  The `text` field is what
@@ -33,9 +32,7 @@ type Session = {
  * raw with NO Content-Type header so the browser fills in the
  * boundary.  Setting Content-Type ourselves breaks the upload.
  */
-export async function extractDocumentText(
-  file: File
-): Promise<ExtractDocumentTextResponse> {
+export async function extractDocumentText(file: File): Promise<ExtractDocumentTextResponse> {
   const formData = new FormData();
   formData.append("file", file);
 

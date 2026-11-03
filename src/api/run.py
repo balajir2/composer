@@ -121,7 +121,7 @@ async def run_external(
     input_size = len(_json.dumps(payload.input, default=str, ensure_ascii=False).encode("utf-8"))
     if input_size > settings.max_execution_input_bytes:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=(
                 f"execution input exceeds max_bytes={settings.max_execution_input_bytes}; "
                 f"got {input_size}"

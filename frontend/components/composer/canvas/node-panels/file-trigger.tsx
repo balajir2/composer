@@ -14,18 +14,14 @@ export default function FileTriggerPanel({
 }) {
   return (
     <div className="space-y-4">
-      <div className="rounded-md border bg-muted/20 p-3">
-        <p className="mb-2 text-xs font-semibold text-muted-foreground">
-          Watch configuration
-        </p>
+      <div className="bg-muted/20 rounded-md border p-3">
+        <p className="mb-2 text-xs font-semibold text-muted-foreground">Watch configuration</p>
         <p className="mb-3 text-[10px] text-muted-foreground">
-          This node is visual-only — it does not run as part of the
-          workflow. For Local filesystem, it configures the{" "}
-          <code>composer watch</code> CLI, which polls the source folder and
-          triggers this workflow when a new file is claimed. For Google
-          Drive, Composer&apos;s own backend polls the connected account on a
-          schedule — no local process needed. Publish this workflow
-          (Production toggle) before either mechanism can trigger it.
+          This node is visual-only — it does not run as part of the workflow. For Local filesystem,
+          it configures the <code>composer watch</code> CLI, which polls the source folder and
+          triggers this workflow when a new file is claimed. For Google Drive, Composer&apos;s own
+          backend polls the connected account on a schedule — no local process needed. Publish this
+          workflow (Production toggle) before either mechanism can trigger it.
         </p>
         <div className="space-y-2">
           <div className="space-y-1">

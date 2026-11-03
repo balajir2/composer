@@ -189,10 +189,7 @@ export function DesignerExecutionPanel({
   }, [executionId, token]);
 
   const orderedNodeEntries = useMemo(
-    () =>
-      Object.entries(byNodeId).sort(
-        ([, a], [, b]) => a.startedAt - b.startedAt
-      ),
+    () => Object.entries(byNodeId).sort(([, a], [, b]) => a.startedAt - b.startedAt),
     [byNodeId]
   );
 
@@ -208,19 +205,11 @@ export function DesignerExecutionPanel({
             Draft execution
           </p>
           <div className="mt-1 flex items-center gap-2">
-            {status === "running" && (
-              <Loader2 className="size-3.5 animate-spin text-primary" />
-            )}
-            {status === "completed" && (
-              <CheckCircle2 className="size-3.5 text-emerald-600" />
-            )}
-            {status === "failed" && (
-              <AlertCircle className="size-3.5 text-destructive" />
-            )}
+            {status === "running" && <Loader2 className="size-3.5 animate-spin text-primary" />}
+            {status === "completed" && <CheckCircle2 className="size-3.5 text-emerald-600" />}
+            {status === "failed" && <AlertCircle className="size-3.5 text-destructive" />}
             {status === "waiting_approval" && <Clock className="size-3.5 text-amber-600" />}
-            <Badge variant={status === "failed" ? "destructive" : "default"}>
-              {status}
-            </Badge>
+            <Badge variant={status === "failed" ? "destructive" : "default"}>{status}</Badge>
           </div>
         </div>
         <Button
@@ -286,7 +275,7 @@ export function DesignerExecutionPanel({
             <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
               Input
             </p>
-            <pre className="max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/40 px-2 py-1 font-mono text-[11px] text-muted-foreground">
+            <pre className="bg-muted/40 max-h-32 overflow-auto whitespace-pre-wrap break-words rounded-md border px-2 py-1 font-mono text-[11px] text-muted-foreground">
               {typeof execution.input === "string"
                 ? execution.input
                 : JSON.stringify(execution.input, null, 2)}
@@ -297,7 +286,7 @@ export function DesignerExecutionPanel({
         {/* Top-level failure — rare case where the executor fails before any
             node_started event (e.g. validation). */}
         {status === "failed" && execution?.error && (
-          <div className="mb-4 flex items-start gap-2 rounded-md border border-destructive/40 bg-destructive/10 px-3 py-2 text-destructive">
+          <div className="border-destructive/40 bg-destructive/10 mb-4 flex items-start gap-2 rounded-md border px-3 py-2 text-destructive">
             <AlertCircle className="mt-0.5 size-4 shrink-0" />
             <div className="min-w-0 flex-1">
               <div className="font-semibold">Execution failed</div>
@@ -334,13 +323,9 @@ export function DesignerExecutionPanel({
               >
                 <div className="flex items-center justify-between gap-2">
                   <div className="min-w-0 flex-1">
-                    <div className="truncate font-medium">
-                      {n.nodeName ?? n.nodeType ?? nodeId}
-                    </div>
+                    <div className="truncate font-medium">{n.nodeName ?? n.nodeType ?? nodeId}</div>
                     {n.nodeType && n.nodeName && n.nodeName !== n.nodeType && (
-                      <div className="truncate text-[10px] text-muted-foreground">
-                        {n.nodeType}
-                      </div>
+                      <div className="truncate text-[10px] text-muted-foreground">{n.nodeType}</div>
                     )}
                   </div>
                   <Badge
@@ -365,10 +350,8 @@ export function DesignerExecutionPanel({
                     <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
                       input
                     </summary>
-                    <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/40 px-2 py-1 font-mono text-muted-foreground">
-                      {typeof n.input === "string"
-                        ? n.input
-                        : JSON.stringify(n.input, null, 2)}
+                    <pre className="bg-muted/40 mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded px-2 py-1 font-mono text-muted-foreground">
+                      {typeof n.input === "string" ? n.input : JSON.stringify(n.input, null, 2)}
                     </pre>
                   </details>
                 )}
@@ -377,10 +360,8 @@ export function DesignerExecutionPanel({
                     <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
                       output
                     </summary>
-                    <pre className="mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded bg-muted/60 px-2 py-1 font-mono text-muted-foreground">
-                      {typeof n.output === "string"
-                        ? n.output
-                        : JSON.stringify(n.output, null, 2)}
+                    <pre className="bg-muted/60 mt-1 max-h-40 overflow-auto whitespace-pre-wrap break-words rounded px-2 py-1 font-mono text-muted-foreground">
+                      {typeof n.output === "string" ? n.output : JSON.stringify(n.output, null, 2)}
                     </pre>
                   </details>
                 )}
@@ -390,18 +371,20 @@ export function DesignerExecutionPanel({
         )}
 
         {/* Final output when the whole flow completes successfully */}
-        {status === "completed" && execution?.output !== null && execution?.output !== undefined && (
-          <div className="mt-4">
-            <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
-              Final output
-            </p>
-            <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words rounded-md border bg-muted/60 px-2 py-1 font-mono text-[11px] text-muted-foreground">
-              {typeof execution.output === "string"
-                ? execution.output
-                : JSON.stringify(execution.output, null, 2)}
-            </pre>
-          </div>
-        )}
+        {status === "completed" &&
+          execution?.output !== null &&
+          execution?.output !== undefined && (
+            <div className="mt-4">
+              <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">
+                Final output
+              </p>
+              <pre className="bg-muted/60 max-h-60 overflow-auto whitespace-pre-wrap break-words rounded-md border px-2 py-1 font-mono text-[11px] text-muted-foreground">
+                {typeof execution.output === "string"
+                  ? execution.output
+                  : JSON.stringify(execution.output, null, 2)}
+              </pre>
+            </div>
+          )}
       </div>
     </div>
   );

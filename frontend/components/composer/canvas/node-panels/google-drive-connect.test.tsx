@@ -2,30 +2,34 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent, act } from "@testing-library/react";
 import GoogleDriveConnect from "./google-drive-connect";
 
-const { listCloudStorageConnections, getPickerToken, getGoogleDriveAuthorizeUrl, MockComposerApiError } =
-  vi.hoisted(() => {
-    // Mocked so the test doesn't need a real next-auth session to import
-    // lib/api/client.ts transitively — only `ComposerApiError` is used by
-    // the component, and the component's `err instanceof ComposerApiError`
-    // check only works if both the component and the test import the SAME
-    // (mocked) class, hence mocking here rather than importing the real
-    // module.
-    class MockComposerApiError extends Error {
-      status: number;
-      detail: unknown;
-      constructor(status: number, detail: unknown) {
-        super(`mock ${status}`);
-        this.status = status;
-        this.detail = detail;
-      }
+const {
+  listCloudStorageConnections,
+  getPickerToken,
+  getGoogleDriveAuthorizeUrl,
+  MockComposerApiError,
+} = vi.hoisted(() => {
+  // Mocked so the test doesn't need a real next-auth session to import
+  // lib/api/client.ts transitively — only `ComposerApiError` is used by
+  // the component, and the component's `err instanceof ComposerApiError`
+  // check only works if both the component and the test import the SAME
+  // (mocked) class, hence mocking here rather than importing the real
+  // module.
+  class MockComposerApiError extends Error {
+    status: number;
+    detail: unknown;
+    constructor(status: number, detail: unknown) {
+      super(`mock ${status}`);
+      this.status = status;
+      this.detail = detail;
     }
-    return {
-      listCloudStorageConnections: vi.fn(),
-      getPickerToken: vi.fn(),
-      getGoogleDriveAuthorizeUrl: vi.fn(),
-      MockComposerApiError,
-    };
-  });
+  }
+  return {
+    listCloudStorageConnections: vi.fn(),
+    getPickerToken: vi.fn(),
+    getGoogleDriveAuthorizeUrl: vi.fn(),
+    MockComposerApiError,
+  };
+});
 
 vi.mock("@/lib/api/cloud-storage", () => ({
   listCloudStorageConnections,
@@ -74,7 +78,15 @@ describe("GoogleDriveConnect", () => {
         { id: "conn-1", provider: "google-drive", accountEmail: "user@gmail.com" },
       ]);
       const onChange = vi.fn();
-      render(<GoogleDriveConnect connectionId={undefined} driveFolderId={undefined} driveProcessedFolderId={undefined} driveErrorFolderId={undefined} onChange={onChange} />);
+      render(
+        <GoogleDriveConnect
+          connectionId={undefined}
+          driveFolderId={undefined}
+          driveProcessedFolderId={undefined}
+          driveErrorFolderId={undefined}
+          onChange={onChange}
+        />
+      );
 
       // Initial mount fetch resolves to the same single connection — but
       // connectionId is still undefined, so the component must NOT have
@@ -94,7 +106,15 @@ describe("GoogleDriveConnect", () => {
       { id: "conn-2", provider: "google-drive", accountEmail: "b@gmail.com" },
     ]);
     const onChange = vi.fn();
-    render(<GoogleDriveConnect connectionId={undefined} driveFolderId={undefined} driveProcessedFolderId={undefined} driveErrorFolderId={undefined} onChange={onChange} />);
+    render(
+      <GoogleDriveConnect
+        connectionId={undefined}
+        driveFolderId={undefined}
+        driveProcessedFolderId={undefined}
+        driveErrorFolderId={undefined}
+        onChange={onChange}
+      />
+    );
 
     await waitFor(() => expect(listCloudStorageConnections).toHaveBeenCalled());
 
@@ -117,7 +137,15 @@ describe("GoogleDriveConnect", () => {
       { id: "conn-1", provider: "google-drive", accountEmail: "user@gmail.com" },
     ]);
     const onChange = vi.fn();
-    render(<GoogleDriveConnect connectionId="conn-1" driveFolderId={undefined} driveProcessedFolderId={undefined} driveErrorFolderId={undefined} onChange={onChange} />);
+    render(
+      <GoogleDriveConnect
+        connectionId="conn-1"
+        driveFolderId={undefined}
+        driveProcessedFolderId={undefined}
+        driveErrorFolderId={undefined}
+        onChange={onChange}
+      />
+    );
 
     await waitFor(() => expect(listCloudStorageConnections).toHaveBeenCalled());
     expect(await screen.findByText(/Connected as user@gmail.com/)).toBeInTheDocument();
@@ -135,7 +163,15 @@ describe("GoogleDriveConnect", () => {
     ]);
     getPickerToken.mockRejectedValue(new MockComposerApiError(409, "expired"));
     const onChange = vi.fn();
-    render(<GoogleDriveConnect connectionId="conn-1" driveFolderId={undefined} driveProcessedFolderId={undefined} driveErrorFolderId={undefined} onChange={onChange} />);
+    render(
+      <GoogleDriveConnect
+        connectionId="conn-1"
+        driveFolderId={undefined}
+        driveProcessedFolderId={undefined}
+        driveErrorFolderId={undefined}
+        onChange={onChange}
+      />
+    );
 
     // Three "Select folder" buttons now render once connected (watch,
     // processed, error) — the watch-folder one is first in DOM order.
@@ -151,7 +187,15 @@ describe("GoogleDriveConnect", () => {
     listCloudStorageConnections.mockResolvedValue([
       { id: "conn-1", provider: "google-drive", accountEmail: "user@gmail.com" },
     ]);
-    render(<GoogleDriveConnect connectionId="conn-1" driveFolderId={undefined} driveProcessedFolderId={undefined} driveErrorFolderId={undefined} onChange={vi.fn()} />);
+    render(
+      <GoogleDriveConnect
+        connectionId="conn-1"
+        driveFolderId={undefined}
+        driveProcessedFolderId={undefined}
+        driveErrorFolderId={undefined}
+        onChange={vi.fn()}
+      />
+    );
     expect(await screen.findByText("Reconnect")).toBeInTheDocument();
   });
 
@@ -226,13 +270,18 @@ describe("GoogleDriveConnect", () => {
       />
     );
 
-    const processedButton = await screen.findByText("Processed folder (optional) — successfully-handled files are moved here");
+    const processedButton = await screen.findByText(
+      "Processed folder (optional) — successfully-handled files are moved here"
+    );
     const button = processedButton.parentElement?.querySelector("button");
     expect(button).not.toBeNull();
     if (button) fireEvent.click(button);
 
     await waitFor(() =>
-      expect(onChange).toHaveBeenCalledWith({ connectionId: "conn-1", driveProcessedFolderId: "new-done-folder" })
+      expect(onChange).toHaveBeenCalledWith({
+        connectionId: "conn-1",
+        driveProcessedFolderId: "new-done-folder",
+      })
     );
 
     delete (window as { google?: unknown }).google;

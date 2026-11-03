@@ -18,10 +18,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { toast } from "sonner";
-import {
-  parseWorkflowFromText,
-  toWorkflowCreate,
-} from "@/lib/workflow-import-export";
+import { parseWorkflowFromText, toWorkflowCreate } from "@/lib/workflow-import-export";
 
 const MINIMAL_WF_BODY = {
   nodes: [
@@ -87,8 +84,7 @@ export function NewWorkflowDialog({
       toast.success(`Imported "${created.name}".`);
       router.push(`/designer/${created.id}`);
     },
-    onError: (err) =>
-      toast.error(err instanceof Error ? err.message : "Import failed."),
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Import failed."),
   });
 
   function reset() {
@@ -126,8 +122,7 @@ export function NewWorkflowDialog({
         <DialogHeader>
           <DialogTitle>New workflow</DialogTitle>
           <DialogDescription>
-            Start from scratch or import an existing workflow from a JSON or
-            Markdown file.
+            Start from scratch or import an existing workflow from a JSON or Markdown file.
           </DialogDescription>
         </DialogHeader>
 
@@ -175,8 +170,7 @@ export function NewWorkflowDialog({
             </div>
             <div className="space-y-1.5">
               <Label htmlFor="wf-description">
-                Description{" "}
-                <span className="font-normal text-muted-foreground">(optional)</span>
+                Description <span className="font-normal text-muted-foreground">(optional)</span>
               </Label>
               <Textarea
                 id="wf-description"
@@ -202,15 +196,14 @@ export function NewWorkflowDialog({
           </form>
         ) : (
           <div className="space-y-4">
-            <div className="rounded-md border border-dashed bg-muted/30 p-4 text-center">
+            <div className="bg-muted/30 rounded-md border border-dashed p-4 text-center">
               <FileUp className="mx-auto mb-2 size-8 text-muted-foreground" />
               <p className="text-sm font-medium">
                 Import a workflow from <code>.json</code> or <code>.md</code>
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                The file should be one Composer exported, or a JSON envelope
-                with <code>name</code>, <code>nodes</code>, and{" "}
-                <code>edges</code> at minimum.
+                The file should be one Composer exported, or a JSON envelope with <code>name</code>,{" "}
+                <code>nodes</code>, and <code>edges</code> at minimum.
               </p>
               <input
                 ref={fileInputRef}
@@ -225,14 +218,10 @@ export function NewWorkflowDialog({
                 onClick={() => fileInputRef.current?.click()}
                 disabled={importInFlight}
               >
-                {importInFlight
-                  ? `Importing ${importedFileName ?? "file"}…`
-                  : "Choose file"}
+                {importInFlight ? `Importing ${importedFileName ?? "file"}…` : "Choose file"}
               </Button>
               {importedFileName && !importInFlight && (
-                <p className="mt-2 truncate text-xs text-muted-foreground">
-                  {importedFileName}
-                </p>
+                <p className="mt-2 truncate text-xs text-muted-foreground">{importedFileName}</p>
               )}
             </div>
             <DialogFooter>

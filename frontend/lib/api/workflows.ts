@@ -13,8 +13,7 @@ export async function listWorkflows(params?: {
 }): Promise<WorkflowListResponse> {
   const q = new URLSearchParams();
   if (params?.mine) q.set("mine", "true");
-  if (params?.isTemplate !== undefined)
-    q.set("isTemplate", String(params.isTemplate));
+  if (params?.isTemplate !== undefined) q.set("isTemplate", String(params.isTemplate));
   if (params?.limit !== undefined) q.set("limit", String(params.limit));
   if (params?.offset !== undefined) q.set("offset", String(params.offset));
   const qs = q.toString();
@@ -106,9 +105,7 @@ export async function adminUpdateWorkflowFlags(
 
 export type WorkflowAssignment = components["schemas"]["WorkflowAssignmentRead"];
 
-export async function listWorkflowAssignments(
-  workflowId: string
-): Promise<WorkflowAssignment[]> {
+export async function listWorkflowAssignments(workflowId: string): Promise<WorkflowAssignment[]> {
   return apiFetch<WorkflowAssignment[]>(`/workflows/${workflowId}/assignments`);
 }
 
@@ -116,16 +113,12 @@ export async function assignWorkflowUser(
   workflowId: string,
   userId: string
 ): Promise<WorkflowAssignment> {
-  return apiFetch<WorkflowAssignment>(
-    `/workflows/${workflowId}/assignments/${userId}`,
-    { method: "POST" }
-  );
+  return apiFetch<WorkflowAssignment>(`/workflows/${workflowId}/assignments/${userId}`, {
+    method: "POST",
+  });
 }
 
-export async function unassignWorkflowUser(
-  workflowId: string,
-  userId: string
-): Promise<void> {
+export async function unassignWorkflowUser(workflowId: string, userId: string): Promise<void> {
   return apiFetch<void>(`/workflows/${workflowId}/assignments/${userId}`, {
     method: "DELETE",
   });

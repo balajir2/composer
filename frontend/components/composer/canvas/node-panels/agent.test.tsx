@@ -20,7 +20,18 @@ beforeEach(() => {
   vi.clearAllMocks();
   getCatalog.mockResolvedValue([]);
   listEnabledLlmModels.mockResolvedValue([
-    { id: "m1", provider: "anthropic", modelId: "claude-haiku-4-5-20251001", label: "Claude Haiku 4.5", enabled: true, verificationStatus: null, verificationMessage: null, verifiedAt: null, createdAt: "", updatedAt: "" },
+    {
+      id: "m1",
+      provider: "anthropic",
+      modelId: "claude-haiku-4-5-20251001",
+      label: "Claude Haiku 4.5",
+      enabled: true,
+      verificationStatus: null,
+      verificationMessage: null,
+      verifiedAt: null,
+      createdAt: "",
+      updatedAt: "",
+    },
   ]);
 });
 
@@ -39,10 +50,7 @@ describe("AgentPanel — provider inference from stored model", () => {
     async () => {
       render(
         wrap(
-          <AgentPanel
-            data={{ model: "anthropic/claude-haiku-4-5-20251001" }}
-            onChange={vi.fn()}
-          />
+          <AgentPanel data={{ model: "anthropic/claude-haiku-4-5-20251001" }} onChange={vi.fn()} />
         )
       );
       const providerSelect = (await screen.findByLabelText("Provider")) as HTMLSelectElement;

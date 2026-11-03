@@ -5,6 +5,13 @@ import { useEffect } from "react";
 import type { Node as RFNode, Edge as RFEdge } from "reactflow";
 import DesignerCanvasPage from "./page";
 
+// The page reads its route param via next/navigation's useParams(); the test
+// drives it through this mutable holder instead of a `params` prop.
+const routeParams = vi.hoisted(() => ({ current: { workflowId: "" } }));
+vi.mock("next/navigation", () => ({
+  useParams: () => routeParams.current,
+}));
+
 // ---------------------------------------------------------------------------
 // Mocks
 // ---------------------------------------------------------------------------
@@ -80,7 +87,10 @@ vi.mock("@/components/composer/canvas/workflow-canvas", () => ({
       <div>
         <button
           onClick={() =>
-            onNodesChange?.([...initialNodes, { id: "new", type: "agent", position: { x: 0, y: 0 }, data: {} }])
+            onNodesChange?.([
+              ...initialNodes,
+              { id: "new", type: "agent", position: { x: 0, y: 0 }, data: {} },
+            ])
           }
         >
           edit-nodes
@@ -121,9 +131,7 @@ function workflowFixture(id: string) {
     tags: [],
     difficulty: null,
     estimatedTime: null,
-    nodes: [
-      { id: "start-1", type: "start", position: { x: 0, y: 0 }, data: {} },
-    ],
+    nodes: [{ id: "start-1", type: "start", position: { x: 0, y: 0 }, data: {} }],
     edges: [],
     version: 1,
     isTemplate: false,
@@ -136,10 +144,11 @@ function workflowFixture(id: string) {
 }
 
 function renderPage(workflowId: string) {
+  routeParams.current = { workflowId };
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
-      <DesignerCanvasPage params={{ workflowId }} />
+      <DesignerCanvasPage />
     </QueryClientProvider>
   );
 }
@@ -174,9 +183,7 @@ describe("DesignerCanvasPage autosave dirty-tracking", () => {
 
     // A genuinely different edit afterward must still flip it dirty.
     fireEvent.click(screen.getByText("edit-nodes"));
-    await waitFor(() =>
-      expect(screen.getByTestId("save-status").textContent).toBe("dirty")
-    );
+    await waitFor(() => expect(screen.getByTestId("save-status").textContent).toBe("dirty"));
   });
 
   it("marks dirty on a real edit after mount", async () => {
@@ -188,9 +195,7 @@ describe("DesignerCanvasPage autosave dirty-tracking", () => {
 
     fireEvent.click(screen.getByText("edit-nodes"));
 
-    await waitFor(() =>
-      expect(screen.getByTestId("save-status").textContent).toBe("dirty")
-    );
+    await waitFor(() => expect(screen.getByTestId("save-status").textContent).toBe("dirty"));
   });
 
   it("re-arms mount-vs-edit tracking when navigating to a different workflowId", async () => {
@@ -208,15 +213,14 @@ describe("DesignerCanvasPage autosave dirty-tracking", () => {
     // nodesRef/edgesRef) instead of leaking wf-a's state into wf-b.
     const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     getWorkflow.mockResolvedValueOnce(workflowFixture("wf-b"));
+    routeParams.current = { workflowId: "wf-b" };
     rerender(
       <QueryClientProvider client={qc}>
-        <DesignerCanvasPage params={{ workflowId: "wf-b" }} />
+        <DesignerCanvasPage />
       </QueryClientProvider>
     );
 
     await waitFor(() => expect(getWorkflow).toHaveBeenCalledWith("wf-b"));
-    await waitFor(() =>
-      expect(screen.getByTestId("save-status").textContent).toBe("idle")
-    );
+    await waitFor(() => expect(screen.getByTestId("save-status").textContent).toBe("idle"));
   });
 });

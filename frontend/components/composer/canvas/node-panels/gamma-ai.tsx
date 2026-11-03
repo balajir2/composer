@@ -69,8 +69,7 @@ export default function GammaAiPanel({
   const format = (data.format as string) ?? "presentation";
   const textMode = (data.textMode as string) ?? "generate";
   const numCardsRaw = data.numCards;
-  const numCards =
-    typeof numCardsRaw === "number" ? String(numCardsRaw) : "";
+  const numCards = typeof numCardsRaw === "number" ? String(numCardsRaw) : "";
   const textAmount = (data.textAmount as string) ?? "";
   const imageSource = (data.imageSource as string) ?? "";
   const language = (data.language as string) ?? "";
@@ -123,9 +122,9 @@ export default function GammaAiPanel({
           options={TEXT_MODE_OPTIONS}
         />
         <p className="text-xs text-muted-foreground">
-          How Gamma treats your prompt text. Pick <strong>Preserve</strong>{" "}
-          when the prompt already contains the slide-by-slide content;{" "}
-          <strong>Generate</strong> when it&apos;s an outline or brief.
+          How Gamma treats your prompt text. Pick <strong>Preserve</strong> when the prompt already
+          contains the slide-by-slide content; <strong>Generate</strong> when it&apos;s an outline
+          or brief.
         </p>
       </div>
 
@@ -173,15 +172,14 @@ export default function GammaAiPanel({
           options={IMAGE_SOURCE_OPTIONS}
         />
         <p className="text-xs text-muted-foreground">
-          For commercial decks, pick <strong>free to use commercially</strong>{" "}
-          or <strong>AI-generated</strong> to avoid licensing surprises.
+          For commercial decks, pick <strong>free to use commercially</strong> or{" "}
+          <strong>AI-generated</strong> to avoid licensing surprises.
         </p>
       </div>
 
       <div className="space-y-2">
         <Label htmlFor="gamma-language">
-          Language{" "}
-          <span className="font-normal text-muted-foreground">(optional)</span>
+          Language <span className="font-normal text-muted-foreground">(optional)</span>
         </Label>
         <Input
           id="gamma-language"

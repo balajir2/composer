@@ -143,7 +143,7 @@ async def create_execution(
     max_bytes = get_settings().max_execution_input_bytes
     if input_size > max_bytes:
         raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            status_code=status.HTTP_413_CONTENT_TOO_LARGE,
             detail=f"execution input exceeds max_bytes={max_bytes}; got {input_size}",
         )
 
@@ -389,7 +389,7 @@ async def delete_executions_bulk(  # pyright: ignore[reportUnusedFunction]
             where["userId"] = user_id
     else:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Provide executionIds or set allInScope=true.",
         )
 

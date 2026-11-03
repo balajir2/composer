@@ -28,10 +28,7 @@ export default function DesignerHome() {
       <div className="flex items-center justify-between gap-4">
         <h2 className="text-2xl font-semibold">My workflows</h2>
         <div className="flex items-center gap-2">
-          <Link
-            href="/designer/templates"
-            className={cn(buttonVariants({ variant: "outline" }))}
-          >
+          <Link href="/designer/templates" className={cn(buttonVariants({ variant: "outline" }))}>
             <BookOpen className="mr-1" />
             Templates
           </Link>

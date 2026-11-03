@@ -41,18 +41,17 @@ export default function AdminToolsPage() {
       <div>
         <h2 className="text-2xl font-semibold">Built-in tools</h2>
         <p className="text-sm text-muted-foreground">
-          Native integrations compiled into Composer. Each tool requires an
-          API key (Admin → LLM keys). Use <strong>Test</strong> to verify the
-          currently-loaded key can reach the upstream service. Toggle a tool
-          off here to hide it from designers without removing its key.
+          Native integrations compiled into Composer. Each tool requires an API key (Admin → LLM
+          keys). Use <strong>Test</strong> to verify the currently-loaded key can reach the upstream
+          service. Toggle a tool off here to hide it from designers without removing its key.
         </p>
         <p className="mt-2 text-sm text-muted-foreground">
           <strong>Adding a new tool without deploying code?</strong> Use an{" "}
           <a className="underline" href="/admin/mcp-servers">
             MCP server
           </a>{" "}
-          instead — mark it <em>shared</em> and it appears in every
-          designer&apos;s Tools palette alongside these built-ins.
+          instead — mark it <em>shared</em> and it appears in every designer&apos;s Tools palette
+          alongside these built-ins.
         </p>
       </div>
       {isLoading ? (

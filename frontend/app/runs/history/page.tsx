@@ -7,11 +7,7 @@ import { Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { useSession } from "next-auth/react";
 
-import {
-  bulkDeleteExecutions,
-  deleteExecution,
-  listExecutions,
-} from "@/lib/api/executions";
+import { bulkDeleteExecutions, deleteExecution, listExecutions } from "@/lib/api/executions";
 import {
   Table,
   TableBody,
@@ -44,8 +40,7 @@ export default function HistoryPage() {
   // Backend exposes role via the JWT claims NextAuth wraps; we read
   // it here purely to gate the "Delete all" button (a member who
   // clicks it gets a 403 anyway, so this is convenience not security).
-  const isAdmin =
-    (session?.user as { role?: string } | undefined)?.role === "admin";
+  const isAdmin = (session?.user as { role?: string } | undefined)?.role === "admin";
 
   // Selected row ids — the source of truth for the "Delete selected"
   // button.  Use a Set for O(1) toggle; convert to Array on submit.
@@ -58,8 +53,7 @@ export default function HistoryPage() {
   });
 
   const items = useMemo(() => data?.items ?? [], [data]);
-  const allSelected =
-    items.length > 0 && items.every((e) => selected.has(e.id));
+  const allSelected = items.length > 0 && items.every((e) => selected.has(e.id));
   const someSelected = selected.size > 0 && !allSelected;
 
   function toggleOne(id: string) {
@@ -82,8 +76,7 @@ export default function HistoryPage() {
       setIntent(null);
       void queryClient.invalidateQueries({ queryKey: ["executions"] });
     },
-    onError: (err) =>
-      toast.error(err instanceof Error ? err.message : "Failed to delete."),
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Failed to delete."),
   });
 
   const bulkDelete = useMutation({
@@ -92,9 +85,7 @@ export default function HistoryPage() {
     onSuccess: (resp) => {
       const { deletedCount, skippedCount } = resp;
       if (skippedCount > 0) {
-        toast.success(
-          `Deleted ${deletedCount}; skipped ${skippedCount} not owned by you.`
-        );
+        toast.success(`Deleted ${deletedCount}; skipped ${skippedCount} not owned by you.`);
       } else {
         toast.success(`Deleted ${deletedCount} execution${deletedCount === 1 ? "" : "s"}.`);
       }
@@ -102,8 +93,7 @@ export default function HistoryPage() {
       setSelected(new Set());
       void queryClient.invalidateQueries({ queryKey: ["executions"] });
     },
-    onError: (err) =>
-      toast.error(err instanceof Error ? err.message : "Bulk delete failed."),
+    onError: (err) => toast.error(err instanceof Error ? err.message : "Bulk delete failed."),
   });
 
   function confirmIntent() {
@@ -140,8 +130,8 @@ export default function HistoryPage() {
         <div>
           <h2 className="text-2xl font-semibold">History</h2>
           <p className="text-xs text-muted-foreground">
-            Members can delete their own executions; admins can delete any.
-            Deleting also removes the LangGraph checkpoint trail.
+            Members can delete their own executions; admins can delete any. Deleting also removes
+            the LangGraph checkpoint trail.
           </p>
         </div>
         <div className="flex items-center gap-2">
@@ -149,9 +139,7 @@ export default function HistoryPage() {
             <Button
               variant="destructive"
               size="sm"
-              onClick={() =>
-                setIntent({ kind: "bulk-selected", ids: Array.from(selected) })
-              }
+              onClick={() => setIntent({ kind: "bulk-selected", ids: Array.from(selected) })}
               disabled={isPending}
             >
               <Trash2 className="mr-1.5 h-3.5 w-3.5" />
@@ -197,10 +185,7 @@ export default function HistoryPage() {
         </TableHeader>
         <TableBody>
           {items.map((e) => (
-            <TableRow
-              key={e.id}
-              className={selected.has(e.id) ? "bg-muted/40" : ""}
-            >
+            <TableRow key={e.id} className={selected.has(e.id) ? "bg-muted/40" : ""}>
               <TableCell>
                 <input
                   type="checkbox"
@@ -263,28 +248,24 @@ export default function HistoryPage() {
               {intent?.kind === "single" && (
                 <>
                   This permanently removes execution{" "}
-                  <code className="font-mono text-xs">{intent.id}</code> from
-                  workflow{" "}
-                  <code className="font-mono text-xs">{intent.workflowId}</code>{" "}
-                  along with its approval history and LangGraph checkpoint
-                  trail.
+                  <code className="font-mono text-xs">{intent.id}</code> from workflow{" "}
+                  <code className="font-mono text-xs">{intent.workflowId}</code> along with its
+                  approval history and LangGraph checkpoint trail.
                 </>
               )}
               {intent?.kind === "bulk-selected" && (
                 <>
-                  This permanently removes the {intent.ids.length} selected
-                  execution{intent.ids.length === 1 ? "" : "s"} along with
-                  their approval history and LangGraph checkpoints. Any ids
-                  you don&apos;t own will be silently skipped.
+                  This permanently removes the {intent.ids.length} selected execution
+                  {intent.ids.length === 1 ? "" : "s"} along with their approval history and
+                  LangGraph checkpoints. Any ids you don&apos;t own will be silently skipped.
                 </>
               )}
               {intent?.kind === "bulk-all" && (
                 <>
-                  This permanently removes <strong>every execution</strong> on
-                  this deployment — across all users and workflows. The
-                  workflows themselves are not affected. Use this only when
-                  you really mean to wipe execution history globally (e.g.
-                  cleaning up a staging environment).
+                  This permanently removes <strong>every execution</strong> on this deployment —
+                  across all users and workflows. The workflows themselves are not affected. Use
+                  this only when you really mean to wipe execution history globally (e.g. cleaning
+                  up a staging environment).
                 </>
               )}
               <br />
@@ -293,18 +274,10 @@ export default function HistoryPage() {
             </DialogDescription>
           </DialogHeader>
           <DialogFooter>
-            <Button
-              variant="outline"
-              onClick={() => setIntent(null)}
-              disabled={isPending}
-            >
+            <Button variant="outline" onClick={() => setIntent(null)} disabled={isPending}>
               Cancel
             </Button>
-            <Button
-              variant="destructive"
-              onClick={confirmIntent}
-              disabled={isPending}
-            >
+            <Button variant="destructive" onClick={confirmIntent} disabled={isPending}>
               {isPending ? "Deleting…" : "Delete"}
             </Button>
           </DialogFooter>

@@ -93,6 +93,17 @@ async def run_migration(*, export_dir: str, dry_run: bool) -> int:
             )
         return 0
 
+    # Resolve the token re-encryptor BEFORE any write: discovering a missing
+    # OAB key only after workflows/executions/servers were inserted would leave
+    # a half-applied one-way migration.
+    reencrypt: Callable[[str], str] | None = None
+    if tables.get("mcpOAuthTokens"):
+        try:
+            reencrypt = _make_token_reencryptor()
+        except RuntimeError as exc:
+            logger.error("%s", exc)
+            return 1
+
     db = Prisma()
     await db.connect()
     try:
@@ -139,8 +150,7 @@ async def run_migration(*, export_dir: str, dry_run: bool) -> int:
                 logger.warning("%s", msg)
 
         # MCP OAuth tokens (requires re-encrypt)
-        if tables.get("mcpOAuthTokens"):
-            reencrypt = _make_token_reencryptor()
+        if reencrypt is not None:
             for row in tables["mcpOAuthTokens"]:
                 try:
                     data = transformers.mcp_oauth_token_row(row, reencrypt)

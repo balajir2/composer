@@ -105,15 +105,14 @@ export default function AdminWorkflowsPage() {
       <div>
         <h2 className="text-2xl font-semibold">All workflows</h2>
         <p className="text-sm text-muted-foreground">
-          Click the visibility or production badges to toggle. Publishing
-          requires a <strong>slug</strong> — the URL-safe identifier used when
-          invoking the workflow via <code>POST /api/run/&#123;slug&#125;</code>{" "}
-          with an API key.
+          Click the visibility or production badges to toggle. Publishing requires a{" "}
+          <strong>slug</strong> — the URL-safe identifier used when invoking the workflow via{" "}
+          <code>POST /api/run/&#123;slug&#125;</code> with an API key.
         </p>
       </div>
 
       {selected.size > 0 && (
-        <div className="flex items-center justify-between gap-3 rounded-md border bg-muted/40 px-3 py-2">
+        <div className="bg-muted/40 flex items-center justify-between gap-3 rounded-md border px-3 py-2">
           <span className="text-sm">
             <strong>{selected.size}</strong> selected
           </span>
@@ -131,7 +130,8 @@ export default function AdminWorkflowsPage() {
               variant="destructive"
               onClick={() => {
                 const preview = selectedNames.slice(0, 5).join(", ");
-                const more = selectedNames.length > 5 ? ` and ${selectedNames.length - 5} more` : "";
+                const more =
+                  selectedNames.length > 5 ? ` and ${selectedNames.length - 5} more` : "";
                 if (
                   window.confirm(
                     `Delete ${selected.size} workflow${selected.size === 1 ? "" : "s"}?\n\n${preview}${more}\n\nThis also removes all their executions and cannot be undone.`
@@ -210,9 +210,7 @@ export default function AdminWorkflowsPage() {
                     {owner ? (
                       <div>
                         <div>{owner.email}</div>
-                        {owner.displayName && (
-                          <div className="text-xs">{owner.displayName}</div>
-                        )}
+                        {owner.displayName && <div className="text-xs">{owner.displayName}</div>}
                       </div>
                     ) : (
                       <code className="rounded bg-muted px-2 py-1 font-mono text-xs">
@@ -246,14 +244,8 @@ export default function AdminWorkflowsPage() {
                     )}
                   </TableCell>
                   <TableCell className="flex items-center gap-2">
-                    <ReassignOwnerDialog
-                      workflowId={workflow.id}
-                      workflowName={workflow.name}
-                    />
-                    <ManageAssigneesDialog
-                      workflowId={workflow.id}
-                      workflowName={workflow.name}
-                    />
+                    <ReassignOwnerDialog workflowId={workflow.id} workflowName={workflow.name} />
+                    <ManageAssigneesDialog workflowId={workflow.id} workflowName={workflow.name} />
                     <Button
                       size="sm"
                       variant="outline"

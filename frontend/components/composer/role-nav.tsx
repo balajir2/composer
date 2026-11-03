@@ -71,8 +71,7 @@ export function RoleNav({
         // href) matches the current path.  We use this to highlight the
         // section header so users always know where they are at a glance.
         const groupActive =
-          isActive(pathname, group.href) ||
-          group.items.some((it) => isActive(pathname, it.href));
+          isActive(pathname, group.href) || group.items.some((it) => isActive(pathname, it.href));
         return (
           <div key={group.href} className="flex flex-col">
             <Link
@@ -92,10 +91,10 @@ export function RoleNav({
                     key={it.href}
                     href={it.href}
                     className={
-                      "flex items-center border-r-2 pl-7 pr-4 py-1.5 text-[0.82rem] transition-colors " +
+                      "flex items-center border-r-2 py-1.5 pl-7 pr-4 text-[0.82rem] transition-colors " +
                       (active
                         ? "border-[var(--brand-pink)] bg-[var(--brand-pink-alpha)] font-semibold text-white"
-                        : "border-transparent text-white/65 hover:bg-white/8 hover:text-white")
+                        : "hover:bg-white/8 border-transparent text-white/65 hover:text-white")
                     }
                   >
                     {it.label}

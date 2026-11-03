@@ -44,14 +44,10 @@ export default function GuardrailsPanel({
   onChange: (patch: Record<string, unknown>) => void;
 }) {
   const piiEnabled = (data.piiEnabled as boolean | undefined) ?? false;
-  const moderationEnabled =
-    (data.moderationEnabled as boolean | undefined) ?? false;
-  const jailbreakEnabled =
-    (data.jailbreakEnabled as boolean | undefined) ?? false;
-  const hallucinationEnabled =
-    (data.hallucinationEnabled as boolean | undefined) ?? false;
-  const actionOnViolation =
-    (data.actionOnViolation as string | undefined) ?? "warn";
+  const moderationEnabled = (data.moderationEnabled as boolean | undefined) ?? false;
+  const jailbreakEnabled = (data.jailbreakEnabled as boolean | undefined) ?? false;
+  const hallucinationEnabled = (data.hallucinationEnabled as boolean | undefined) ?? false;
+  const actionOnViolation = (data.actionOnViolation as string | undefined) ?? "warn";
   const model = (data.model as string | undefined) ?? "";
 
   // The events_wrapper exposes this node's output under the snake_case
@@ -59,14 +55,11 @@ export default function GuardrailsPanel({
   // shows the EXACT string the designer should paste — angle-bracket
   // placeholders like `<name>` lured users into copying them verbatim.
   const rawNodeName =
-    (data.nodeName as string | undefined) ??
-    (data.label as string | undefined) ??
-    "";
+    (data.nodeName as string | undefined) ?? (data.label as string | undefined) ?? "";
   const aliasFromName = sanitizeNodeName(rawNodeName);
   const alias = aliasFromName || "your_node_name";
 
-  const anyChecked =
-    piiEnabled || moderationEnabled || jailbreakEnabled || hallucinationEnabled;
+  const anyChecked = piiEnabled || moderationEnabled || jailbreakEnabled || hallucinationEnabled;
 
   return (
     <div className="space-y-4">
@@ -117,8 +110,7 @@ export default function GuardrailsPanel({
 
       <div className="space-y-2">
         <Label htmlFor="guard-model">
-          Classifier model{" "}
-          <span className="font-normal text-muted-foreground">(optional)</span>
+          Classifier model <span className="font-normal text-muted-foreground">(optional)</span>
         </Label>
         <Input
           id="guard-model"
@@ -127,8 +119,8 @@ export default function GuardrailsPanel({
           placeholder="anthropic/claude-haiku-4-5-20251001 (default)"
         />
         <p className="text-xs text-muted-foreground">
-          Leave blank to use the default Haiku 4.5 classifier (cheap, fast,
-          one 10-token call per enabled check, run concurrently).
+          Leave blank to use the default Haiku 4.5 classifier (cheap, fast, one 10-token call per
+          enabled check, run concurrently).
         </p>
       </div>
 
@@ -136,17 +128,17 @@ export default function GuardrailsPanel({
           content go?" question that comes up immediately.  Fields show
           the LIVE alias for THIS node so designers can copy verbatim;
           earlier `<name>` placeholder text was a copy-paste trap. */}
-      <div className="space-y-2 rounded-md border bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+      <div className="bg-muted/40 space-y-2 rounded-md border px-3 py-2 text-xs text-muted-foreground">
         <p className="font-medium text-foreground">Output behaviour</p>
         <p>
-          The upstream node&apos;s <code className="font-mono">lastOutput</code>{" "}
-          is preserved unchanged — guardrails sits transparently between
-          steps. The verdict is exposed on this node&apos;s own alias.
+          The upstream node&apos;s <code className="font-mono">lastOutput</code> is preserved
+          unchanged — guardrails sits transparently between steps. The verdict is exposed on this
+          node&apos;s own alias.
         </p>
         {!aliasFromName && (
           <p className="rounded bg-amber-50 px-2 py-1 text-amber-900">
-            Set this node&apos;s <strong>Name</strong> field above first.
-            The samples below will show the real alias once it&apos;s set.
+            Set this node&apos;s <strong>Name</strong> field above first. The samples below will
+            show the real alias once it&apos;s set.
           </p>
         )}
         <p className="text-foreground">
@@ -154,22 +146,19 @@ export default function GuardrailsPanel({
         </p>
         <ul className="space-y-1">
           <li>
-            <CopyableCode value={`{{${alias}.passed}}`} /> →
-            boolean (true / false)
+            <CopyableCode value={`{{${alias}.passed}}`} /> → boolean (true / false)
           </li>
           <li>
-            <CopyableCode value={`{{${alias}.violations}}`} /> →
-            array, e.g. <code className="font-mono">[&quot;PII detected&quot;]</code>
+            <CopyableCode value={`{{${alias}.violations}}`} /> → array, e.g.{" "}
+            <code className="font-mono">[&quot;PII detected&quot;]</code>
           </li>
           <li>
-            <CopyableCode value={`{{${alias}.message}}`} /> →
-            human-readable summary
+            <CopyableCode value={`{{${alias}.message}}`} /> → human-readable summary
           </li>
         </ul>
         <p>
-          For an <strong>If/Else</strong> node after this one (Warn mode),
-          paste this exactly into the condition field — no quotes, no
-          extra text:
+          For an <strong>If/Else</strong> node after this one (Warn mode), paste this exactly into
+          the condition field — no quotes, no extra text:
         </p>
         <CopyableCode value={`{{${alias}.passed}}`} block />
       </div>
@@ -232,7 +221,7 @@ function Toggle({
   onChange: (v: boolean) => void;
 }) {
   return (
-    <label className="flex cursor-pointer items-start gap-2 rounded px-1.5 py-1 text-sm hover:bg-muted/50">
+    <label className="hover:bg-muted/50 flex cursor-pointer items-start gap-2 rounded px-1.5 py-1 text-sm">
       <input
         type="checkbox"
         checked={checked}

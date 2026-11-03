@@ -1,0 +1,19 @@
+{
+  "_comment": "Per-module coverage floors enforced by tests/coverage_floors.py in CI (audit P2-8). Combined line+branch %, set a few points below the achieved value. Raise a floor when you raise the coverage; never lower one to make a change pass without a reason in the PR.",
+  "overall": 84,
+  "modules": {
+    "src/api/llm_models_live.py": 93,
+    "src/api/admin_llm_models.py": 92,
+    "src/api/admin_tools.py": 95,
+    "src/executors/mcp.py": 95,
+    "src/mcp/resolver.py": 95,
+    "src/migration/runner.py": 80,
+    "src/migration/writer.py": 95,
+    "src/migration/convex_loader.py": 95,
+    "src/vectordb/providers/chroma.py": 92,
+    "src/vectordb/providers/milvus.py": 90,
+    "src/vectordb/providers/pinecone.py": 93,
+    "src/vectordb/providers/qdrant.py": 92,
+    "src/vectordb/providers/weaviate.py": 92
+  }
+}

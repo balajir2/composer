@@ -35,6 +35,7 @@ from src.config import get_settings
 from src.config_validation import validate_production_config
 from src.maintenance.execution_sweeper import start_sweeper, stop_sweeper
 from src.security.key_sync import sync_llm_keys_from_db
+from src.security.proxy_headers import TrustedProxyHeadersMiddleware
 from src.storage.db import prisma_lifespan
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,10 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    # Added last so it is the OUTERMOST middleware: the client address must be
+    # corrected before CORS, rate limiting, or any route sees the request.
+    app.add_middleware(TrustedProxyHeadersMiddleware, trusted_hops=settings.trusted_proxy_hops)
 
     app.include_router(admin_deployment_settings_router)
     app.include_router(admin_llm_keys_router)

@@ -108,8 +108,8 @@ export default function McpPanel({
         <Label htmlFor="mcp-server">MCP Server</Label>
         {serverOptions.length === 0 ? (
           <p className="text-xs text-muted-foreground">
-            No shared MCP servers yet. Ask an admin to add one under Admin → MCP
-            servers and mark it as <strong>shared</strong>.
+            No shared MCP servers yet. Ask an admin to add one under Admin → MCP servers and mark it
+            as <strong>shared</strong>.
           </p>
         ) : (
           <NativeSelect
@@ -136,8 +136,8 @@ export default function McpPanel({
           {serverTools.length === 0 ? (
             <p className="text-xs text-muted-foreground">
               This server hasn&apos;t exposed a tool list yet. Go to{" "}
-              <strong>Admin → MCP servers</strong> and click <strong>Test</strong>{" "}
-              on this server — that populates its tool cache.
+              <strong>Admin → MCP servers</strong> and click <strong>Test</strong> on this server —
+              that populates its tool cache.
             </p>
           ) : (
             <div className="space-y-1 rounded-md border p-2">
@@ -145,10 +145,7 @@ export default function McpPanel({
                 const name = typeof t.name === "string" ? t.name : `tool_${i}`;
                 const desc = typeof t.description === "string" ? t.description : "";
                 return (
-                  <label
-                    key={name}
-                    className="flex cursor-pointer items-start gap-2 text-sm"
-                  >
+                  <label key={name} className="flex cursor-pointer items-start gap-2 text-sm">
                     <input
                       type="checkbox"
                       checked={selectedToolNames.includes(name)}
@@ -157,11 +154,7 @@ export default function McpPanel({
                     />
                     <div className="min-w-0 flex-1">
                       <div className="truncate font-mono text-xs">{name}</div>
-                      {desc && (
-                        <div className="truncate text-xs text-muted-foreground">
-                          {desc}
-                        </div>
-                      )}
+                      {desc && <div className="truncate text-xs text-muted-foreground">{desc}</div>}
                     </div>
                   </label>
                 );
@@ -169,8 +162,7 @@ export default function McpPanel({
             </div>
           )}
           <p className="text-xs text-muted-foreground">
-            Leave all unchecked to let the model pick from every tool this server
-            offers.
+            Leave all unchecked to let the model pick from every tool this server offers.
           </p>
         </div>
       )}
@@ -204,8 +196,7 @@ export default function McpPanel({
             <p className="text-xs text-muted-foreground">Loading models…</p>
           ) : modelOptions.length === 0 ? (
             <p className="text-xs text-muted-foreground">
-              No models enabled for this provider. Ask an admin to add one
-              under Admin → LLM models.
+              No models enabled for this provider. Ask an admin to add one under Admin → LLM models.
             </p>
           ) : (
             <NativeSelect
@@ -227,11 +218,7 @@ export default function McpPanel({
           min={1}
           max={100}
           placeholder="10 (default)"
-          value={
-            typeof data.maxIterations === "number"
-              ? String(data.maxIterations)
-              : ""
-          }
+          value={typeof data.maxIterations === "number" ? String(data.maxIterations) : ""}
           onChange={(e) => {
             const v = e.target.value;
             if (v === "") {
@@ -243,19 +230,18 @@ export default function McpPanel({
           }}
         />
         <p className="text-xs text-muted-foreground">
-          How many LLM ↔ tool round-trips the node is allowed before giving
-          up. Default 10, hard ceiling 100. Bump to 20–30 for long research
-          flows (many search + scrape calls).
+          How many LLM ↔ tool round-trips the node is allowed before giving up. Default 10, hard
+          ceiling 100. Bump to 20–30 for long research flows (many search + scrape calls).
         </p>
       </div>
 
       {!data.instructions && (data.toolName as string | undefined) && (
-        <div className="rounded-md border bg-muted/30 p-2 text-xs text-muted-foreground">
+        <div className="bg-muted/30 rounded-md border p-2 text-xs text-muted-foreground">
           <p className="font-medium">Legacy deterministic mode</p>
           <p className="mt-0.5">
             This node is configured for a single tool call (
-            <code className="font-mono">{data.toolName as string}</code>). Write a
-            Prompt above to switch it into agent mode.
+            <code className="font-mono">{data.toolName as string}</code>). Write a Prompt above to
+            switch it into agent mode.
           </p>
           <Input
             className="mt-2"

@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.security.auth import ensure_admin
@@ -22,8 +22,7 @@ class RoleUpdateRequest(BaseModel):
 class ResetPasswordResponse(BaseModel):
     temporary_password: str = Field(alias="temporaryPassword")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class UserSummary(BaseModel):
@@ -33,9 +32,7 @@ class UserSummary(BaseModel):
     display_name: str | None = Field(default=None, alias="displayName")
     is_active: bool = Field(default=True, alias="isActive")
 
-    class Config:
-        populate_by_name = True
-        from_attributes = True
+    model_config = ConfigDict(populate_by_name=True, from_attributes=True)
 
 
 def _summary_from_row(row: Any) -> "UserSummary":

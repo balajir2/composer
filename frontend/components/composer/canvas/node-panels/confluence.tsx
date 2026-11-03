@@ -105,9 +105,7 @@ export default function ConfluencePanel({
   const [propertyValueText, setPropertyValueText] = useState(() =>
     stringifyPropertyValue(data.propertyValue)
   );
-  const [propertyValueError, setPropertyValueError] = useState<string | null>(
-    null
-  );
+  const [propertyValueError, setPropertyValueError] = useState<string | null>(null);
   useEffect(() => {
     setPropertyValueText(stringifyPropertyValue(data.propertyValue));
     setPropertyValueError(null);
@@ -121,17 +119,14 @@ export default function ConfluencePanel({
     onChange({ propertyValue: value });
   }
 
-  const needsSpaceAndTitle =
-    operation === "create_or_update_page" || operation === "get_page";
+  const needsSpaceAndTitle = operation === "create_or_update_page" || operation === "get_page";
   const needsPageId = operation === "get_property" || operation === "set_property";
 
   return (
     <div className="space-y-4">
       {/* Credentials */}
-      <div className="rounded-md border bg-muted/20 p-3">
-        <p className="mb-2 text-xs font-semibold text-muted-foreground">
-          Confluence Connection
-        </p>
+      <div className="bg-muted/20 rounded-md border p-3">
+        <p className="mb-2 text-xs font-semibold text-muted-foreground">Confluence Connection</p>
         <div className="space-y-2">
           <div className="space-y-1">
             <Label htmlFor="confluence-domain" className="text-xs">
@@ -228,8 +223,7 @@ export default function ConfluencePanel({
         <>
           <div className="space-y-2">
             <Label htmlFor="confluence-parent-page-id">
-              Parent page ID{" "}
-              <span className="font-normal text-muted-foreground">(optional)</span>
+              Parent page ID <span className="font-normal text-muted-foreground">(optional)</span>
             </Label>
             <Input
               id="confluence-parent-page-id"
@@ -271,8 +265,8 @@ export default function ConfluencePanel({
               className="font-mono text-xs"
             />
             <p className="text-xs text-amber-700">
-              Comma-separated. Reconciled exactly to this set on every run —
-              labels not listed here are removed.
+              Comma-separated. Reconciled exactly to this set on every run — labels not listed here
+              are removed.
             </p>
           </div>
         </>
@@ -306,9 +300,7 @@ export default function ConfluencePanel({
 
       {operation === "set_property" && (
         <div className="space-y-2">
-          <Label htmlFor="confluence-property-value">
-            Property value (JSON or text)
-          </Label>
+          <Label htmlFor="confluence-property-value">Property value (JSON or text)</Label>
           <Textarea
             id="confluence-property-value"
             value={propertyValueText}
@@ -318,13 +310,10 @@ export default function ConfluencePanel({
             className="font-mono text-xs"
             aria-invalid={propertyValueError !== null}
           />
-          {propertyValueError && (
-            <p className="text-xs text-destructive">{propertyValueError}</p>
-          )}
+          {propertyValueError && <p className="text-xs text-destructive">{propertyValueError}</p>}
           <p className="text-xs text-muted-foreground">
-            JSON objects/arrays are stored as structured data; anything else
-            (including <code className="font-mono">{"{{template}}"}</code>{" "}
-            references) is stored as plain text.
+            JSON objects/arrays are stored as structured data; anything else (including{" "}
+            <code className="font-mono">{"{{template}}"}</code> references) is stored as plain text.
           </p>
         </div>
       )}

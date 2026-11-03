@@ -18,7 +18,10 @@
 # syntax=docker/dockerfile:1.7
 
 # ─── builder ──────────────────────────────────────────────────────────
-FROM python:3.12-slim AS builder
+# Base images are pinned by multi-arch index digest (captured 2026-11-02 via
+# `docker buildx imagetools inspect`).  Bump the tag AND digest together,
+# deliberately; never re-point to a floating tag.
+FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159 AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -39,8 +42,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# uv from the official image (~3 MB).
-COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /usr/local/bin/
+# uv from the official image (~3 MB), pinned to 0.8.15 (matches the local
+# toolchain) by index digest, captured 2026-11-02.
+COPY --from=ghcr.io/astral-sh/uv:0.8.15@sha256:a5727064a0de127bdb7c9d3c1383f3a9ac307d9f2d8a391edc7896c54289ced0 /uv /uvx /usr/local/bin/
 
 WORKDIR /app
 
@@ -62,7 +66,7 @@ COPY src/ ./src/
 RUN uv sync --frozen --no-dev
 
 # ─── runtime ──────────────────────────────────────────────────────────
-FROM python:3.12-slim AS runtime
+FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159 AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -81,9 +85,26 @@ WORKDIR /app
 # Node.js binary, no apt-cache, no uv, no nodeenv install.
 COPY --from=builder /app /app
 
+# Run as an unprivileged user (fixed uid/gid 10001, no login shell).  /app
+# stays root-owned and world-readable/executable (code + venv + Prisma
+# engine are NOT writable by the app).  Only the paths the app writes at
+# runtime are owned by the app user:
+#   /tmp/composer-attachments  default APPROVAL_ATTACHMENT_ROOT
+#   /home/app                  HOME, for any library that wants ~/.cache
+RUN groupadd --system --gid 10001 app     && useradd --system --uid 10001 --gid 10001 --home-dir /home/app         --shell /usr/sbin/nologin app     && mkdir -p /home/app /tmp/composer-attachments     && chown 10001:10001 /home/app /tmp/composer-attachments     && chmod -R a+rX /app
+
+ENV HOME=/home/app
+
+USER 10001:10001
+
 EXPOSE 8080
 
-# --proxy-headers + --forwarded-allow-ips '*' makes FastAPI honour the
-# X-Forwarded-* headers Cloud Run's load balancer injects (so
-# request.url.scheme is 'https' rather than 'http' behind the proxy).
-CMD ["sh", "-c", "uvicorn src.main:app --host 0.0.0.0 --port $PORT --proxy-headers --forwarded-allow-ips '*'"]
+# uvicorn's own proxy-header handling is OFF on purpose. With
+# `--forwarded-allow-ips '*'` it takes the LEFTMOST X-Forwarded-For entry,
+# which is whatever the client sent — letting callers spoof the address the
+# login / approval-email rate limiters see (audit P1-6). The app instead
+# installs src/security/proxy_headers.py's TrustedProxyHeadersMiddleware,
+# which trusts only the proxy-appended entry from the right
+# (TRUSTED_PROXY_HOPS, default 1 = Cloud Run's front end) and also restores
+# the https scheme from X-Forwarded-Proto.
+CMD ["sh", "-c", "uvicorn src.main:app --host 0.0.0.0 --port $PORT --no-proxy-headers"]

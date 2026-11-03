@@ -107,8 +107,7 @@ export function CreateMcpDialog() {
   const needsHeaderName = authType === "api-key";
   const isOauth = authType === "oauth";
   const oauthComplete =
-    !isOauth ||
-    (authorizeUrl.trim() !== "" && tokenUrl.trim() !== "" && clientId.trim() !== "");
+    !isOauth || (authorizeUrl.trim() !== "" && tokenUrl.trim() !== "" && clientId.trim() !== "");
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
@@ -193,13 +192,13 @@ export function CreateMcpDialog() {
             </div>
           )}
           {isOauth && (
-            <div className="space-y-3 rounded-md border bg-muted/30 p-3">
+            <div className="bg-muted/30 space-y-3 rounded-md border p-3">
               <p className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">
                 OAuth 2.1 config
               </p>
               <p className="text-xs text-muted-foreground">
-                Provided by the MCP server&apos;s vendor. You can also edit
-                these later from the server&apos;s row.
+                Provided by the MCP server&apos;s vendor. You can also edit these later from the
+                server&apos;s row.
               </p>
               <div className="space-y-2">
                 <Label htmlFor="new-mcp-authorize-url">Authorize URL</Label>
@@ -256,8 +255,8 @@ export function CreateMcpDialog() {
                 />
               </div>
               <p className="text-xs text-muted-foreground">
-                After saving, click <strong>Authorize</strong> on the server row
-                to sign in and capture an access token.
+                After saving, click <strong>Authorize</strong> on the server row to sign in and
+                capture an access token.
               </p>
             </div>
           )}
@@ -282,10 +281,7 @@ export function CreateMcpDialog() {
             >
               Cancel
             </Button>
-            <Button
-              type="submit"
-              disabled={mutation.isPending || !name || !url || !oauthComplete}
-            >
+            <Button type="submit" disabled={mutation.isPending || !name || !url || !oauthComplete}>
               {mutation.isPending ? "Adding…" : "Add"}
             </Button>
           </DialogFooter>

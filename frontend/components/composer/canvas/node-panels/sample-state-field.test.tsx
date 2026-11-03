@@ -78,9 +78,7 @@ describe("useSampleState", () => {
 
 describe("SampleStateField", () => {
   it("shows an error message when the text is invalid JSON", () => {
-    render(
-      wrap(<SampleStateField text="{not json" onChangeText={vi.fn()} error="Invalid JSON" />)
-    );
+    render(wrap(<SampleStateField text="{not json" onChangeText={vi.fn()} error="Invalid JSON" />));
     expect(screen.getByText("Invalid JSON")).toBeInTheDocument();
   });
 

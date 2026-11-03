@@ -28,7 +28,12 @@ from src.security.encryption import encrypt
 
 pytestmark = [
     pytest.mark.integration,
-    pytest.mark.skip(reason="Highspot OAuth token is external and currently invalid"),
+    pytest.mark.live,
+    # QUARANTINED (audit P2-9). Owner: balajirajan@gmail.com. Review by 2027-01-31:
+    # re-issue the Highspot OAuth token, then delete this skip - or delete the test.
+    pytest.mark.skip(
+        reason="QUARANTINED until 2027-01-31 (owner: balajirajan@gmail.com): Highspot OAuth token is external and currently invalid"
+    ),
 ]
 
 

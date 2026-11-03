@@ -9,13 +9,13 @@
 #      https://composer-backend-<hash>-uc.a.run.app).
 #   4. (Optional) Add the public frontend URL as `COMPOSER_FRONTEND_URL`
 #      so NEXTAUTH_URL points at the right host.
-#   5. (Optional, P1-2/P1-4 durable execution) Add the shared Cloud
-#      Tasks/Scheduler service account email — created by
-#      scripts/gcp-bootstrap.ps1's "1a" step — as a repository variable
-#      named `CLOUD_TASKS_SERVICE_ACCOUNT` (e.g.
-#      composer-tasks@composer-497608.iam.gserviceaccount.com). Left
-#      unset, /internal/claim-and-run and /internal/sweep skip OIDC
-#      verification (dev-mode fallback; see src/api/internal.py).
+#   5. (REQUIRED) Add the shared Cloud Tasks/Scheduler service account
+#      email — created by scripts/gcp-bootstrap.ps1's "1a" step — as a
+#      repository variable named `CLOUD_TASKS_SERVICE_ACCOUNT` (e.g.
+#      composer-tasks@composer-497608.iam.gserviceaccount.com). The
+#      deploy fails if it is unset: /internal/* routes reject every call
+#      without it and production refuses to start (src/api/internal.py,
+#      src/config_validation.py).
 #
 # The workflow assumes the bootstrap script has already run (Secret
 # Manager populated, Cloud Run services exist, Cloud Tasks queue +
@@ -57,15 +57,15 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Set up gcloud CLI
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
         with:
           project_id: ${{ env.PROJECT_ID }}
 
@@ -73,10 +73,10 @@ jobs:
         run: gcloud auth configure-docker ${{ env.REGION }}-docker.pkg.dev --quiet
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build and push backend image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           file: ./Dockerfile
@@ -90,10 +90,31 @@ jobs:
           # layers (apt+node install, uv sync, prisma generate).
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
+          # Supply-chain evidence (audit P1-5): BuildKit attaches an SPDX SBOM
+          # and SLSA provenance (inputs, builder, source commit) to the pushed
+          # image as OCI attestations, stored in Artifact Registry next to the
+          # image digest. Inspect with:
+          #   docker buildx imagetools inspect <image>@<digest> --format '{{ json .SBOM }}'
+          #   docker buildx imagetools inspect <image>@<digest> --format '{{ json .Provenance }}'
+          sbom: true
+          provenance: mode=max
 
       - name: Export backend image ref
         run: |
           echo "BACKEND_IMAGE=${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/backend:${{ github.sha }}" >> $GITHUB_ENV
+
+      # Audit P0-1: fail before anything is built or deployed if the
+      # internal-route identity is missing, instead of discovering it
+      # mid-deploy (new revision would crash-loop at boot — see
+      # src/config_validation.py — or serve /internal/* unauthenticated).
+      - name: Preflight — required repository variables
+        env:
+          CLOUD_TASKS_SERVICE_ACCOUNT: ${{ vars.CLOUD_TASKS_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$CLOUD_TASKS_SERVICE_ACCOUNT" ]; then
+            echo "::error::Repository variable CLOUD_TASKS_SERVICE_ACCOUNT is unset or empty. Set it (e.g. composer-tasks@${{ env.PROJECT_ID }}.iam.gserviceaccount.com) before deploying."
+            exit 1
+          fi
 
       - name: Deploy to Cloud Run
         run: |
@@ -155,15 +176,23 @@ jobs:
       # matching this workflow's existing COMPOSER_API_URL/
       # COMPOSER_FRONTEND_URL convention. Unconditional (unlike the
       # FRONTEND_URL step above): GCP_PROJECT_ID/GCP_REGION are always
-      # available, and an unset vars.CLOUD_TASKS_SERVICE_ACCOUNT resolves
-      # to an empty string, which src/config.py already treats as a safe
-      # default (OIDC verification skipped, matching local/dev) rather
-      # than a broken one — see scripts/gcp-bootstrap.ps1's section 1a for
-      # how this value is provisioned (queue + service account created
-      # together; not automated here — set this repo variable by hand
-      # after running that script once).
+      # available. The variable is REQUIRED (audit P0-1): an unset
+      # vars.CLOUD_TASKS_SERVICE_ACCOUNT resolves to an empty string, which
+      # would overwrite the live value, leave /internal/* unable to
+      # authenticate callers, and (src/config_validation.py) crash-loop the
+      # backend at boot. The step fails before touching Cloud Run instead —
+      # see scripts/gcp-bootstrap.ps1's section 1a for how this value is
+      # provisioned (queue + service account created together; not
+      # automated here — set this repo variable by hand after running that
+      # script once).
       - name: Set Cloud Tasks env vars
+        env:
+          CLOUD_TASKS_SERVICE_ACCOUNT: ${{ vars.CLOUD_TASKS_SERVICE_ACCOUNT }}
         run: |
+          if [ -z "$CLOUD_TASKS_SERVICE_ACCOUNT" ]; then
+            echo "::error::Repository variable CLOUD_TASKS_SERVICE_ACCOUNT is unset or empty; refusing to overwrite the production value. Set it (e.g. composer-tasks@${{ env.PROJECT_ID }}.iam.gserviceaccount.com) and re-run."
+            exit 1
+          fi
           gcloud run services update ${{ env.BACKEND_SERVICE }} \
             --region=${{ env.REGION }} \
             --project=${{ env.PROJECT_ID }} \
@@ -212,15 +241,15 @@ jobs:
     permissions:
       contents: read
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Set up gcloud CLI
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
         with:
           project_id: ${{ env.PROJECT_ID }}
 
@@ -244,10 +273,10 @@ jobs:
           echo "Frontend will call API at: $URL"
 
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build and push frontend image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: frontend
           file: frontend/Dockerfile
@@ -263,6 +292,9 @@ jobs:
           # cached.
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
+          # SBOM + SLSA provenance attestations — see the backend step.
+          sbom: true
+          provenance: mode=max
 
       - name: Export frontend image ref
         run: |
@@ -309,12 +341,12 @@ jobs:
       contents: read
     steps:
       - name: Authenticate to Google Cloud
-        uses: google-github-actions/auth@v2
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
         with:
           credentials_json: ${{ secrets.GCP_SA_KEY }}
 
       - name: Set up gcloud CLI
-        uses: google-github-actions/setup-gcloud@v2
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
         with:
           project_id: ${{ env.PROJECT_ID }}
 

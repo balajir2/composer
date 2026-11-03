@@ -78,9 +78,8 @@ function SetKeyDialog({
           {hasExistingKey ? `Update ${providerLabel} key` : `Set ${providerLabel} key`}
         </DialogTitle>
         <DialogDescription>
-          Keys live in Postgres, encrypted with AES-256-GCM. The existing value
-          can never be revealed — only replaced. Paste the new key below to
-          overwrite.
+          Keys live in Postgres, encrypted with AES-256-GCM. The existing value can never be
+          revealed — only replaced. Paste the new key below to overwrite.
         </DialogDescription>
       </DialogHeader>
       <form

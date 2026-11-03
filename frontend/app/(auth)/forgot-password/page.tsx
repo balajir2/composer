@@ -43,13 +43,10 @@ export default function ForgotPasswordPage() {
         {submitted ? (
           <div className="space-y-4 text-center">
             <p className="text-sm text-muted-foreground">
-              If an account exists for that email, we&apos;ve sent a link to reset your
-              password. Check your inbox.
+              If an account exists for that email, we&apos;ve sent a link to reset your password.
+              Check your inbox.
             </p>
-            <Link
-              href="/login"
-              className="text-sm text-primary underline-offset-4 hover:underline"
-            >
+            <Link href="/login" className="text-sm text-primary underline-offset-4 hover:underline">
               Back to sign in
             </Link>
           </div>

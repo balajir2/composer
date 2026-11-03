@@ -5,10 +5,7 @@ import { useMutation } from "@tanstack/react-query";
 
 import { Button } from "@/components/ui/button";
 import { testLlmKey } from "@/lib/api/admin";
-import {
-  InlineTestResult,
-  type InlineTestState,
-} from "@/components/composer/inline-test-result";
+import { InlineTestResult, type InlineTestState } from "@/components/composer/inline-test-result";
 
 export function LlmKeyTestButton({ provider }: { provider: string; providerLabel?: string }) {
   const [state, setState] = useState<InlineTestState>({ kind: "idle" });

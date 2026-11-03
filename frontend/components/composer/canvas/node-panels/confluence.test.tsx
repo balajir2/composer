@@ -10,9 +10,7 @@ describe("ConfluencePanel", () => {
   });
 
   it("switching operation to get_property reveals pageId/propertyKey fields", () => {
-    render(
-      <ConfluencePanel data={{ operation: "get_property" }} onChange={vi.fn()} />
-    );
+    render(<ConfluencePanel data={{ operation: "get_property" }} onChange={vi.fn()} />);
     expect(screen.getByLabelText("Page ID")).toBeInTheDocument();
     expect(screen.getByLabelText("Property key")).toBeInTheDocument();
     expect(screen.queryByLabelText("Space key")).not.toBeInTheDocument();
@@ -38,9 +36,7 @@ describe("ConfluencePanel", () => {
 
   it("editing propertyKey in get_property mode calls onChange with propertyKey", () => {
     const onChange = vi.fn();
-    render(
-      <ConfluencePanel data={{ operation: "get_property" }} onChange={onChange} />
-    );
+    render(<ConfluencePanel data={{ operation: "get_property" }} onChange={onChange} />);
     fireEvent.change(screen.getByLabelText("Property key"), {
       target: { value: "metrics_snapshot" },
     });
@@ -48,23 +44,17 @@ describe("ConfluencePanel", () => {
   });
 
   it("switching operation to set_property reveals pageId/propertyKey/propertyValue and hides spaceKey/title", () => {
-    render(
-      <ConfluencePanel data={{ operation: "set_property" }} onChange={vi.fn()} />
-    );
+    render(<ConfluencePanel data={{ operation: "set_property" }} onChange={vi.fn()} />);
     expect(screen.getByLabelText("Page ID")).toBeInTheDocument();
     expect(screen.getByLabelText("Property key")).toBeInTheDocument();
-    expect(
-      screen.getByLabelText("Property value (JSON or text)")
-    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Property value (JSON or text)")).toBeInTheDocument();
     expect(screen.queryByLabelText("Space key")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("Title")).not.toBeInTheDocument();
   });
 
   it("propertyValue round-trips real JSON as a parsed object, not a string", () => {
     const onChange = vi.fn();
-    render(
-      <ConfluencePanel data={{ operation: "set_property" }} onChange={onChange} />
-    );
+    render(<ConfluencePanel data={{ operation: "set_property" }} onChange={onChange} />);
     fireEvent.change(screen.getByLabelText("Property value (JSON or text)"), {
       target: { value: '{"total": 42}' },
     });
@@ -73,9 +63,7 @@ describe("ConfluencePanel", () => {
 
   it("preserves a non-JSON template reference as a plain string in propertyValue", () => {
     const onChange = vi.fn();
-    render(
-      <ConfluencePanel data={{ operation: "set_property" }} onChange={onChange} />
-    );
+    render(<ConfluencePanel data={{ operation: "set_property" }} onChange={onChange} />);
     fireEvent.change(screen.getByLabelText("Property value (JSON or text)"), {
       target: { value: "{{compute_metrics.output}}" },
     });
@@ -96,11 +84,7 @@ describe("ConfluencePanel", () => {
     expect(screen.getByLabelText("Labels")).toHaveValue("summary, status");
 
     rerender(
-      <ConfluencePanel
-        data={{ labels: ["priority"] }}
-        onChange={onChange}
-        currentNodeId="node-b"
-      />
+      <ConfluencePanel data={{ labels: ["priority"] }} onChange={onChange} currentNodeId="node-b" />
     );
     expect(screen.getByLabelText("Labels")).toHaveValue("priority");
   });

@@ -108,10 +108,12 @@ async def _verify_internal_oidc(
     asserting a service-account identity, so one verification function
     covers both rather than duplicating the logic per endpoint.
 
-    Skipped entirely when CLOUD_TASKS_SERVICE_ACCOUNT is unset (local dev,
-    or before the queue/scheduler is provisioned) — mirrors the existing
-    dev-mode auth fallback pattern (src/main.py's ADR-0015 warning) rather
-    than introducing a second, differently-shaped bypass.
+    Skipped only when CLOUD_TASKS_SERVICE_ACCOUNT is unset AND the
+    environment is explicitly "development" (local dev/CI) — mirrors the
+    existing dev-mode auth fallback pattern (src/main.py's ADR-0015
+    warning). With the identity unset in any other environment the request
+    is rejected with 401 (fail closed), and production additionally refuses
+    to boot (src/config_validation.py).
 
     Uses google-auth's verify_oauth2_token (JWKS fetch/cache, signature,
     issuer, expiry all handled internally) rather than hand-rolling JWT
@@ -143,7 +145,22 @@ async def _verify_internal_oidc(
     """
     settings = get_settings()
     if not settings.cloud_tasks_service_account:
-        return
+        # Fail closed (audit P0-1): the unauthenticated path exists only for
+        # explicit local development. Any other environment — production,
+        # staging, or a mistyped name — with no configured identity must
+        # reject rather than expose /internal/* to the open internet.
+        if settings.environment == "development":
+            return
+        logger.error(
+            "internal: rejecting %s — CLOUD_TASKS_SERVICE_ACCOUNT is unset and "
+            "environment is %r (OIDC bypass is allowed only in 'development')",
+            request.url.path,
+            settings.environment,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="internal authentication is not configured",
+        )
     if authorization is None or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="missing OIDC token")
     token = authorization.removeprefix("Bearer ")
@@ -359,7 +376,7 @@ async def claim_and_run_execution(
             )
             if not decision:
                 raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                     detail="decision is required when kind='resume'",
                 )
             await executor.resume(execution_id, decision)
