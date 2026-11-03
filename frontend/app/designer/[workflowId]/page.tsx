@@ -12,6 +12,7 @@ import {
   exportWorkflowAsMarkdown,
 } from "@/lib/workflow-import-export";
 import { WorkflowCanvas } from "@/components/composer/canvas/workflow-canvas";
+import { BuilderPanel } from "@/components/composer/builder-chat/builder-panel";
 import { SaveControls } from "@/components/composer/canvas/save-controls";
 import { PublishedEndpoint } from "@/components/composer/published-endpoint";
 import {
@@ -131,6 +132,20 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
   // can decorate nodes (running / completed / failed).
   const [runState, setRunState] = useState<DesignerExecutionState | null>(null);
 
+  // Bumped whenever the AI builder replaces the graph. WorkflowCanvas seeds
+  // its internal state from `initialNodes`/`initialEdges` on MOUNT ONLY
+  // (`useNodesState` -> `useState`), so a prop change alone would NOT repaint
+  // the canvas — a new `key` forces a fresh mount that picks up the new graph.
+  const [canvasKey, setCanvasKey] = useState(0);
+
+  // The graph the canvas should seed from after a builder turn. We cannot
+  // simply let the remount read the `workflow` query's nodes: the
+  // invalidateQueries below refetches asynchronously, so at remount time the
+  // cached workflow is still the pre-builder one and the canvas would paint
+  // stale data. Holding the applied arrays here guarantees the remounted
+  // canvas shows exactly what the builder returned.
+  const [canvasSeed, setCanvasSeed] = useState<{ nodes: RFNode[]; edges: RFEdge[] } | null>(null);
+
   const {
     data: workflow,
     isLoading,
@@ -176,6 +191,25 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
     } finally {
       setIsSaving(false);
     }
+  }
+
+  // Apply a builder turn's output to the canvas. The backend persists the
+  // workflow before responding, so we mirror it into the canvas refs, take it
+  // as the new "as-loaded" baseline (so autosave does not immediately flag the
+  // freshly generated graph as an unsaved edit), and remount the canvas so it
+  // renders the new nodes/edges.
+  function applyBuilderWorkflow(next: { nodes: unknown[]; edges: unknown[] }) {
+    const { rfNodes, rfEdges } = toReactFlow(
+      next.nodes as unknown as ComposerNode[],
+      next.edges as unknown as ComposerEdge[]
+    );
+    nodesRef.current = rfNodes;
+    edgesRef.current = rfEdges;
+    initialNodesRef.current = rfNodes;
+    initialEdgesRef.current = rfEdges;
+    setCanvasSeed({ nodes: rfNodes, edges: rfEdges });
+    setCanvasKey((k) => k + 1);
+    void queryClient.invalidateQueries({ queryKey: ["workflow", workflowId] });
   }
 
   useEffect(() => {
@@ -321,13 +355,14 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
         </div>
       </div>
 
-      {/* Canvas + execution panel */}
+      {/* Canvas + builder panel + execution panel */}
       <div className="flex flex-1 overflow-hidden">
         <div className="flex-1 overflow-hidden">
           <WorkflowCanvas
+            key={canvasKey}
             workflowId={workflowId}
-            initialNodes={rfNodes}
-            initialEdges={rfEdges}
+            initialNodes={canvasSeed?.nodes ?? rfNodes}
+            initialEdges={canvasSeed?.edges ?? rfEdges}
             onNodesChange={(nodes) => {
               nodesRef.current = nodes;
               if (!nodesMatchInitial(nodes, initialNodesRef.current)) {
@@ -343,6 +378,7 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
             runState={runState ?? undefined}
           />
         </div>
+        <BuilderPanel workflowId={workflowId} onWorkflowUpdated={applyBuilderWorkflow} />
         {draftExecutionId && (
           <DesignerExecutionPanel
             executionId={draftExecutionId}
