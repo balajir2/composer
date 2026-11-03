@@ -14,6 +14,8 @@ from langchain_core.messages import AIMessage
 
 from src.builder.builder_agent import BuildSession, run_builder_turn
 from src.engine.workflow import (
+    AgentNode,
+    AgentNodeData,
     EndNode,
     EndNodeData,
     Position,
@@ -55,6 +57,26 @@ def _empty_workflow() -> Workflow:
         ),
     ]
     edges: list[WorkflowEdge] = [WorkflowEdge(id="e1", source="s", target="e")]
+    return Workflow(name="t", nodes=nodes, edges=edges)
+
+
+def _origin_workflow() -> Workflow:
+    """Three chained nodes all at the origin — proves layout repositions them."""
+    nodes: list[WorkflowNode] = [
+        StartNode(
+            id="s", type="start", position=Position(x=0, y=0), data=StartNodeData(label="S")
+        ),
+        AgentNode(
+            id="a", type="agent", position=Position(x=0, y=0), data=AgentNodeData(label="A")
+        ),
+        EndNode(
+            id="e", type="end", position=Position(x=0, y=0), data=EndNodeData(label="E")
+        ),
+    ]
+    edges: list[WorkflowEdge] = [
+        WorkflowEdge(id="e1", source="s", target="a"),
+        WorkflowEdge(id="e2", source="a", target="e"),
+    ]
     return Workflow(name="t", nodes=nodes, edges=edges)
 
 
@@ -125,3 +147,22 @@ async def test_diagnose_turn_proposes_without_applying() -> None:
     assert any(e.get("type") == "patch_proposal" for e in events)
     assert session.pending_patch is not None
     assert wf is not None
+
+
+async def test_build_turn_applies_layout_to_generated_nodes() -> None:
+    session = BuildSession(workflow_id="w1")
+    session.pending_plan = {"stages": []}  # skip the planning branch
+    _events, _reply, wf = await run_builder_turn(
+        model=_model(""),
+        workflow_id="w1",
+        workflow=_origin_workflow(),
+        session=session,
+        message="build it",
+        execution_id=None,
+        db=None,
+    )
+    positions = {n.id: n.position for n in wf.nodes}
+    # All three nodes started at the origin; layout must separate them.
+    assert len({(p.x, p.y) for p in positions.values()}) == 3
+    assert positions["s"].x < positions["a"].x < positions["e"].x
+    assert any(p.x != 0.0 or p.y != 0.0 for p in positions.values())

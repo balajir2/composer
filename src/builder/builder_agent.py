@@ -11,6 +11,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from src.builder.builder_tools import BuilderContext, make_builder_tools
 from src.builder.diagnostics import build_diagnosis
 from src.builder.draft import Draft
+from src.builder.layout import compute_layout
 from src.builder.prompts import build_system_prompt
 from src.engine.graph_builder import collect_workflow_violations
 from src.engine.workflow import Workflow
@@ -101,24 +102,46 @@ def _diff_workflows(original: Workflow, candidate: Workflow) -> dict[str, Any]:
     }
 
 
-def _draft_to_workflow(workflow: Workflow, draft: Draft) -> Workflow:
-    nodes, edges = draft.snapshot()
+def _apply_layout(workflow: Workflow) -> Workflow:
+    """Reposition builder-generated nodes using the deterministic layered layout.
+
+    ``_build_node`` creates every node at ``Position(x=0, y=0)``, so without
+    this the canvas would stack the whole graph at the origin. Positions are
+    advisory — the user can drag nodes afterward.
+    """
+    positions = compute_layout(workflow.nodes, workflow.edges)
+    nodes = [n.model_copy(update={"position": positions[n.id]}) for n in workflow.nodes]
     return Workflow(
         id=workflow.id,
         name=workflow.name,
         description=workflow.description,
         nodes=nodes,
-        edges=edges,
+        edges=workflow.edges,
+    )
+
+
+def _draft_to_workflow(workflow: Workflow, draft: Draft) -> Workflow:
+    nodes, edges = draft.snapshot()
+    return _apply_layout(
+        Workflow(
+            id=workflow.id,
+            name=workflow.name,
+            description=workflow.description,
+            nodes=nodes,
+            edges=edges,
+        )
     )
 
 
 def _workflow_from_patch(workflow: Workflow, patch: dict[str, Any]) -> Workflow:
-    return Workflow(
-        id=workflow.id,
-        name=workflow.name,
-        description=workflow.description,
-        nodes=patch["nodes"],
-        edges=patch["edges"],
+    return _apply_layout(
+        Workflow(
+            id=workflow.id,
+            name=workflow.name,
+            description=workflow.description,
+            nodes=patch["nodes"],
+            edges=patch["edges"],
+        )
     )
 
 
