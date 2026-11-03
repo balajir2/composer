@@ -11,22 +11,24 @@ type Msg = { role: "user" | "assistant"; text: string; events: BuilderEvent[] };
 export function BuilderPanel({
   workflowId,
   onWorkflowUpdated,
+  executionId,
 }: {
   workflowId: string;
   onWorkflowUpdated: (workflow: { nodes: unknown[]; edges: unknown[] }) => void;
+  executionId?: string;
 }) {
   const [sessionId, setSessionId] = useState<string | undefined>();
   const [transcript, setTranscript] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
 
-  async function send(text: string) {
+  async function send(text: string, executionId?: string) {
     if (!text.trim()) return;
     setBusy(true);
     setTranscript((t) => [...t, { role: "user", text, events: [] }]);
     setInput("");
     try {
-      const res = await sendBuilderMessage(workflowId, { message: text, sessionId });
+      const res = await sendBuilderMessage(workflowId, { message: text, sessionId, executionId });
       if (res.events.some((e) => e.type === "session_expired")) {
         setSessionId(undefined); // next turn opens a fresh session
       } else {
@@ -66,17 +68,31 @@ export function BuilderPanel({
           </div>
         ))}
       </div>
-      <div className="flex gap-2 border-t p-3">
-        <input
-          className="min-w-0 flex-1 rounded-md border px-2 py-1 text-sm"
-          value={input}
-          disabled={busy}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") send(input);
-          }}
-          placeholder="Describe your workflow…"
-        />
+      <div className="border-t p-3">
+        {executionId && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() =>
+              send("Diagnose this failed run and suggest a fix.", executionId)
+            }
+            className="mb-2 w-full rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive hover:bg-destructive/20 disabled:opacity-50"
+          >
+            Ask about the failed run
+          </button>
+        )}
+        <div className="flex gap-2">
+          <input
+            className="min-w-0 flex-1 rounded-md border px-2 py-1 text-sm"
+            value={input}
+            disabled={busy}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") send(input);
+            }}
+            placeholder="Describe your workflow…"
+          />
+        </div>
       </div>
     </div>
   );

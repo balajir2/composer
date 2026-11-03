@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BuilderPanel } from "./builder-panel";
 
@@ -49,6 +49,28 @@ describe("BuilderPanel session recovery", () => {
     expect(sendBuilderMessage.mock.calls[1]?.[1]).toEqual({
       message: "second",
       sessionId: undefined,
+    });
+  });
+
+  it("sends the execution id when asking about a failed run", async () => {
+    sendBuilderMessage.mockResolvedValue(reply({}));
+
+    render(
+      <BuilderPanel
+        workflowId="wf-1"
+        onWorkflowUpdated={vi.fn()}
+        executionId="exec-123"
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /ask about the failed run/i }));
+
+    await waitFor(() => {
+      expect(sendBuilderMessage).toHaveBeenCalledWith("wf-1", {
+        message: "Diagnose this failed run and suggest a fix.",
+        sessionId: undefined,
+        executionId: "exec-123",
+      });
     });
   });
 });

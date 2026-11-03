@@ -266,6 +266,12 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
     initialEdgesRef.current = rfEdges;
   }
 
+  // Only hand the builder an execution id when the current draft run has
+  // actually failed — otherwise a normal build turn would be misrouted into
+  // the diagnose→patch (Sequence B) flow.
+  const failedExecutionId =
+    draftExecutionId && runState?.status === "failed" ? draftExecutionId : undefined;
+
   return (
     <div className="flex h-[calc(100vh-8rem)] flex-col">
       {/* Slim canvas top bar */}
@@ -378,7 +384,11 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
             runState={runState ?? undefined}
           />
         </div>
-        <BuilderPanel workflowId={workflowId} onWorkflowUpdated={applyBuilderWorkflow} />
+        <BuilderPanel
+          workflowId={workflowId}
+          onWorkflowUpdated={applyBuilderWorkflow}
+          executionId={failedExecutionId}
+        />
         {draftExecutionId && (
           <DesignerExecutionPanel
             executionId={draftExecutionId}
