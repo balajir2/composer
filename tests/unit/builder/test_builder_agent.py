@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 from langchain_core.messages import AIMessage
 
 from src.builder.builder_agent import BuildSession, run_builder_turn
+from src.engine.graph_builder import collect_workflow_violations
 from src.engine.workflow import (
     AgentNode,
     AgentNodeData,
@@ -156,3 +157,75 @@ async def test_build_turn_applies_layout_to_generated_nodes() -> None:
     assert len({(p.x, p.y) for p in positions.values()}) == 3
     assert positions["s"].x < positions["a"].x < positions["e"].x
     assert any(p.x != 0.0 or p.y != 0.0 for p in positions.values())
+
+
+async def test_plan_wrapped_in_code_fence_still_becomes_a_plan_card() -> None:
+    session = BuildSession(workflow_id="w1")
+    fenced = 'Here you go:\n```json\n{"stages":[{"id":"s1","summary":"search"}]}\n```'
+    events, _reply, _wf = await run_builder_turn(
+        model=_model(fenced),
+        workflow_id="w1",
+        workflow=_empty_workflow(),
+        session=session,
+        message="search the web",
+        execution_id=None,
+        db=None,
+    )
+    assert [e for e in events if e.get("type") == "plan"] == [
+        {"type": "plan", "stages": [{"id": "s1", "summary": "search"}]}
+    ]
+
+
+class _ToolCallingModel:
+    """Replays scripted AIMessages, so the real tool loop runs end to end."""
+
+    def __init__(self, script: list[AIMessage]) -> None:
+        self._script = list(script)
+
+    async def ainvoke(self, messages: Any, **kwargs: Any) -> AIMessage:
+        return self._script.pop(0)
+
+    def bind_tools(self, tools: Any) -> _ToolCallingModel:
+        return self
+
+
+def _call(name: str, args: dict[str, Any], call_id: str) -> dict[str, Any]:
+    return {"name": name, "args": args, "id": call_id, "type": "tool_call"}
+
+
+async def test_build_turn_repairs_a_second_start_and_disconnected_end() -> None:
+    """Regression for the 2026-11-04 screenshot: the model added its own Start
+    beside the default Start -> End and never wired the End."""
+    script = [
+        AIMessage(
+            content="",
+            tool_calls=[  # pyright: ignore[reportArgumentType]
+                _call(
+                    "create_node", {"node_type": "start", "node_id": "start", "label": "Start"}, "1"
+                ),
+                _call(
+                    "create_node",
+                    {"node_type": "agent", "node_id": "search", "label": "Search"},
+                    "2",
+                ),
+                _call("connect_nodes", {"source": "start", "target": "search"}, "3"),
+            ],
+        ),
+        AIMessage(content="Built it."),
+    ]
+    session = BuildSession(workflow_id="w1")
+    session.pending_plan = {"stages": []}
+    _events, reply, wf = await run_builder_turn(
+        model=cast("BaseChatModel", _ToolCallingModel(script)),
+        workflow_id="w1",
+        workflow=_empty_workflow(),
+        session=session,
+        message="approve the plan",
+        execution_id=None,
+        db=None,
+    )
+
+    assert reply == "Built it."
+    assert [n.id for n in wf.nodes if n.type == "start"] == ["s"]
+    assert {(e.source, e.target) for e in wf.edges} == {("s", "search"), ("search", "e")}
+    assert collect_workflow_violations(wf) == []

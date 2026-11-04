@@ -75,3 +75,30 @@ def test_connect_nodes_ids_do_not_collide_after_removal() -> None:
     t["connect_nodes"].invoke({"source": "a", "target": "e"})
     _, edges = ctx.draft.snapshot()
     assert {(e.source, e.target) for e in edges} == {("a", "c"), ("a", "e")}
+
+
+def test_create_node_error_lists_valid_types_for_unknown_type() -> None:
+    ctx = BuilderContext(draft=Draft(), events=[])
+    r = _tools(ctx)["create_node"].invoke(
+        {"node_type": "tavily", "node_id": "x", "label": "X", "data": {}}
+    )
+    assert r.startswith("ERROR")
+    assert "agent" in r and "mcp" in r  # the model sees what it could have used
+
+
+def test_create_node_error_explains_bad_node_id() -> None:
+    ctx = BuilderContext(draft=Draft(), events=[])
+    r = _tools(ctx)["create_node"].invoke(
+        {"node_type": "agent", "node_id": "has space", "label": "X", "data": {}}
+    )
+    assert r.startswith("ERROR")
+    assert "node_id" in r
+
+
+def test_create_node_error_names_the_invalid_field() -> None:
+    ctx = BuilderContext(draft=Draft(), events=[])
+    r = _tools(ctx)["create_node"].invoke(
+        {"node_type": "agent", "node_id": "a", "label": "A", "data": {"maxIterations": "lots"}}
+    )
+    assert r.startswith("ERROR")
+    assert "maxIterations" in r

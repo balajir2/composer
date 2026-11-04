@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from typing import Any, cast
 
 from langchain_core.tools import BaseTool, tool
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from src.builder.draft import Draft
 from src.engine.workflow import (
@@ -98,18 +98,30 @@ class BuilderContext:
     events: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
 
 
-def _build_node(node_type: str, node_id: str, data: dict[str, Any]) -> WorkflowNode | None:
+def _try_build_node(
+    node_type: str, node_id: str, data: dict[str, Any]
+) -> tuple[WorkflowNode | None, str]:
+    """Build a node, or explain in model-readable terms why it can't be built."""
     cls = _NODE_CLASSES.get(node_type)
     if cls is None:
-        return None
+        return (
+            None,
+            f"unknown node type {node_type!r}; valid types: {', '.join(sorted(_NODE_CLASSES))}",
+        )
     if not _ID_RE.match(node_id):
-        return None
+        return None, "node_id must be 1-64 characters of letters, digits, '_' or '-'"
     payload = {"label": data.get("label", node_type), **data}
     try:
         node = cls(id=node_id, type=node_type, position=Position(x=0, y=0), data=payload)
-    except Exception:
-        return None
-    return cast("WorkflowNode", node)
+    except ValidationError as exc:
+        problems = "; ".join(
+            f"{'.'.join(str(p) for p in err['loc'][1:] or err['loc'])}: {err['msg']}"
+            for err in exc.errors()
+        )
+        return None, problems
+    except Exception as exc:
+        return None, str(exc)
+    return cast("WorkflowNode", node), ""
 
 
 def make_builder_tools(ctx: BuilderContext) -> list[BaseTool]:
@@ -119,11 +131,9 @@ def make_builder_tools(ctx: BuilderContext) -> list[BaseTool]:
     def create_node(node_type: str, node_id: str, label: str, data: dict[str, Any] = {}) -> str:  # noqa: B006
         """Create a node. `data` is a dict of node-specific fields (omit label; it is passed separately)."""
         payload = {"label": label, **data}
-        node = _build_node(node_type, node_id, payload)
+        node, problem = _try_build_node(node_type, node_id, payload)
         if node is None:
-            return (
-                f"ERROR: could not create {node_type!r} node {node_id!r} — check type and fields."
-            )
+            return f"ERROR: could not create {node_type!r} node {node_id!r}: {problem}."
         if node_id in draft.nodes:
             return f"ERROR: node id {node_id!r} already exists."
         draft.nodes[node_id] = node
@@ -136,9 +146,9 @@ def make_builder_tools(ctx: BuilderContext) -> list[BaseTool]:
         if existing is None:
             return f"ERROR: no node {node_id!r}."
         merged = {**existing.data.model_dump(by_alias=True), **data}
-        updated = _build_node(existing.type, node_id, merged)
+        updated, problem = _try_build_node(existing.type, node_id, merged)
         if updated is None:
-            return f"ERROR: invalid data for node {node_id!r}."
+            return f"ERROR: invalid data for node {node_id!r}: {problem}."
         draft.nodes[node_id] = updated
         return f"ok: updated node {node_id!r}."
 

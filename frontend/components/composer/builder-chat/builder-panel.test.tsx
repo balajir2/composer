@@ -68,3 +68,108 @@ describe("BuilderPanel session recovery", () => {
     });
   });
 });
+
+describe("BuilderPanel conversation UX", () => {
+  beforeEach(() => {
+    sendBuilderMessage.mockReset();
+  });
+
+  async function sendText(text: string) {
+    const input = screen.getByPlaceholderText("Describe your workflow…");
+    fireEvent.change(input, { target: { value: text } });
+    fireEvent.keyDown(input, { key: "Enter" });
+  }
+
+  it("shows each message in its own bubble tagged by role", async () => {
+    sendBuilderMessage.mockResolvedValue(reply({ reply: "Hello there" }));
+    render(<BuilderPanel workflowId="wf-1" onWorkflowUpdated={vi.fn()} />);
+
+    await sendText("hi");
+    await screen.findByText("Hello there");
+
+    expect(screen.getByText("hi").closest("[data-role]")?.getAttribute("data-role")).toBe("user");
+    expect(screen.getByText("Hello there").closest("[data-role]")?.getAttribute("data-role")).toBe(
+      "assistant"
+    );
+  });
+
+  it("offers example prompts on an empty conversation and sends the chosen one", async () => {
+    sendBuilderMessage.mockResolvedValue(reply({}));
+    render(<BuilderPanel workflowId="wf-1" onWorkflowUpdated={vi.fn()} />);
+
+    const chips = screen.getAllByTestId("builder-suggestion");
+    expect(chips.length).toBeGreaterThan(0);
+    fireEvent.click(chips[0]!);
+
+    await waitFor(() => expect(sendBuilderMessage).toHaveBeenCalledTimes(1));
+    expect(sendBuilderMessage.mock.calls[0]?.[1].message).toBe(chips[0]!.textContent);
+    expect(screen.queryAllByTestId("builder-suggestion")).toHaveLength(0);
+  });
+
+  it("does not send on Shift+Enter, so replies can span lines", () => {
+    render(<BuilderPanel workflowId="wf-1" onWorkflowUpdated={vi.fn()} />);
+    const input = screen.getByPlaceholderText("Describe your workflow…");
+
+    fireEvent.change(input, { target: { value: "line one" } });
+    fireEvent.keyDown(input, { key: "Enter", shiftKey: true });
+
+    expect(sendBuilderMessage).not.toHaveBeenCalled();
+  });
+
+  it("summarises what was added to the canvas", async () => {
+    sendBuilderMessage.mockResolvedValue(
+      reply({
+        reply: "Built it.",
+        events: [{ type: "stage_applied", node_count: 4, edge_count: 3 }],
+      })
+    );
+    render(<BuilderPanel workflowId="wf-1" onWorkflowUpdated={vi.fn()} />);
+
+    await sendText("build");
+
+    expect(await screen.findByText(/4 nodes/)).toBeTruthy();
+    expect(screen.getByText(/3 connections/)).toBeTruthy();
+  });
+
+  it("shows validation notices instead of dropping them", async () => {
+    sendBuilderMessage.mockResolvedValue(
+      reply({ events: [{ type: "message", content: "Remaining issues: End node has no input" }] })
+    );
+    render(<BuilderPanel workflowId="wf-1" onWorkflowUpdated={vi.fn()} />);
+
+    await sendText("build");
+
+    expect(await screen.findByText(/Remaining issues/)).toBeTruthy();
+  });
+
+  it("approves a plan once, then locks the button", async () => {
+    sendBuilderMessage
+      .mockResolvedValueOnce(
+        reply({ events: [{ type: "plan", stages: [{ id: "s1", summary: "Search the web" }] }] })
+      )
+      .mockResolvedValueOnce(reply({ reply: "Done" }));
+    render(<BuilderPanel workflowId="wf-1" onWorkflowUpdated={vi.fn()} />);
+
+    await sendText("search");
+    const approve = await screen.findByRole("button", { name: /approve plan/i });
+    fireEvent.click(approve);
+    await screen.findByText("Done");
+
+    expect(sendBuilderMessage).toHaveBeenCalledTimes(2);
+    expect((screen.getByRole("button", { name: /approved/i }) as HTMLButtonElement).disabled).toBe(
+      true
+    );
+  });
+
+  it("reports a failed request in the conversation and recovers", async () => {
+    sendBuilderMessage.mockRejectedValueOnce(new Error("boom"));
+    render(<BuilderPanel workflowId="wf-1" onWorkflowUpdated={vi.fn()} />);
+
+    await sendText("build");
+
+    expect(await screen.findByText(/something went wrong/i)).toBeTruthy();
+    expect(
+      (screen.getByPlaceholderText("Describe your workflow…") as HTMLTextAreaElement).disabled
+    ).toBe(false);
+  });
+});

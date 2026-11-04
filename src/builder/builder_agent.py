@@ -1,6 +1,7 @@
 """Builder agent loop + ephemeral in-memory BuildSession."""
 
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, cast
@@ -12,7 +13,8 @@ from src.builder.builder_tools import BuilderContext, make_builder_tools
 from src.builder.diagnostics import build_diagnosis
 from src.builder.draft import Draft
 from src.builder.layout import compute_layout
-from src.builder.prompts import build_system_prompt
+from src.builder.normalize import normalize_orchestration
+from src.builder.prompts import build_system_prompt, describe_canvas
 from src.engine.graph_builder import collect_workflow_violations
 from src.engine.workflow import Workflow
 
@@ -33,16 +35,29 @@ class BuildSession:
         self.last_activity = time.monotonic()
 
 
-def _system_messages() -> list[BaseMessage]:
-    return [SystemMessage(content=build_system_prompt())]
+def _system_messages(workflow: Workflow) -> list[BaseMessage]:
+    canvas = describe_canvas(workflow.nodes, workflow.edges)
+    return [SystemMessage(content=build_system_prompt(canvas))]
+
+
+def _draft_system_messages(draft: Draft) -> list[BaseMessage]:
+    nodes, edges = draft.snapshot()
+    return [SystemMessage(content=build_system_prompt(describe_canvas(nodes, edges)))]
+
+
+_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
 
 
 def _try_parse_plan(text: str) -> dict[str, Any] | None:
+    """Parse the plan JSON, tolerating code fences or a line of prose around it."""
+    match = _JSON_OBJECT.search(text)
+    if match is None:
+        return None
     try:
-        data = json.loads(text)
+        data = json.loads(match.group(0))
     except json.JSONDecodeError:
         return None
-    if isinstance(data, dict) and "stages" in data:
+    if isinstance(data, dict) and isinstance(data.get("stages"), list):  # pyright: ignore[reportUnknownMemberType]
         return cast("dict[str, Any]", data)
     return None
 
@@ -55,7 +70,7 @@ def _extract_text(response: Any) -> str:
 async def _tool_loop(model: BaseChatModel, ctx: BuilderContext, session: BuildSession) -> str:
     tools = make_builder_tools(ctx)
     bound = model.bind_tools(tools)
-    messages: list[BaseMessage] = [*_system_messages(), *session.messages]
+    messages: list[BaseMessage] = [*_draft_system_messages(ctx.draft), *session.messages]
     for _ in range(MAX_TOOL_ITERATIONS):
         response = await bound.ainvoke(messages)
         messages.append(response)
@@ -107,7 +122,7 @@ def _diff_workflows(original: Workflow, candidate: Workflow) -> dict[str, Any]:
 def _apply_layout(workflow: Workflow) -> Workflow:
     """Reposition builder-generated nodes using the deterministic layered layout.
 
-    ``_build_node`` creates every node at ``Position(x=0, y=0)``, so without
+    ``_try_build_node`` creates every node at ``Position(x=0, y=0)``, so without
     this the canvas would stack the whole graph at the origin. Positions are
     advisory — the user can drag nodes afterward.
     """
@@ -215,7 +230,7 @@ async def run_builder_turn(
 
     # 3. Planning turn.
     if session.pending_plan is None:
-        response = await model.ainvoke([*_system_messages(), *session.messages])
+        response = await model.ainvoke([*_system_messages(workflow), *session.messages])
         text = _extract_text(response)
         plan = _try_parse_plan(text)
         if plan is not None:
@@ -235,6 +250,7 @@ async def run_builder_turn(
     for edge in workflow.edges:
         ctx.draft.edges[edge.id] = edge
     reply = await _tool_loop(model, ctx, session)
+    normalize_orchestration(ctx.draft)
     updated = _draft_to_workflow(workflow, ctx.draft)
     violations = collect_workflow_violations(updated)
     if violations:

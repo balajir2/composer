@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed / Changed — "Build with AI" orchestration and chat UX (2026-11-04)
+
+Reported from a real session: the builder added a **second Start node** next to the default Start → End, left End disconnected, and the new nodes unreachable; the chat was plain unbounded text.
+
+- **Orchestration is now repaired in code** (`src/builder/normalize.py`, run after every build turn): extra Start nodes are merged into the existing one (input variables carried over), a missing Start/End is created, chain heads are wired from Start, chain tails into End, and a leftover direct Start → End shortcut is dropped. Branch nodes and several sinks into one End are deliberately left for the validator to report.
+- **The model now sees the canvas** (existing nodes/edges are in the system prompt) and is told to reuse Start/End, chain start → steps → end, declare inputs with `set_start_inputs` and reference them with `{{name}}` / `{{lastOutput}}`.
+- **Tool errors are specific**: `create_node` / `update_node` return the Pydantic field error, the valid node types, or the node-id rule, so the model can self-correct instead of seeing "check type and fields".
+- **Plan parsing tolerates code fences / surrounding prose**, so a plan wrapped in ```json still renders as a plan card.
+- **Chat UI**: user / assistant message bubbles, example prompts on an empty chat, typing indicator, auto-scroll, multi-line input (Enter sends, Shift+Enter newline) with a Send button, "Added to canvas · N nodes, M connections" summaries, validation notices and failed-request messages shown inline, plan / patch cards lock after being used, wider panel (w-96).
+- Frontend CI no longer fetches Google Fonts at build time (Plus Jakarta Sans is self-hosted; the fetch had failed on a runner).
+
 ### Security — system-audit remediation, P0-1 through P2-10 (2026-11-02)
 
 Work through `docs/claude-system-audit-fix-list.md`, done on branch `audit/p0-p2-hardening` (nothing pushed: every push to `main` deploys). Each item below was re-verified against the branch before editing; three audit claims turned out wrong and are noted. Details per item follow; the P0-1 entry is the one directly below this summary.
