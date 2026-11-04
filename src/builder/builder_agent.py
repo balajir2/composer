@@ -81,7 +81,9 @@ def _diff_workflows(original: Workflow, candidate: Workflow) -> dict[str, Any]:
     """Compute a patch diff between two workflow snapshots."""
     orig_nodes = {n.id: n for n in original.nodes}
     cand_nodes = {n.id: n for n in candidate.nodes}
-    added_nodes = [n.model_dump(by_alias=True) for i, n in cand_nodes.items() if i not in orig_nodes]
+    added_nodes = [
+        n.model_dump(by_alias=True) for i, n in cand_nodes.items() if i not in orig_nodes
+    ]
     removed_nodes = [i for i in orig_nodes if i not in cand_nodes]
     changed_nodes = [
         i
@@ -165,13 +167,17 @@ async def run_builder_turn(
         updated = _workflow_from_patch(workflow, session.pending_patch)
         session.pending_patch = None
         session.messages.append(AIMessage(content="Patch applied."))
-        return [
-            {
-                "type": "stage_applied",
-                "node_count": len(updated.nodes),
-                "edge_count": len(updated.edges),
-            }
-        ], "Patch applied.", updated
+        return (
+            [
+                {
+                    "type": "stage_applied",
+                    "node_count": len(updated.nodes),
+                    "edge_count": len(updated.edges),
+                }
+            ],
+            "Patch applied.",
+            updated,
+        )
     if message == _REJECT_PATCH and session.pending_patch is not None:
         session.pending_patch = None
         session.messages.append(AIMessage(content="Patch discarded."))
@@ -215,9 +221,11 @@ async def run_builder_turn(
         if plan is not None:
             session.pending_plan = plan
             session.messages.append(AIMessage(content=json.dumps(plan)))
-            return [{"type": "plan", "stages": plan.get("stages", [])}], (
-                "Here's my plan. Approve it and I'll start building."
-            ), workflow
+            return (
+                [{"type": "plan", "stages": plan.get("stages", [])}],
+                ("Here's my plan. Approve it and I'll start building."),
+                workflow,
+            )
         # Fall through to build if the model didn't return a plan.
 
     # 4. Build turn.
@@ -230,10 +238,16 @@ async def run_builder_turn(
     updated = _draft_to_workflow(workflow, ctx.draft)
     violations = collect_workflow_violations(updated)
     if violations:
-        events.append({"type": "message", "content": "Remaining issues: " + "; ".join(violations[:5])})
+        events.append(
+            {"type": "message", "content": "Remaining issues: " + "; ".join(violations[:5])}
+        )
     events.extend(ctx.events)
     events.append(
-        {"type": "stage_applied", "node_count": len(updated.nodes), "edge_count": len(updated.edges)}
+        {
+            "type": "stage_applied",
+            "node_count": len(updated.nodes),
+            "edge_count": len(updated.edges),
+        }
     )
     session.messages.append(AIMessage(content=reply))
     return events, reply, updated

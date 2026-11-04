@@ -49,12 +49,8 @@ def _model(text: str) -> BaseChatModel:
 
 def _empty_workflow() -> Workflow:
     nodes: list[WorkflowNode] = [
-        StartNode(
-            id="s", type="start", position=Position(x=0, y=0), data=StartNodeData(label="S")
-        ),
-        EndNode(
-            id="e", type="end", position=Position(x=400, y=0), data=EndNodeData(label="E")
-        ),
+        StartNode(id="s", type="start", position=Position(x=0, y=0), data=StartNodeData(label="S")),
+        EndNode(id="e", type="end", position=Position(x=400, y=0), data=EndNodeData(label="E")),
     ]
     edges: list[WorkflowEdge] = [WorkflowEdge(id="e1", source="s", target="e")]
     return Workflow(name="t", nodes=nodes, edges=edges)
@@ -63,15 +59,9 @@ def _empty_workflow() -> Workflow:
 def _origin_workflow() -> Workflow:
     """Three chained nodes all at the origin — proves layout repositions them."""
     nodes: list[WorkflowNode] = [
-        StartNode(
-            id="s", type="start", position=Position(x=0, y=0), data=StartNodeData(label="S")
-        ),
-        AgentNode(
-            id="a", type="agent", position=Position(x=0, y=0), data=AgentNodeData(label="A")
-        ),
-        EndNode(
-            id="e", type="end", position=Position(x=0, y=0), data=EndNodeData(label="E")
-        ),
+        StartNode(id="s", type="start", position=Position(x=0, y=0), data=StartNodeData(label="S")),
+        AgentNode(id="a", type="agent", position=Position(x=0, y=0), data=AgentNodeData(label="A")),
+        EndNode(id="e", type="end", position=Position(x=0, y=0), data=EndNodeData(label="E")),
     ]
     edges: list[WorkflowEdge] = [
         WorkflowEdge(id="e1", source="s", target="a"),

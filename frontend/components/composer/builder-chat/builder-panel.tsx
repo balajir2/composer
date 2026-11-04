@@ -73,10 +73,8 @@ export function BuilderPanel({
           <button
             type="button"
             disabled={busy}
-            onClick={() =>
-              send("Diagnose this failed run and suggest a fix.", executionId)
-            }
-            className="mb-2 w-full rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-xs text-destructive hover:bg-destructive/20 disabled:opacity-50"
+            onClick={() => send("Diagnose this failed run and suggest a fix.", executionId)}
+            className="border-destructive/40 bg-destructive/10 hover:bg-destructive/20 mb-2 w-full rounded-md border px-2 py-1 text-xs text-destructive disabled:opacity-50"
           >
             Ask about the failed run
           </button>

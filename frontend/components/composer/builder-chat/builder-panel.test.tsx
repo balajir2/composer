@@ -55,13 +55,7 @@ describe("BuilderPanel session recovery", () => {
   it("sends the execution id when asking about a failed run", async () => {
     sendBuilderMessage.mockResolvedValue(reply({}));
 
-    render(
-      <BuilderPanel
-        workflowId="wf-1"
-        onWorkflowUpdated={vi.fn()}
-        executionId="exec-123"
-      />
-    );
+    render(<BuilderPanel workflowId="wf-1" onWorkflowUpdated={vi.fn()} executionId="exec-123" />);
 
     fireEvent.click(screen.getByRole("button", { name: /ask about the failed run/i }));
 

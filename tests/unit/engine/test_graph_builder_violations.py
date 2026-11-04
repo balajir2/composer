@@ -28,9 +28,7 @@ def _start(i: str = "s") -> StartNode:
 
 
 def _end(i: str = "e") -> EndNode:
-    return EndNode(
-        id=i, type="end", position=Position(x=400, y=0), data=EndNodeData(label="End")
-    )
+    return EndNode(id=i, type="end", position=Position(x=400, y=0), data=EndNodeData(label="End"))
 
 
 def test_valid_workflow_has_no_violations() -> None:

@@ -281,7 +281,8 @@ def collect_workflow_violations(workflow: Workflow) -> list[str]:
     branch_markers = _branch_markers(nodes, clean_edges)
     for end_id in end_ids:
         incoming = [
-            e for e in clean_edges
+            e
+            for e in clean_edges
             if e.target == end_id and nodes[e.source].type not in _VISUAL_ONLY_TYPES
         ]
         if len(incoming) == 1:
@@ -304,7 +305,8 @@ def collect_workflow_violations(workflow: Workflow) -> list[str]:
         if node.type != "join":
             continue
         outgoing = [
-            e for e in clean_edges
+            e
+            for e in clean_edges
             if e.source == node.id and nodes[e.target].type not in _VISUAL_ONLY_TYPES
         ]
         if len(outgoing) != 1:
