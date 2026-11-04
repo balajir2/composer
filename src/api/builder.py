@@ -18,11 +18,12 @@ from src.api.workflows import (  # reuse existing secret helpers (additive impor
     _to_workflow_read,  # pyright: ignore[reportPrivateUsage]
 )
 from src.builder.builder_agent import BuildSession, run_builder_turn
+from src.builder.model_policy import ModelNotAllowedError, load_policy
 from src.config import get_settings
 from src.engine.graph_builder import collect_workflow_violations
 from src.engine.workflow import Workflow
 from src.llm.providers import build_chat_model
-from src.security.auth import get_current_role
+from src.security.auth import get_current_role, get_current_user_id
 from src.security.rate_limit import (
     RateLimiterProtocol,
     enforce,
@@ -33,7 +34,6 @@ from src.storage.db import get_db
 
 router = APIRouter(tags=["builder"])
 
-DEFAULT_BUILDER_MODEL = "anthropic/claude-sonnet-4-5"
 SESSION_TTL_SECONDS = 30 * 60
 
 
@@ -43,6 +43,20 @@ class BuilderMessageRequest(BaseModel):
     message: str
     session_id: str | None = Field(default=None, alias="sessionId")
     execution_id: str | None = Field(default=None, alias="executionId")
+    # "provider/modelId"; must be in the admin-approved set. Omit for the default.
+    model: str | None = None
+
+
+class BuilderModelOption(BaseModel):
+    id: str
+    label: str
+
+
+class BuilderModelsResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    default: str
+    models: list[BuilderModelOption]
 
 
 class BuilderMessageResponse(BaseModel):
@@ -108,9 +122,17 @@ async def _persist(db: Prisma, workflow_id: str, workflow: Workflow, existing: A
     )
 
 
-async def _deployment_setting(db: Prisma, key: str) -> str | None:
-    row = await db.deploymentsetting.find_unique(where={"key": key})  # pyright: ignore[reportAttributeAccessIssue]
-    return row.value if row else None
+@router.get("/builder/models", response_model=BuilderModelsResponse)
+async def builder_models(  # pyright: ignore[reportUnusedFunction]
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    _user_id: str = Depends(get_current_user_id),
+) -> BuilderModelsResponse:
+    """Models the signed-in user may pick in the Build-with-AI panel."""
+    policy = await load_policy(db)
+    return BuilderModelsResponse(
+        default=policy.default,
+        models=[BuilderModelOption(id=o.id, label=o.label) for o in policy.options],
+    )
 
 
 @router.post("/builder/{workflow_id}/message", response_model=BuilderMessageResponse)
@@ -159,7 +181,11 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
     else:
         sid = payload.session_id or ""
 
-    model_string = (await _deployment_setting(db, "builder_model")) or DEFAULT_BUILDER_MODEL
+    policy = await load_policy(db)
+    try:
+        model_string = policy.resolve(payload.model)
+    except ModelNotAllowedError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     model = build_chat_model(model_string)
 
     workflow = _to_engine_workflow(existing)

@@ -25,6 +25,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { BuilderModelsCard } from "@/components/composer/builder-models-card";
 import { EmptyState } from "@/components/composer/empty-state";
 import {
   adminCreateLlmModel,
@@ -105,6 +106,7 @@ export default function AdminLlmModelsPage() {
 
   return (
     <div className="space-y-4">
+      <BuilderModelsCard />
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-semibold">LLM models</h2>

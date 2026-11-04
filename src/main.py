@@ -8,6 +8,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from src import __version__
+from src.api.admin_builder import router as admin_builder_router
 from src.api.admin_deployment_settings import router as admin_deployment_settings_router
 from src.api.admin_llm_keys import router as admin_llm_keys_router
 from src.api.admin_llm_models import router as admin_llm_models_router
@@ -137,6 +138,7 @@ def create_app() -> FastAPI:
     # corrected before CORS, rate limiting, or any route sees the request.
     app.add_middleware(TrustedProxyHeadersMiddleware, trusted_hops=settings.trusted_proxy_hops)
 
+    app.include_router(admin_builder_router)
     app.include_router(admin_deployment_settings_router)
     app.include_router(admin_llm_keys_router)
     app.include_router(admin_llm_models_router)

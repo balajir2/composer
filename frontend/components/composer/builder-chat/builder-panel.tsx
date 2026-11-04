@@ -2,13 +2,36 @@
 
 import { useEffect, useRef, useState } from "react";
 import { CheckCircle2, Info, Send, Sparkles } from "lucide-react";
-import { sendBuilderMessage, type BuilderEvent } from "@/lib/api/builder";
+import {
+  listBuilderModels,
+  sendBuilderMessage,
+  type BuilderEvent,
+  type BuilderModels,
+} from "@/lib/api/builder";
 import { cn } from "@/lib/utils";
 import { PlanCard } from "./plan-card";
 import { CredentialRequestCard } from "./credential-request-card";
 import { PatchDiffCard } from "./patch-diff-card";
 
 type Msg = { role: "user" | "assistant"; text: string; events: BuilderEvent[] };
+
+const MODEL_STORAGE_KEY = "composer.builder.model";
+
+function readSavedModel(): string | null {
+  try {
+    return window.localStorage.getItem(MODEL_STORAGE_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function saveModel(id: string) {
+  try {
+    window.localStorage.setItem(MODEL_STORAGE_KEY, id);
+  } catch {
+    // Remembering the choice is a convenience only.
+  }
+}
 
 const SUGGESTIONS = [
   "Search the web for a topic the user gives me and summarize what it finds",
@@ -80,6 +103,27 @@ export function BuilderPanel({
   // "<message index>:<event index>" of plan / patch cards the user already acted on.
   const [resolved, setResolved] = useState<Set<string>>(new Set());
   const endRef = useRef<HTMLDivElement | null>(null);
+  // Models the admin allows; `null` until loaded (or if loading failed, in which
+  // case the server default is used).
+  const [models, setModels] = useState<BuilderModels | null>(null);
+  const [model, setModel] = useState<string | undefined>();
+
+  useEffect(() => {
+    let cancelled = false;
+    listBuilderModels()
+      .then((m) => {
+        if (cancelled) return;
+        setModels(m);
+        const saved = readSavedModel();
+        setModel(saved && m.models.some((o) => o.id === saved) ? saved : m.default);
+      })
+      .catch(() => {
+        // Fall back to the server default; the panel still works.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     endRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
@@ -95,7 +139,12 @@ export function BuilderPanel({
     }
     setInput("");
     try {
-      const res = await sendBuilderMessage(workflowId, { message: text, sessionId, executionId });
+      const res = await sendBuilderMessage(workflowId, {
+        message: text,
+        sessionId,
+        executionId,
+        model,
+      });
       if (res.events.some((e) => e.type === "session_expired")) {
         setSessionId(undefined); // next turn opens a fresh session
       } else {
@@ -122,6 +171,30 @@ export function BuilderPanel({
       <div className="flex items-center gap-2 border-b px-3 py-2.5">
         <Sparkles className="h-4 w-4 text-primary" aria-hidden />
         <span className="text-sm font-semibold">Build with AI</span>
+        {models && models.models.length > 1 ? (
+          <select
+            aria-label="Model"
+            className="ml-auto max-w-[11rem] truncate rounded-md border bg-background px-2 py-1 text-xs"
+            value={model ?? models.default}
+            disabled={busy}
+            onChange={(e) => {
+              setModel(e.target.value);
+              saveModel(e.target.value);
+            }}
+          >
+            {models.models.map((o) => (
+              <option key={o.id} value={o.id}>
+                {o.label}
+              </option>
+            ))}
+          </select>
+        ) : (
+          models && (
+            <span className="ml-auto max-w-[11rem] truncate text-xs text-muted-foreground">
+              {models.models[0]?.label}
+            </span>
+          )
+        )}
       </div>
       <div className="flex-1 space-y-3 overflow-y-auto p-3" aria-live="polite">
         {transcript.length === 0 && (

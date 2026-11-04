@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — admin-controlled model choice for "Build with AI" (2026-11-04)
+
+- Users pick the chat model from a dropdown in the panel (remembered per browser); a single allowed model is shown as plain text. The choice is sent as `model` on `POST /builder/{id}/message`.
+- Admins choose the default and the allow-list under **Admin → LLM models → Build with AI models**. Only models enabled in the catalog can be offered, so disabling one there also removes it from the chat. Stored in `deployment_settings` (`builder_model`, `builder_allowed_models`) — no migration.
+- Enforced server-side: a model outside the approved set returns 400, whatever the client sends. Until an admin configures it, only the default (`anthropic/claude-sonnet-4-5`) is allowed, so cost cannot widen by accident.
+- New endpoints: `GET /builder/models` (any signed-in user), `GET`/`PUT /admin/builder-models` (admin).
+
 ### Fixed / Changed — "Build with AI" orchestration and chat UX (2026-11-04)
 
 Reported from a real session: the builder added a **second Start node** next to the default Start → End, left End disconnected, and the new nodes unreachable; the chat was plain unbounded text.

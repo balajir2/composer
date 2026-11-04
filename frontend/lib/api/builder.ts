@@ -19,7 +19,33 @@ export type BuilderMessageRequest = {
   message: string;
   sessionId?: string;
   executionId?: string;
+  /** "provider/modelId"; must be one the admin allowed. Omit for the default. */
+  model?: string;
 };
+
+export type BuilderModelOption = { id: string; label: string };
+export type BuilderModels = { default: string; models: BuilderModelOption[] };
+
+/** Models the signed-in user may pick in the Build-with-AI panel. */
+export async function listBuilderModels(): Promise<BuilderModels> {
+  return apiFetch<BuilderModels>("/builder/models");
+}
+
+export type BuilderModelSettings = { defaultModel: string; allowedModels: string[] };
+
+/** Admin: the default builder model and the full allow-list (default included). */
+export async function adminGetBuilderModels(): Promise<BuilderModelSettings> {
+  return apiFetch<BuilderModelSettings>("/admin/builder-models");
+}
+
+export async function adminUpdateBuilderModels(
+  body: BuilderModelSettings
+): Promise<BuilderModelSettings> {
+  return apiFetch<BuilderModelSettings>("/admin/builder-models", {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
 
 export type BuilderMessageResponse = {
   sessionId: string;

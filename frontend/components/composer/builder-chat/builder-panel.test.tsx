@@ -2,9 +2,12 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BuilderPanel } from "./builder-panel";
 
-const { sendBuilderMessage } = vi.hoisted(() => ({ sendBuilderMessage: vi.fn() }));
+const { sendBuilderMessage, listBuilderModels } = vi.hoisted(() => ({
+  sendBuilderMessage: vi.fn(),
+  listBuilderModels: vi.fn(),
+}));
 
-vi.mock("@/lib/api/builder", () => ({ sendBuilderMessage }));
+vi.mock("@/lib/api/builder", () => ({ sendBuilderMessage, listBuilderModels }));
 
 function reply(overrides: Record<string, unknown> = {}) {
   return {
@@ -20,6 +23,12 @@ function reply(overrides: Record<string, unknown> = {}) {
 describe("BuilderPanel session recovery", () => {
   beforeEach(() => {
     sendBuilderMessage.mockReset();
+    listBuilderModels.mockReset();
+    listBuilderModels.mockResolvedValue({
+      default: "anthropic/sonnet",
+      models: [{ id: "anthropic/sonnet", label: "Sonnet" }],
+    });
+    window.localStorage.clear();
   });
 
   it("drops the stale session id after a session_expired turn", async () => {
@@ -49,6 +58,7 @@ describe("BuilderPanel session recovery", () => {
     expect(sendBuilderMessage.mock.calls[1]?.[1]).toEqual({
       message: "second",
       sessionId: undefined,
+      model: "anthropic/sonnet",
     });
   });
 
@@ -72,6 +82,12 @@ describe("BuilderPanel session recovery", () => {
 describe("BuilderPanel conversation UX", () => {
   beforeEach(() => {
     sendBuilderMessage.mockReset();
+    listBuilderModels.mockReset();
+    listBuilderModels.mockResolvedValue({
+      default: "anthropic/sonnet",
+      models: [{ id: "anthropic/sonnet", label: "Sonnet" }],
+    });
+    window.localStorage.clear();
   });
 
   async function sendText(text: string) {
@@ -171,5 +187,73 @@ describe("BuilderPanel conversation UX", () => {
     expect(
       (screen.getByPlaceholderText("Describe your workflow…") as HTMLTextAreaElement).disabled
     ).toBe(false);
+  });
+});
+
+describe("BuilderPanel model choice", () => {
+  beforeEach(() => {
+    sendBuilderMessage.mockReset();
+    listBuilderModels.mockReset();
+    window.localStorage.clear();
+  });
+
+  const twoModels = {
+    default: "anthropic/sonnet",
+    models: [
+      { id: "anthropic/sonnet", label: "Sonnet" },
+      { id: "openai/gpt-5", label: "GPT-5" },
+    ],
+  };
+
+  it("lets the user pick from the admin-allowed models and sends the choice", async () => {
+    listBuilderModels.mockResolvedValue(twoModels);
+    sendBuilderMessage.mockResolvedValue(reply({}));
+    render(<BuilderPanel workflowId="wf-1" onWorkflowUpdated={vi.fn()} />);
+
+    const picker = (await screen.findByLabelText(/model/i)) as HTMLSelectElement;
+    expect(picker.value).toBe("anthropic/sonnet");
+    fireEvent.change(picker, { target: { value: "openai/gpt-5" } });
+
+    const input = screen.getByPlaceholderText("Describe your workflow…");
+    fireEvent.change(input, { target: { value: "build" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await waitFor(() => expect(sendBuilderMessage).toHaveBeenCalledTimes(1));
+    expect(sendBuilderMessage.mock.calls[0]?.[1].model).toBe("openai/gpt-5");
+  });
+
+  it("shows the model as plain text when the admin allowed only one", async () => {
+    listBuilderModels.mockResolvedValue({
+      default: "anthropic/sonnet",
+      models: [{ id: "anthropic/sonnet", label: "Sonnet" }],
+    });
+    render(<BuilderPanel workflowId="wf-1" onWorkflowUpdated={vi.fn()} />);
+
+    expect(await screen.findByText("Sonnet")).toBeTruthy();
+    expect(screen.queryByLabelText(/model/i)).toBeNull();
+  });
+
+  it("ignores a remembered model the admin has since removed", async () => {
+    window.localStorage.setItem("composer.builder.model", "groq/removed");
+    listBuilderModels.mockResolvedValue(twoModels);
+    sendBuilderMessage.mockResolvedValue(reply({}));
+    render(<BuilderPanel workflowId="wf-1" onWorkflowUpdated={vi.fn()} />);
+
+    const picker = (await screen.findByLabelText(/model/i)) as HTMLSelectElement;
+
+    expect(picker.value).toBe("anthropic/sonnet");
+  });
+
+  it("still works when the model list cannot be loaded", async () => {
+    listBuilderModels.mockRejectedValue(new Error("down"));
+    sendBuilderMessage.mockResolvedValue(reply({ reply: "fine" }));
+    render(<BuilderPanel workflowId="wf-1" onWorkflowUpdated={vi.fn()} />);
+
+    const input = screen.getByPlaceholderText("Describe your workflow…");
+    fireEvent.change(input, { target: { value: "build" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    await screen.findByText("fine");
+    expect(sendBuilderMessage.mock.calls[0]?.[1].model).toBeUndefined();
   });
 });
