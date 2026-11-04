@@ -1,12 +1,14 @@
 import type { Metadata } from "next";
-import { Plus_Jakarta_Sans } from "next/font/google";
+import localFont from "next/font/local";
 import "./globals.css";
 import { Providers } from "./providers";
 
-// Brand font — exposes --font-sans for tailwind.config.ts.
-const jakarta = Plus_Jakarta_Sans({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700", "800"],
+// Brand font — exposes --font-sans for tailwind.config.ts. Self-hosted (variable
+// latin subset) so builds never depend on fonts.googleapis.com being reachable.
+const jakarta = localFont({
+  src: "./fonts/PlusJakartaSans-latin.woff2",
+  weight: "400 800",
+  display: "swap",
   variable: "--font-sans",
 });
 
