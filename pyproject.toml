@@ -10,30 +10,30 @@ readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     # Web framework
-    "fastapi>=0.115.0",
+    "fastapi>=0.162.0",
     "uvicorn[standard]>=0.32.0",
 
     # Validation
-    "pydantic>=2.9.0",
-    "pydantic-settings>=2.6.0",
+    "pydantic>=2.14.3",
+    "pydantic-settings>=2.16.2",
 
     # Database (Prisma Python)
     "prisma>=0.15.0",
 
     # Postgres LISTEN/NOTIFY (P1-4)
-    "asyncpg>=0.30.0",
+    "asyncpg>=0.32.0",
 
     # Cloud Tasks (P1-2 durable execution)
-    "google-cloud-tasks>=2.16.0",
+    "google-cloud-tasks>=2.26.0",
 
     # Orchestration
-    "langgraph>=0.2.50",
-    "langchain>=0.3.0",
+    "langgraph>=1.2.20",
+    "langchain>=1.4.9",
     "langchain-core>=0.3.0",
-    "langchain-anthropic>=0.3.0",
-    "langchain-openai>=0.2.0",
-    "langchain-google-genai>=2.0.0",
-    "langchain-groq>=0.2.0",
+    "langchain-anthropic>=1.7.10",
+    "langchain-openai>=1.7.4",
+    "langchain-google-genai>=4.4.3",
+    "langchain-groq>=1.1.3",
 
     # MCP / HTTP
     "httpx>=0.28.0",
@@ -42,38 +42,38 @@ dependencies = [
     "cryptography>=44.0.0",
     "python-jose[cryptography]>=3.3.0",
     "bcrypt>=4.0.0",
-    "simpleeval>=1.0.0",
+    "simpleeval>=1.0.8",
 
     # Email validation (Pydantic EmailStr, Phase 7a)
     "email-validator>=2.0.0",
 
     # Utilities
-    "python-dotenv>=1.0.1",
-    "python-multipart>=0.0.20",
+    "python-dotenv>=1.2.4",
+    "python-multipart>=0.0.33",
 
     # LangSmith tracing
     "langsmith>=0.2.0",
 
     # Sandboxed code execution
-    "e2b-code-interpreter>=1.0.0",
+    "e2b-code-interpreter>=2.11.9",
 
     # Document parsing (for Start node file uploads)
     "pypdf>=5.0.0",
     "python-docx>=1.1.0",
 
     # Document generation (file-write node — Markdown -> DOCX/PDF)
-    "markdown-it-py>=3.0.0",
-    "xhtml2pdf>=0.2.16",
+    "markdown-it-py>=4.2.0",
+    "xhtml2pdf>=0.2.28",
 ]
 
 [project.optional-dependencies]
 dev = [
-    "pytest>=8.3.0",
-    "pytest-asyncio>=0.24.0",
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.4.1.post1",
     "pytest-cov>=6.0.0",
     "pytest-httpx>=0.30.0",
-    "ruff>=0.8.0",
-    "pyright>=1.1.390",
+    "ruff>=0.17.4",
+    "pyright>=1.1.414",
     "asyncpg-stubs>=0.31.0",
 ]
 
