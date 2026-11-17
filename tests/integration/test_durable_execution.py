@@ -19,6 +19,7 @@ pattern).
 
 import asyncio
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -26,24 +27,15 @@ import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
-from prisma import Json  # pyright: ignore[reportAttributeAccessIssue]
+from prisma import Base64, Json  # pyright: ignore[reportAttributeAccessIssue]
 
 pytestmark = pytest.mark.integration
 
 
-async def test_expired_lease_is_reclaimed_and_marked_running_again(
+async def test_expired_lease_fails_without_replaying_execution(
     app: FastAPI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Simulates a worker that claimed an execution then died: the row's
-    lease is set and already expired. `sweep_expired_leases` must clear
-    the lease and re-enqueue (Task 11) — this test verifies the real-DB
-    state transition; the Cloud Tasks call itself is monkeypatched since
-    integration tests should not depend on real GCP credentials (the
-    established pattern in tests/unit/maintenance/test_execution_sweeper.py,
-    which patches the same `src.execution.cloud_tasks.enqueue_execution`
-    target — `sweep_expired_leases` imports it lazily inside the function
-    body, so patching the module attribute before the call is what makes
-    the patch take effect)."""
+    """A dead worker's expired attempt fails without replaying side effects."""
     db: Any = app.state.db
 
     workflow = await db.workflow.create(
@@ -63,6 +55,7 @@ async def test_expired_lease_is_reclaimed_and_marked_running_again(
             "variables": Json({}),
             "leaseOwner": "dead-worker-1",
             "leaseExpiresAt": datetime.now(UTC) - timedelta(seconds=30),
+            "runningSince": datetime.now(UTC) - timedelta(minutes=31),
             "deliveryAttempts": 1,
         }
     )
@@ -73,15 +66,198 @@ async def test_expired_lease_is_reclaimed_and_marked_running_again(
         mock_enqueue = AsyncMock()
         monkeypatch.setattr("src.execution.cloud_tasks.enqueue_execution", mock_enqueue)
 
-        result = await sweep_expired_leases(db, max_delivery_attempts=5)
+        result = await sweep_expired_leases(db)
 
-        assert result.marked_failed == 0
+        assert result.marked_failed >= 1
         refreshed = await db.workflowexecution.find_unique(where={"id": execution.id})
         assert refreshed is not None
+        assert refreshed.status == "failed"
+        assert refreshed.failureCode == "lease_expired"
         assert refreshed.leaseOwner is None
         assert refreshed.leaseExpiresAt is None
-        mock_enqueue.assert_awaited_once_with(execution.id, kind="run", db=db)
+        assert refreshed.runningSince is None
+        mock_enqueue.assert_not_awaited()
     finally:
+        await db.workflowexecution.delete(where={"id": execution.id})
+        await db.workflow.delete(where={"id": workflow.id})
+
+
+async def test_months_old_execution_with_recent_attempt_and_live_lease_survives_sweeps(
+    app: FastAPI,
+) -> None:
+    from src.maintenance.execution_sweeper import sweep_expired_leases, sweep_orphaned_running
+
+    db: Any = app.state.db
+    now = datetime.now(UTC)
+    workflow = await db.workflow.create(
+        data={
+            "userId": "itest-user",
+            "name": "itest-recent-attempt",
+            "nodes": Json([]),
+            "edges": Json([]),
+        }
+    )
+    execution = await db.workflowexecution.create(
+        data={
+            "workflowId": workflow.id,
+            "status": "running",
+            "threadId": f"itest-recent-{workflow.id}",
+            "startedAt": now - timedelta(days=180),
+            "runningSince": now - timedelta(seconds=10),
+            "leaseOwner": "live-worker",
+            "leaseExpiresAt": now + timedelta(minutes=20),
+        }
+    )
+    try:
+        await sweep_orphaned_running(db, grace_seconds=120, now=now)
+        await sweep_expired_leases(db, now=now)
+
+        refreshed = await db.workflowexecution.find_unique(where={"id": execution.id})
+        assert refreshed is not None
+        assert refreshed.status == "running"
+        assert refreshed.runningSince == execution.runningSince
+        assert refreshed.leaseOwner == "live-worker"
+        assert refreshed.leaseExpiresAt == execution.leaseExpiresAt
+        assert refreshed.failureCode is None
+    finally:
+        await db.workflowexecution.delete(where={"id": execution.id})
+        await db.workflow.delete(where={"id": workflow.id})
+
+
+@pytest.mark.parametrize("sweep_kind", ["lease", "orphan"])
+async def test_sweeper_stale_read_cannot_fail_attempt_claimed_after_selection(
+    app: FastAPI, sweep_kind: str
+) -> None:
+    from src.maintenance.execution_sweeper import sweep_expired_leases, sweep_orphaned_running
+
+    db: Any = app.state.db
+    now = datetime.now(UTC)
+    workflow = await db.workflow.create(
+        data={
+            "userId": "itest-user",
+            "name": "itest-sweep-race",
+            "nodes": Json([]),
+            "edges": Json([]),
+        }
+    )
+    execution = await db.workflowexecution.create(
+        data={
+            "workflowId": workflow.id,
+            "status": "running",
+            "threadId": f"itest-sweep-race-{workflow.id}",
+            "runningSince": now - timedelta(minutes=31),
+            "leaseOwner": "dead-worker" if sweep_kind == "lease" else None,
+            "leaseExpiresAt": now - timedelta(seconds=30) if sweep_kind == "lease" else None,
+        }
+    )
+    try:
+
+        async def _select_then_claim(*, where: dict[str, Any]) -> list[Any]:
+            # The seam controls timing only: selection, renewal, and the
+            # sweeper's conditional update all execute against Postgres.
+            rows: list[Any] = await db.workflowexecution.find_many(
+                where={"id": execution.id, **where}
+            )
+            assert len(rows) == 1
+            await db.workflowexecution.update(
+                where={"id": execution.id},
+                data={
+                    "runningSince": now,
+                    "leaseOwner": "renewed-worker",
+                    "leaseExpiresAt": now + timedelta(minutes=20),
+                },
+            )
+            return rows
+
+        sweep_db = SimpleNamespace(
+            workflowexecution=SimpleNamespace(
+                find_many=_select_then_claim,
+                update_many=db.workflowexecution.update_many,
+            )
+        )
+        if sweep_kind == "lease":
+            result = await sweep_expired_leases(sweep_db, now=now)
+        else:
+            result = await sweep_orphaned_running(sweep_db, grace_seconds=120, now=now)
+
+        assert result.scanned == 1
+        assert result.marked_failed == 0
+        assert result.errored == 0
+        refreshed = await db.workflowexecution.find_unique(where={"id": execution.id})
+        assert refreshed is not None
+        assert refreshed.status == "running"
+        assert refreshed.leaseOwner == "renewed-worker"
+        assert refreshed.leaseExpiresAt > now
+        assert refreshed.runningSince >= now - timedelta(milliseconds=1)
+        assert refreshed.failureCode is None
+    finally:
+        await db.workflowexecution.delete(where={"id": execution.id})
+        await db.workflow.delete(where={"id": workflow.id})
+
+
+async def test_cancel_retains_checkpoint_and_pending_writes(
+    client: AsyncClient, app: FastAPI
+) -> None:
+    db: Any = app.state.db
+    now = datetime.now(UTC)
+    workflow = await db.workflow.create(
+        data={
+            "userId": "dev",
+            "name": "itest-cancel-retention",
+            "nodes": Json([]),
+            "edges": Json([]),
+        }
+    )
+    execution = await db.workflowexecution.create(
+        data={
+            "workflowId": workflow.id,
+            "userId": "dev",
+            "status": "running",
+            "threadId": f"itest-cancel-{workflow.id}",
+            "runningSince": now,
+            "leaseOwner": "active-worker",
+            "leaseExpiresAt": now + timedelta(minutes=20),
+        }
+    )
+    try:
+        await db.langgraphcheckpoint.create(
+            data={
+                "threadId": execution.threadId,
+                "checkpointId": "checkpoint-1",
+                "checkpoint": Base64.encode(b"retained-checkpoint"),
+                "metadata": Base64.encode(b"retained-metadata"),
+            }
+        )
+        await db.langgraphcheckpointwrite.create(
+            data={
+                "threadId": execution.threadId,
+                "checkpointId": "checkpoint-1",
+                "taskId": "task-1",
+                "idx": 0,
+                "channel": "result",
+                "value": Base64.encode(b"retained-write"),
+            }
+        )
+
+        response = await client.post(f"/executions/{execution.id}/cancel")
+
+        assert response.status_code == 200, response.text
+        refreshed = await db.workflowexecution.find_unique(where={"id": execution.id})
+        assert refreshed is not None
+        assert refreshed.status == "canceled"
+        assert refreshed.runningSince is None
+        assert refreshed.leaseOwner is None
+        assert refreshed.leaseExpiresAt is None
+        checkpoints = await db.langgraphcheckpoint.find_many(where={"threadId": execution.threadId})
+        writes = await db.langgraphcheckpointwrite.find_many(where={"threadId": execution.threadId})
+        assert len(checkpoints) == 1
+        assert checkpoints[0].checkpoint.decode() == b"retained-checkpoint"
+        assert len(writes) == 1
+        assert writes[0].value.decode() == b"retained-write"
+    finally:
+        await db.langgraphcheckpointwrite.delete_many(where={"threadId": execution.threadId})
+        await db.langgraphcheckpoint.delete_many(where={"threadId": execution.threadId})
+        await db.executionevent.delete_many(where={"executionId": execution.id})
         await db.workflowexecution.delete(where={"id": execution.id})
         await db.workflow.delete(where={"id": workflow.id})
 
@@ -189,27 +365,7 @@ async def test_two_concurrent_claims_only_one_succeeds(client: AsyncClient, app:
 async def test_resume_clears_stale_lease_and_reclaim_succeeds(
     client: AsyncClient, app: FastAPI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Reproduces the P1-2 fast-follow bug end-to-end against real Postgres
-    and proves the fix (2026-07-15 holistic branch-wide review finding):
-    claim_and_run sets a real lease (leaseOwner/leaseExpiresAt) on claim;
-    `_mark_waiting_approval` (src/engine/langgraph_executor.py) never
-    clears it when the execution pauses for approval, so the stale lease
-    survives the entire approval-pending window. Before the fix,
-    `resume_execution`'s waiting_approval -> running transition also left
-    the lease untouched, so the fresh Cloud Task delivery that follows
-    (claim_and_run again, kind='resume') found zero claimable rows --
-    `lease_expires_at` was still in the future -- and silently returned
-    {"status": "already_claimed"} without ever calling
-    `executor.resume()`. The row would sit at status='running' doing
-    nothing until `sweep_expired_leases` eventually noticed (up to
-    `execution_lease_seconds` later).
-
-    This test drives the real claim -> pause -> resume -> reclaim round
-    trip through the actual HTTP endpoints (not mocks) and asserts the
-    SECOND claim-and-run call actually claims the row (does NOT return
-    already_claimed) -- the only assertion that proves the lease was
-    genuinely cleared, not merely that no exception was raised.
-    """
+    """Pause releases ownership; resume starts a fresh, immediately claimable attempt."""
     db: Any = app.state.db
 
     workflow = await db.workflow.create(
@@ -292,14 +448,19 @@ async def test_resume_clears_stale_lease_and_reclaim_succeeds(
         paused = await db.workflowexecution.find_unique(where={"id": execution.id})
         assert paused is not None
         assert paused.status == "waiting_approval", paused.status
-        # The bug precondition, reproduced against real Postgres: the
-        # lease from the original claim is still set on the row.
-        assert paused.leaseOwner is not None, "lease must survive the pause (bug precondition)"
-        assert paused.leaseExpiresAt is not None, "lease must survive the pause (bug precondition)"
-        assert paused.leaseExpiresAt > datetime.now(UTC), (
-            "lease must still be UNEXPIRED for this test to actually exercise the bug -- "
-            "an already-expired lease would let claim_and_run's own "
-            "`lease_expires_at < now()` clause reclaim the row regardless of the fix"
+        assert paused.runningSince is None
+        assert paused.leaseOwner is None
+        assert paused.leaseExpiresAt is None
+
+        # Legacy paused rows may still have a lease from an older worker.
+        # Resume must also clear those fields in its guarded transition.
+        await db.workflowexecution.update(
+            where={"id": execution.id},
+            data={
+                "leaseOwner": "legacy-worker",
+                "leaseExpiresAt": datetime.now(UTC) + timedelta(minutes=20),
+                "startedAt": datetime.now(UTC) - timedelta(days=180),
+            },
         )
 
         # Step 2: resolve the approval through the real, public resume
@@ -311,6 +472,7 @@ async def test_resume_clears_stale_lease_and_reclaim_succeeds(
         mock_enqueue = AsyncMock()
         monkeypatch.setattr("src.api.executions.enqueue_execution", mock_enqueue)
 
+        resumed_at = datetime.now(UTC)
         resume = await client.post(
             f"/executions/{execution.id}/resume",
             json={"decision": "approved"},
@@ -325,6 +487,17 @@ async def test_resume_clears_stale_lease_and_reclaim_succeeds(
         # stale lease from the original claim must be gone.
         assert resumed_row.leaseOwner is None, "fix did not clear leaseOwner"
         assert resumed_row.leaseExpiresAt is None, "fix did not clear leaseExpiresAt"
+        assert resumed_row.runningSince is not None
+        assert resumed_row.runningSince >= resumed_at - timedelta(milliseconds=1)
+        assert resumed_row.runningSince <= datetime.now(UTC)
+
+        from src.maintenance.execution_sweeper import sweep_expired_leases, sweep_orphaned_running
+
+        await sweep_orphaned_running(db, grace_seconds=120)
+        await sweep_expired_leases(db)
+        awaiting_claim = await db.workflowexecution.find_unique(where={"id": execution.id})
+        assert awaiting_claim is not None
+        assert awaiting_claim.status == "running"
 
         # Step 3: the real proof -- a fresh Cloud Task delivery (what
         # `mock_enqueue` above stood in for) must be able to claim the
@@ -346,6 +519,9 @@ async def test_resume_clears_stale_lease_and_reclaim_succeeds(
         final_row = await db.workflowexecution.find_unique(where={"id": execution.id})
         assert final_row is not None
         assert final_row.status == "completed", final_row.status
+        assert final_row.runningSince is None
+        assert final_row.leaseOwner is None
+        assert final_row.leaseExpiresAt is None
         final_vars: dict[str, Any] = final_row.variables or {}
         assert final_vars.get("result") == "approved"
 

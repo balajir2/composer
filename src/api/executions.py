@@ -499,15 +499,9 @@ async def cancel_execution(  # pyright: ignore[reportUnusedFunction]
     documents `canceled`, but nothing ever wrote it — worker shutdown
     persisted `failed`, and there was no user-triggered cancel operation.
 
-    Known limitation: this marks the row canceled but does not preempt an
-    in-flight claim-and-run delivery (P1-2: execution is driven by
-    POST /internal/claim-and-run, not a request-bound background task) —
-    LangGraph has no cooperative-cancellation hook wired through the
-    executor today. Any side-effecting node (Jira, email, HTTP) already
-    in flight when cancel is called still
-    completes; this stops the row from looking permanently stuck and gives
-    callers a real terminal status to key off, which is the concrete gap
-    this closes. True mid-node preemption is a separate, larger change.
+    Execution stops cooperatively at graph boundaries. A side-effecting
+    node already in flight may still complete; cancellation releases the
+    attempt's ownership without deleting its checkpoints or pending writes.
     """
     user_id, role = _role
     execution = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
@@ -549,6 +543,9 @@ async def cancel_execution(  # pyright: ignore[reportUnusedFunction]
             "status": "canceled",
             "error": _CANCEL_ERROR_MESSAGE,
             "completedAt": datetime.now(UTC),
+            "runningSince": None,
+            "leaseOwner": None,
+            "leaseExpiresAt": None,
         },
     )
     if updated_count != 1:
@@ -621,26 +618,18 @@ async def resume_execution(
     # statement that performs the transition — at most one request can
     # ever flip this row, matching the same pattern already used for the
     # emailed-link path (src/api/approval_email.py).
-    # Also clears the lease from the original claim: without this, the
-    # stale (still-unexpired) lease from when this execution was first
-    # claimed by POST /internal/claim-and-run blocks the fresh Cloud Task
-    # delivery (enqueued below) from re-claiming the row — claim_and_run's
-    # claim query requires `lease_expires_at IS NULL OR lease_expires_at <
-    # now()`, and the original claim's lease (default
-    # execution_lease_seconds=3600s) is typically still unexpired at
-    # resume time, since most approvals resolve well within an hour. Left
-    # unfixed, the row would silently stall at status='running' — the
-    # fresh delivery finds zero claimable rows and returns
-    # {"status": "already_claimed"} — until sweep_expired_leases notices
-    # the stale lease has expired (up to execution_lease_seconds later)
-    # and self-heals it. See 2026-07-15 holistic branch-wide review
-    # finding (P1-2 fast-follow): reproduced end-to-end against real
-    # Postgres, invisible to mocked-DB unit tests since they never
-    # enforce the real claim-query predicate against a genuinely-set
-    # lease.
+    # Start the new attempt's claim grace period, independent of the original
+    # execution creation time. Clear any legacy lease left on the approval
+    # pause so the fresh task can claim it and establish new ownership.
+    resume_time = datetime.now(UTC)
     updated_count = await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
         where={"id": execution_id, "status": "waiting_approval"},
-        data={"status": "running", "leaseOwner": None, "leaseExpiresAt": None},
+        data={
+            "status": "running",
+            "runningSince": resume_time,
+            "leaseOwner": None,
+            "leaseExpiresAt": None,
+        },
     )
     if updated_count != 1:
         raise HTTPException(

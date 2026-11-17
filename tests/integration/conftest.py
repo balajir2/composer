@@ -59,10 +59,3 @@ async def _drive_cloud_tasks_synchronously(  # pyright: ignore[reportUnusedFunct
     monkeypatch.setattr("src.api.executions.enqueue_execution", _fake_enqueue)
     monkeypatch.setattr("src.api.approval_email.enqueue_execution", _fake_enqueue)
     monkeypatch.setattr("src.api.run.enqueue_execution", _fake_enqueue)
-    # src/maintenance/execution_sweeper.py imports enqueue_execution locally
-    # inside sweep_expired_leases (a deferred import, not a module-level
-    # binding), so there's no src.maintenance.execution_sweeper.enqueue_execution
-    # attribute to patch here. No currently-failing test exercises that path
-    # anyway — the sweeper's own unit tests already mock
-    # src.execution.cloud_tasks.enqueue_execution directly at its real import
-    # site when needed (see tests/unit/maintenance/test_execution_sweeper.py).

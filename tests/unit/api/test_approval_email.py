@@ -7,6 +7,7 @@ confirmation page's form submission, triggered by a real user click)
 performs the actual approve/reject.
 """
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -287,6 +288,10 @@ def test_post_confirm_clears_stale_lease_in_same_update_many(
     token = create_approval_email_token(
         "exec-1", "approval-1", "approved", "reviewer@example.com", _PENDING_SINCE
     )
+    frozen_now = datetime(2026, 11, 17, 12, tzinfo=UTC)
+    clock = MagicMock(wraps=datetime)
+    clock.now.return_value = frozen_now
+    monkeypatch.setattr("src.api.approval_email.datetime", clock, raising=False)
     resp = client.post(f"/approvals/email/{token}/confirm", follow_redirects=False)
     assert resp.status_code == 303
     db.workflowexecution.update_many.assert_awaited_once()
@@ -294,6 +299,8 @@ def test_post_confirm_clears_stale_lease_in_same_update_many(
     assert update_many_call.kwargs["data"]["status"] == "running"
     assert update_many_call.kwargs["data"]["leaseOwner"] is None
     assert update_many_call.kwargs["data"]["leaseExpiresAt"] is None
+    assert update_many_call.kwargs["data"]["runningSince"] == frozen_now
+    clock.now.assert_called_once_with(UTC)
 
 
 def test_post_confirm_race_loses_when_update_many_affects_zero_rows(

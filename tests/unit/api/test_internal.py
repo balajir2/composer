@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -147,9 +148,8 @@ def test_claim_and_run_claim_query_filters_on_status(monkeypatch: pytest.MonkeyP
     `executor.run()`/`.resume()` to be invoked a second time on a
     terminal execution.
 
-    `_mark_completed`/`_mark_failed` never clear lease_owner/
-    lease_expires_at, so this predicate is the only thing standing
-    between a late redelivery and a double-run.
+    Terminal transitions clear ownership, so the status predicate must
+    still exclude those rows when their lease is null.
     """
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
     client, db = _client_with_mock_db()
@@ -308,6 +308,41 @@ def test_claim_and_run_update_sets_status_running(monkeypatch: pytest.MonkeyPatc
     assert re.search(r"status\s*=\s*'running'", sql, re.IGNORECASE), (
         "claim UPDATE must unconditionally set status='running'"
     )
+
+
+@pytest.mark.parametrize("kind", ["run", "resume"])
+def test_claim_stamps_attempt_and_derived_lease_from_one_timestamp(
+    monkeypatch: pytest.MonkeyPatch, kind: str
+) -> None:
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    monkeypatch.setenv("EXECUTION_MAX_RUNTIME_SECONDS", "900")
+    monkeypatch.setenv("EXECUTION_SHUTDOWN_GRACE_SECONDS", "47")
+    client, db = _client_with_mock_db()
+    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
+    db.execute_raw = AsyncMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(variables={"_resume_decision": "approved"})
+    )
+    frozen_now = datetime(2026, 11, 17, 12, tzinfo=UTC)
+    clock = MagicMock(wraps=datetime)
+    clock.now.return_value = frozen_now
+    monkeypatch.setattr("src.api.internal.datetime", clock)
+    monkeypatch.setattr("src.api.internal.LangGraphExecutor.run", AsyncMock())
+    monkeypatch.setattr("src.api.internal.LangGraphExecutor.resume", AsyncMock())
+
+    response = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": kind})
+
+    assert response.status_code == 200, response.text
+    sql, owner, lease_expires, running_since, execution_id = db.execute_raw.call_args.args
+    assert "lease_owner = $1" in sql
+    assert "lease_expires_at = $2::timestamptz" in sql
+    assert "running_since = $3::timestamptz" in sql
+    assert "WHERE id = $4" in sql
+    assert owner
+    assert running_since == frozen_now
+    assert lease_expires == datetime(2026, 11, 17, 12, 15, 47, tzinfo=UTC)
+    assert execution_id == "exec-1"
+    clock.now.assert_called_once_with(UTC)
 
 
 def test_claim_and_run_resume_dispatches_resume(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -488,6 +523,10 @@ def test_claim_and_run_crash_in_run_marks_row_failed_and_returns_error(
     assert "RuntimeError" in data["error"]
     assert "simulated executor crash" in data["error"]
     assert data["completedAt"] is not None
+    assert data["failureCode"] == "execution_error"
+    assert data["runningSince"] is None
+    assert data["leaseOwner"] is None
+    assert data["leaseExpiresAt"] is None
 
 
 def test_claim_and_run_crash_in_resume_marks_row_failed_and_returns_error(
@@ -533,6 +572,10 @@ def test_claim_and_run_crash_in_resume_marks_row_failed_and_returns_error(
     assert "RuntimeError" in data["error"]
     assert "simulated resume crash" in data["error"]
     assert data["completedAt"] is not None
+    assert data["failureCode"] == "execution_error"
+    assert data["runningSince"] is None
+    assert data["leaseOwner"] is None
+    assert data["leaseExpiresAt"] is None
 
 
 def test_claim_and_run_crash_does_not_clobber_concurrent_cancel(

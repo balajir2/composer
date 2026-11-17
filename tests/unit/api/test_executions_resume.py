@@ -1,5 +1,6 @@
 """Tests for POST /executions/{id}/resume (Phase 5a)."""
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -195,6 +196,10 @@ def test_resume_clears_stale_lease_in_same_update_many(
     tests/integration/test_durable_execution.py's
     test_resume_clears_stale_lease_and_reclaim_succeeds for that."""
     client, db = _client_with_execution(monkeypatch, _execution_row())
+    frozen_now = datetime(2026, 11, 17, 12, tzinfo=UTC)
+    clock = MagicMock(wraps=datetime)
+    clock.now.return_value = frozen_now
+    monkeypatch.setattr("src.api.executions.datetime", clock)
     resp = client.post("/executions/e1/resume", json={"decision": "approved"})
     assert resp.status_code == 200, resp.text
     db.workflowexecution.update_many.assert_awaited_once()
@@ -202,7 +207,9 @@ def test_resume_clears_stale_lease_in_same_update_many(
     assert call.kwargs["data"]["status"] == "running"
     assert call.kwargs["data"]["leaseOwner"] is None
     assert call.kwargs["data"]["leaseExpiresAt"] is None
+    assert call.kwargs["data"]["runningSince"] == frozen_now
     assert call.kwargs["where"]["status"] == "waiting_approval"
+    clock.now.assert_called_once_with(UTC)
 
 
 def test_resume_race_loses_when_update_many_affects_zero_rows(

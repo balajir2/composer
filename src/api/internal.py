@@ -205,8 +205,8 @@ async def claim_and_run_execution(
     correct rather than two that could drift apart.
     """
     lease_seconds = get_settings().execution_lease_seconds
-    now = datetime.now(UTC)
-    lease_expires = now + timedelta(seconds=lease_seconds)
+    claim_time = datetime.now(UTC)
+    lease_expires = claim_time + timedelta(seconds=lease_seconds)
 
     # Fixed, short timeout for the claim transaction — intentionally NOT
     # scaled to `execution_lease_seconds`. The lease duration sizes the
@@ -259,7 +259,7 @@ async def claim_and_run_execution(
         # only ever looks at `status='running'` rows with an expired lease
         # (src/maintenance/execution_sweeper.py), so this keeps that
         # invariant true from the moment of claim.
-        # $2 is explicitly cast to `timestamptz` — Prisma Python's raw-query
+        # Both timestamps are explicitly cast to `timestamptz` — Prisma Python's raw-query
         # binder tags a Python `datetime` parameter as `text` on the wire
         # (verified directly against real Postgres while writing this
         # code's integration test, tests/integration/test_durable_execution.py;
@@ -280,11 +280,13 @@ async def claim_and_run_execution(
             """
             UPDATE workflow_executions
             SET status = 'running', lease_owner = $1, lease_expires_at = $2::timestamptz,
+                running_since = $3::timestamptz,
                 delivery_attempts = delivery_attempts + 1
-            WHERE id = $3
+            WHERE id = $4
             """,
             worker_id,
             lease_expires,
+            claim_time,
             execution_id,
         )
 
@@ -395,7 +397,11 @@ async def claim_and_run_execution(
                 data={
                     "status": "failed",
                     "error": f"{type(exc).__name__}: {exc}",
+                    "failureCode": "execution_error",
                     "completedAt": datetime.now(UTC),
+                    "runningSince": None,
+                    "leaseOwner": None,
+                    "leaseExpiresAt": None,
                 },
             )
         except Exception:

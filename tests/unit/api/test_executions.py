@@ -574,6 +574,11 @@ def test_cancel_execution_running_succeeds() -> None:
     # allow-list is sourced from the same set as the guard check above it.
     assert where["status"] == {"in": ["queued", "running", "waiting_approval"]}
 
+    data = db.workflowexecution.update_many.call_args.kwargs["data"]
+    assert data["runningSince"] is None
+    assert data["leaseOwner"] is None
+    assert data["leaseExpiresAt"] is None
+
 
 def test_cancel_execution_queued_succeeds() -> None:
     """Important #1 (P1-2-followup): a user who cancels immediately after
