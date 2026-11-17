@@ -32,9 +32,9 @@ def test_fully_configured_production_settings_pass() -> None:
     validate_production_config(_settings())
 
 
-def test_development_environment_skips_all_checks() -> None:
+def test_development_environment_allows_local_service_defaults() -> None:
     """Dev defaults (localhost URLs, dev JWT secret) are expected locally
-    — only environment == "production" enforces anything."""
+    — only environment == "production" enforces deployed service settings."""
     validate_production_config(
         Settings(environment="development")  # pyright: ignore[reportCallIssue]
     )
@@ -100,3 +100,49 @@ def test_google_oauth_settings_default_to_empty_string(monkeypatch: pytest.Monke
     assert settings.google_oauth_client_id == ""
     assert settings.google_oauth_client_secret == ""
     assert settings.google_picker_api_key == ""
+
+
+@pytest.mark.parametrize(
+    ("runtime", "grace", "offending_setting"),
+    [
+        (0, 30, "EXECUTION_MAX_RUNTIME_SECONDS"),
+        (-1, 30, "EXECUTION_MAX_RUNTIME_SECONDS"),
+        (1740, -1, "EXECUTION_SHUTDOWN_GRACE_SECONDS"),
+        (1740, 0, "EXECUTION_SHUTDOWN_GRACE_SECONDS"),
+        (1740, 61, "EXECUTION_SHUTDOWN_GRACE_SECONDS"),
+        (1741, 60, "EXECUTION_MAX_RUNTIME_SECONDS.*EXECUTION_SHUTDOWN_GRACE_SECONDS"),
+        (1800, 1, "EXECUTION_MAX_RUNTIME_SECONDS.*EXECUTION_SHUTDOWN_GRACE_SECONDS"),
+    ],
+)
+def test_invalid_execution_timing_blocks_production(
+    runtime: int, grace: int, offending_setting: str
+) -> None:
+    with pytest.raises(ProductionConfigError, match=offending_setting):
+        validate_production_config(
+            _settings(
+                execution_max_runtime_seconds=runtime,
+                execution_shutdown_grace_seconds=grace,
+            )
+        )
+
+
+@pytest.mark.parametrize(("runtime", "grace"), [(1, 1), (1740, 60), (1799, 1)])
+def test_execution_timing_accepts_valid_boundaries(runtime: int, grace: int) -> None:
+    validate_production_config(
+        _settings(
+            execution_max_runtime_seconds=runtime,
+            execution_shutdown_grace_seconds=grace,
+        )
+    )
+
+
+@pytest.mark.parametrize("environment", ["development", "production"])
+def test_invalid_execution_timing_blocks_app_creation(
+    monkeypatch: pytest.MonkeyPatch, environment: str
+) -> None:
+    import src.main as main_module
+
+    settings = _settings(environment=environment, execution_max_runtime_seconds=0)
+    monkeypatch.setattr(main_module, "get_settings", lambda: settings)
+    with pytest.raises(ProductionConfigError, match="EXECUTION_MAX_RUNTIME_SECONDS"):
+        main_module.create_app()

@@ -40,12 +40,12 @@ def test_sweep_endpoint_runs_all_four_sweeps_and_returns_summary(
 
     async def _fake_sweep_stuck_executions(db: object, *, stuck_after_seconds: int) -> SweepResult:
         calls.append("stuck")
-        assert stuck_after_seconds == 900
+        assert stuck_after_seconds == 1770
         return SweepResult(scanned=3, marked_failed=2)
 
     async def _fake_sweep_expired_approvals(db: object, *, timeout_hours: int) -> SweepResult:
         calls.append("approvals")
-        assert timeout_hours == 168
+        assert timeout_hours == 0
         return SweepResult(scanned=5, marked_failed=1)
 
     async def _fake_sweep_expired_leases(db: object, *, max_delivery_attempts: int) -> SweepResult:

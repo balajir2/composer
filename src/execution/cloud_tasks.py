@@ -47,6 +47,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import timedelta
 from typing import Any, Literal
 
 from google.cloud import tasks_v2
@@ -166,6 +167,7 @@ async def enqueue_execution(execution_id: str, *, kind: _TaskKind, db: Any) -> N
     body = json.dumps({"executionId": execution_id, "kind": kind}).encode()
 
     task: dict[str, object] = {
+        "dispatch_deadline": timedelta(seconds=settings.execution_dispatch_deadline_seconds),
         "http_request": {
             "http_method": tasks_v2.HttpMethod.POST,
             "url": url,
@@ -175,7 +177,7 @@ async def enqueue_execution(execution_id: str, *, kind: _TaskKind, db: Any) -> N
                 "service_account_email": settings.cloud_tasks_service_account,
                 "audience": url,
             },
-        }
+        },
     }
     await client.create_task(  # pyright: ignore[reportUnknownMemberType]
         request={"parent": queue_path, "task": task}

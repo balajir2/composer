@@ -200,12 +200,12 @@ class Settings(BaseSettings):
         ),
     )
     approval_wait_timeout_hours: int = Field(
-        default=168,
+        default=0,
+        ge=0,
         description=(
             "Auto-fail a waiting_approval execution after this many hours "
             "with no decision, independent of the emailed link's own shorter "
-            "TTL — bounds Postgres/checkpoint row growth from runs nobody "
-            "ever approves or rejects."
+            "TTL. Set 0 to disable approval expiry (the default)."
         ),
     )
     approval_attachment_root: str = Field(
@@ -322,18 +322,21 @@ class Settings(BaseSettings):
     # development (auth skipped — see src/api/internal.py's
     # _verify_internal_oidc); required in production (src/config_validation.py).
     cloud_tasks_service_account: str = ""
-    # DESIGN DECISION (P1-2, "lease and heartbeat behavior"): rather than a
-    # short lease with periodic mid-execution heartbeat renewal (the usual
-    # pattern for long batch jobs), claim-and-run (src/api/internal.py) runs
-    # an execution to completion synchronously within ONE bounded Cloud
-    # Tasks-delivered HTTP request. The lease is sized to match — not
-    # exceed — that request's own maximum duration (Cloud Run's configured
-    # request timeout), so it needs no separate renewal: the lease *is* the
-    # heartbeat, because "the request is still running" and "the lease is
-    # still valid" cover the same span by construction. If Cloud Run's
-    # request timeout for the service ever changes, this must change with
-    # it — keep them equal, don't drift.
-    execution_lease_seconds: int = 3600
+    # Processing has one budget: runtime plus time to cancel and persist.
+    # Cloud Tasks delivery and the execution lease share that deadline.
+    # validate_execution_timing enforces the 1800-second delivery ceiling.
+    execution_max_runtime_seconds: int = 1740
+    execution_shutdown_grace_seconds: int = 30
+    orphaned_running_grace_seconds: int = 120
+
+    @property
+    def execution_dispatch_deadline_seconds(self) -> int:
+        return self.execution_max_runtime_seconds + self.execution_shutdown_grace_seconds
+
+    @property
+    def execution_lease_seconds(self) -> int:
+        return self.execution_dispatch_deadline_seconds
+
     # How many times sweep_expired_leases will re-enqueue a fresh Cloud
     # Task for the same execution before giving up and dead-lettering it
     # (marking `failed` rather than retrying indefinitely).
@@ -347,19 +350,6 @@ class Settings(BaseSettings):
     execution_events_retention_days: int = 30
 
     # ─── Stuck-execution sweeper ─────────────────
-    # Any WorkflowExecution row in 'running' for longer than this without a
-    # terminal status update is treated as crashed (worker died, runtime
-    # timed out, network blip during persist).  See
-    # docs/archive/incident-history/2026-04-30-execution-status-truth.md.
-    execution_stuck_after_seconds: int = Field(
-        default=900,
-        description=(
-            "Mark 'running' executions as failed once they've been running this "
-            "long without a terminal update. Default 15 min covers the longest "
-            "legitimate workflows; tighten if your runtime has a shorter "
-            "request budget (Vercel ~5min, Lambda ~15min)."
-        ),
-    )
     execution_sweeper_interval_seconds: int = Field(
         default=300,
         description="How often the background sweeper runs. Set 0 to disable.",

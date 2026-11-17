@@ -79,5 +79,72 @@ def test_cloud_tasks_settings_have_safe_defaults(monkeypatch: pytest.MonkeyPatch
     assert settings.gcp_region == "us-central1"
     assert settings.cloud_tasks_queue == "composer-executions"
     assert settings.cloud_tasks_service_account == ""
-    assert settings.execution_lease_seconds == 3600
+    assert settings.execution_lease_seconds == 1770
     assert settings.execution_max_delivery_attempts == 5
+
+
+@pytest.fixture
+def clean_timing_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in (
+        "EXECUTION_MAX_RUNTIME_SECONDS",
+        "EXECUTION_SHUTDOWN_GRACE_SECONDS",
+        "ORPHANED_RUNNING_GRACE_SECONDS",
+        "EXECUTION_DISPATCH_DEADLINE_SECONDS",
+        "EXECUTION_LEASE_SECONDS",
+        "APPROVAL_WAIT_TIMEOUT_HOURS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.mark.usefixtures("clean_timing_environment")
+def test_execution_deadline_defaults() -> None:
+    from src.config import Settings
+
+    settings = Settings(_env_file=None)  # pyright: ignore[reportCallIssue]
+    assert settings.execution_max_runtime_seconds == 1740
+    assert settings.execution_shutdown_grace_seconds == 30
+    assert settings.execution_dispatch_deadline_seconds == 1770
+    assert settings.execution_lease_seconds == 1770
+    assert settings.orphaned_running_grace_seconds == 120
+    assert settings.approval_wait_timeout_hours == 0
+
+
+@pytest.mark.usefixtures("clean_timing_environment")
+def test_execution_deadlines_follow_operator_runtime_and_grace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.config import Settings
+
+    monkeypatch.setenv("EXECUTION_MAX_RUNTIME_SECONDS", "120")
+    monkeypatch.setenv("EXECUTION_SHUTDOWN_GRACE_SECONDS", "10")
+    monkeypatch.setenv("ORPHANED_RUNNING_GRACE_SECONDS", "45")
+    # Derived deadlines must ignore independently configured legacy values.
+    monkeypatch.setenv("EXECUTION_LEASE_SECONDS", "3600")
+    monkeypatch.setenv("EXECUTION_DISPATCH_DEADLINE_SECONDS", "600")
+    settings = Settings(_env_file=None)  # pyright: ignore[reportCallIssue]
+    assert settings.execution_dispatch_deadline_seconds == 130
+    assert settings.execution_lease_seconds == 130
+    assert settings.orphaned_running_grace_seconds == 45
+
+
+@pytest.mark.usefixtures("clean_timing_environment")
+@pytest.mark.parametrize("hours", [0, 24, 168])
+def test_operator_can_set_approval_wait_timeout(
+    monkeypatch: pytest.MonkeyPatch, hours: int
+) -> None:
+    from src.config import Settings
+
+    monkeypatch.setenv("APPROVAL_WAIT_TIMEOUT_HOURS", str(hours))
+    settings = Settings(_env_file=None)  # pyright: ignore[reportCallIssue]
+    assert settings.approval_wait_timeout_hours == hours
+
+
+@pytest.mark.usefixtures("clean_timing_environment")
+def test_negative_approval_wait_timeout_is_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    from pydantic import ValidationError
+
+    from src.config import Settings
+
+    monkeypatch.setenv("APPROVAL_WAIT_TIMEOUT_HOURS", "-1")
+    with pytest.raises(ValidationError, match="approval_wait_timeout_hours"):
+        Settings(_env_file=None)  # pyright: ignore[reportCallIssue]

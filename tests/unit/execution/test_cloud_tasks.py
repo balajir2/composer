@@ -3,6 +3,7 @@
 import asyncio
 import json
 from collections.abc import Iterator
+from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -91,6 +92,29 @@ async def test_enqueue_execution_reuses_cached_client_across_calls(
         assert mock_client.create_task.await_count == 2
 
     get_settings.cache_clear()
+
+
+@pytest.mark.parametrize(("runtime", "grace", "deadline"), [(1740, 30, 1770), (120, 10, 130)])
+async def test_enqueue_execution_sets_processing_dispatch_deadline(
+    monkeypatch: pytest.MonkeyPatch, runtime: int, grace: int, deadline: int
+) -> None:
+    from src.config import get_settings
+
+    monkeypatch.setenv("GCP_PROJECT_ID", "test-project")
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "worker@test-project.iam.gserviceaccount.com")
+    monkeypatch.setenv("BACKEND_PUBLIC_URL", "https://composer.example.com")
+    monkeypatch.setenv("EXECUTION_MAX_RUNTIME_SECONDS", str(runtime))
+    monkeypatch.setenv("EXECUTION_SHUTDOWN_GRACE_SECONDS", str(grace))
+    get_settings.cache_clear()
+
+    client = MagicMock()
+    client.create_task = AsyncMock(return_value=None)
+    with patch("src.execution.cloud_tasks.tasks_v2.CloudTasksAsyncClient", return_value=client):
+        await enqueue_execution("exec-deadline", kind="run", db=MagicMock())
+
+    assert client.create_task.await_args is not None
+    task = client.create_task.await_args.kwargs["request"]["task"]
+    assert task["dispatch_deadline"] == timedelta(seconds=deadline)
 
 
 async def test_enqueue_execution_dispatches_in_process_when_service_account_unset(

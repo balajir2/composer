@@ -34,7 +34,7 @@ from src.api.uploads import router as uploads_router
 from src.api.users import router as users_router
 from src.api.workflows import router as workflows_router
 from src.config import get_settings
-from src.config_validation import validate_production_config
+from src.config_validation import validate_execution_timing, validate_production_config
 from src.maintenance.execution_sweeper import start_sweeper, stop_sweeper
 from src.security.key_sync import sync_llm_keys_from_db
 from src.security.proxy_headers import TrustedProxyHeadersMiddleware
@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             app,
             db,
             interval_seconds=settings.execution_sweeper_interval_seconds,
-            stuck_after_seconds=settings.execution_stuck_after_seconds,
+            stuck_after_seconds=settings.execution_lease_seconds,
             approval_timeout_hours=settings.approval_wait_timeout_hours,
         )
         try:
@@ -78,6 +78,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     """Application factory. Keeps tests and scripts free to construct their own."""
     settings = get_settings()
+    validate_execution_timing(settings)
 
     # ADR-0014: fail fast if embedded mode is misconfigured
     if settings.deployment_mode == "embedded":

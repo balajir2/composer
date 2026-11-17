@@ -482,7 +482,7 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
     stuck: int | None
     try:
         stuck_result = await sweep_stuck_executions(
-            db, stuck_after_seconds=settings.execution_stuck_after_seconds
+            db, stuck_after_seconds=settings.execution_lease_seconds
         )
         stuck = stuck_result.marked_failed
     except Exception:

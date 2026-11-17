@@ -1,8 +1,8 @@
-"""Fail-fast production configuration checks (P0-4).
+"""Fail-fast execution timing and production configuration checks (P0-4).
 
-Called once at startup when environment == "production" so a
-misconfigured deployment refuses to start instead of silently serving
-broken behavior. Added after the 2026-07-11 incident where
+Execution timing is checked at app creation in every environment;
+production-only checks run at startup so a misconfigured deployment
+refuses to serve broken behavior. Added after the 2026-07-11 incident where
 BACKEND_PUBLIC_URL/FRONTEND_URL were never set in production —
 approval/reset emails silently linked to http://localhost and nothing
 failed until a human clicked a broken link.
@@ -21,7 +21,7 @@ _DEV_DATABASE_URL = "postgresql://composer:composer@localhost:5432/composer"
 
 
 class ProductionConfigError(RuntimeError):
-    """Raised when required production configuration is missing or unsafe."""
+    """Raised when required configuration is missing or unsafe."""
 
 
 def _is_localhost_url(value: str) -> bool:
@@ -29,13 +29,31 @@ def _is_localhost_url(value: str) -> bool:
     return any(marker in lowered for marker in _LOCALHOST_MARKERS)
 
 
+def validate_execution_timing(settings: Settings) -> None:
+    """Reject processing budgets that cannot fit within a Cloud Tasks delivery."""
+    problems: list[str] = []
+    if settings.execution_max_runtime_seconds <= 0:
+        problems.append("EXECUTION_MAX_RUNTIME_SECONDS must be greater than 0.")
+    if not 1 <= settings.execution_shutdown_grace_seconds <= 60:
+        problems.append("EXECUTION_SHUTDOWN_GRACE_SECONDS must be between 1 and 60.")
+    if settings.execution_dispatch_deadline_seconds > 1800:
+        problems.append(
+            "EXECUTION_MAX_RUNTIME_SECONDS + EXECUTION_SHUTDOWN_GRACE_SECONDS "
+            "must not exceed 1800 seconds."
+        )
+    if problems:
+        raise ProductionConfigError(
+            "Refusing to start: invalid execution timing —\n- " + "\n- ".join(problems)
+        )
+
+
 def validate_production_config(settings: Settings) -> None:
     """Raise ProductionConfigError listing every problem found, if any.
 
-    No-op unless settings.environment == "production" — localhost URLs
-    and the dev JWT secret are the expected, correct configuration for
-    local development.
+    Execution timing is checked in all environments. Production additionally
+    rejects localhost URLs and dev secrets, which remain valid locally.
     """
+    validate_execution_timing(settings)
     if settings.environment != "production":
         return
 
@@ -71,4 +89,4 @@ def validate_production_config(settings: Settings) -> None:
         )
 
 
-__all__ = ["ProductionConfigError", "validate_production_config"]
+__all__ = ["ProductionConfigError", "validate_execution_timing", "validate_production_config"]
