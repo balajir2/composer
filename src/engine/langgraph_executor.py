@@ -34,6 +34,24 @@ from src.engine.workflow import Workflow
 logger = logging.getLogger(__name__)
 
 
+def _transition_succeeded(execution_id: str, intended_status: str, updated: int) -> bool:
+    """Report a lost compare-and-set without exposing execution payloads."""
+    if updated != 1:
+        logger.info(
+            "Execution %s did not transition to %s",
+            execution_id,
+            intended_status,
+            extra={
+                "execution_id": execution_id,
+                "transition_source": "executor",
+                "previous_status": "running",
+                "intended_status": intended_status,
+                "transition_outcome": "lost",
+            },
+        )
+    return updated == 1
+
+
 def _extract_pending_info(snapshot: Any) -> dict[str, Any]:
     """Extract {node_id, prompt} from snapshot.tasks[*].interrupts.
 
@@ -174,8 +192,8 @@ class LangGraphExecutor:
         lg_config: dict[str, Any] = {"configurable": {"thread_id": execution.threadId}}
         return compiled, state, lg_config
 
-    async def _mark_completed(self, execution_id: str, final_state: dict[str, Any]) -> None:
-        """Persist completed status + output/variables/nodeResults."""
+    async def _mark_completed(self, execution_id: str, final_state: dict[str, Any]) -> bool:
+        """Persist completion results only while the execution is running."""
         final_vars: dict[str, Any] = final_state.get("variables") or {}
         final_outputs: dict[str, Any] = final_state.get("final_outputs") or {}
         # final_outputs is keyed by End-node id (see src/executors/end.py).
@@ -193,16 +211,20 @@ class LangGraphExecutor:
             output_value = final_outputs
         else:
             output_value = final_vars.get("lastOutput")
-        await self.db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"id": execution_id},
+        updated = await self.db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
+            where={"id": execution_id, "status": "running"},
             data={
                 "status": "completed",
                 "output": Json(output_value),
                 "variables": Json(final_vars),
                 "nodeResults": Json(final_state.get("node_results") or {}),
                 "completedAt": datetime.now(UTC),
+                "leaseOwner": None,
+                "leaseExpiresAt": None,
+                "runningSince": None,
             },
         )
+        return _transition_succeeded(execution_id, "completed", updated)
 
     async def _mark_waiting_approval(
         self,
@@ -210,7 +232,7 @@ class LangGraphExecutor:
         pending_info: dict[str, Any],
         existing_vars: dict[str, Any] | None,
         pending_since: str,
-    ) -> None:
+    ) -> bool:
         """Persist waiting_approval status + pending node/prompt into variables.
 
         Merges pending markers into existing_vars so pre-interrupt state is preserved.
@@ -226,24 +248,35 @@ class LangGraphExecutor:
         merged["_pending_approval_prompt"] = pending_info.get("prompt")
         merged["_pending_approval_since"] = pending_since
 
-        await self.db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"id": execution_id},
+        updated = await self.db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
+            where={"id": execution_id, "status": "running"},
             data={
                 "status": "waiting_approval",
                 "variables": Json(merged),
+                "leaseOwner": None,
+                "leaseExpiresAt": None,
+                "runningSince": None,
             },
         )
+        return _transition_succeeded(execution_id, "waiting_approval", updated)
 
-    async def _mark_failed(self, execution_id: str, exc: Exception) -> None:
-        """Persist failed status + error message."""
-        await self.db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"id": execution_id},
+    async def _mark_failed(
+        self, execution_id: str, exc: Exception, *, failure_code: str = "execution_error"
+    ) -> bool:
+        """Persist failure details only while the execution is running."""
+        updated = await self.db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
+            where={"id": execution_id, "status": "running"},
             data={
                 "status": "failed",
                 "error": f"{type(exc).__name__}: {exc}",
+                "failureCode": failure_code,
                 "completedAt": datetime.now(UTC),
+                "leaseOwner": None,
+                "leaseExpiresAt": None,
+                "runningSince": None,
             },
         )
+        return _transition_succeeded(execution_id, "failed", updated)
 
     async def run(self, execution_id: str) -> None:
         """Drive the compiled graph to completion and persist results.
@@ -279,45 +312,45 @@ class LangGraphExecutor:
                 if isinstance(final_state.get("variables"), dict):
                     existing_vars = final_state["variables"]
                 pending_since = datetime.now(UTC).isoformat()
-                await self._mark_waiting_approval(
+                if await self._mark_waiting_approval(
                     execution_id, pending_info, existing_vars, pending_since
-                )
-                await send_approval_email(
-                    execution_id=execution_id,
-                    node_id=str(pending_info.get("node_id", "")),
-                    prompt=str(pending_info.get("prompt", "")),
-                    approver_email=str(pending_info.get("approver_email", "")),
-                    approver_cc=str(pending_info.get("approver_cc", "")) or None,
-                    pending_since=pending_since,
-                    attachment_path=str(pending_info.get("attachment_path", "")) or None,
-                )
-                await self._emit(
-                    "approval_required",
-                    execution_id,
-                    {
-                        "node_id": pending_info.get("node_id"),
-                        "prompt": pending_info.get("prompt"),
-                        "status": "waiting_approval",
-                    },
-                )
+                ):
+                    await send_approval_email(
+                        execution_id=execution_id,
+                        node_id=str(pending_info.get("node_id", "")),
+                        prompt=str(pending_info.get("prompt", "")),
+                        approver_email=str(pending_info.get("approver_email", "")),
+                        approver_cc=str(pending_info.get("approver_cc", "")) or None,
+                        pending_since=pending_since,
+                        attachment_path=str(pending_info.get("attachment_path", "")) or None,
+                    )
+                    await self._emit(
+                        "approval_required",
+                        execution_id,
+                        {
+                            "node_id": pending_info.get("node_id"),
+                            "prompt": pending_info.get("prompt"),
+                            "status": "waiting_approval",
+                        },
+                    )
                 return
 
-            await self._mark_completed(execution_id, final_state)
-            await self._emit(
-                "workflow_completed",
-                execution_id,
-                {"status": "completed"},
-            )
+            if await self._mark_completed(execution_id, final_state):
+                await self._emit(
+                    "workflow_completed",
+                    execution_id,
+                    {"status": "completed"},
+                )
 
         except Exception as exc:
             logger.exception("Execution %s failed", execution_id)
-            await self._mark_failed(execution_id, exc)
-            # _emit is self-guarding (never raises) — no outer try/except needed.
-            await self._emit(
-                "workflow_completed",
-                execution_id,
-                {"status": "failed"},
-            )
+            if await self._mark_failed(execution_id, exc):
+                # _emit is self-guarding (never raises) — no outer try/except needed.
+                await self._emit(
+                    "workflow_completed",
+                    execution_id,
+                    {"status": "failed"},
+                )
 
     async def resume(self, execution_id: str, decision: str) -> None:
         """Continue a paused execution with a user decision (approved/rejected).
@@ -356,45 +389,45 @@ class LangGraphExecutor:
                 if isinstance(final_state.get("variables"), dict):
                     existing_vars = final_state["variables"]
                 pending_since = datetime.now(UTC).isoformat()
-                await self._mark_waiting_approval(
+                if await self._mark_waiting_approval(
                     execution_id, pending_info, existing_vars, pending_since
-                )
-                await send_approval_email(
-                    execution_id=execution_id,
-                    node_id=str(pending_info.get("node_id", "")),
-                    prompt=str(pending_info.get("prompt", "")),
-                    approver_email=str(pending_info.get("approver_email", "")),
-                    approver_cc=str(pending_info.get("approver_cc", "")) or None,
-                    pending_since=pending_since,
-                    attachment_path=str(pending_info.get("attachment_path", "")) or None,
-                )
-                await self._emit(
-                    "approval_required",
-                    execution_id,
-                    {
-                        "node_id": pending_info.get("node_id"),
-                        "prompt": pending_info.get("prompt"),
-                        "status": "waiting_approval",
-                    },
-                )
+                ):
+                    await send_approval_email(
+                        execution_id=execution_id,
+                        node_id=str(pending_info.get("node_id", "")),
+                        prompt=str(pending_info.get("prompt", "")),
+                        approver_email=str(pending_info.get("approver_email", "")),
+                        approver_cc=str(pending_info.get("approver_cc", "")) or None,
+                        pending_since=pending_since,
+                        attachment_path=str(pending_info.get("attachment_path", "")) or None,
+                    )
+                    await self._emit(
+                        "approval_required",
+                        execution_id,
+                        {
+                            "node_id": pending_info.get("node_id"),
+                            "prompt": pending_info.get("prompt"),
+                            "status": "waiting_approval",
+                        },
+                    )
                 return
 
-            await self._mark_completed(execution_id, final_state)
-            await self._emit(
-                "workflow_completed",
-                execution_id,
-                {"status": "completed"},
-            )
+            if await self._mark_completed(execution_id, final_state):
+                await self._emit(
+                    "workflow_completed",
+                    execution_id,
+                    {"status": "completed"},
+                )
 
         except Exception as exc:
             logger.exception("Execution %s failed during resume", execution_id)
-            await self._mark_failed(execution_id, exc)
-            # _emit is self-guarding (never raises) — no outer try/except needed.
-            await self._emit(
-                "workflow_completed",
-                execution_id,
-                {"status": "failed"},
-            )
+            if await self._mark_failed(execution_id, exc):
+                # _emit is self-guarding (never raises) — no outer try/except needed.
+                await self._emit(
+                    "workflow_completed",
+                    execution_id,
+                    {"status": "failed"},
+                )
 
 
 __all__ = ["LangGraphExecutor"]

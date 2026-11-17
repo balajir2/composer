@@ -107,14 +107,14 @@ async def test_run_completes_start_to_end() -> None:
             userId=None,  # Phase 7a: nullable; executor checks before setting state
         )
     )
-    db.workflowexecution.update = AsyncMock()
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
 
     executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
     await executor.run("ex1")
 
-    db.workflowexecution.update.assert_awaited_once()
-    assert db.workflowexecution.update.await_args is not None
-    update_kwargs = db.workflowexecution.update.await_args.kwargs["data"]
+    db.workflowexecution.update_many.assert_awaited_once()
+    assert db.workflowexecution.update_many.await_args is not None
+    update_kwargs = db.workflowexecution.update_many.await_args.kwargs["data"]
     assert update_kwargs["status"] == "completed"
     # output/variables/nodeResults are wrapped in prisma.Json(...) before being
     # passed to Prisma — unwrap via the .data attribute for assertion.
@@ -127,7 +127,7 @@ async def test_mark_completed_preserves_falsy_final_output() -> None:
     "", [], {}) must not be discarded in favor of lastOutput."""
     db = MagicMock()
     db.workflowexecution = MagicMock()
-    db.workflowexecution.update = AsyncMock()
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
     executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
 
     final_state = {
@@ -136,8 +136,8 @@ async def test_mark_completed_preserves_falsy_final_output() -> None:
     }
     await executor._mark_completed("ex1", final_state)  # pyright: ignore[reportPrivateUsage]
 
-    assert db.workflowexecution.update.await_args is not None
-    update_kwargs = db.workflowexecution.update.await_args.kwargs["data"]
+    assert db.workflowexecution.update_many.await_args is not None
+    update_kwargs = db.workflowexecution.update_many.await_args.kwargs["data"]
     assert update_kwargs["output"].data == 0
 
 
@@ -147,14 +147,14 @@ async def test_mark_completed_falls_back_to_last_output_when_no_end_reached() ->
     for that case."""
     db = MagicMock()
     db.workflowexecution = MagicMock()
-    db.workflowexecution.update = AsyncMock()
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
     executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
 
     final_state = {"final_outputs": {}, "variables": {"lastOutput": "fallback value"}}
     await executor._mark_completed("ex1", final_state)  # pyright: ignore[reportPrivateUsage]
 
-    assert db.workflowexecution.update.await_args is not None
-    update_kwargs = db.workflowexecution.update.await_args.kwargs["data"]
+    assert db.workflowexecution.update_many.await_args is not None
+    update_kwargs = db.workflowexecution.update_many.await_args.kwargs["data"]
     assert update_kwargs["output"].data == "fallback value"
 
 
@@ -163,7 +163,7 @@ async def test_mark_completed_persists_dict_when_multiple_ends_fire() -> None:
     dict, keyed by End node id, not a single collapsed scalar."""
     db = MagicMock()
     db.workflowexecution = MagicMock()
-    db.workflowexecution.update = AsyncMock()
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
     executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
 
     final_state = {
@@ -172,8 +172,8 @@ async def test_mark_completed_persists_dict_when_multiple_ends_fire() -> None:
     }
     await executor._mark_completed("ex1", final_state)  # pyright: ignore[reportPrivateUsage]
 
-    assert db.workflowexecution.update.await_args is not None
-    update_kwargs = db.workflowexecution.update.await_args.kwargs["data"]
+    assert db.workflowexecution.update_many.await_args is not None
+    update_kwargs = db.workflowexecution.update_many.await_args.kwargs["data"]
     assert update_kwargs["output"].data == {"end-a": "value-a", "end-b": "value-b"}
 
 
@@ -202,14 +202,14 @@ async def test_run_marks_failed_on_exception(monkeypatch: pytest.MonkeyPatch) ->
             userId=None,  # Phase 7a: nullable; executor checks before setting state
         )
     )
-    db.workflowexecution.update = AsyncMock()
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
 
     executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
     await executor.run("ex1")
 
-    db.workflowexecution.update.assert_awaited_once()
-    assert db.workflowexecution.update.await_args is not None
-    update_kwargs = db.workflowexecution.update.await_args.kwargs["data"]
+    db.workflowexecution.update_many.assert_awaited_once()
+    assert db.workflowexecution.update_many.await_args is not None
+    update_kwargs = db.workflowexecution.update_many.await_args.kwargs["data"]
     assert update_kwargs["status"] == "failed"
     assert "simulated build failure" in update_kwargs["error"]
 
@@ -264,9 +264,9 @@ async def test_run_marks_waiting_approval_on_interrupt(
 
     async def _update(*, where: Any, data: Any) -> Any:
         update_calls.append({"where": where, "data": data})
-        return None
+        return 1
 
-    db.workflowexecution.update = _update
+    db.workflowexecution.update_many = _update
 
     from src.engine import langgraph_executor as lge_mod
 
@@ -334,9 +334,9 @@ async def test_resume_approved_continues_to_completion(
 
     async def _update(*, where: Any, data: Any) -> Any:
         update_calls.append(data)
-        return None
+        return 1
 
-    db.workflowexecution.update = _update
+    db.workflowexecution.update_many = _update
 
     from src.engine import langgraph_executor as lge_mod
 
@@ -398,7 +398,7 @@ async def test_run_emits_status_change_on_start_and_complete(
             edges=[{"id": "e1", "source": "s", "target": "e"}],
         )
     )
-    db.workflowexecution.update = AsyncMock()
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
 
     class _FakeSnap:
         next = ()
@@ -479,7 +479,7 @@ async def test_run_emits_approval_pending_on_pause(
             ],
         )
     )
-    db.workflowexecution.update = AsyncMock()
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
 
     class _FakeInterrupt:
         value: ClassVar[dict[str, str]] = {"node_id": "ua", "prompt": "Approve?"}
@@ -537,7 +537,7 @@ async def test_run_emits_failed_on_exception(
     )
     db.workflow = MagicMock()
     db.workflow.find_unique = AsyncMock(side_effect=RuntimeError("boom"))
-    db.workflowexecution.update = AsyncMock()
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
 
     orch = LangGraphExecutor(db, MagicMock(), event_bus=store)  # pyright: ignore[reportArgumentType]
     await orch.run("e1")
@@ -591,7 +591,7 @@ async def test_run_sends_approval_email_when_approver_email_set(
             ],
         )
     )
-    db.workflowexecution.update = AsyncMock()
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
 
     class _FakeInterrupt:
         value: ClassVar[dict[str, str]] = {
@@ -688,9 +688,9 @@ async def test_run_pending_since_matches_persisted_and_emailed(
 
     async def _update(*, where: Any, data: Any) -> Any:
         update_calls.append({"where": where, "data": data})
-        return None
+        return 1
 
-    db.workflowexecution.update = _update
+    db.workflowexecution.update_many = _update
 
     class _FakeInterrupt:
         value: ClassVar[dict[str, str]] = {
@@ -796,9 +796,9 @@ async def test_resume_chained_pause_stamps_consistent_pending_since(
 
     async def _update(*, where: Any, data: Any) -> Any:
         update_calls.append({"where": where, "data": data})
-        return None
+        return 1
 
-    db.workflowexecution.update = _update
+    db.workflowexecution.update_many = _update
 
     # Simulates a `while`-loop re-entering the same user-approval node: after
     # resume's ainvoke(Command(resume=...)), the graph immediately hits
@@ -898,9 +898,9 @@ async def test_run_completed_status_survives_emit_failure(
 
     async def _update(*, where: Any, data: Any) -> Any:
         update_calls.append(data)
-        return None
+        return 1
 
-    db.workflowexecution.update = _update
+    db.workflowexecution.update_many = _update
 
     class _FakeSnap:
         next = ()
@@ -990,9 +990,9 @@ async def test_resume_waiting_approval_status_survives_emit_failure(
 
     async def _update(*, where: Any, data: Any) -> Any:
         update_calls.append(data)
-        return None
+        return 1
 
-    db.workflowexecution.update = _update
+    db.workflowexecution.update_many = _update
 
     class _FakeInterrupt:
         value: ClassVar[dict[str, str]] = {
@@ -1040,9 +1040,9 @@ async def test_mark_waiting_approval_stamps_pending_since() -> None:
 
     async def _update(*, where: Any, data: Any) -> Any:
         update_calls.append({"where": where, "data": data})
-        return None
+        return 1
 
-    db.workflowexecution.update = _update
+    db.workflowexecution.update_many = _update
 
     orch = LangGraphExecutor(db, MagicMock())
     pending_since = "2026-07-11T10:00:00+00:00"
@@ -1056,3 +1056,120 @@ async def test_mark_waiting_approval_stamps_pending_since() -> None:
     from datetime import datetime
 
     datetime.fromisoformat(since)  # raises if not a valid ISO-8601 string
+
+
+@pytest.mark.parametrize("updated,expected", [(1, True), (0, False)])
+@pytest.mark.parametrize("status", ["completed", "waiting_approval", "failed"])
+async def test_status_transition_compares_running_and_clears_attempt(
+    status: str, updated: int, expected: bool, caplog: pytest.LogCaptureFixture
+) -> None:
+    db = MagicMock()
+    db.workflowexecution.update = AsyncMock()
+    db.workflowexecution.update_many = AsyncMock(return_value=updated)
+    executor = LangGraphExecutor(db, MemorySaver())
+
+    with caplog.at_level("INFO", logger="src.engine.langgraph_executor"):
+        if status == "completed":
+            transitioned = await executor._mark_completed(  # pyright: ignore[reportPrivateUsage]
+                "ex1",
+                {
+                    "final_outputs": {"end": "result"},
+                    "variables": {"lastOutput": "previous"},
+                    "node_results": {"end": {"output": "result"}},
+                },
+            )
+        elif status == "waiting_approval":
+            transitioned = await executor._mark_waiting_approval(  # pyright: ignore[reportPrivateUsage]
+                "ex1", {"node_id": "ua", "prompt": "Approve?"}, {"saved": "value"}, "pause-1"
+            )
+        else:
+            transitioned = await executor._mark_failed(  # pyright: ignore[reportPrivateUsage]
+                "ex1", RuntimeError("private error"), failure_code="execution_timeout"
+            )
+
+    assert transitioned is expected
+    db.workflowexecution.update.assert_not_awaited()
+    db.workflowexecution.update_many.assert_awaited_once()
+    assert db.workflowexecution.update_many.await_args is not None
+    kwargs = db.workflowexecution.update_many.await_args.kwargs
+    assert kwargs["where"] == {"id": "ex1", "status": "running"}
+    data = kwargs["data"]
+    assert data["status"] == status
+    for field in ("leaseOwner", "leaseExpiresAt", "runningSince"):
+        assert field in data and data[field] is None
+    if status == "completed":
+        assert data["output"].data == "result"
+        assert data["variables"].data == {"lastOutput": "previous"}
+        assert data["nodeResults"].data == {"end": {"output": "result"}}
+        assert data["completedAt"] is not None
+    elif status == "waiting_approval":
+        assert data["variables"].data == {
+            "saved": "value",
+            "_pending_approval_node": "ua",
+            "_pending_approval_prompt": "Approve?",
+            "_pending_approval_since": "pause-1",
+        }
+    else:
+        assert data["failureCode"] == "execution_timeout"
+        assert data["error"] == "RuntimeError: private error"
+        assert data["completedAt"] is not None
+    if not expected:
+        record = next(r for r in caplog.records if getattr(r, "transition_outcome", None) == "lost")
+        assert record.levelname == "INFO"
+        assert record.__dict__["execution_id"] == "ex1"
+        assert record.__dict__["transition_source"] == "executor"
+        assert record.__dict__["previous_status"] == "running"
+        assert record.__dict__["intended_status"] == status
+        assert "private error" not in record.getMessage()
+
+
+@pytest.mark.parametrize("method", ["run", "resume"])
+@pytest.mark.parametrize("status", ["completed", "waiting_approval", "failed"])
+@pytest.mark.parametrize("updated", [0, 1])
+async def test_status_transition_gates_events_and_approval_email(
+    monkeypatch: pytest.MonkeyPatch, method: str, status: str, updated: int
+) -> None:
+    db = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(return_value=SimpleNamespace(id="ex1"))
+    db.workflowexecution.update = AsyncMock()
+    db.workflowexecution.update_many = AsyncMock(return_value=updated)
+    store = _FakeEventStore()
+    executor = LangGraphExecutor(db, MemorySaver(), event_bus=store)  # pyright: ignore[reportArgumentType]
+    pending_info = {"node_id": "ua", "prompt": "Approve?", "approver_email": "a@example.com"}
+    snapshot = SimpleNamespace(
+        next=("ua",) if status == "waiting_approval" else (),
+        tasks=(SimpleNamespace(interrupts=(SimpleNamespace(value=pending_info),)),),
+    )
+    compiled = SimpleNamespace(
+        ainvoke=AsyncMock(return_value={"variables": {"saved": "value"}}),
+        aget_state=AsyncMock(return_value=snapshot),
+    )
+    if status == "failed":
+        compiled.ainvoke.side_effect = RuntimeError("graph failed")
+    monkeypatch.setattr(executor, "_prepare_compiled", AsyncMock(return_value=(compiled, {}, {})))
+    send_email = AsyncMock()
+    monkeypatch.setattr("src.engine.langgraph_executor.send_approval_email", send_email)
+
+    if method == "run":
+        await executor.run("ex1")
+    else:
+        await executor.resume("ex1", "approved")
+
+    assert db.workflowexecution.update_many.await_count == 1
+    expected_events = [("workflow_started", "running")]
+    if updated:
+        event_type = "approval_required" if status == "waiting_approval" else "workflow_completed"
+        expected_events.append((event_type, status))
+    assert [(event.type, event.payload["status"]) for event in store.events] == expected_events
+    if updated and status == "waiting_approval":
+        send_email.assert_awaited_once()
+        assert send_email.await_args is not None
+        assert send_email.await_args.kwargs["execution_id"] == "ex1"
+        assert send_email.await_args.kwargs["approver_email"] == "a@example.com"
+    else:
+        send_email.assert_not_awaited()
+    if status == "failed":
+        assert db.workflowexecution.update_many.await_args is not None
+        assert db.workflowexecution.update_many.await_args.kwargs["data"]["failureCode"] == (
+            "execution_error"
+        )
