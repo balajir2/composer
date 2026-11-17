@@ -66,6 +66,8 @@ model WorkflowExecution {
   idempotencyKey String?  @map("idempotency_key")
   leaseOwner    String?   @map("lease_owner")
   leaseExpiresAt DateTime? @map("lease_expires_at")
+  runningSince  DateTime? @map("running_since")
+  failureCode   String?   @map("failure_code")
   deliveryAttempts Int    @default(0) @map("delivery_attempts")
 
   workflow      Workflow  @relation(fields: [workflowId], references: [id], onDelete: Cascade)
