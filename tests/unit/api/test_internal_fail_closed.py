@@ -110,7 +110,7 @@ def test_internal_route_still_skips_oidc_in_explicit_development(
     async def _noop_events(*_args: object, **_kwargs: object) -> int:
         return 0
 
-    monkeypatch.setattr("src.api.internal.sweep_stuck_executions", _noop_sweep)
+    monkeypatch.setattr("src.api.internal.sweep_orphaned_running", _noop_sweep)
     monkeypatch.setattr("src.api.internal.sweep_expired_approvals", _noop_sweep)
     monkeypatch.setattr("src.api.internal.sweep_expired_leases", _noop_sweep)
     monkeypatch.setattr("src.api.internal.sweep_old_execution_events", _noop_events)

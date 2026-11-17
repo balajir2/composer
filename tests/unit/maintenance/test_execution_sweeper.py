@@ -1,76 +1,89 @@
-"""Tests for the stuck-execution sweeper.
-
-The sweeper finds `WorkflowExecution` rows that say `running` for longer
-than the configured threshold and marks them `failed` with an explanatory
-error.  The tests use an in-memory stub of the Prisma client so the
-sweep policy is exercised without touching Postgres.
-"""
+"""Execution maintenance policy, including changes between read and write."""
 
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.maintenance.execution_sweeper import (
-    SweepResult,
-    start_sweeper,
-    stop_sweeper,
-    sweep_expired_approvals,
-    sweep_stuck_executions,
-)
+from prisma import Json
+from src.maintenance import execution_sweeper as sweeper
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
+def _now() -> datetime:
+    return datetime(2026, 11, 17, 12, tzinfo=UTC)
 
 
 @dataclass
 class _Row:
-    id: str
-    status: str
-    startedAt: datetime
+    id: str = "execution-1"
+    status: str = "running"
+    startedAt: datetime = field(default_factory=lambda: _now() - timedelta(days=30))
+    runningSince: datetime | None = field(default_factory=lambda: _now() - timedelta(minutes=10))
+    leaseExpiresAt: datetime | None = None
+    leaseOwner: str | None = "worker-1"
+    deliveryAttempts: int = 1
+    variables: Any = field(default_factory=dict[str, Any])
     error: str | None = None
+    failureCode: str | None = None
     completedAt: datetime | None = None
-    variables: dict[str, Any] | None = None
+
+
+def _matches(row: _Row, where: dict[str, Any]) -> bool:
+    for key, expected in where.items():
+        actual = getattr(row, key)
+        if isinstance(expected, dict) and "lt" in expected:
+            if actual is None or not actual < expected["lt"]:
+                return False
+        elif isinstance(expected, dict) and "equals" in expected:
+            value = cast("dict[str, Any]", expected)["equals"]
+            if actual != (value.data if isinstance(value, Json) else value):
+                return False
+        elif actual != expected:
+            return False
+    return True
 
 
 @dataclass
 class _ExecutionTable:
     rows: list[_Row] = field(default_factory=list[_Row])
-    update_calls: list[tuple[str, dict[str, Any]]] = field(
-        default_factory=list[tuple[str, dict[str, Any]]]
-    )
+    queries: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+    writes: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+    before_update: Callable[[_Row], None] | None = None
     fail_update_for_ids: set[str] = field(default_factory=set[str])
 
     async def find_many(self, *, where: dict[str, Any]) -> list[_Row]:
-        out: list[_Row] = []
-        cutoff: datetime | None = None
-        if isinstance(where.get("startedAt"), dict):
-            cutoff = where["startedAt"].get("lt")
-        target_status = where.get("status")
-        for r in self.rows:
-            if target_status is not None and r.status != target_status:
-                continue
-            if cutoff is not None and not (r.startedAt < cutoff):
-                continue
-            out.append(r)
-        return out
+        self.queries.append(where)
+        return [deepcopy(row) for row in self.rows if _matches(row, where)]
+
+    async def update_many(self, *, where: dict[str, Any], data: dict[str, Any]) -> int:
+        self.writes.append(where)
+        for row in self.rows:
+            if self.before_update is not None:
+                self.before_update(row)
+        if where["id"] in self.fail_update_for_ids:
+            raise RuntimeError("simulated db failure")
+        count = 0
+        for row in self.rows:
+            if _matches(row, where):
+                for key, value in data.items():
+                    setattr(row, key, value)
+                count += 1
+        return count
 
     async def update(self, *, where: dict[str, Any], data: dict[str, Any]) -> _Row:
-        row_id = where["id"]
-        if row_id in self.fail_update_for_ids:
-            raise RuntimeError("simulated db failure")
-        for r in self.rows:
-            if r.id == row_id:
-                self.update_calls.append((row_id, data))
-                if "status" in data:
-                    r.status = data["status"]
-                if "error" in data:
-                    r.error = data["error"]
-                if "completedAt" in data:
-                    r.completedAt = data["completedAt"]
-                return r
-        raise KeyError(row_id)
+        # Retain the unconditional API so a regression to update(id=...)
+        # changes state in the race tests instead of raising on the stub.
+        await self.update_many(where=where, data=data)
+        return next(row for row in self.rows if row.id == where["id"])
 
 
 @dataclass
@@ -78,425 +91,340 @@ class _DbStub:
     workflowexecution: _ExecutionTable = field(default_factory=_ExecutionTable)
 
 
-def _now() -> datetime:
-    return datetime(2026, 5, 4, 12, 0, 0, tzinfo=UTC)
+def _db(*rows: _Row) -> _DbStub:
+    return _DbStub(_ExecutionTable(list(rows)))
 
 
-async def test_old_running_rows_are_marked_failed() -> None:
-    """A `running` row older than the threshold is flipped to `failed`."""
-    now = _now()
-    db = _DbStub()
-    db.workflowexecution.rows = [
-        _Row(id="exe-old", status="running", startedAt=now - timedelta(minutes=20)),
+@pytest.mark.parametrize("variables", [{}, {"_resume_decision": "approved"}])
+async def test_expired_lease_fails_without_replaying(
+    monkeypatch: pytest.MonkeyPatch, variables: dict[str, Any]
+) -> None:
+    enqueue = AsyncMock()
+    monkeypatch.setattr("src.execution.cloud_tasks.enqueue_execution", enqueue)
+    row = _Row(leaseExpiresAt=_now() - timedelta(seconds=1), variables=variables)
+    db = _db(row)
+
+    result = await sweeper.sweep_expired_leases(db, now=_now())
+
+    assert result == sweeper.SweepResult(scanned=1, marked_failed=1)
+    assert row.status == "failed"
+    assert row.failureCode == "lease_expired"
+    assert row.completedAt == _now()
+    assert row.error and "lease" in row.error.lower()
+    assert row.leaseOwner is None
+    assert row.leaseExpiresAt is None
+    assert row.runningSince is None
+    enqueue.assert_not_called()
+    assert db.workflowexecution.writes == [
+        {"id": row.id, "status": "running", "leaseExpiresAt": _now() - timedelta(seconds=1)}
     ]
 
-    result = await sweep_stuck_executions(db, stuck_after_seconds=900, now=now)
 
-    assert result == SweepResult(scanned=1, marked_failed=1)
-    [(exec_id, data)] = db.workflowexecution.update_calls
-    assert exec_id == "exe-old"
-    assert data["status"] == "failed"
-    assert "900s" in data["error"]
-    assert data["completedAt"] == now
+async def test_renewed_lease_wins_against_expiry_sweep() -> None:
+    row = _Row(leaseExpiresAt=_now() - timedelta(seconds=1))
+    db = _db(row)
+    renewed_until = _now() + timedelta(minutes=30)
+    db.workflowexecution.before_update = lambda current: setattr(
+        current, "leaseExpiresAt", renewed_until
+    )
+
+    result = await sweeper.sweep_expired_leases(db, now=_now())
+
+    assert result == sweeper.SweepResult(scanned=1, marked_failed=0)
+    assert row.status == "running"
+    assert row.leaseExpiresAt == renewed_until
+    assert row.failureCode is None
+    assert row.completedAt is None
 
 
-async def test_recent_running_rows_are_skipped() -> None:
-    """Anything within the threshold is left alone."""
-    now = _now()
-    db = _DbStub()
-    db.workflowexecution.rows = [
-        _Row(id="exe-recent", status="running", startedAt=now - timedelta(seconds=60)),
+@pytest.mark.parametrize("lease", [None, _now(), _now() + timedelta(seconds=1)])
+async def test_nonexpired_leases_are_not_selected_despite_old_creation(
+    lease: datetime | None,
+) -> None:
+    row = _Row(leaseExpiresAt=lease)
+    db = _db(row)
+
+    result = await sweeper.sweep_expired_leases(db, now=_now())
+
+    assert result == sweeper.SweepResult(scanned=0, marked_failed=0)
+    assert row.status == "running"
+    assert db.workflowexecution.writes == []
+
+
+async def test_orphaned_running_fails_and_clears_attempt_fields() -> None:
+    row = _Row()
+    db = _db(row)
+
+    result = await sweeper.sweep_orphaned_running(db, grace_seconds=120, now=_now())
+
+    assert result == sweeper.SweepResult(scanned=1, marked_failed=1)
+    assert row.status == "failed"
+    assert row.failureCode == "orphaned_running"
+    assert row.error and "120s" in row.error
+    assert row.completedAt == _now()
+    assert row.runningSince is None
+    assert row.leaseExpiresAt is None
+    assert row.leaseOwner is None
+    assert db.workflowexecution.writes == [
+        {
+            "id": row.id,
+            "status": "running",
+            "leaseExpiresAt": None,
+            "runningSince": {"lt": _now() - timedelta(seconds=120)},
+        }
     ]
 
-    result = await sweep_stuck_executions(db, stuck_after_seconds=900, now=now)
 
-    assert result == SweepResult(scanned=0, marked_failed=0)
-    assert db.workflowexecution.update_calls == []
+@pytest.mark.parametrize(
+    ("running_since", "lease"),
+    [
+        (_now() - timedelta(seconds=119), None),
+        (_now() - timedelta(seconds=120), None),
+        (None, None),
+        (_now() - timedelta(days=1), _now() + timedelta(minutes=30)),
+        (_now() - timedelta(days=1), _now() - timedelta(seconds=1)),
+    ],
+)
+async def test_orphan_sweep_ignores_recent_attempts_and_all_leased_rows(
+    running_since: datetime | None, lease: datetime | None
+) -> None:
+    row = _Row(runningSince=running_since, leaseExpiresAt=lease)
+    db = _db(row)
 
+    result = await sweeper.sweep_orphaned_running(db, grace_seconds=120, now=_now())
 
-async def test_waiting_approval_rows_are_skipped() -> None:
-    """`waiting_approval` is paused on purpose and never gets reaped."""
-    now = _now()
-    db = _DbStub()
-    db.workflowexecution.rows = [
-        _Row(
-            id="exe-waiting",
-            status="waiting_approval",
-            startedAt=now - timedelta(days=2),
-        ),
-    ]
-
-    result = await sweep_stuck_executions(db, stuck_after_seconds=900, now=now)
-
-    assert result == SweepResult(scanned=0, marked_failed=0)
-    assert db.workflowexecution.update_calls == []
-
-
-async def test_completed_rows_are_skipped() -> None:
-    """Sanity: terminal rows are never re-touched."""
-    now = _now()
-    db = _DbStub()
-    db.workflowexecution.rows = [
-        _Row(id="exe-done", status="completed", startedAt=now - timedelta(hours=1)),
-        _Row(id="exe-failed", status="failed", startedAt=now - timedelta(hours=1)),
-    ]
-
-    result = await sweep_stuck_executions(db, stuck_after_seconds=900, now=now)
-
-    assert result == SweepResult(scanned=0, marked_failed=0)
+    assert result == sweeper.SweepResult(scanned=0, marked_failed=0)
+    assert row.status == "running"
+    assert db.workflowexecution.writes == []
 
 
-async def test_one_failed_update_does_not_stop_other_rows() -> None:
-    """If updating one row throws, the sweeper logs and continues."""
-    now = _now()
-    db = _DbStub()
-    db.workflowexecution.rows = [
-        _Row(id="exe-bad", status="running", startedAt=now - timedelta(minutes=20)),
-        _Row(id="exe-good", status="running", startedAt=now - timedelta(minutes=20)),
-    ]
-    db.workflowexecution.fail_update_for_ids = {"exe-bad"}
+@pytest.mark.parametrize("change", ["lease", "attempt", "cancel"])
+async def test_orphan_sweep_rechecks_selection_at_write(change: str) -> None:
+    row = _Row()
+    db = _db(row)
 
-    result = await sweep_stuck_executions(db, stuck_after_seconds=900, now=now)
+    def _change(current: _Row) -> None:
+        if change == "lease":
+            current.leaseExpiresAt = _now() + timedelta(minutes=30)
+        elif change == "attempt":
+            current.runningSince = _now()
+        else:
+            current.status = "canceled"
 
-    # 2 scanned, only 1 marked (the good one); no exception bubbled out.
-    assert result == SweepResult(scanned=2, marked_failed=1)
-    [(exec_id, _)] = db.workflowexecution.update_calls
-    assert exec_id == "exe-good"
+    db.workflowexecution.before_update = _change
+
+    result = await sweeper.sweep_orphaned_running(db, grace_seconds=120, now=_now())
+
+    assert result == sweeper.SweepResult(scanned=1, marked_failed=0)
+    assert row.failureCode is None
+    assert row.completedAt is None
+    assert row.status == ("canceled" if change == "cancel" else "running")
 
 
-async def test_zero_threshold_rejected() -> None:
-    """Misconfiguration — refuse to sweep with a 0 threshold."""
-    db = _DbStub()
+@pytest.mark.parametrize(
+    "status", ["queued", "waiting_approval", "completed", "failed", "canceled"]
+)
+async def test_running_sweeps_never_select_other_statuses(status: str) -> None:
+    leased = _Row(id="leased", status=status, leaseExpiresAt=_now() - timedelta(seconds=1))
+    orphaned = _Row(id="orphaned", status=status)
+    db = _db(leased, orphaned)
+
+    lease_result = await sweeper.sweep_expired_leases(db, now=_now())
+    orphan_result = await sweeper.sweep_orphaned_running(db, grace_seconds=120, now=_now())
+
+    assert lease_result == orphan_result == sweeper.SweepResult(scanned=0, marked_failed=0)
+    assert leased.status == orphaned.status == status
+
+
+@pytest.mark.parametrize("status", ["waiting_approval", "completed", "canceled"])
+async def test_lease_sweep_preserves_concurrent_status_transition(status: str) -> None:
+    row = _Row(leaseExpiresAt=_now() - timedelta(seconds=1))
+    db = _db(row)
+    db.workflowexecution.before_update = lambda current: setattr(current, "status", status)
+
+    result = await sweeper.sweep_expired_leases(db, now=_now())
+
+    assert result == sweeper.SweepResult(scanned=1, marked_failed=0)
+    assert row.status == status
+    assert row.failureCode is None
+
+
+@pytest.mark.parametrize("sweep_kind", ["lease", "orphan"])
+async def test_write_failure_does_not_stop_remaining_rows(sweep_kind: str) -> None:
+    lease = _now() - timedelta(seconds=1) if sweep_kind == "lease" else None
+    bad, good = _Row(id="bad", leaseExpiresAt=lease), _Row(id="good", leaseExpiresAt=lease)
+    db = _db(bad, good)
+    db.workflowexecution.fail_update_for_ids.add("bad")
+
+    if sweep_kind == "lease":
+        result = await sweeper.sweep_expired_leases(db, now=_now())
+    else:
+        result = await sweeper.sweep_orphaned_running(db, grace_seconds=120, now=_now())
+
+    assert result == sweeper.SweepResult(scanned=2, marked_failed=1, errored=1)
+    assert bad.status == "running"
+    assert good.status == "failed"
+
+
+@pytest.mark.parametrize("grace", [0, -1])
+async def test_orphan_grace_must_be_positive(grace: int) -> None:
     with pytest.raises(ValueError, match="must be > 0"):
-        await sweep_stuck_executions(db, stuck_after_seconds=0)
+        await sweeper.sweep_orphaned_running(_db(), grace_seconds=grace)
+
+
+def _approval_row(**kwargs: Any) -> _Row:
+    return _Row(
+        status="waiting_approval",
+        runningSince=None,
+        leaseOwner=None,
+        variables={"_pending_approval_since": (_now() - timedelta(hours=200)).isoformat()},
+        **kwargs,
+    )
+
+
+async def test_approval_timeout_zero_skips_query() -> None:
+    row = _approval_row()
+    db = _db(row)
+
+    result = await sweeper.sweep_expired_approvals(db, timeout_hours=0, now=_now())
+
+    assert result == sweeper.SweepResult(scanned=0, marked_failed=0)
+    assert row.status == "waiting_approval"
+    assert db.workflowexecution.queries == []
+
+
+async def test_positive_approval_timeout_fails_old_pause_with_conditional_write() -> None:
+    row = _approval_row()
+    db = _db(row)
+
+    result = await sweeper.sweep_expired_approvals(db, timeout_hours=168, now=_now())
+
+    assert result == sweeper.SweepResult(scanned=1, marked_failed=1)
+    assert row.status == "failed"
+    assert row.completedAt == _now()
+    assert row.error and "expired waiting for approval" in row.error.lower()
+    [where] = db.workflowexecution.writes
+    assert where["id"] == row.id
+    assert where["status"] == "waiting_approval"
+    assert where["variables"]["equals"].data == row.variables
+
+
+@pytest.mark.parametrize("change", ["new_pause", "resume", "cancel"])
+async def test_approval_sweep_preserves_new_pause_or_status(change: str) -> None:
+    row = _approval_row()
+    db = _db(row)
+
+    def _change(current: _Row) -> None:
+        if change == "new_pause":
+            current.variables = {"_pending_approval_since": _now().isoformat()}
+        else:
+            current.status = "running" if change == "resume" else "canceled"
+
+    db.workflowexecution.before_update = _change
+
+    result = await sweeper.sweep_expired_approvals(db, timeout_hours=168, now=_now())
+
+    assert result == sweeper.SweepResult(scanned=1, marked_failed=0)
+    assert (
+        row.status
+        == {"new_pause": "waiting_approval", "resume": "running", "cancel": "canceled"}[change]
+    )
+    assert row.completedAt is None
+
+
+@pytest.mark.parametrize(
+    "variables",
+    [
+        {},
+        None,
+        [],
+        {"_pending_approval_since": "not-a-date"},
+        {"_pending_approval_since": 4},
+        {"_pending_approval_since": "2026-11-01T12:00:00"},
+        {"_pending_approval_since": (_now() - timedelta(hours=1)).isoformat()},
+        {"_pending_approval_since": (_now() - timedelta(hours=168)).isoformat()},
+    ],
+)
+async def test_approval_sweep_skips_missing_malformed_or_recent_timestamp(variables: Any) -> None:
+    row = _approval_row()
+    row.variables = variables
+    db = _db(row)
+
+    result = await sweeper.sweep_expired_approvals(db, timeout_hours=168, now=_now())
+
+    assert result == sweeper.SweepResult(scanned=1, marked_failed=0)
+    assert row.status == "waiting_approval"
+
+
+async def test_approval_write_failure_does_not_stop_remaining_rows() -> None:
+    bad, good = _approval_row(id="bad"), _approval_row(id="good")
+    db = _db(bad, good)
+    db.workflowexecution.fail_update_for_ids.add("bad")
+
+    result = await sweeper.sweep_expired_approvals(db, timeout_hours=168, now=_now())
+
+    assert result == sweeper.SweepResult(scanned=2, marked_failed=1, errored=1)
+    assert bad.status == "waiting_approval"
+    assert good.status == "failed"
+
+
+async def test_approval_negative_timeout_rejected() -> None:
+    with pytest.raises(ValueError, match="must be >= 0"):
+        await sweeper.sweep_expired_approvals(_db(), timeout_hours=-1)
 
 
 async def test_start_sweeper_disabled_returns_none() -> None:
-    """interval_seconds=0 disables the sweeper entirely."""
     from fastapi import FastAPI
 
-    app = FastAPI()
-    db = _DbStub()
-    task = start_sweeper(
-        app, db, interval_seconds=0, stuck_after_seconds=900, approval_timeout_hours=168
+    assert (
+        sweeper.start_sweeper(
+            FastAPI(),
+            _db(),
+            interval_seconds=0,
+            orphaned_running_grace_seconds=120,
+            approval_timeout_hours=0,
+        )
+        is None
     )
-    assert task is None
 
 
-async def test_start_and_stop_sweeper_runs_at_least_once() -> None:
-    """Smoke-test the loop: starts, sweeps once, exits cleanly."""
+@pytest.mark.parametrize("timeout_hours", [0, 168])
+async def test_background_loop_runs_orphan_sweep_and_optional_approvals(
+    monkeypatch: pytest.MonkeyPatch, timeout_hours: int
+) -> None:
     from fastapi import FastAPI
 
-    app = FastAPI()
-    db = _DbStub()
-    db.workflowexecution.rows = [
-        _Row(id="exe-old", status="running", startedAt=_now() - timedelta(hours=1)),
-    ]
+    row = _Row(runningSince=datetime(2000, 1, 1, tzinfo=UTC))
+    db = _db(row)
+    approvals = AsyncMock(return_value=sweeper.SweepResult(scanned=0, marked_failed=0))
+    monkeypatch.setattr(sweeper, "sweep_expired_approvals", approvals)
 
-    # interval_seconds=1 keeps the loop responsive enough for the test to
-    # observe the first sweep before cancelling.
-    task = start_sweeper(
-        app, db, interval_seconds=1, stuck_after_seconds=900, approval_timeout_hours=168
+    task = sweeper.start_sweeper(
+        FastAPI(),
+        db,
+        interval_seconds=300,
+        orphaned_running_grace_seconds=120,
+        approval_timeout_hours=timeout_hours,
     )
     assert task is not None
-    # Yield to the event loop so the loop body runs once.
-    await asyncio.sleep(0.05)
-    await stop_sweeper(task)
-    assert task.cancelled() or task.done()
-    # First iteration completed the sweep before the cancel.
-    assert any(call[1].get("status") == "failed" for call in db.workflowexecution.update_calls)
+    await asyncio.sleep(0)
+    await sweeper.stop_sweeper(task)
 
-
-async def test_stale_waiting_approval_rows_are_marked_failed() -> None:
-    now = _now()
-    stale_since = (now - timedelta(hours=200)).isoformat()
-    db = _DbStub()
-    db.workflowexecution.rows = [
-        _Row(
-            id="exe-stale",
-            status="waiting_approval",
-            startedAt=now - timedelta(hours=200),
-            variables={"_pending_approval_since": stale_since},
-        ),
-    ]
-
-    result = await sweep_expired_approvals(db, timeout_hours=168, now=now)
-
-    assert result == SweepResult(scanned=1, marked_failed=1)
-    [(exec_id, data)] = db.workflowexecution.update_calls
-    assert exec_id == "exe-stale"
-    assert data["status"] == "failed"
-    assert "expired waiting for approval" in data["error"].lower()
-    assert data["completedAt"] == now
-
-
-async def test_recent_waiting_approval_rows_are_skipped() -> None:
-    now = _now()
-    fresh_since = (now - timedelta(hours=1)).isoformat()
-    db = _DbStub()
-    db.workflowexecution.rows = [
-        _Row(
-            id="exe-fresh",
-            status="waiting_approval",
-            startedAt=now - timedelta(hours=1),
-            variables={"_pending_approval_since": fresh_since},
-        ),
-    ]
-
-    result = await sweep_expired_approvals(db, timeout_hours=168, now=now)
-
-    assert result == SweepResult(scanned=1, marked_failed=0)
-    assert db.workflowexecution.update_calls == []
-
-
-async def test_waiting_approval_rows_without_timestamp_are_skipped() -> None:
-    """Defensive: a row somehow missing the stamp (e.g. pre-migration data)
-    is left alone rather than immediately expired."""
-    now = _now()
-    db = _DbStub()
-    db.workflowexecution.rows = [
-        _Row(
-            id="exe-no-ts",
-            status="waiting_approval",
-            startedAt=now - timedelta(days=30),
-            variables={},
-        ),
-    ]
-
-    result = await sweep_expired_approvals(db, timeout_hours=168, now=now)
-
-    assert result == SweepResult(scanned=1, marked_failed=0)
-    assert db.workflowexecution.update_calls == []
-
-
-async def test_running_rows_are_not_touched_by_approval_sweep() -> None:
-    """sweep_expired_approvals only ever looks at waiting_approval — a stuck
-    running row is sweep_stuck_executions's job, not this one's."""
-    now = _now()
-    db = _DbStub()
-    db.workflowexecution.rows = [
-        _Row(id="exe-running", status="running", startedAt=now - timedelta(hours=200)),
-    ]
-
-    result = await sweep_expired_approvals(db, timeout_hours=168, now=now)
-
-    assert result == SweepResult(scanned=0, marked_failed=0)
-
-
-async def test_approval_sweep_zero_timeout_rejected() -> None:
-    db = _DbStub()
-    with pytest.raises(ValueError, match="must be > 0"):
-        await sweep_expired_approvals(db, timeout_hours=0)
-
-
-async def test_sweep_expired_leases_requeues_for_retry(monkeypatch: pytest.MonkeyPatch) -> None:
-    """A lease that expired without the worker completing the execution
-    means the worker likely died mid-run (Cloud Run instance recycled,
-    OOM, etc.) — recover by clearing the lease AND re-enqueueing a fresh
-    Cloud Task (clearing the lease alone doesn't guarantee anything will
-    ever look at this row again — see the code comment on this in
-    sweep_expired_leases), bounded by delivery_attempts so a poison task
-    doesn't retry forever."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    from src.maintenance.execution_sweeper import sweep_expired_leases
-
-    enqueued: list[tuple[str, str]] = []
-
-    async def _fake_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
-        enqueued.append((execution_id, kind))
-
-    monkeypatch.setattr("src.execution.cloud_tasks.enqueue_execution", _fake_enqueue)
-
-    db = MagicMock()
-    now = datetime.now(UTC)
-    stuck_row = MagicMock(
-        id="ex1",
-        leaseExpiresAt=now - timedelta(seconds=10),
-        deliveryAttempts=1,
-        status="running",
-        variables={},
-    )
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_many = AsyncMock(return_value=[stuck_row])
-    db.workflowexecution.update = AsyncMock()
-
-    result = await sweep_expired_leases(db, max_delivery_attempts=5, now=now)
-
-    assert result.marked_failed == 0
-    db.workflowexecution.update.assert_awaited_once()
-    assert db.workflowexecution.update.await_args is not None
-    update_data = db.workflowexecution.update.await_args.kwargs["data"]
-    assert update_data["leaseOwner"] is None
-    assert update_data["leaseExpiresAt"] is None
-    assert enqueued == [("ex1", "run")]
-
-
-async def test_sweep_expired_leases_requeues_resume_as_resume(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A died mid-resume execution (one with _resume_decision already
-    stamped into variables, per Task 13) must be re-enqueued as a resume,
-    not restarted as a fresh run."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    from src.maintenance.execution_sweeper import sweep_expired_leases
-
-    enqueued: list[tuple[str, str]] = []
-
-    async def _fake_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
-        enqueued.append((execution_id, kind))
-
-    monkeypatch.setattr("src.execution.cloud_tasks.enqueue_execution", _fake_enqueue)
-
-    db = MagicMock()
-    now = datetime.now(UTC)
-    stuck_row = MagicMock(
-        id="ex1",
-        leaseExpiresAt=now - timedelta(seconds=10),
-        deliveryAttempts=1,
-        status="running",
-        variables={"_resume_decision": "approved"},
-    )
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_many = AsyncMock(return_value=[stuck_row])
-    db.workflowexecution.update = AsyncMock()
-
-    await sweep_expired_leases(db, max_delivery_attempts=5, now=now)
-
-    assert enqueued == [("ex1", "resume")]
-
-
-async def test_sweep_expired_leases_fails_after_max_attempts() -> None:
-    from unittest.mock import AsyncMock, MagicMock
-
-    from src.maintenance.execution_sweeper import sweep_expired_leases
-
-    db = MagicMock()
-    now = datetime.now(UTC)
-    poison_row = MagicMock(
-        id="ex1",
-        leaseExpiresAt=now - timedelta(seconds=10),
-        deliveryAttempts=5,
-        status="running",
-        variables={},
-    )
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_many = AsyncMock(return_value=[poison_row])
-    db.workflowexecution.update = AsyncMock()
-
-    result = await sweep_expired_leases(db, max_delivery_attempts=5, now=now)
-
-    assert result.marked_failed == 1
-    assert db.workflowexecution.update.await_args is not None
-    update_data = db.workflowexecution.update.await_args.kwargs["data"]
-    assert update_data["status"] == "failed"
-
-
-async def test_sweep_expired_leases_does_not_clear_lease_if_enqueue_fails(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Regression test for the lease-clear-before-enqueue ordering bug: if
-    enqueue_execution raises (Cloud Tasks API error, IAM blip, transient
-    network failure), the lease must NOT already have been cleared —
-    otherwise leaseExpiresAt becomes NULL and sweep_expired_leases's own
-    `{"lt": now}` filter (SQL `NULL < x` is never true) would never match
-    this row again, permanently excluding it from lease-based recovery
-    even though max_delivery_attempts wasn't exhausted."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    from src.maintenance.execution_sweeper import sweep_expired_leases
-
-    async def _fake_enqueue_fails(execution_id: str, *, kind: str, db: object = None) -> None:
-        raise RuntimeError("simulated Cloud Tasks API error")
-
-    monkeypatch.setattr("src.execution.cloud_tasks.enqueue_execution", _fake_enqueue_fails)
-
-    db = MagicMock()
-    now = datetime.now(UTC)
-    stuck_row = MagicMock(
-        id="ex1",
-        leaseExpiresAt=now - timedelta(seconds=10),
-        deliveryAttempts=1,
-        status="running",
-        variables={},
-    )
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_many = AsyncMock(return_value=[stuck_row])
-    db.workflowexecution.update = AsyncMock()
-
-    result = await sweep_expired_leases(db, max_delivery_attempts=5, now=now)
-
-    assert result.marked_failed == 0
-    assert result.errored == 1
-    # The lease-clear UPDATE must never have been reached — enqueue is
-    # called first and raised before we got there.
-    db.workflowexecution.update.assert_not_awaited()
-
-
-async def test_sweep_expired_leases_errored_row_not_counted_as_recovered(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """A row whose enqueue_execution raises must show up as neither
-    dead-lettered nor recovered — `errored` tracks it separately so
-    callers (src/api/internal.py's leases_recovered computation) don't
-    silently fold a failed recovery attempt into a healthy-looking
-    'recovered' count."""
-    from unittest.mock import AsyncMock, MagicMock
-
-    from src.maintenance.execution_sweeper import sweep_expired_leases
-
-    async def _fake_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
-        if execution_id == "ex-bad":
-            raise RuntimeError("simulated Cloud Tasks API error")
-
-    monkeypatch.setattr("src.execution.cloud_tasks.enqueue_execution", _fake_enqueue)
-
-    db = MagicMock()
-    now = datetime.now(UTC)
-    good_row = MagicMock(
-        id="ex-good",
-        leaseExpiresAt=now - timedelta(seconds=10),
-        deliveryAttempts=1,
-        status="running",
-        variables={},
-    )
-    bad_row = MagicMock(
-        id="ex-bad",
-        leaseExpiresAt=now - timedelta(seconds=10),
-        deliveryAttempts=1,
-        status="running",
-        variables={},
-    )
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_many = AsyncMock(return_value=[good_row, bad_row])
-    db.workflowexecution.update = AsyncMock()
-
-    result = await sweep_expired_leases(db, max_delivery_attempts=5, now=now)
-
-    assert result.scanned == 2
-    assert result.marked_failed == 0
-    assert result.errored == 1
-    # "actually recovered" = scanned - marked_failed - errored = 1
-    # (only ex-good); the naive `scanned - marked_failed` (the pre-fix
-    # formula) would have overcounted this as 2.
-    assert result.scanned - result.marked_failed - result.errored == 1
+    assert task.cancelled()
+    assert row.failureCode == "orphaned_running"
+    if timeout_hours:
+        approvals.assert_awaited_once_with(db, timeout_hours=168)
+    else:
+        approvals.assert_not_awaited()
 
 
 async def test_sweep_old_execution_events_deletes_past_retention() -> None:
-    from unittest.mock import AsyncMock, MagicMock
-
-    from src.maintenance.execution_sweeper import sweep_old_execution_events
-
     db = MagicMock()
-    db.executionevent = MagicMock()
-    db.executionevent.delete_many = AsyncMock(return_value=MagicMock(count=42))
-    now = datetime.now(UTC)
+    db.executionevent.delete_many = AsyncMock(return_value=42)
 
-    deleted = await sweep_old_execution_events(db, retention_days=30, now=now)
+    deleted = await sweeper.sweep_old_execution_events(db, retention_days=30, now=_now())
 
     assert deleted == 42
-    db.executionevent.delete_many.assert_awaited_once()
-    assert db.executionevent.delete_many.await_args is not None
-    where = db.executionevent.delete_many.await_args.kwargs["where"]
-    assert where["createdAt"]["lt"] == now - timedelta(days=30)
+    db.executionevent.delete_many.assert_awaited_once_with(
+        where={"createdAt": {"lt": _now() - timedelta(days=30)}}
+    )

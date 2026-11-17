@@ -64,7 +64,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             app,
             db,
             interval_seconds=settings.execution_sweeper_interval_seconds,
-            stuck_after_seconds=settings.execution_lease_seconds,
+            orphaned_running_grace_seconds=settings.orphaned_running_grace_seconds,
             approval_timeout_hours=settings.approval_wait_timeout_hours,
         )
         try:

@@ -211,7 +211,7 @@ async def create_execution(
         # The row already committed as 'queued' above. If enqueueing raises
         # here (un-retried gRPC error, transient network blip, IAM/ADC
         # misconfiguration), the row would otherwise be stuck at 'queued'
-        # forever — invisible to both sweepers (sweep_stuck_executions and
+        # forever — invisible to both sweepers (sweep_orphaned_running and
         # sweep_expired_leases both only scan status='running') and, if the
         # caller supplied an idempotencyKey and retries per the documented
         # pattern above, the idempotency short-circuit would keep returning

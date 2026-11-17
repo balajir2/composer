@@ -327,7 +327,10 @@ class Settings(BaseSettings):
     # validate_execution_timing enforces the 1800-second delivery ceiling.
     execution_max_runtime_seconds: int = 1740
     execution_shutdown_grace_seconds: int = 30
-    orphaned_running_grace_seconds: int = 120
+    orphaned_running_grace_seconds: int = Field(
+        default=120,
+        description="Grace for a running attempt without a lease, measured from runningSince.",
+    )
 
     @property
     def execution_dispatch_deadline_seconds(self) -> int:
@@ -337,10 +340,6 @@ class Settings(BaseSettings):
     def execution_lease_seconds(self) -> int:
         return self.execution_dispatch_deadline_seconds
 
-    # How many times sweep_expired_leases will re-enqueue a fresh Cloud
-    # Task for the same execution before giving up and dead-lettering it
-    # (marking `failed` rather than retrying indefinitely).
-    execution_max_delivery_attempts: int = 5
     # P1-4 ("add bounded retention and cleanup"): sweep_old_execution_events
     # deletes execution_events rows older than this. Event rows carry no
     # operational state (only SSE/WebSocket replay history), so unbounded
@@ -349,7 +348,7 @@ class Settings(BaseSettings):
     # that run" investigation window.
     execution_events_retention_days: int = 30
 
-    # ─── Stuck-execution sweeper ─────────────────
+    # ─── Execution maintenance sweeper ───────────
     execution_sweeper_interval_seconds: int = Field(
         default=300,
         description="How often the background sweeper runs. Set 0 to disable.",

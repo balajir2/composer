@@ -11,12 +11,12 @@ the callers are Cloud Tasks and Cloud Scheduler, not end users:
     prevents two concurrent deliveries of the same task from
     double-running an execution.
   - POST /internal/sweep — Cloud Scheduler target (P1-2/P1-4). Runs all
-    four maintenance sweeps (stuck executions, expired approvals,
+    four maintenance sweeps (orphaned attempts, optional expired approvals,
     expired leases, old execution_events) once per invocation. See the
     2026-07-14 revision note in
     docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md's
     Task 11: this replaces relying on the in-process `_sweeper_loop`
-    background task for lease recovery + retention cleanup, since that
+    background task for lease expiry + retention cleanup, since that
     loop requires `--no-cpu-throttling` (removed as the dominant Cloud
     Run cost driver) to keep ticking between requests. A real inbound
     HTTP request needs no background CPU allocation.
@@ -55,7 +55,7 @@ from src.maintenance.execution_sweeper import (
     sweep_expired_approvals,
     sweep_expired_leases,
     sweep_old_execution_events,
-    sweep_stuck_executions,
+    sweep_orphaned_running,
 )
 from src.storage.db import get_checkpointer, get_db, get_event_bus
 from src.storage_providers.google_drive import GoogleDriveProvider
@@ -255,7 +255,7 @@ async def claim_and_run_execution(
         # should only claim to be `running` once a worker has genuinely
         # picked it up. Setting status unconditionally here is also
         # idempotent for the already-`running`/`waiting_approval` claim
-        # cases (lease-recovery redelivery, resume) — sweep_expired_leases
+        # cases (expired-lease redelivery, resume) — sweep_expired_leases
         # only ever looks at `status='running'` rows with an expired lease
         # (src/maintenance/execution_sweeper.py), so this keeps that
         # invariant true from the moment of claim.
@@ -275,7 +275,7 @@ async def claim_and_run_execution(
         # to the session's timezone (GMT on this project's Neon instances)
         # — the same UTC wall-clock value every other `leaseExpiresAt`
         # write in this codebase produces via the typed Prisma client
-        # (e.g. sweep_expired_leases's `db.workflowexecution.update`).
+        # (e.g. sweep_expired_leases's `db.workflowexecution.update_many`).
         await tx.execute_raw(
             """
             UPDATE workflow_executions
@@ -295,13 +295,11 @@ async def claim_and_run_execution(
     # try/except is a fast-fail belt-and-suspenders layered ALONGSIDE
     # `sweep_expired_leases`, not a replacement for it (P1-2 Task 13
     # follow-up — restores the fast-fail path deleted in e50cb81 after
-    # code review flagged that lease+sweep alone means up to
-    # `execution_lease_seconds` (default 1h) before a crash is even
-    # noticed, and up to `execution_max_delivery_attempts` sweep cycles
-    # before dead-letter). If a genuine crash happens here (an uncaught
-    # exception from the executor, a bug in this handler's own code), we
+    # code review flagged that lease+sweep alone waits for the processing
+    # lease to expire before recording failure). If a genuine crash happens
+    # here (an uncaught exception from the executor, a bug in this handler's own code), we
     # want the row marked 'failed' *now*, synchronously, in the same
-    # request — not an hour from now.
+    # request.
     #
     # This mirrors the deleted `_run_with_persistence` wrapper
     # (src/api/run.py, removed in e50cb81) in spirit — the *DB* `error`
@@ -330,8 +328,8 @@ async def claim_and_run_execution(
     # propagates untouched — a graceful Cloud Run scale-down/shutdown
     # cancelling this request must NOT get marked 'failed' by this fast
     # path; it correctly falls through to `sweep_expired_leases`'s slower
-    # recovery instead, same as a hard worker kill that never runs any
-    # Python code at all. `HTTPException` (itself an `Exception`
+    # failure handling instead, same as a hard worker kill that never runs
+    # any Python code at all. `HTTPException` (itself an `Exception`
     # subclass) is caught and immediately re-raised unchanged, before the
     # generic handler below, so the existing "decision is required" 422
     # validation error is untouched by this guard — that's expected
@@ -357,7 +355,7 @@ async def claim_and_run_execution(
     # the failure), that inner exception is swallowed (logged, not
     # raised) so it can never mask the original crash — and the lease
     # committed above remains in place for `sweep_expired_leases` to
-    # eventually recover. The safety net has its own safety net.
+    # eventually mark failed. The safety net has its own safety net.
     try:
         executor = LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
 
@@ -403,7 +401,7 @@ async def claim_and_run_execution(
         except Exception:
             logger.exception(
                 "internal: failed to mark crashed execution %s as failed "
-                "(lease remains for sweep_expired_leases to recover)",
+                "(lease remains for sweep_expired_leases to mark failed)",
                 execution_id,
             )
             updated_count = None
@@ -461,14 +459,15 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
 ) -> dict[str, int | None]:
     """Cloud-Scheduler-triggered maintenance sweep (P1-2/P1-4).
 
-    Runs all four sweep functions exactly once per invocation, reading
-    thresholds from settings. Intentionally NOT wired into the
+    Runs lease, orphan, and retention maintenance once per invocation;
+    approval expiry runs only with a positive timeout. Reads thresholds
+    from settings. Intentionally NOT wired into the
     in-process `_sweeper_loop` — see this module's docstring and the
     2026-07-14 revision note in Task 11 of
     docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md.
 
     Each of the four sweeps is isolated in its own try/except: this
-    endpoint is now the SOLE production trigger for lease recovery and
+    endpoint is now the SOLE production trigger for lease expiry and
     retention cleanup (no in-process background loop to fall back on —
     see the module docstring), so one sweep raising (e.g. a transient DB
     error on its initial query) must not prevent the other three from
@@ -479,43 +478,34 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
     """
     settings = get_settings()
 
-    stuck: int | None
+    orphaned_running: int | None
     try:
-        stuck_result = await sweep_stuck_executions(
-            db, stuck_after_seconds=settings.execution_lease_seconds
+        orphaned_result = await sweep_orphaned_running(
+            db, grace_seconds=settings.orphaned_running_grace_seconds
         )
-        stuck = stuck_result.marked_failed
+        orphaned_running = orphaned_result.marked_failed
     except Exception:
-        logger.exception("internal: sweep_stuck_executions failed")
-        stuck = None
+        logger.exception("internal: sweep_orphaned_running failed")
+        orphaned_running = None
 
-    approvals_expired: int | None
-    try:
-        approvals_result = await sweep_expired_approvals(
-            db, timeout_hours=settings.approval_wait_timeout_hours
-        )
-        approvals_expired = approvals_result.marked_failed
-    except Exception:
-        logger.exception("internal: sweep_expired_approvals failed")
-        approvals_expired = None
+    approvals_expired: int | None = 0
+    if settings.approval_wait_timeout_hours > 0:
+        try:
+            approvals_result = await sweep_expired_approvals(
+                db, timeout_hours=settings.approval_wait_timeout_hours
+            )
+            approvals_expired = approvals_result.marked_failed
+        except Exception:
+            logger.exception("internal: sweep_expired_approvals failed")
+            approvals_expired = None
 
-    leases_recovered: int | None
+    leases_expired: int | None
     try:
-        leases_result = await sweep_expired_leases(
-            db, max_delivery_attempts=settings.execution_max_delivery_attempts
-        )
-        # sweep_expired_leases's `marked_failed` counts dead-lettered rows;
-        # `errored` counts rows whose recovery attempt raised (caught by
-        # its own per-row try/except) — neither dead-lettered nor
-        # genuinely recovered. Subtracting both from `scanned` is what
-        # makes this an honest "actually recovered" count rather than
-        # silently folding errored rows into a healthy-looking total.
-        leases_recovered = (
-            leases_result.scanned - leases_result.marked_failed - leases_result.errored
-        )
+        leases_result = await sweep_expired_leases(db)
+        leases_expired = leases_result.marked_failed
     except Exception:
         logger.exception("internal: sweep_expired_leases failed")
-        leases_recovered = None
+        leases_expired = None
 
     events_deleted: int | None
     try:
@@ -527,9 +517,9 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
         events_deleted = None
 
     return {
-        "stuck": stuck,
+        "orphaned_running": orphaned_running,
         "approvals_expired": approvals_expired,
-        "leases_recovered": leases_recovered,
+        "leases_expired": leases_expired,
         "events_deleted": events_deleted,
     }
 

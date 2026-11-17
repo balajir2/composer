@@ -291,7 +291,7 @@ $backendDeployArgs = @(
     # are what enqueue_execution() (src/execution/cloud_tasks.py) and
     # _verify_internal_oidc() (src/api/internal.py) need at runtime to
     # enqueue tasks and verify push-auth tokens, respectively.
-    "--set-env-vars=ENVIRONMENT=production,COMPOSER_DEPLOYMENT_MODE=standalone,LOG_LEVEL=INFO,EXECUTION_STUCK_AFTER_SECONDS=900,EXECUTION_SWEEPER_INTERVAL_SECONDS=0,GCP_PROJECT_ID=$ProjectId,GCP_REGION=$Region,CLOUD_TASKS_QUEUE=composer-executions,CLOUD_TASKS_SERVICE_ACCOUNT=$cloudTasksServiceAccountEmail",
+    "--set-env-vars=ENVIRONMENT=production,COMPOSER_DEPLOYMENT_MODE=standalone,LOG_LEVEL=INFO,EXECUTION_SWEEPER_INTERVAL_SECONDS=0,GCP_PROJECT_ID=$ProjectId,GCP_REGION=$Region,CLOUD_TASKS_QUEUE=composer-executions,CLOUD_TASKS_SERVICE_ACCOUNT=$cloudTasksServiceAccountEmail",
     "--set-secrets=$setSecrets"
 )
 if ($AllowUnauthenticated) { $backendDeployArgs += "--allow-unauthenticated" }

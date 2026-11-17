@@ -80,7 +80,6 @@ def test_cloud_tasks_settings_have_safe_defaults(monkeypatch: pytest.MonkeyPatch
     assert settings.cloud_tasks_queue == "composer-executions"
     assert settings.cloud_tasks_service_account == ""
     assert settings.execution_lease_seconds == 1770
-    assert settings.execution_max_delivery_attempts == 5
 
 
 @pytest.fixture
