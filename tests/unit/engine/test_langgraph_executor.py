@@ -5,6 +5,7 @@ creates the right rows, drives the compiled graph, and persists the
 right fields on completion/failure.
 """
 
+import asyncio
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -1277,3 +1278,63 @@ async def test_real_graph_cancellation_after_node_stops_downstream_progression(
         ("node_started", "s"),
     ]
     db.workflowexecution.update_many.assert_not_awaited()
+
+
+@pytest.mark.parametrize("method", ["run", "resume"])
+@pytest.mark.parametrize("updated", [0, 1])
+async def test_graph_timeout_persists_guarded_failure(
+    monkeypatch: pytest.MonkeyPatch, method: str, updated: int
+) -> None:
+    """Both invocation paths time out; a lost failure transition emits no failure event."""
+    db = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(id="ex1", status="running")
+    )
+    db.workflowexecution.update_many = AsyncMock(return_value=updated)
+    store = _FakeEventStore()
+    executor = LangGraphExecutor(db, MemorySaver(), event_bus=store)  # pyright: ignore[reportArgumentType]
+    invocation_cancelled = False
+
+    async def _blocking_invoke(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal invocation_cancelled
+        try:
+            await asyncio.sleep(0.1)
+        except asyncio.CancelledError:
+            invocation_cancelled = True
+            raise
+        return {}
+
+    compiled = SimpleNamespace(
+        ainvoke=AsyncMock(side_effect=_blocking_invoke),
+        aget_state=AsyncMock(return_value=SimpleNamespace(next=())),
+    )
+    monkeypatch.setattr(executor, "_prepare_compiled", AsyncMock(return_value=(compiled, {}, {})))
+    monkeypatch.setattr(
+        "src.engine.langgraph_executor.get_settings",
+        lambda: SimpleNamespace(execution_max_runtime_seconds=0.001),
+    )
+    mark_failed = AsyncMock(wraps=executor._mark_failed)  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr(executor, "_mark_failed", mark_failed)
+
+    if method == "run":
+        await executor.run("ex1")
+    else:
+        await executor.resume("ex1", "approved")
+
+    mark_failed.assert_awaited_once()
+    assert mark_failed.await_args is not None
+    assert mark_failed.await_args.args[0] == "ex1"
+    assert isinstance(mark_failed.await_args.args[1], TimeoutError)
+    assert mark_failed.await_args.kwargs == {"failure_code": "execution_timeout"}
+    assert invocation_cancelled
+    compiled.aget_state.assert_not_awaited()
+    db.workflowexecution.update_many.assert_awaited_once()
+    assert db.workflowexecution.update_many.await_args is not None
+    update = db.workflowexecution.update_many.await_args.kwargs
+    assert update["where"] == {"id": "ex1", "status": "running"}
+    assert update["data"]["status"] == "failed"
+    assert update["data"]["failureCode"] == "execution_timeout"
+    expected_events = [("workflow_started", "running")]
+    if updated:
+        expected_events.append(("workflow_completed", "failed"))
+    assert [(event.type, event.payload["status"]) for event in store.events] == expected_events

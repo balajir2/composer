@@ -6,8 +6,10 @@ Responsibilities:
   - Persist terminal state (status, output, node_results, variables, error)
 """
 
+import asyncio
 import logging
 import uuid
+from collections.abc import Awaitable
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -278,6 +280,10 @@ class LangGraphExecutor:
         )
         return _transition_succeeded(execution_id, "failed", updated)
 
+    async def _invoke_with_timeout(self, awaitable: Awaitable[dict[str, Any]]) -> dict[str, Any]:
+        async with asyncio.timeout(get_settings().execution_max_runtime_seconds):
+            return await awaitable
+
     async def run(self, execution_id: str) -> None:
         """Drive the compiled graph to completion and persist results.
 
@@ -299,7 +305,7 @@ class LangGraphExecutor:
             await self._emit("workflow_started", execution_id, {"status": "running"})
             compiled, state, lg_config = await self._prepare_compiled(execution)
 
-            final_state: dict[str, Any] = await compiled.ainvoke(state, config=lg_config)
+            final_state = await self._invoke_with_timeout(compiled.ainvoke(state, config=lg_config))
 
             snapshot = await compiled.aget_state(lg_config)  # pyright: ignore[reportUnknownMemberType]
             if snapshot.next:  # non-empty tuple → graph is paused at an interrupt
@@ -342,6 +348,10 @@ class LangGraphExecutor:
         except ExecutionStopped as stopped:
             logger.info("Execution %s stopped with status %s", execution_id, stopped.status)
             return
+        except TimeoutError as exc:
+            logger.warning("Execution %s timed out", execution_id)
+            if await self._mark_failed(execution_id, exc, failure_code="execution_timeout"):
+                await self._emit("workflow_completed", execution_id, {"status": "failed"})
         except Exception as exc:
             logger.exception("Execution %s failed", execution_id)
             if await self._mark_failed(execution_id, exc):
@@ -369,9 +379,11 @@ class LangGraphExecutor:
             await self._emit("workflow_started", execution_id, {"status": "running"})
             compiled, _state, lg_config = await self._prepare_compiled(execution)
 
-            final_state: dict[str, Any] = await compiled.ainvoke(
-                Command(resume=decision),  # pyright: ignore[reportArgumentType]
-                config=lg_config,
+            final_state = await self._invoke_with_timeout(
+                compiled.ainvoke(
+                    Command(resume=decision),  # pyright: ignore[reportArgumentType]
+                    config=lg_config,
+                )
             )
 
             snapshot = await compiled.aget_state(lg_config)  # pyright: ignore[reportUnknownMemberType]
@@ -417,6 +429,10 @@ class LangGraphExecutor:
                 "Execution %s stopped during resume with status %s", execution_id, stopped.status
             )
             return
+        except TimeoutError as exc:
+            logger.warning("Execution %s timed out during resume", execution_id)
+            if await self._mark_failed(execution_id, exc, failure_code="execution_timeout"):
+                await self._emit("workflow_completed", execution_id, {"status": "failed"})
         except Exception as exc:
             logger.exception("Execution %s failed during resume", execution_id)
             if await self._mark_failed(execution_id, exc):
