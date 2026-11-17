@@ -1,12 +1,15 @@
 """Tests for the event-emitting executor wrapper."""
 
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from langgraph.errors import GraphBubbleUp
 
 from src.engine.events import ExecutionEvent
 from src.engine.events_wrapper import wrap_executor_with_events
+from src.engine.execution_control import ExecutionStopped
 from src.engine.state import initial_state
 from src.engine.workflow import Workflow
 
@@ -213,6 +216,71 @@ async def test_wrapper_noop_when_context_unset() -> None:
     arun = wrap_executor_with_events(_FakeExecutor(), _FakeNode("n1", "http"))  # pyright: ignore[reportArgumentType]
     result = await arun(initial_state())
     assert result["variables"]["k"] == "v"
+
+
+@pytest.mark.parametrize(
+    "status", ["canceled", "completed", "failed", "waiting_approval", "queued", None]
+)
+async def test_wrapper_stops_before_start_when_execution_is_not_running(status: str | None) -> None:
+    from src.engine.context import set_current_db, set_current_event_bus, set_current_execution_id
+
+    db = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(status=status) if status is not None else None
+    )
+    executor = _FakeExecutor()
+    executor.arun = AsyncMock(wraps=executor.arun)
+    store = _FakeEventStore()
+    set_current_db(db)
+    set_current_execution_id("e1")
+    set_current_event_bus(store)  # pyright: ignore[reportArgumentType]
+
+    try:
+        arun = wrap_executor_with_events(executor, _FakeNode())  # pyright: ignore[reportArgumentType]
+        with pytest.raises(ExecutionStopped) as stopped:
+            await arun(initial_state())
+    finally:
+        set_current_db(None)
+        set_current_execution_id(None)
+        set_current_event_bus(None)
+
+    assert isinstance(stopped.value, GraphBubbleUp)
+    assert stopped.value.execution_id == "e1"
+    assert stopped.value.status == (status if status is not None else "missing")
+    executor.arun.assert_not_awaited()
+    assert store.events == []
+    db.workflowexecution.find_unique.assert_awaited_once_with(where={"id": "e1"})
+
+
+async def test_wrapper_stops_after_executor_returns_when_execution_was_canceled() -> None:
+    from src.engine.context import set_current_db, set_current_event_bus, set_current_execution_id
+
+    db = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        side_effect=[SimpleNamespace(status="running"), SimpleNamespace(status="canceled")]
+    )
+    executor = _FakeExecutor()
+    executor.arun = AsyncMock(wraps=executor.arun)
+    store = _FakeEventStore()
+    set_current_db(db)
+    set_current_execution_id("e1")
+    set_current_event_bus(store)  # pyright: ignore[reportArgumentType]
+
+    try:
+        arun = wrap_executor_with_events(executor, _FakeNode())  # pyright: ignore[reportArgumentType]
+        with pytest.raises(ExecutionStopped) as stopped:
+            await arun(initial_state())
+    finally:
+        set_current_db(None)
+        set_current_execution_id(None)
+        set_current_event_bus(None)
+
+    assert isinstance(stopped.value, GraphBubbleUp)
+    assert stopped.value.execution_id == "e1"
+    assert stopped.value.status == "canceled"
+    executor.arun.assert_awaited_once()
+    assert [event.type for event in store.events] == ["node_started"]
+    assert db.workflowexecution.find_unique.await_count == 2
 
 
 async def test_wrapper_persists_events_and_notifies() -> None:

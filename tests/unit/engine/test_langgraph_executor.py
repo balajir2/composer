@@ -13,6 +13,7 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
 from src.engine.events import ExecutionEvent
+from src.engine.execution_control import ExecutionStopped
 from src.engine.langgraph_executor import LangGraphExecutor
 
 
@@ -100,6 +101,7 @@ async def test_run_completes_start_to_end() -> None:
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
         return_value=SimpleNamespace(
+            status="running",
             id="ex1",
             workflowId="wf1",
             threadId="t1",
@@ -195,6 +197,7 @@ async def test_run_marks_failed_on_exception(monkeypatch: pytest.MonkeyPatch) ->
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
         return_value=SimpleNamespace(
+            status="running",
             id="ex1",
             workflowId="wf1",
             threadId="t1",
@@ -230,6 +233,7 @@ async def test_run_marks_waiting_approval_on_interrupt(
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
         return_value=SimpleNamespace(
+            status="running",
             id="e1",
             workflowId="w1",
             userId="dev",
@@ -311,6 +315,7 @@ async def test_resume_approved_continues_to_completion(
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
         return_value=SimpleNamespace(
+            status="running",
             id="e1",
             workflowId="w1",
             userId="dev",
@@ -379,6 +384,7 @@ async def test_run_emits_status_change_on_start_and_complete(
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
         return_value=SimpleNamespace(
+            status="running",
             id="e1",
             workflowId="w1",
             userId="dev",
@@ -449,6 +455,7 @@ async def test_run_emits_approval_pending_on_pause(
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
         return_value=SimpleNamespace(
+            status="running",
             id="e1",
             workflowId="w1",
             userId="dev",
@@ -528,6 +535,7 @@ async def test_run_emits_failed_on_exception(
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
         return_value=SimpleNamespace(
+            status="running",
             id="e1",
             workflowId="w1",
             userId="dev",
@@ -561,7 +569,7 @@ async def test_run_sends_approval_email_when_approver_email_set(
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
         return_value=SimpleNamespace(
-            id="e1", workflowId="w1", userId="dev", threadId="t1", input=None
+            status="running", id="e1", workflowId="w1", userId="dev", threadId="t1", input=None
         )
     )
     db.workflow = MagicMock()
@@ -653,7 +661,7 @@ async def test_run_pending_since_matches_persisted_and_emailed(
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
         return_value=SimpleNamespace(
-            id="e1", workflowId="w1", userId="dev", threadId="t1", input=None
+            status="running", id="e1", workflowId="w1", userId="dev", threadId="t1", input=None
         )
     )
     db.workflow = MagicMock()
@@ -757,6 +765,7 @@ async def test_resume_chained_pause_stamps_consistent_pending_since(
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
         return_value=SimpleNamespace(
+            status="running",
             id="e1",
             workflowId="w1",
             userId="dev",
@@ -874,6 +883,7 @@ async def test_run_completed_status_survives_emit_failure(
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
         return_value=SimpleNamespace(
+            status="running",
             id="e1",
             workflowId="w1",
             userId="dev",
@@ -951,6 +961,7 @@ async def test_resume_waiting_approval_status_survives_emit_failure(
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
         return_value=SimpleNamespace(
+            status="running",
             id="e1",
             workflowId="w1",
             userId="dev",
@@ -1130,7 +1141,9 @@ async def test_status_transition_gates_events_and_approval_email(
     monkeypatch: pytest.MonkeyPatch, method: str, status: str, updated: int
 ) -> None:
     db = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(return_value=SimpleNamespace(id="ex1"))
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(id="ex1", status="running")
+    )
     db.workflowexecution.update = AsyncMock()
     db.workflowexecution.update_many = AsyncMock(return_value=updated)
     store = _FakeEventStore()
@@ -1173,3 +1186,94 @@ async def test_status_transition_gates_events_and_approval_email(
         assert db.workflowexecution.update_many.await_args.kwargs["data"]["failureCode"] == (
             "execution_error"
         )
+
+
+@pytest.mark.parametrize("method", ["run", "resume"])
+async def test_cancellation_before_workflow_started_skips_graph_and_failure(
+    monkeypatch: pytest.MonkeyPatch, method: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    db = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        side_effect=[
+            SimpleNamespace(id="ex1", status="running"),
+            SimpleNamespace(id="ex1", status="canceled"),
+        ]
+    )
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    store = _FakeEventStore()
+    executor = LangGraphExecutor(db, MemorySaver(), event_bus=store)  # pyright: ignore[reportArgumentType]
+    prepare = AsyncMock(return_value=(MagicMock(), {}, {}))
+    monkeypatch.setattr(executor, "_prepare_compiled", prepare)
+    send_email = AsyncMock()
+    monkeypatch.setattr("src.engine.langgraph_executor.send_approval_email", send_email)
+
+    with caplog.at_level("INFO", logger="src.engine.langgraph_executor"):
+        if method == "run":
+            await executor.run("ex1")
+        else:
+            await executor.resume("ex1", "approved")
+
+    prepare.assert_not_awaited()
+    db.workflowexecution.update_many.assert_not_awaited()
+    send_email.assert_not_awaited()
+    assert store.events == []
+    assert any("canceled" in record.getMessage() for record in caplog.records)
+
+
+@pytest.mark.parametrize("method", ["run", "resume"])
+async def test_graph_stop_does_not_mark_failed_or_emit_failure(
+    monkeypatch: pytest.MonkeyPatch, method: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    db = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(id="ex1", status="running")
+    )
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    store = _FakeEventStore()
+    executor = LangGraphExecutor(db, MemorySaver(), event_bus=store)  # pyright: ignore[reportArgumentType]
+    compiled = SimpleNamespace(
+        ainvoke=AsyncMock(side_effect=ExecutionStopped("ex1", "canceled")),
+        aget_state=AsyncMock(),
+    )
+    monkeypatch.setattr(executor, "_prepare_compiled", AsyncMock(return_value=(compiled, {}, {})))
+    send_email = AsyncMock()
+    monkeypatch.setattr("src.engine.langgraph_executor.send_approval_email", send_email)
+
+    with caplog.at_level("INFO", logger="src.engine.langgraph_executor"):
+        if method == "run":
+            await executor.run("ex1")
+        else:
+            await executor.resume("ex1", "approved")
+
+    compiled.ainvoke.assert_awaited_once()
+    compiled.aget_state.assert_not_awaited()
+    db.workflowexecution.update_many.assert_not_awaited()
+    send_email.assert_not_awaited()
+    assert [event.type for event in store.events] == ["workflow_started"]
+    assert any("canceled" in record.getMessage() for record in caplog.records)
+    assert not any(record.levelname == "ERROR" for record in caplog.records)
+
+
+async def test_real_graph_cancellation_after_node_stops_downstream_progression(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = MagicMock()
+    running = SimpleNamespace(
+        id="ex1", status="running", workflowId="wf1", threadId="t1", input="hello", userId=None
+    )
+    db.workflowexecution.find_unique = AsyncMock(
+        side_effect=[running, running, running, SimpleNamespace(status="canceled")]
+    )
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    db.workflow.find_unique = AsyncMock(return_value=_workflow_row(_start_to_end_workflow_dict()))
+    store = _FakeEventStore()
+    monkeypatch.setattr("src.engine.events_wrapper.notify_execution_event", AsyncMock())
+    executor = LangGraphExecutor(db, MemorySaver(), event_bus=store)  # pyright: ignore[reportArgumentType]
+
+    await executor.run("ex1")
+
+    assert [(event.type, event.payload.get("nodeId")) for event in store.events] == [
+        ("workflow_started", None),
+        ("node_started", "s"),
+    ]
+    db.workflowexecution.update_many.assert_not_awaited()

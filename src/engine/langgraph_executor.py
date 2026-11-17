@@ -27,6 +27,7 @@ from src.engine.context import (
 from src.engine.events import EventType, ExecutionEvent
 from src.engine.events_notify import notify_execution_event
 from src.engine.events_pg import PostgresEventStore
+from src.engine.execution_control import ExecutionStopped, ensure_execution_running
 from src.engine.graph_builder import build_graph
 from src.engine.state import initial_state
 from src.engine.workflow import Workflow
@@ -96,8 +97,7 @@ class LangGraphExecutor:
         correct "completed"/"waiting_approval" status with "failed" —
         corrupting the real execution outcome over a telemetry failure.
         Self-guarding here means every call site (including the
-        `workflow_started` emit, which sits outside the try block in both
-        `run()` and `resume()`) is safe by construction.
+        `workflow_started` emit in both `run()` and `resume()`) is safe by construction.
         """
         if self.event_bus is None:
             return
@@ -294,12 +294,9 @@ class LangGraphExecutor:
             logger.error("Execution %s not found at run time", execution_id)
             return
 
-        # Intentionally outside the try block: nothing has mutated execution
-        # state yet, and `_emit` is self-guarding (never raises), so there is
-        # no outcome here that a failed emit could corrupt.
-        await self._emit("workflow_started", execution_id, {"status": "running"})
-
         try:
+            await ensure_execution_running(self.db, execution_id)
+            await self._emit("workflow_started", execution_id, {"status": "running"})
             compiled, state, lg_config = await self._prepare_compiled(execution)
 
             final_state: dict[str, Any] = await compiled.ainvoke(state, config=lg_config)
@@ -342,6 +339,9 @@ class LangGraphExecutor:
                     {"status": "completed"},
                 )
 
+        except ExecutionStopped as stopped:
+            logger.info("Execution %s stopped with status %s", execution_id, stopped.status)
+            return
         except Exception as exc:
             logger.exception("Execution %s failed", execution_id)
             if await self._mark_failed(execution_id, exc):
@@ -364,16 +364,9 @@ class LangGraphExecutor:
             logger.error("Execution %s not found at resume time", execution_id)
             return
 
-        # Intentionally outside the try block: nothing has mutated execution
-        # state yet, and `_emit` is self-guarding (never raises), so there is
-        # no outcome here that a failed emit could corrupt.
-        await self._emit(
-            "workflow_started",
-            execution_id,
-            {"status": "running"},
-        )
-
         try:
+            await ensure_execution_running(self.db, execution_id)
+            await self._emit("workflow_started", execution_id, {"status": "running"})
             compiled, _state, lg_config = await self._prepare_compiled(execution)
 
             final_state: dict[str, Any] = await compiled.ainvoke(
@@ -419,6 +412,11 @@ class LangGraphExecutor:
                     {"status": "completed"},
                 )
 
+        except ExecutionStopped as stopped:
+            logger.info(
+                "Execution %s stopped during resume with status %s", execution_id, stopped.status
+            )
+            return
         except Exception as exc:
             logger.exception("Execution %s failed during resume", execution_id)
             if await self._mark_failed(execution_id, exc):
