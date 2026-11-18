@@ -1,4 +1,4 @@
-"""Integration tests for durable execution lease expiration/recovery and
+"""Integration tests for durable execution attempt expiry, terminal races, and
 the single-claim guarantee (P1-2 explicit acceptance criterion:
 "Integration tests simulate lease expiration and worker termination").
 
@@ -30,6 +30,213 @@ from httpx import AsyncClient
 from prisma import Base64, Json  # pyright: ignore[reportAttributeAccessIssue]
 
 pytestmark = pytest.mark.integration
+
+
+def _terminal_race_graph(outcome: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    nodes: list[dict[str, Any]] = [
+        {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+        {"id": "e", "type": "end", "position": {"x": 2, "y": 0}, "data": {"label": "E"}},
+    ]
+    edges: list[dict[str, Any]] = [{"id": "se", "source": "s", "target": "e"}]
+    if outcome != "completed":
+        nodes.append(
+            {
+                "id": "middle",
+                "type": "transform" if outcome == "failed" else "user-approval",
+                "position": {"x": 1, "y": 0},
+                "data": (
+                    {"label": "Fail", "transformScript": "1 / 0"}
+                    if outcome == "failed"
+                    else {
+                        "label": "Approve",
+                        "approvalMessage": "Approve this race test",
+                        "approverEmail": "race@example.com",
+                    }
+                ),
+            }
+        )
+        edges = [
+            {"id": "sm", "source": "s", "target": "middle"},
+            {"id": "me", "source": "middle", "target": "e"},
+        ]
+        if outcome == "waiting_approval":
+            edges[1]["branch"] = "approved"
+            nodes.append(
+                {"id": "r", "type": "end", "position": {"x": 2, "y": 1}, "data": {"label": "R"}}
+            )
+            edges.append({"id": "mr", "source": "middle", "target": "r", "branch": "rejected"})
+    return nodes, edges
+
+
+@pytest.mark.parametrize("outcome", ["completed", "failed", "waiting_approval"])
+@pytest.mark.parametrize("first_writer", ["cancel", "executor", "simultaneous"])
+async def test_running_cancel_competes_with_executor_transition_in_postgres(
+    app: FastAPI, monkeypatch: pytest.MonkeyPatch, outcome: str, first_writer: str
+) -> None:
+    """Removing a running-state CAS or its event/email guard must fail this test.
+
+    Both operations compete from running. Public cancellation also accepts an
+    already-paused row, so running -> waiting_approval -> canceled is a valid
+    *sequential* pair of transitions, covered separately below.
+    """
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    db: Any = app.state.db
+    nodes, edges = _terminal_race_graph(outcome)
+    workflow = await db.workflow.create(
+        data={
+            "userId": "dev",
+            "name": "itest-terminal-race",
+            "nodes": Json(nodes),
+            "edges": Json(edges),
+        }
+    )
+    execution = await db.workflowexecution.create(
+        data={
+            "workflowId": workflow.id,
+            "userId": "dev",
+            "status": "running",
+            "threadId": f"itest-terminal-race-{workflow.id}",
+            "runningSince": datetime.now(UTC),
+            "leaseOwner": "race-worker",
+            "leaseExpiresAt": datetime.now(UTC) + timedelta(minutes=20),
+        }
+    )
+    try:
+        executor = LangGraphExecutor(db, app.state.checkpointer, app.state.event_bus)
+        method_name = {
+            "completed": "_mark_completed",
+            "failed": "_mark_failed",
+            "waiting_approval": "_mark_waiting_approval",
+        }[outcome]
+        transition = getattr(executor, method_name)
+        executor_ready = asyncio.Event()
+        start_updates = asyncio.Event()
+        first_committed = asyncio.Event()
+        executor_results: list[bool] = []
+        sent_emails: list[dict[str, Any]] = []
+
+        async def _competing_transition(*args: Any, **kwargs: Any) -> bool:
+            # Control scheduling only. The original executor's Prisma update
+            # and the cancel transaction both execute their real SQL predicates.
+            executor_ready.set()
+            await start_updates.wait()
+            if first_writer == "cancel":
+                await first_committed.wait()
+            won: bool = await transition(*args, **kwargs)
+            executor_results.append(won)
+            if first_writer == "executor":
+                first_committed.set()
+            return won
+
+        async def _cancel_running() -> int:
+            await executor_ready.wait()
+            start_updates.set()
+            if first_writer == "executor":
+                await first_committed.wait()
+            async with db.tx() as tx:
+                updated: int = await tx.workflowexecution.update_many(
+                    where={"id": execution.id, "status": "running"},
+                    data={
+                        "status": "canceled",
+                        "completedAt": datetime.now(UTC),
+                        "runningSince": None,
+                        "leaseOwner": None,
+                        "leaseExpiresAt": None,
+                    },
+                )
+            if first_writer == "cancel":
+                first_committed.set()
+            return updated
+
+        async def _deliver_email(**kwargs: Any) -> None:
+            # Only external delivery is replaced; pause persistence and the
+            # executor's decision to send an approval email remain real.
+            sent_emails.append(kwargs)
+
+        monkeypatch.setattr(executor, method_name, _competing_transition)
+        monkeypatch.setattr("src.engine.langgraph_executor.send_approval_email", _deliver_email)
+        _, cancel_count = await asyncio.wait_for(
+            asyncio.gather(executor.run(execution.id), _cancel_running()), timeout=30
+        )
+
+        assert len(executor_results) == 1
+        executor_won = executor_results[0]
+        assert cancel_count in (0, 1)
+        assert int(executor_won) + cancel_count == 1
+        if first_writer != "simultaneous":
+            assert executor_won == (first_writer == "executor")
+        refreshed = await db.workflowexecution.find_unique(where={"id": execution.id})
+        assert refreshed is not None
+        assert refreshed.status == (outcome if executor_won else "canceled")
+        assert refreshed.runningSince is None
+        assert refreshed.leaseOwner is None
+        assert refreshed.leaseExpiresAt is None
+        assert refreshed.failureCode == (
+            "execution_error" if executor_won and outcome == "failed" else None
+        )
+
+        events: list[Any] = await db.executionevent.find_many(where={"executionId": execution.id})
+        outcome_events = [
+            e for e in events if e.type in {"workflow_completed", "approval_required"}
+        ]
+        assert len(outcome_events) == int(executor_won)
+        if executor_won:
+            assert outcome_events[0].type == (
+                "approval_required" if outcome == "waiting_approval" else "workflow_completed"
+            )
+            assert outcome_events[0].payload["status"] == outcome
+        assert len(sent_emails) == int(executor_won and outcome == "waiting_approval")
+        if sent_emails:
+            assert sent_emails[0]["execution_id"] == execution.id
+            assert sent_emails[0]["approver_email"] == "race@example.com"
+    finally:
+        await db.langgraphcheckpointwrite.delete_many(where={"threadId": execution.threadId})
+        await db.langgraphcheckpoint.delete_many(where={"threadId": execution.threadId})
+        await db.executionevent.delete_many(where={"executionId": execution.id})
+        await db.workflowexecution.delete(where={"id": execution.id})
+        await db.workflow.delete(where={"id": workflow.id})
+
+
+async def test_public_cancel_accepts_an_already_committed_approval_pause(
+    app: FastAPI, client: AsyncClient
+) -> None:
+    """A pause winner remains cancellable in a subsequent public request."""
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    db: Any = app.state.db
+    workflow = await db.workflow.create(
+        data={
+            "userId": "dev",
+            "name": "itest-cancel-after-pause",
+            "nodes": Json([]),
+            "edges": Json([]),
+        }
+    )
+    execution = await db.workflowexecution.create(
+        data={
+            "workflowId": workflow.id,
+            "userId": "dev",
+            "status": "running",
+            "threadId": f"itest-paused-{workflow.id}",
+        }
+    )
+    try:
+        executor = LangGraphExecutor(db, app.state.checkpointer, app.state.event_bus)
+        assert await executor._mark_waiting_approval(  # pyright: ignore[reportPrivateUsage]
+            execution.id,
+            {"node_id": "approval", "prompt": "Approve"},
+            {},
+            datetime.now(UTC).isoformat(),
+        )
+        response = await client.post(f"/executions/{execution.id}/cancel")
+        assert response.status_code == 200, response.text
+        refreshed = await db.workflowexecution.find_unique(where={"id": execution.id})
+        assert refreshed is not None
+        assert refreshed.status == "canceled"
+    finally:
+        await db.workflowexecution.delete(where={"id": execution.id})
+        await db.workflow.delete(where={"id": workflow.id})
 
 
 async def test_expired_lease_fails_without_replaying_execution(

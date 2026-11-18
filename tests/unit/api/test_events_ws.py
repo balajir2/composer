@@ -140,6 +140,14 @@ async def test_ws_replays_events_since_client_cursor(monkeypatch: pytest.MonkeyP
     store.list_since = AsyncMock(return_value=[missed_event])
     app.state.event_bus = store
 
+    # Replay can reach the live-listener setup before TestClient closes.
+    # Keep this cursor-replay unit test independent of a real Postgres socket.
+    listener = MagicMock()
+    listener.add_listener = AsyncMock()
+    listener.remove_listener = AsyncMock()
+    listener.close = AsyncMock()
+    monkeypatch.setattr("src.api.events_ws.asyncpg.connect", AsyncMock(return_value=listener))
+
     token = _token_for("u1")
     with client.websocket_connect(
         "/executions/exec-1/ws?after=1", subprotocols=["bearer", token]

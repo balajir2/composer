@@ -915,6 +915,8 @@ The full P0-5 objective — "one secure credential abstraction shared by all int
 
 ## ADR-0033: Durable execution + shared events/rate-limits — Cloud Tasks + Postgres
 
+**Lifecycle update (2026-11-18).** [ADR-0034](#adr-0034-bounded-processing-attempts-with-long-lived-durable-threads) supersedes this entry's original lease-recovery/re-enqueue behavior and independent lease-duration setting. Expired attempts now fail without automatic replay; processing, lease, and dispatch timing share one budget.
+
 **Status.** Accepted 2026-07-13, implemented 2026-07-15. User approved: Cloud Tasks as new infrastructure, full replacement of the in-process execution model (not run-alongside), and P1-2 + P1-4 implemented together. Implementation plan: `docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md` (16 tasks, TDD) — all 16 complete, 41 commits, merged into `main` 2026-07-15 (docs/decisions.md's own two independently-edited versions reconciled as part of the merge — see "Known unresolved item at completion" below, now resolved). See the 2026-07-14 addendum below for a cost-driven refinement to Task 11/14's scope, made mid-implementation, and the 2026-07-15 addendum for a completion summary (deviations, the two production bugs integration testing and a final holistic review caught).
 
 **Context.** Two related backlog items (P1-2, P1-4) both stem from the same root cause: Composer's execution model and cross-cutting infrastructure (event bus, rate limiter) are process-local, correct only for a single, continuously-running backend instance.
@@ -992,3 +994,30 @@ Verified against the actual deployment config (`scripts/gcp-bootstrap.ps1`), not
 All commits originated on branch `feat/durable-execution-cloud-tasks` (forked from `main` at `9f1b131`) and merged into `main` on 2026-07-15.
 
 **Related.** `docs/claude-improvement-backlog.md` §P1-2 and §P1-4; `docs/deferred-backlog.md` (P1-2/P1-4 entries); ADR-0031 (the row-locking POC this reuses); `scripts/poc_persistence_row_lock.py`; `src/maintenance/execution_sweeper.py` (the existing sweep pattern this extends or replaces); `scripts/gcp-bootstrap.ps1` (the deployment config this analysis is grounded in); `docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md` (implementation plan, Task 11/14 updated per the 2026-07-14 addendum, all 16 tasks complete per the 2026-07-15 addendum).
+
+
+## ADR-0034: Bounded processing attempts with long-lived durable threads
+
+**Status.** Accepted 2026-11-17; lifecycle implementation and release documentation completed 2026-11-18. Real-Postgres validation remains a release prerequisite: Task 7's configured test credentials returned `InvalidPasswordError`, and Task 8's bounded integration attempt timed out before establishing a test result. The new races are collected integration tests, not verified database successes.
+
+**Context.** A workflow's elapsed lifetime is different from its active processing time. Approval may arrive months later, while an HTTP delivery and its worker must have a bounded lifetime. Measuring recovery from the original `startedAt` can falsely fail a healthy resumed attempt. Replaying an expired lease can repeat a Jira ticket, email, or other external effect whose original outcome is unknown. A user cancellation must also remain authoritative when it races completion, failure, or an approval pause.
+
+**Decision.** Keep the existing Cloud Tasks HTTP delivery and durable Postgres/LangGraph thread, with a bounded active attempt. `EXECUTION_MAX_RUNTIME_SECONDS` defaults to 1740 (29 minutes), and `EXECUTION_SHUTDOWN_GRACE_SECONDS` defaults to 30 (allowed range 1–60). Runtime must be positive and runtime plus grace must not exceed 1800 seconds. Dispatch deadline and processing lease derive from that sum, rather than independent settings. `ORPHANED_RUNNING_GRACE_SECONDS` defaults to 120 and must be positive: it covers a new running attempt that has not acquired a lease, using its fresh `runningSince`. A valid live lease protects a healthy attempt regardless of thread age. Completion, failure, and approval pause release attempt ownership; approval resumes stamp fresh attempt timing.
+
+Waiting for approval uses durable storage and no live compute. Thread lifetime may span months, subject to retention and explicit deletion. Approval expiration defaults to disabled (`APPROVAL_WAIT_TIMEOUT_HOURS=0`); a positive value opts the whole deployment into expiry. The email link's independent TTL can expire while in-app approval remains available.
+
+Cancellation is terminal and cooperative. The current operation may finish, including an already-started external effect; subsequent node, model, or tool operations check persisted execution state. Ordinary resume rejects canceled executions. Cancellation retains checkpoints, pending writes, variables, node results, and events subject to retention. Executor transitions use a compare-and-set from `running`, and only a winning transition emits its terminal/pause event or approval email. A committed approval pause can still be canceled by a later public request; that valid sequential transition is distinct from two operations competing from the same running state.
+
+Timeouts fail with `execution_timeout`, expired leases with `lease_expired`, abandoned running attempts without leases with `orphaned_running`, and executor/worker errors with `execution_error`. Maintenance conditionally fails expired attempts and **never automatically replays or enqueues them**. `/internal/sweep` names the failure counts `orphaned_running` and `leases_expired`, alongside `approvals_expired` and `events_deleted`; `null` identifies a component error.
+
+**Alternatives considered.**
+
+| Alternative | Why it was not selected |
+|---|---|
+| One-hour Cloud Tasks requests | Does not fit the 1800-second HTTP delivery ceiling enforced by our configuration. A longer Cloud Run host timeout cannot extend the delivery contract, and it still cannot represent months of approval waiting. |
+| Immediate checkpoint continuation after a processing timeout | A checkpoint does not establish whether an external side effect finished. Automatic continuation could repeat that effect; safe continuation requires an explicit operation/idempotency design beyond this lifecycle change. |
+| Cloud Run Jobs | Adds a second worker/deployment and invocation lifecycle. The bounded attempt fits the existing request worker; Jobs would still need the same durable approval, cancellation, and side-effect decisions. Reconsider if workloads require longer active compute. |
+
+**Consequences and rollout.** Long human waits remain supported without long-running workers, while timed-out or lost attempts become visible failures needing an operator/user decision. There is no exactly-once guarantee for external side effects already started. Apply `20261117000000_execution_attempt_timing` before new backend code, workers, or sweeps; it adds nullable `running_since` and `failure_code` without backfilling history. Generate the matching client, deploy the timing settings, and validate real-Postgres race tests against the migrated schema before promotion. New claims/resumes populate attempt timestamps; inspect legacy running rows with null timestamps separately.
+
+**Related.** ADR-0033; [API lifecycle](api-reference.md#executions); [production rollout](operations/production-deployment.md#phase-3--run-migrations--seed-templates); [Cloud Run setup](operations/gcp-cloud-run-setup.md#step-2--run-the-first-deploy); `tests/integration/test_durable_execution.py`.

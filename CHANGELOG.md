@@ -6,6 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — bounded processing attempts and durable execution lifecycle (2026-11-18)
+
+- Active attempts default to 29 minutes (`EXECUTION_MAX_RUNTIME_SECONDS=1740`) plus a 30-second shutdown grace (`EXECUTION_SHUTDOWN_GRACE_SECONDS`, allowed 1–60 seconds). Their sum must be at most 1800 seconds and supplies both the Cloud Tasks dispatch deadline and processing lease. `ORPHANED_RUNNING_GRACE_SECONDS=120` is positive claim grace for a running attempt without a lease, measured from the new `runningSince` field. The durable thread can span months; each approval resume starts a fresh processing attempt.
+- Cancellation is terminal and cooperative: the executor stops after the current operation, while already-started external side effects may finish. Guarded completion/failure/pause writes cannot overwrite cancellation or emit losing outcome events/approval emails. Checkpoints, pending writes, variables, results, and events remain subject to retention or explicit deletion; ordinary approval resume rejects canceled executions.
+- Failed attempts expose `failureCode`: `execution_timeout`, `lease_expired`, `orphaned_running`, or `execution_error`. Sweep responses use `orphaned_running` and `leases_expired`. **Removed automatic lease replay** so maintenance cannot repeat workflow side effects.
+- Approval expiration defaults to **disabled** (`APPROVAL_WAIT_TIMEOUT_HOURS=0`); operators may opt into a positive deployment-wide timeout. Emailed-link expiration remains separate.
+- **Rollout order:** apply `20261117000000_execution_attempt_timing` before new backend code/workers/sweeps. It adds nullable `running_since` and `failure_code` without rewriting historical rows. Claims/resumes populate attempt timing; inspect legacy running rows with null timestamps separately.
+- Added real-Postgres cancel/completion, cancel/failure, and cancel/approval-pause CAS races, covering both ordered winners and simultaneous contention, plus sequential pause-then-cancel behavior. **Live database validation is pending:** Task 7's configured test credentials rejected authentication, and the Task 8 integration attempt timed out during startup. Collection and offline checks do not establish passing database races; use valid credentials and the migrated schema before release.
+
 ### Added — admin-controlled model choice for "Build with AI" (2026-11-04)
 
 - Users pick the chat model from a dropdown in the panel (remembered per browser); a single allowed model is shown as plain text. The choice is sent as `model` on `POST /builder/{id}/message`.

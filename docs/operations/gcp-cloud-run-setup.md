@@ -92,6 +92,22 @@ Anything missing in `.env` is skipped quietly (the script logs which were skippe
 
 ## Step 2 — Run the first deploy
 
+Apply `uv run prisma migrate deploy` against the intended database **before** running the deploy script for this release. Verify `20261117000000_execution_attempt_timing` is applied: new code and workers require the nullable `running_since` and `failure_code` columns. Generate the matching Prisma client with `uv run prisma generate` for local management commands; the backend image generates its client during the build. Historical rows are preserved without backfill. New claims and approval resumes stamp fresh attempt timestamps; inspect legacy running rows without `runningSince` separately. See [production deployment order](production-deployment.md#phase-3--run-migrations--seed-templates).
+
+The backend uses these three timing settings:
+
+| Environment variable | Default | Constraint / purpose |
+|---|---:|---|
+| `EXECUTION_MAX_RUNTIME_SECONDS` | 1740 | Positive; active attempt runtime (29 minutes). |
+| `EXECUTION_SHUTDOWN_GRACE_SECONDS` | 30 | 1–60 seconds; runtime plus grace must be at most 1800. |
+| `ORPHANED_RUNNING_GRACE_SECONDS` | 120 | Positive; grace for a running attempt without a lease, measured from `runningSince`. |
+
+The Cloud Tasks dispatch deadline and worker lease both derive from runtime plus grace (1770 seconds by default). The Cloud Run request timeout is an outer host limit; increasing it cannot extend the processing budget or make a one-hour Cloud Tasks delivery valid. Approval resumes receive a fresh budget. The durable thread may span months while waiting without a worker; retention and approval expiration govern that lifetime separately.
+
+`APPROVAL_WAIT_TIMEOUT_HOURS=0` disables approval expiration by default. Operators may opt into a positive deployment-wide timeout; an expired email link does not itself expire the approval. Cancellation is terminal and cooperative, stopping after the current operation; already-started external side effects may finish. Checkpoints, pending writes, and state remain subject to retention, while ordinary resume rejects canceled executions.
+
+The scheduler's `/internal/sweep` response uses `orphaned_running` and `leases_expired` for successful failure transitions (alongside `approvals_expired` and `events_deleted`; `null` means a component errored). Expired leases now fail with `lease_expired`; lease-less abandoned attempts fail with `orphaned_running`. **There is no automatic lease replay or enqueue from the sweeper.** Review failed attempts before manually starting replacements to avoid repeating external effects. Executor failures use `execution_error`; attempts that exceed the runtime budget use `execution_timeout`.
+
 From the repo root:
 
 ```powershell
@@ -111,7 +127,7 @@ What it does (idempotent — safe to re-run any time):
 2. Builds + pushes the backend image to Artifact Registry.
 3. Deploys `composer-backend` to Cloud Run, with `EXECUTION_SWEEPER_INTERVAL_SECONDS=0` (the in-process sweeper fallback loop is disabled — Cloud Scheduler drives sweeping instead) and the `CLOUD_TASKS_*`/`GCP_PROJECT_ID`/`GCP_REGION` env vars `enqueue_execution()` needs.
 3a–3b. Grants the backend's runtime service account permission to enqueue Cloud Tasks and mint the OIDC token embedded in each task; grants the shared OIDC service account `roles/run.invoker` on the backend.
-3c. Provisions the `composer-sweep` Cloud Scheduler job (`POST /internal/sweep` every 5 minutes — stuck executions, expired approvals, expired leases, old `execution_events`).
+3c. Provisions the `composer-sweep` Cloud Scheduler job (`POST /internal/sweep` every 5 minutes — orphaned running attempts, opt-in approval expiration, expired leases, old `execution_events`). Lease expiry fails the attempt and never automatically enqueues replay.
 3d. Provisions the `composer-poll-file-triggers` Cloud Scheduler job (`POST /internal/poll-file-triggers` every 5 minutes — Google Drive file-trigger polling).
 4. Builds + pushes the frontend image with `NEXT_PUBLIC_COMPOSER_API_URL` baked in to point at the backend.
 5. Deploys `composer-frontend` to Cloud Run.

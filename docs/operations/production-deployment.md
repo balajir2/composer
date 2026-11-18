@@ -118,11 +118,20 @@ LANGCHAIN_ENDPOINT=https://api.smith.langchain.com
 ### Recommended — sweeper tuning
 
 ```bash
-EXECUTION_STUCK_AFTER_SECONDS=900     # default 15min; tighten if your runtime has a shorter budget
+EXECUTION_MAX_RUNTIME_SECONDS=1740    # active attempt: positive; default 29 minutes
+EXECUTION_SHUTDOWN_GRACE_SECONDS=30   # 1–60 seconds; runtime + grace must be <= 1800
+ORPHANED_RUNNING_GRACE_SECONDS=120    # positive lease-less claim grace, measured from runningSince
+APPROVAL_WAIT_TIMEOUT_HOURS=0         # disabled; positive hours opt into deployment-wide expiration
 EXECUTION_SWEEPER_INTERVAL_SECONDS=300 # default 5min in-process fallback loop; set to 0 on Cloud Run
 ```
 
+The three timing settings above separate active processing from durable lifetime. Runtime must be positive; shutdown grace must be 1–60 seconds; their sum must not exceed 1800 seconds. Both the Cloud Tasks dispatch deadline and the processing lease derive from that sum (1770 seconds by default). Orphan grace must be positive and applies only to attempts with no lease, using `runningSince`, never the months-old execution's `startedAt`. A valid live lease takes precedence over execution age. Approval resumes start a fresh attempt; approval waits hold no live compute and may last months when retention permits.
+
 On Cloud Run, set `EXECUTION_SWEEPER_INTERVAL_SECONDS=0` and let the `composer-sweep` Cloud Scheduler job (provisioned in Phase 1.2, `POST /internal/sweep` every 5 minutes) do the sweeping instead — the in-process loop requires `--no-cpu-throttling`, which is no longer part of the deploy config (see [gcp-cloud-run-setup.md](gcp-cloud-run-setup.md)). The in-process loop only stays useful for local development or a non-Cloud-Run host without a scheduler equivalent.
+
+`POST /internal/sweep` reports successful conditional failures as `orphaned_running` and `leases_expired`, alongside `approvals_expired` and `events_deleted`; a failed sweep component returns `null`. The response names describe terminal failure counts. **Automatic lease replay has been removed**: an expired attempt fails with `lease_expired`, and an orphan fails with `orphaned_running`, without enqueueing work that could repeat external side effects. Inspect failures before explicitly starting any replacement execution. Cooperative cancellation is terminal; already-started external operations may finish, and ordinary approval resume rejects canceled executions. Durable checkpoint/write/state data remains until explicit deletion or its retention policy removes it.
+
+Approval expiration is disabled by default (`APPROVAL_WAIT_TIMEOUT_HOURS=0`). A positive value opts the entire deployment into approval expiry; it is independent of the emailed link's 72-hour default TTL and of the 29-minute processing budget.
 
 ### Recommended — rate limits (defaults are fine for most deployments)
 
@@ -138,7 +147,7 @@ The complete list of supported variables is in [`../../.env.example`](../../.env
 
 ## Phase 3 — Run migrations + seed templates
 
-Once the backend is reachable from where you can run management commands (locally with the `DATABASE_URL` exported, or via the host's exec/SSH):
+Apply database migrations **before deploying the new backend code or enabling its workers/sweeps**. Run management commands from a release/administrative environment with the intended `DATABASE_URL`; a running new backend is not a prerequisite. For this lifecycle release, apply the migration adding nullable `running_since` and `failure_code` (`20261117000000_execution_attempt_timing`) first, verify it is present, then deploy code and the timing settings. Historical rows stay unchanged; new claims/resumes establish attempt timestamps. Inspect legacy running rows with null attempt timestamps separately because orphan sweeping requires `runningSince`. Validate real-Postgres integration races against the migrated schema before promotion.
 
 ```bash
 # Generate the Prisma client (always after schema changes too)
