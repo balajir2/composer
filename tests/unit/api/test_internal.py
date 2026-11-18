@@ -4,6 +4,7 @@ import asyncio
 import re
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -239,46 +240,29 @@ def test_claim_and_run_claim_query_includes_queued_status(
     assert ran == ["exec-1"]
 
 
-def test_claim_and_run_claim_query_status_set_matches_shared_constant(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("kind, expected_status", [("run", "queued"), ("resume", "running")])
+def test_claim_eligibility_is_kind_specific(
+    monkeypatch: pytest.MonkeyPatch, kind: str, expected_status: str
 ) -> None:
-    """Anti-drift regression (P1-2 followup, Issue 1): the claim query's
-    bound status list must equal `ACTIVE_EXECUTION_STATUSES_SORTED`
-    (src/api/execution_status.py) EXACTLY — not just "queued is present"
-    (test_claim_and_run_claim_query_includes_queued_status) or "terminal
-    statuses are excluded" (test_claim_and_run_claim_query_filters_on_status).
-    Before this fix, `claim_and_run` hardcoded its own independent
-    `status IN ('queued', 'running', 'waiting_approval')` SQL literal,
-    completely decoupled from the constant `executions.py`'s delete/cancel
-    guards use — a change to the active-status set anywhere else would
-    silently desync this query and this test would have caught it.
-    """
-    from src.api.execution_status import ACTIVE_EXECUTION_STATUSES_SORTED
-
+    """Active paused or expired attempts must never be replayed by delivery."""
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
     client, db = _client_with_mock_db()
 
-    captured_status_lists: list[list[str]] = []
+    async def _query(sql: str, *args: object) -> list[dict[str, str]]:
+        assert args[1] == [expected_status]
+        assert re.search(r"lease_expires_at\s+IS\s+NULL", sql, re.IGNORECASE)
+        assert re.search(r"lease_owner\s+IS\s+NULL", sql, re.IGNORECASE)
+        assert not re.search(r"lease_expires_at\s*<", sql, re.IGNORECASE)
+        return []
 
-    async def _fake_query_raw(sql: str, *args: object) -> list[dict[str, str]]:
-        assert len(args) >= 2, "claim query must bind the allowed statuses as a parameter"
-        captured_status_lists.append(list(args[1]))  # type: ignore[arg-type]
-        return [{"id": "exec-1"}]
-
-    db.query_raw = AsyncMock(side_effect=_fake_query_raw)
+    db.query_raw = AsyncMock(side_effect=_query)
     db.execute_raw = AsyncMock()
-
-    from src.engine.langgraph_executor import LangGraphExecutor
-
-    async def _fake_run(self: LangGraphExecutor, execution_id: str) -> None:
-        return None
-
-    monkeypatch.setattr(LangGraphExecutor, "run", _fake_run)
-
-    resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
-    assert resp.status_code == 200, resp.text
-    assert len(captured_status_lists) == 1
-    assert set(captured_status_lists[0]) == set(ACTIVE_EXECUTION_STATUSES_SORTED)
+    response = cast("Any", client).post(
+        "/internal/claim-and-run", json={"executionId": "exec-1", "kind": kind}
+    )
+    assert response.status_code == 200, response.text
+    assert response.json() == {"status": "already_claimed"}
+    db.execute_raw.assert_not_awaited()
 
 
 def test_claim_and_run_update_sets_status_running(monkeypatch: pytest.MonkeyPatch) -> None:

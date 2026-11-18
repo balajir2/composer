@@ -1,7 +1,7 @@
 """Tests for GET /executions (list) — Phase 7b."""
 
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -144,3 +144,13 @@ def test_admin_get_execution_for_other_user(monkeypatch: pytest.MonkeyPatch) -> 
     finally:
         client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
     assert resp.status_code == 200
+
+
+@pytest.mark.parametrize("failure_code", ["execution_timeout", None])
+def test_list_serializes_failure_code(
+    monkeypatch: pytest.MonkeyPatch, failure_code: str | None
+) -> None:
+    client, _ = _client(monkeypatch, [_exec_row(failureCode=failure_code)], total=1)
+    response = cast("Any", client).get("/executions")
+    assert response.status_code == 200, response.text
+    assert response.json()["items"][0]["failureCode"] == failure_code

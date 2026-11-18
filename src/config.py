@@ -329,6 +329,7 @@ class Settings(BaseSettings):
     execution_shutdown_grace_seconds: int = 30
     orphaned_running_grace_seconds: int = Field(
         default=120,
+        ge=1,
         description="Grace for a running attempt without a lease, measured from runningSince.",
     )
 

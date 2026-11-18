@@ -37,6 +37,10 @@ from src.engine.workflow import Workflow
 logger = logging.getLogger(__name__)
 
 
+class _ExecutionDeadlineExceeded(TimeoutError):
+    """Composer's graph-invocation budget expired."""
+
+
 def _transition_succeeded(execution_id: str, intended_status: str, updated: int) -> bool:
     """Report a lost compare-and-set without exposing execution payloads."""
     if updated != 1:
@@ -281,8 +285,17 @@ class LangGraphExecutor:
         return _transition_succeeded(execution_id, "failed", updated)
 
     async def _invoke_with_timeout(self, awaitable: Awaitable[dict[str, Any]]) -> dict[str, Any]:
-        async with asyncio.timeout(get_settings().execution_max_runtime_seconds):
-            return await awaitable
+        runtime = get_settings().execution_max_runtime_seconds
+        deadline = asyncio.timeout(runtime)
+        try:
+            async with deadline:
+                return await awaitable
+        except TimeoutError as exc:
+            if deadline.expired():
+                raise _ExecutionDeadlineExceeded(
+                    f"Execution exceeded its {runtime}-second processing budget"
+                ) from exc
+            raise
 
     async def run(self, execution_id: str) -> None:
         """Drive the compiled graph to completion and persist results.
@@ -348,7 +361,7 @@ class LangGraphExecutor:
         except ExecutionStopped as stopped:
             logger.info("Execution %s stopped with status %s", execution_id, stopped.status)
             return
-        except TimeoutError as exc:
+        except _ExecutionDeadlineExceeded as exc:
             logger.warning("Execution %s timed out", execution_id)
             if await self._mark_failed(execution_id, exc, failure_code="execution_timeout"):
                 await self._emit("workflow_completed", execution_id, {"status": "failed"})
@@ -429,7 +442,7 @@ class LangGraphExecutor:
                 "Execution %s stopped during resume with status %s", execution_id, stopped.status
             )
             return
-        except TimeoutError as exc:
+        except _ExecutionDeadlineExceeded as exc:
             logger.warning("Execution %s timed out during resume", execution_id)
             if await self._mark_failed(execution_id, exc, failure_code="execution_timeout"):
                 await self._emit("workflow_completed", execution_id, {"status": "failed"})

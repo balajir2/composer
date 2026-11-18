@@ -43,9 +43,8 @@ router = APIRouter(tags=["executions"])
 # between row-creation and terminal completion that is ever safe to delete
 # unconditionally.
 #
-# Sourced from `src.api.execution_status` (not defined here) so
-# `internal.py`'s claim-query predicate can share the exact same set —
-# see that module's docstring for the drift bug this closes.
+# Shared cancellation/deletion vocabulary comes from `src.api.execution_status`.
+# Worker claims use narrower, delivery-kind-specific eligibility.
 
 
 class ExecutionCreate(BaseModel):
@@ -69,6 +68,7 @@ class ExecutionRead(BaseModel):
     input: Any = None
     output: Any = None
     error: str | None = None
+    failure_code: str | None = Field(default=None, alias="failureCode")
     started_at: Any = Field(alias="startedAt")
     completed_at: Any = Field(default=None, alias="completedAt")
     thread_id: str = Field(alias="threadId")

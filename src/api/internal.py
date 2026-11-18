@@ -45,7 +45,6 @@ from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token
 from pydantic import BaseModel, ConfigDict, Field
 
-from src.api.execution_status import ACTIVE_EXECUTION_STATUSES_SORTED
 from src.config import get_settings
 from src.engine.langgraph_executor import LangGraphExecutor
 from src.engine.workflow import FileTriggerNode
@@ -214,51 +213,37 @@ async def claim_and_run_execution(
     # src/config.py's design-decision comment on execution_lease_seconds),
     # not this transaction, which does only one SELECT + one UPDATE and
     # commits before `executor.run()`/`.resume()` is ever called. Sizing it
-    # to the lease (up to 1h by default) would mean an anomalous hang here
-    # holds the row lock and a pool connection for up to an hour instead of
+    # to the lease (1770 seconds by default) would mean an anomalous hang here
+    # holds the row lock and a pool connection for the entire lease instead of
     # failing fast — blocking unrelated operations (cancel, delete, status
     # reads) on that row. Matches the precedent set by the identical
     # FOR UPDATE SKIP LOCKED pattern in scripts/poc_persistence_row_lock.py.
     async with db.tx(timeout=10000) as tx:
-        # Status predicate is bound as a real parameter (Postgres
-        # `= ANY($N::text[])`), not interpolated into the SQL text, and is
-        # sourced from `ACTIVE_EXECUTION_STATUSES_SORTED`
-        # (src/api/execution_status.py) rather than a hardcoded
-        # `status IN (...)` literal — this was previously its own
-        # independent hardcoded list, completely out of sync with the
-        # identical set `executions.py`'s delete/cancel guards derive from
-        # the same shared constant. A future change to the active-status
-        # set now can't silently desync the claim query from those guards.
+        # Deliveries authorize a specific transition: run starts a queued
+        # thread; resume continues the unowned running attempt established by
+        # approval resolution. Expired ownership belongs to the failure sweeper,
+        # never to task redelivery, because replay may repeat external effects.
+        claimable_statuses = ["queued"] if kind == "run" else ["running"]
         rows = await tx.query_raw(
             """
             SELECT id FROM workflow_executions
             WHERE id = $1
               AND status = ANY($2::text[])
-              AND (lease_expires_at IS NULL OR lease_expires_at < now())
+              AND lease_expires_at IS NULL
+              AND lease_owner IS NULL
             FOR UPDATE SKIP LOCKED
             LIMIT 1
             """,
             execution_id,
-            ACTIVE_EXECUTION_STATUSES_SORTED,
+            claimable_statuses,
         )
         if not rows:
-            # Already claimed by another delivery, or the lease hasn't
-            # expired yet — nothing to do. Returning 200 (not an error)
-            # tells Cloud Tasks the delivery succeeded so it doesn't retry
-            # a task that's genuinely already being handled.
+            # Another worker owns it, the row is locked, or this delivery
+            # kind cannot act on its state. Acknowledge without replay.
             return {"status": "already_claimed"}
 
-        # P1-2: the claim itself is what transitions a freshly-enqueued
-        # `queued` row to `running` — start_execution (langgraph_executor.py)
-        # deliberately creates rows as `queued` since Cloud Run can scale to
-        # zero between "row created" and "Cloud Task delivered"; the row
-        # should only claim to be `running` once a worker has genuinely
-        # picked it up. Setting status unconditionally here is also
-        # idempotent for the already-`running`/`waiting_approval` claim
-        # cases (expired-lease redelivery, resume) — sweep_expired_leases
-        # only ever looks at `status='running'` rows with an expired lease
-        # (src/maintenance/execution_sweeper.py), so this keeps that
-        # invariant true from the moment of claim.
+        # The locked row is eligible for this delivery kind. Persist the
+        # processing attempt before invoking any graph or external operation.
         # Both timestamps are explicitly cast to `timestamptz` — Prisma Python's raw-query
         # binder tags a Python `datetime` parameter as `text` on the wire
         # (verified directly against real Postgres while writing this
@@ -319,7 +304,7 @@ async def claim_and_run_execution(
     # is already captured in `logger.exception` above and the DB `error`
     # field below. That 5xx may prompt Cloud Tasks to retry the
     # delivery, but that retry is a harmless no-op: the claim query above
-    # only matches rows whose status is in `ACTIVE_EXECUTION_STATUSES_SORTED`,
+    # only matches eligible queued/run or unowned running/resume rows,
     # and this code path has already stamped the row 'failed' before
     # raising, so the redelivered request finds nothing to claim and
     # returns `{"status": "already_claimed"}`.

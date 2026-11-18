@@ -1,6 +1,7 @@
 """Tests for /executions endpoints."""
 
 from types import SimpleNamespace
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -643,3 +644,14 @@ def test_cancel_execution_race_loses_when_update_many_affects_zero_rows() -> Non
     db.workflowexecution.update_many = AsyncMock(return_value=0)
     resp = client.post("/executions/ex1/cancel")
     assert resp.status_code == 409
+
+
+@pytest.mark.parametrize("failure_code", ["lease_expired", None])
+def test_detail_serializes_failure_code(failure_code: str | None) -> None:
+    client, db = _client_with_mock_db()
+    row = _execution_row(status="failed")
+    row.failureCode = failure_code
+    db.workflowexecution.find_unique = AsyncMock(return_value=row)
+    response = cast("Any", client).get("/executions/ex1")
+    assert response.status_code == 200, response.text
+    assert response.json()["failureCode"] == failure_code

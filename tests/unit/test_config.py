@@ -147,3 +147,33 @@ def test_negative_approval_wait_timeout_is_rejected(monkeypatch: pytest.MonkeyPa
     monkeypatch.setenv("APPROVAL_WAIT_TIMEOUT_HOURS", "-1")
     with pytest.raises(ValidationError, match="approval_wait_timeout_hours"):
         Settings(_env_file=None)  # pyright: ignore[reportCallIssue]
+
+
+@pytest.mark.usefixtures("clean_timing_environment")
+@pytest.mark.parametrize("seconds", [0, -1])
+def test_nonpositive_orphan_grace_is_rejected(
+    monkeypatch: pytest.MonkeyPatch, seconds: int
+) -> None:
+    from pydantic import ValidationError
+
+    from src.config import Settings
+
+    monkeypatch.setenv("ORPHANED_RUNNING_GRACE_SECONDS", str(seconds))
+    with pytest.raises(ValidationError, match="orphaned_running_grace_seconds"):
+        Settings(_env_file=None)  # pyright: ignore[reportCallIssue]
+
+
+@pytest.mark.usefixtures("clean_timing_environment")
+def test_env_example_keeps_approval_expiry_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
+    from dotenv import dotenv_values
+
+    from src.config import Settings
+
+    for name, value in dotenv_values(".env.example").items():
+        if value is not None:
+            monkeypatch.setenv(name, value)
+    settings = Settings(_env_file=None)  # pyright: ignore[reportCallIssue]
+    assert settings.approval_wait_timeout_hours == 0
+    assert settings.execution_max_runtime_seconds == 1740
+    assert settings.execution_shutdown_grace_seconds == 30
+    assert settings.orphaned_running_grace_seconds == 120

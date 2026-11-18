@@ -1338,3 +1338,42 @@ async def test_graph_timeout_persists_guarded_failure(
     if updated:
         expected_events.append(("workflow_completed", "failed"))
     assert [(event.type, event.payload["status"]) for event in store.events] == expected_events
+
+
+@pytest.mark.parametrize("method", ["run", "resume"])
+@pytest.mark.parametrize("stage", ["prepare", "provider", "checkpoint"])
+async def test_dependency_timeout_is_execution_error(
+    monkeypatch: pytest.MonkeyPatch, method: str, stage: str
+) -> None:
+    """Only Composer's elapsed runtime budget may produce execution_timeout."""
+    db = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(id="ex1", status="running")
+    )
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    store = _FakeEventStore()
+    executor = LangGraphExecutor(db, MemorySaver(), event_bus=store)  # pyright: ignore[reportArgumentType]
+    error = TimeoutError("dependency timed out")
+    compiled = SimpleNamespace(
+        ainvoke=AsyncMock(side_effect=error) if stage == "provider" else AsyncMock(return_value={}),
+        aget_state=AsyncMock(side_effect=error) if stage == "checkpoint" else AsyncMock(),
+    )
+    prepare = (
+        AsyncMock(side_effect=error)
+        if stage == "prepare"
+        else AsyncMock(return_value=(compiled, {}, {}))
+    )
+    monkeypatch.setattr(executor, "_prepare_compiled", prepare)
+    if method == "run":
+        await executor.run("ex1")
+    else:
+        await executor.resume("ex1", "approved")
+
+    assert db.workflowexecution.update_many.await_args is not None
+    data = db.workflowexecution.update_many.await_args.kwargs["data"]
+    assert data["failureCode"] == "execution_error"
+    assert data["error"] == "TimeoutError: dependency timed out"
+    assert [(event.type, event.payload["status"]) for event in store.events] == [
+        ("workflow_started", "running"),
+        ("workflow_completed", "failed"),
+    ]

@@ -240,7 +240,7 @@ async def test_public_cancel_accepts_an_already_committed_approval_pause(
 
 
 async def test_expired_lease_fails_without_replaying_execution(
-    app: FastAPI, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, app: FastAPI, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A dead worker's expired attempt fails without replaying side effects."""
     db: Any = app.state.db
@@ -272,6 +272,20 @@ async def test_expired_lease_fails_without_replaying_execution(
 
         mock_enqueue = AsyncMock()
         monkeypatch.setattr("src.execution.cloud_tasks.enqueue_execution", mock_enqueue)
+
+        # Deliver both task kinds before maintenance. Neither may steal the
+        # dead worker's expired ownership or increment delivery attempts.
+        for kind in ("run", "resume"):
+            delivery = await client.post(
+                "/internal/claim-and-run", json={"executionId": execution.id, "kind": kind}
+            )
+            assert delivery.status_code == 200, delivery.text
+            assert delivery.json() == {"status": "already_claimed"}
+        untouched = await db.workflowexecution.find_unique(where={"id": execution.id})
+        assert untouched is not None
+        assert untouched.status == "running"
+        assert untouched.leaseOwner == "dead-worker-1"
+        assert untouched.deliveryAttempts == 1
 
         result = await sweep_expired_leases(db)
 
@@ -659,6 +673,20 @@ async def test_resume_clears_stale_lease_and_reclaim_succeeds(
         assert paused.leaseOwner is None
         assert paused.leaseExpiresAt is None
 
+        # Original deliveries and unauthorized resume deliveries cannot
+        # claim an approval pause, whose ownership has correctly been cleared.
+        for kind in ("run", "resume"):
+            duplicate = await client.post(
+                "/internal/claim-and-run", json={"executionId": execution.id, "kind": kind}
+            )
+            assert duplicate.status_code == 200, duplicate.text
+            assert duplicate.json() == {"status": "already_claimed"}
+        still_paused = await db.workflowexecution.find_unique(where={"id": execution.id})
+        assert still_paused is not None
+        assert still_paused.status == "waiting_approval"
+        assert still_paused.variables == paused.variables
+        assert still_paused.deliveryAttempts == paused.deliveryAttempts
+
         # Legacy paused rows may still have a lease from an older worker.
         # Resume must also clear those fields in its guarded transition.
         await db.workflowexecution.update(
@@ -705,6 +733,14 @@ async def test_resume_clears_stale_lease_and_reclaim_succeeds(
         awaiting_claim = await db.workflowexecution.find_unique(where={"id": execution.id})
         assert awaiting_claim is not None
         assert awaiting_claim.status == "running"
+
+        # A late original run task must not steal the authorized resume's
+        # unowned running row and restart the graph from its original input.
+        original = await client.post(
+            "/internal/claim-and-run", json={"executionId": execution.id, "kind": "run"}
+        )
+        assert original.status_code == 200, original.text
+        assert original.json() == {"status": "already_claimed"}
 
         # Step 3: the real proof -- a fresh Cloud Task delivery (what
         # `mock_enqueue` above stood in for) must be able to claim the
