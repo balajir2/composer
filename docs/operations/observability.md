@@ -45,13 +45,20 @@ Common log lines and what they mean:
 | `auth: dev-mode fallback ENABLED` | `ENVIRONMENT` isn't set to `production` — dangerous in real deployments |
 | `Execution <id> failed` | Workflow execution raised an exception; details follow with full traceback |
 | `Execution <id> paused at user-approval node` | Interrupt-resume cycle began; expect a `/resume` call later |
-| `execution_sweeper: started (interval=300s, stuck_after=900s)` | In-process sweeper fallback loop boot — expected on non-Cloud-Run hosts, or on Cloud Run only if `EXECUTION_SWEEPER_INTERVAL_SECONDS` wasn't set to `0`. On the production Cloud Run config this is disabled; look for `POST /internal/sweep` request logs (Cloud Scheduler-triggered) instead. |
-| `execution_sweeper: marked N/M stuck executions as failed` | A sweep pass (in-process loop or a `POST /internal/sweep` call) found stuck rows and marked them failed |
+| `execution_sweeper: started (interval=300s, orphan_grace=120s, approval_timeout=0h)` | Local maintenance loop boot with default settings; it handles lease-less orphan attempts and opt-in approval expiration. Cloud Run normally disables this loop and uses `POST /internal/sweep` request logs instead. |
+| `execution_sweeper: disabled (interval_seconds=0)` | The local loop is disabled; expected when Cloud Scheduler drives production maintenance. |
+| `execution_sweeper: scanned N orphaned attempts, F failed, E errored` | Lease-less running attempts older than their current attempt's claim grace were selected. `F` counts successful conditional failures with `failureCode=orphaned_running`; lost races count as scanned but not failed. |
+| `execution_sweeper: scanned N expired leases, F failed, E errored` | Running attempts with expired processing leases were selected. `F` counts successful conditional failures with `failureCode=lease_expired`; a concurrently renewed live lease must survive. This runs through `/internal/sweep` or an explicit full maintenance call, not the local fallback loop. |
+| `execution_sweeper: scanned N approval pauses, F expired, E errored` | Opt-in approval expiration ran; `APPROVAL_WAIT_TIMEOUT_HOURS=0` disables this by default. |
+| `POST /internal/sweep` request / response | Cloud Scheduler's production maintenance endpoint. Inspect `orphaned_running`, `leases_expired`, `approvals_expired`, and `events_deleted`; a `null` component signals failure even when HTTP status is 200. |
+| `internal: sweep_orphaned_running failed` / `internal: sweep_expired_leases failed` | A maintenance component raised; inspect the traceback and corresponding `null` response field. A successful HTTP delivery alone does not prove all sweep components succeeded. |
 | `internal: OIDC verification failed: ...` | A push request to `/internal/claim-and-run` or `/internal/sweep` presented an invalid/wrong-audience OIDC token — check the Cloud Tasks queue's / Cloud Scheduler job's service account matches `CLOUD_TASKS_SERVICE_ACCOUNT` |
 | `cloud_tasks: in-process fallback failed for execution <id>` | `enqueue_execution()`'s dev-mode fallback (no `CLOUD_TASKS_SERVICE_ACCOUNT` configured) crashed running the execution in-process — expected only outside production |
-| `run: detached executor task crashed for <id>` | Async invocation path's wrapper caught an uncaught executor crash |
+| `internal: claim_and_run crashed for execution <id> (kind=<kind>)` | The request worker crashed; inspect the traceback and guarded terminal write. An already-resolved execution is preserved. |
 | `MCPClient: tools/list returned <N> tools` | MCP server enumeration succeeded |
 | `MCP base64 blob stripped from response` | Sanitiser fired on an MCP response — usually fine |
+
+Sweep summary lines appear only when rows were selected; their absence does not prove maintenance stopped. Check the configured `composer-sweep` job's dispatch history and `/internal/sweep` component results. Failures never enqueue automatic lease replay. An execution's original age is not an abandonment signal: a live lease or fresh resumed `runningSince` protects a healthy attempt.
 
 ### Postgres logs
 
@@ -84,7 +91,7 @@ Composer doesn't ship its own metrics-exporter today (no Prometheus scrape endpo
 | Request rate | Count `POST /executions` per minute from logs | Stable; spikes correlate with customer activity |
 | Execution success rate | `count(status='completed') / count(*)` per hour from `workflow_executions` | >95% (lower means systemic issue) |
 | Sev-1 incidents per month | Count of postmortems tagged Sev-1 | Trending toward zero |
-| Stuck-row sweep count | Count of "marked N/M stuck" log lines per day | Trending toward zero |
+| Abandoned-attempt failures | Sum successful `orphaned_running` and `leases_expired` counts from `/internal/sweep`, or the corresponding `F failed` log values; avoid counting both sources twice | Trending toward zero; investigate `errored` values or `null` response components separately |
 | Mean execution duration | `avg(completed_at - started_at)` per workflow | Workflow-specific; alarm on sudden 2× regression |
 | External-invoke 401 rate | Count of `Authorization: Bearer ck_...` 401s per hour | <1% of api_run requests |
 
@@ -162,7 +169,7 @@ A single dashboard showing:
 - Execution rate per minute
 - Execution success rate (last hour)
 - p95 execution latency
-- Stuck-row sweep count (should be ~0)
+- Orphaned-running and expired-lease failure counts (should be ~0)
 - LangSmith trace volume (should match execution rate)
 - Top 10 most-failed workflows in the last 24h
 

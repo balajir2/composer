@@ -35,7 +35,7 @@ Detection happens via:
 | Customer ticket | minutes to hours | Customer-visible symptoms |
 | Backend log error rate | ~1 min | Internal exceptions, 5xx counts |
 | Postgres connection pool alarm | ~1 min | DB capacity issues |
-| Sweeper inactivity alarm | ~10 min | Background maintenance loop stopped |
+| Sweeper inactivity alarm | Deployment cadence | Cloud Scheduler delivery to `POST /internal/sweep` failed, or a configured local maintenance loop stopped |
 
 When any channel fires, the on-call engineer is paged. Multiple firings on the same incident are collapsed by the alerting tool.
 
@@ -114,31 +114,102 @@ Common mitigations by failure class:
 
 ### Sweeper isn't running
 
-On Cloud Run (the production path), the sweeper is a Cloud Scheduler job (`composer-sweep`) POSTing to `/internal/sweep` every 5 minutes, not an in-process loop — check Cloud Scheduler's execution history for the job first:
+On Cloud Run (the production path), `composer-sweep` calls `POST /internal/sweep` at its configured Cloud Scheduler cadence (the bootstrap default is every 5 minutes). Check the job's execution history first:
 
-```
-1. gcloud scheduler jobs describe composer-sweep --location=<region> --project=<project>
-   gcloud scheduler jobs run composer-sweep --location=<region> --project=<project>   # force an immediate run
-2. If the job's executions show 401s, the OIDC service account (CLOUD_TASKS_SERVICE_ACCOUNT) or the
-   audience (BACKEND_PUBLIC_URL) is misconfigured — check src/api/internal.py's `_verify_internal_oidc`
-   against the job's --oidc-service-account-email / --oidc-token-audience (scripts/gcp-bootstrap.ps1).
-3. Manually invoke all four sweeps while you investigate (covers stuck executions, expired approvals,
-   expired leases, and old execution_events — the same work POST /internal/sweep does):
-   uv run python -c "import asyncio; from src.maintenance.execution_sweeper import sweep_stuck_executions, sweep_expired_approvals, sweep_expired_leases, sweep_old_execution_events; from prisma import Prisma; \
-     async def main():
-         db = Prisma()
-         await db.connect()
-         try:
-             print(await sweep_stuck_executions(db, stuck_after_seconds=900))
-         finally:
-             await db.disconnect()
-     asyncio.run(main())"
-4. While the sweeper's down, manually clear stuck rows via SQL if customer-impacting:
-   UPDATE workflow_executions SET status='failed', error='Manually cleared during incident <id>', completed_at=now()
-   WHERE status='running' AND started_at < now() - interval '15 minutes';
+```bash
+gcloud scheduler jobs describe composer-sweep --location=<region> --project=<project>
+gcloud scheduler jobs run composer-sweep --location=<region> --project=<project>
 ```
 
-On a non-Cloud-Run host still running the in-process fallback loop (`EXECUTION_SWEEPER_INTERVAL_SECONDS > 0`), the "execution_sweeper: started" log line should appear once at boot — if not, the lifespan didn't start it correctly; check the env var and restart.
+If deliveries return 401, compare `CLOUD_TASKS_SERVICE_ACCOUNT` and `BACKEND_PUBLIC_URL` with the job's `--oidc-service-account-email` and `--oidc-token-audience` and the checks in `src/api/internal.py`. A successful `/internal/sweep` response reports `orphaned_running`, `approvals_expired`, `leases_expired`, and `events_deleted`; a component returning `null` failed even if the HTTP status is 200.
+
+If Scheduler cannot deliver, run the current sweep functions from an administrative environment using the deployed release's code, migrated schema, and settings. Save this as `sweep_incident.py` in the repository root and run `uv run python sweep_incident.py`. It performs the same four maintenance operations without creating a replacement execution:
+
+```python
+import asyncio
+from datetime import UTC, datetime
+
+from prisma import Prisma
+from src.config import get_settings
+from src.maintenance.execution_sweeper import (
+    sweep_expired_approvals,
+    sweep_expired_leases,
+    sweep_old_execution_events,
+    sweep_orphaned_running,
+)
+
+
+async def main() -> None:
+    settings = get_settings()
+    db = Prisma(datasource={"url": settings.database_url})
+    await db.connect()
+    try:
+        now = datetime.now(UTC)
+        orphaned = await sweep_orphaned_running(
+            db, grace_seconds=settings.orphaned_running_grace_seconds, now=now
+        )
+        approvals = await sweep_expired_approvals(
+            db, timeout_hours=settings.approval_wait_timeout_hours, now=now
+        )
+        leases = await sweep_expired_leases(db, now=now)
+        events_deleted = await sweep_old_execution_events(
+            db, retention_days=settings.execution_events_retention_days, now=now
+        )
+        print({
+            "orphaned_running": orphaned,
+            "approvals_expired": approvals,
+            "leases_expired": leases,
+            "events_deleted": events_deleted,
+        })
+    finally:
+        await db.disconnect()
+
+
+asyncio.run(main())
+```
+
+The three attempt/approval results are `SweepResult` values: inspect `marked_failed` and `errored`, not just `scanned`. Approval expiration is disabled when `APPROVAL_WAIT_TIMEOUT_HOURS=0`. The orphan sweep requires `status='running'`, no lease expiry, and `runningSince` older than the configured positive claim grace; its update rechecks these predicates. The lease sweep requires a running row with an expired lease and rechecks that exact lease expiry before failing it. A live lease or a fresh resumed attempt must survive regardless of the original `startedAt`.
+
+If a customer-impacting execution needs a manual SQL transition instead, inspect and lock that **specific execution**, then use the current attempt predicates in the same transaction. Replace the execution/incident placeholders and use the deployment's actual `ORPHANED_RUNNING_GRACE_SECONDS` (120 seconds below is only the default):
+
+```sql
+BEGIN;
+SET LOCAL TIME ZONE 'UTC';
+
+SELECT id, status, running_since, lease_owner, lease_expires_at
+FROM workflow_executions
+WHERE id = '<execution-id>'
+FOR UPDATE;
+
+UPDATE workflow_executions
+SET status = 'failed',
+    failure_code = CASE
+        WHEN lease_expires_at IS NOT NULL THEN 'lease_expired'
+        ELSE 'orphaned_running'
+    END,
+    error = 'Manually failed during incident <incident-id>',
+    completed_at = now(),
+    running_since = NULL,
+    lease_owner = NULL,
+    lease_expires_at = NULL
+WHERE id = '<execution-id>'
+  AND status = 'running'
+  AND (
+      lease_expires_at < now()
+      OR (
+          lease_expires_at IS NULL
+          AND running_since IS NOT NULL
+          AND running_since < now() - interval '120 seconds'
+      )
+  )
+RETURNING id, status, failure_code;
+
+COMMIT;
+```
+
+The lock prevents renewal/resume between inspection and the update, and the conditional update still protects a live lease or recent attempt. Zero updated rows means leave it alone: it is no longer an eligible abandoned attempt. Never bulk-fail rows by their original creation/start time. A legacy lease-less row with null `running_since` needs separate investigation; age alone does not prove abandonment. These procedures retain checkpoints and pending writes and never enqueue automatic replay. Review already-started external effects before deliberately creating any replacement execution.
+
+On a non-Cloud-Run host with `EXECUTION_SWEEPER_INTERVAL_SECONDS > 0`, expect `execution_sweeper: started (interval=...s, orphan_grace=...s, approval_timeout=...h)` once at boot. That local loop handles lease-less orphan attempts and opt-in approval expiration; lease expiry and event retention require `/internal/sweep` or the full manual sweep above. Check the interval and lifespan wiring if the local loop did not start.
 
 ### MCP server returning bad data
 
@@ -215,7 +286,7 @@ Mitigation:
 
 ### "Stuck running" execution rows
 
-The stuck-execution sweeper handles this automatically, but during an incident you may want to clear them faster than the 5-minute interval. Use the manual SQL above under "Sweeper isn't running."
+`POST /internal/sweep` conditionally fails expired leased attempts and lease-less orphan attempts. To act sooner than the configured scheduler cadence, follow "Sweeper isn't running" above. A months-old execution with a live lease or a fresh `running_since` may be healthy; do not fail it based on `started_at`.
 
 ### Highspot MCP returning huge base64 responses
 

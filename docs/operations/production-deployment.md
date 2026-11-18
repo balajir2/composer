@@ -8,6 +8,8 @@ This runbook is the **end-to-end checklist** for going live. It is not a replace
 
 Read it in full once before starting. Each section ends with a **"Done when"** acceptance criterion you can pin against.
 
+**Release ordering:** complete the database migration prerequisite in Phase 1.1a before starting the release's backend image, running its smoke test, or creating/enabling scheduler jobs that call it. Phase 3 verifies that prerequisite and seeds templates; do not postpone schema application until after the backend starts.
+
 ## Phase 0 — Decisions before infrastructure exists
 
 Decisions you'll be locked into until the next major maintenance window. Make them deliberately.
@@ -38,7 +40,25 @@ Walk through [postgres-setup.md](postgres-setup.md). The end state:
 - Daily backup job verified by checking the most recent backup timestamp in the host's UI
 - Network ACL configured so only your backend host's egress IPs (or VPC) can reach the database
 
+### 1.1a Apply release migrations before backend startup
+
+Use an administrative/release environment with the intended `DATABASE_URL` and the release's schema. This step does not need a running new backend:
+
+```bash
+uv run prisma generate
+uv run prisma migrate deploy
+uv run prisma migrate status
+```
+
+For this lifecycle release, verify `20261117000000_execution_attempt_timing` is applied before any new backend code, workers, or sweepers run. It adds nullable `running_since` and `failure_code`; historical rows stay unchanged and new claims/resumes establish attempt timestamps. Inspect legacy running rows with null attempt timestamps separately because orphan sweeping requires `runningSince`. Validate real-Postgres integration races against the migrated schema before promotion.
+
+If migration application or verification fails, keep the new backend revision stopped and its scheduler jobs uncreated/paused; resolve the database error before proceeding. On Cloud Run, this prerequisite comes **before** invoking `scripts/gcp-bootstrap.ps1`, since that script deploys the backend and creates scheduler jobs. Existing jobs must not target the new release until its schema is ready.
+
+**Done when**: `prisma migrate status` confirms the intended database has all release migrations applied, including `20261117000000_execution_attempt_timing`.
+
 ### 1.2 Backend host
+
+Proceed only after Phase 1.1a succeeds. Provisioning the host can happen earlier, but starting the new application image or enabling its scheduler targets cannot.
 
 Provision a container host that supports:
 
@@ -147,14 +167,11 @@ The complete list of supported variables is in [`../../.env.example`](../../.env
 
 ## Phase 3 — Run migrations + seed templates
 
-Apply database migrations **before deploying the new backend code or enabling its workers/sweeps**. Run management commands from a release/administrative environment with the intended `DATABASE_URL`; a running new backend is not a prerequisite. For this lifecycle release, apply the migration adding nullable `running_since` and `failure_code` (`20261117000000_execution_attempt_timing`) first, verify it is present, then deploy code and the timing settings. Historical rows stay unchanged; new claims/resumes establish attempt timestamps. Inspect legacy running rows with null attempt timestamps separately because orphan sweeping requires `runningSince`. Validate real-Postgres integration races against the migrated schema before promotion.
+Migration application was a hard prerequisite in Phase 1.1a, before backend startup and scheduler enablement. This phase verifies the already-applied schema and seeds templates; if the schema check fails, stop the new backend and pause its scheduler targets, then return to Phase 1.1a.
 
 ```bash
-# Generate the Prisma client (always after schema changes too)
-uv run prisma generate
-
-# Apply migrations
-uv run prisma migrate deploy
+# Confirm the prerequisite completed against the intended database
+uv run prisma migrate status
 
 # Seed the 20 reference templates (idempotent — safe to re-run)
 uv run python -m scripts.seed_templates
