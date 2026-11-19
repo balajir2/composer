@@ -18,10 +18,10 @@
 # syntax=docker/dockerfile:1.7
 
 # ─── builder ──────────────────────────────────────────────────────────
-# Base images are pinned by multi-arch index digest (captured 2026-11-02 via
+# Base images are pinned by multi-arch index digest (captured 2026-11-19 via
 # `docker buildx imagetools inspect`).  Bump the tag AND digest together,
 # deliberately; never re-point to a floating tag.
-FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159 AS builder
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -66,7 +66,7 @@ COPY src/ ./src/
 RUN uv sync --frozen --no-dev
 
 # ─── runtime ──────────────────────────────────────────────────────────
-FROM python:3.12-slim@sha256:aa943ce411423c7582288f18707ff66eddcbaeb510502d747a72aeb34f30d159 AS runtime
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -78,6 +78,12 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=8080
 
 WORKDIR /app
+
+# Pull fixed Debian security packages that may be newer than the pinned base
+# image rebuild (for example apt 3.0.4 and zlib deb13u1).
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 
 # Copy everything we need from the builder in a single layer.  This
 # brings the venv (with the generated Prisma client), the source, the

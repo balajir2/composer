@@ -46,6 +46,8 @@ dependencies = [
 
     # Email validation (Pydantic EmailStr, Phase 7a)
     "email-validator>=2.0.0",
+    # Security floor for email-validator's DNS dependency (CVE-2026-128089).
+    "dnspython>=2.9.2",
 
     # Utilities
     "python-dotenv>=1.0.1",
