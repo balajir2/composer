@@ -166,3 +166,25 @@ def test_conditional_nodes_are_not_given_unlabelled_edges() -> None:
     normalize_orchestration(draft)
 
     assert all(e.source != "i" for e in draft.edges.values())
+
+
+def test_duplicate_edges_are_collapsed_to_one() -> None:
+    """2026-11-19 defect: persisted duplicate edges (same source/target/branch)
+    survived every build turn and reappeared on the canvas."""
+    draft = _draft(
+        [_start("start-1"), _agent("search"), _agent("pii"), _end("end-1")],
+        [
+            ("start-1", "search"),
+            ("search", "pii"),
+            ("search", "pii"),
+            ("pii", "end-1"),
+            ("pii", "end-1"),
+            ("pii", "end-1"),
+        ],
+    )
+
+    normalize_orchestration(draft)
+
+    assert len(draft.edges) == 3
+    assert list(draft.edges) == ["e0", "e1", "e3"]  # first occurrence wins
+    assert _violations(draft) == []

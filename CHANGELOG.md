@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — "Build with AI" duplicate edges that reappeared after deletion (2026-11-19)
+
+- **Lost manual edits:** the builder reads the workflow from the database and saves its result back, but canvas edits autosave on a 3-second debounce. Deleting edges and messaging the builder inside that window made it build on (and save over) the stale graph, so deleted edges came back. The panel now saves pending canvas edits before every builder request. If that save fails, the request does not run and the user is told why.
+- **Duplicate edges:** `connect_nodes` added a new edge under a fresh id even when that `source → target (branch)` edge already existed. It is now idempotent. Every build turn also collapses any duplicates already stored, keeping the first, so affected workflows repair themselves on their next turn.
+- **No way to remove an edge:** added a `disconnect_nodes` tool, so the builder no longer has to delete a whole node to drop one edge.
+
 ### Fixed — bounded processing attempts and durable execution lifecycle (2026-11-18)
 
 - Active attempts default to 29 minutes (`EXECUTION_MAX_RUNTIME_SECONDS=1740`) plus a 30-second shutdown grace (`EXECUTION_SHUTDOWN_GRACE_SECONDS`, allowed 1–60 seconds). Their sum must be at most 1800 seconds and supplies both the Cloud Tasks dispatch deadline and processing lease. `ORPHANED_RUNNING_GRACE_SECONDS=120` is positive claim grace for a running attempt without a lease, measured from the new `runningSince` field. The durable thread can span months; each approval resume starts a fresh processing attempt.

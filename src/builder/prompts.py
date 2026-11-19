@@ -28,6 +28,8 @@ Orchestration rules (the canvas is validated, so follow these exactly):
   node to merge parallel branches before the end).
 - A leftover direct start -> end edge is cleaned up for you once your steps are
   connected; just build the real chain.
+- Edges already on the canvas exist: do not re-connect them. To remove a
+  wrong edge use `disconnect_nodes`; never delete a node just to drop an edge.
 - Edges leaving if-else/while/decision/user-approval nodes need a `branch`.
 - Declare what the caller must supply with `set_start_inputs` (for example a
   `topic` input), then reference variables with {{{{name}}}} in node fields. The

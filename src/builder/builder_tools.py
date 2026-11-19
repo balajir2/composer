@@ -171,9 +171,30 @@ def make_builder_tools(ctx: BuilderContext) -> list[BaseTool]:
             return f"ERROR: unknown source {source!r}."
         if target not in draft.nodes:
             return f"ERROR: unknown target {target!r}."
+        # Idempotent: the canvas lists existing edges and models re-add them,
+        # which used to pile up duplicate edges under fresh ids.
+        if any(
+            e.source == source and e.target == target and e.branch == branch
+            for e in draft.edges.values()
+        ):
+            return f"ok: {source!r} -> {target!r} is already connected."
         edge_id = f"e-{secrets.token_hex(4)}"
         draft.edges[edge_id] = WorkflowEdge(id=edge_id, source=source, target=target, branch=branch)
         return f"ok: connected {source!r} -> {target!r}."
+
+    @tool
+    def disconnect_nodes(source: str, target: str, branch: str | None = None) -> str:
+        """Remove the edge(s) from `source` to `target` without removing either node. Pass `branch` to remove only that branch's edge."""
+        matching = [
+            eid
+            for eid, e in draft.edges.items()
+            if e.source == source and e.target == target and (branch is None or e.branch == branch)
+        ]
+        if not matching:
+            return f"ERROR: no edge {source!r} -> {target!r}."
+        for eid in matching:
+            del draft.edges[eid]
+        return f"ok: disconnected {source!r} -> {target!r}."
 
     @tool
     def set_start_inputs(variables: list[dict[str, Any]]) -> str:
@@ -213,6 +234,7 @@ def make_builder_tools(ctx: BuilderContext) -> list[BaseTool]:
         update_node,
         remove_node,
         connect_nodes,
+        disconnect_nodes,
         set_start_inputs,
         request_credential,
     ]
