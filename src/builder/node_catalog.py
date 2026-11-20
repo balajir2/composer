@@ -6,6 +6,7 @@ in sync with the node-type set so a new node type can't be silently missing
 from the builder's vocabulary.
 """
 
+import re
 from collections.abc import Mapping
 from types import UnionType
 from typing import Any, Literal, Union, get_args, get_origin
@@ -66,8 +67,12 @@ def build_node_catalog() -> str:
     return "\n".join(lines)
 
 
-# label is its own create_node argument; nodeName is a UI alias field.
-_GUIDE_SKIP = {"label", "nodeName"}
+# label is its own create_node argument; nodeName/nodeType are UI bookkeeping.
+_GUIDE_SKIP = {"label", "nodeName", "nodeType"}
+# Credential fields stay out of the guide: listing them invites the model to
+# invent values, and credentials must come from the user (request_credential).
+# Deliberately narrow: plain "...Key" fields such as stateKey are real settings.
+_SECRET_FIELD = re.compile(r"(?i)token|apikey|secret|password")
 
 
 def _describe_type(annotation: Any) -> str:
@@ -104,6 +109,7 @@ def build_field_guide(node_classes: Mapping[str, type[BaseModel]]) -> str:
             f"({_describe_type(info.annotation)})"
             for name, info in data_cls.model_fields.items()
             if (info.alias or name) not in _GUIDE_SKIP
+            and not _SECRET_FIELD.search(info.alias or name)
         ]
         lines.append(f"- `{node_type}`: " + (", ".join(fields) or "no fields"))
     return "\n".join(lines)

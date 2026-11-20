@@ -78,3 +78,11 @@ def test_system_prompt_includes_field_guide_and_models() -> None:
     prompt = build_system_prompt("(empty)", {"openai/gpt-5": None})
     assert "piiEnabled" in prompt
     assert "`openai/gpt-5`" in prompt
+
+
+def test_field_guide_leaves_out_secrets_and_ui_bookkeeping() -> None:
+    """Listing credential fields invites the model to invent values for them;
+    credentials must come from the user via request_credential."""
+    guide = build_field_guide(NODE_CLASSES)
+    for hidden in ("apiToken", "vectorDbApiKey", "nodeType"):
+        assert hidden not in guide
