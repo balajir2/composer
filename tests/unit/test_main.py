@@ -12,7 +12,9 @@ def test_standalone_includes_auth_register_route(monkeypatch: pytest.MonkeyPatch
     from src.main import create_app
 
     app = create_app()
-    paths = {getattr(r, "path", None) for r in app.routes}
+    # FastAPI >=0.150 nests included routers (_IncludedRouter) in app.routes,
+    # so list the served paths from the public OpenAPI schema instead.
+    paths = set(app.openapi()["paths"])
     assert "/auth/register" in paths
     assert "/auth/login" in paths
     assert "/auth/refresh" in paths
@@ -31,7 +33,9 @@ def test_embedded_excludes_auth_register(monkeypatch: pytest.MonkeyPatch) -> Non
     from src.main import create_app
 
     app = create_app()
-    paths = {getattr(r, "path", None) for r in app.routes}
+    # FastAPI >=0.150 nests included routers (_IncludedRouter) in app.routes,
+    # so list the served paths from the public OpenAPI schema instead.
+    paths = set(app.openapi()["paths"])
     # Standalone-only routes absent
     assert "/auth/register" not in paths
     assert "/auth/login" not in paths

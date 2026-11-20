@@ -6,7 +6,7 @@ Routes and the engine access it via a Depends() helper.
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from datetime import timedelta
 from typing import TYPE_CHECKING
@@ -74,7 +74,7 @@ async def _connect_with_retry(db: Prisma) -> None:  # pyright: ignore[reportUnkn
 @asynccontextmanager
 async def prisma_lifespan(  # pyright: ignore[reportUnknownParameterType]
     app: FastAPI,
-) -> AsyncIterator[Prisma]:  # pyright: ignore[reportUnknownParameterType]
+) -> AsyncGenerator[Prisma, None]:  # pyright: ignore[reportUnknownParameterType]
     """Connect a Prisma client + attach checkpointer for the duration of the app's lifespan."""
     # Deferred import to avoid circular dependency: checkpointer imports db module.
     from src.storage.checkpointer import PrismaCheckpointSaver
