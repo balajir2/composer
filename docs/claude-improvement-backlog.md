@@ -1,5 +1,14 @@
 # Composer Improvement Backlog for Claude Code
 
+> **⚠️ Needs update — historical record, not current state (flagged 2026-11-20).** This is the
+> 2026-07-11 Codex audit. Its per-item status notes were last refreshed 2026-07-21 and some are
+> wrong: **P0-0 was fixed on 2026-07-12** (commit `bba60d2`) despite the "not started" note below,
+> and P1-2/P1-4 are merged to `main` (`7e9a4ef`). The "Initial recommendation" order and the
+> copy-paste prompt at the bottom are obsolete. Still open from this list: P0-5 (`Credential`
+> model), the remainder of P1-5, and P2-1 through P2-4 — see `docs/deferred-backlog.md`. For the
+> newer audit, see `docs/claude-system-audit-fix-list.md`. Re-verify any item against the code
+> before acting on it.
+
 ## Purpose
 
 This document is a review and implementation backlog for improving Composer's reliability,
@@ -111,9 +120,10 @@ race, security-boundary, and adversarial tests that the existing suite does not 
 
 ## P0-0: Fix frontend/backend node field contracts
 
-> **Status (2026-07-21): not started.** Not part of the 2026-07-12 Codex-audit remediation pass (see
-> CHANGELOG.md's "Fixed — Codex audit remediation" entry, which covers P0-1 through P1-6 but not
-> P0-0) and not in `docs/deferred-backlog.md`. Still open.
+> **Status (corrected 2026-11-20): resolved.** Shipped 2026-07-12 in commit `bba60d2`
+> ("correct node-panel field contracts for P0-0"). All seven panels now write the backend field
+> names. Arcade, Extract, and Join Chunks migrate legacy saved fields on open, and End's no-op
+> `outputRenderHint` control was removed. The earlier 2026-07-21 "not started" note was incorrect.
 
 ### Problem
 
@@ -1128,6 +1138,9 @@ Resolved versions observed in the local environment:
 > validated by a proof-of-concept (`scripts/poc_persistence_row_lock.py`) confirming Prisma's
 > raw-SQL escape hatch supports the `SELECT ... FOR UPDATE SKIP LOCKED` row-claiming pattern P1-2
 > needed. See `docs/deferred-backlog.md` §P3-1 for concrete trigger conditions for revisiting.
+>
+> **Pending (2026-11-20):** the owner has decided to plan an incremental Prisma → SQLAlchemy
+> migration. That decision has no ADR yet; once one supersedes ADR-0031, update this note to link it.
 
 ### Objective
 
