@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — SQLAlchemy foundation, migration phase 0 (of phases 0–7) (2026-11-20)
+
+- **Why:** Prisma Client Python, Composer's ORM, is archived upstream. This starts the move to SQLAlchemy 2.x + Alembic on psycopg 3 (ADR-0035).
+- **What:** models for all 17 tables, mapped onto the existing schema; an empty Alembic baseline; a schema-parity test; the SQLAlchemy engine starts alongside Prisma. No behaviour change, and no route uses SQLAlchemy yet.
+- **Rules from now on:** schema changes are Alembic revisions only (`prisma/` is frozen and a test enforces it). The deploy runs `alembic upgrade head` after `prisma migrate deploy`.
+- **Local development:** run uvicorn with `--reload` on Windows, and set `DB_CONNECT_TIMEOUT_SECONDS=10` locally if you're far from the database (see CLAUDE.md gotchas 6–7).
+
 ### Added — Build with AI fills in nodes completely (2026-11-20)
 
 Builder output often left nodes empty (an agent with no instructions, a guardrails node with every check off, a model that is not enabled), and an empty node does nothing at run time. The builder now checks its own work and fixes it before handing the canvas back.

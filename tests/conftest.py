@@ -18,6 +18,7 @@ from dotenv import load_dotenv
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
 
+from src.config import get_settings
 from src.main import create_app
 
 load_dotenv()
@@ -44,6 +45,9 @@ def pytest_collection_modifyitems(
 async def app() -> AsyncIterator[FastAPI]:
     # The app reads DATABASE_URL; point it at the test DB for this process.
     os.environ["DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]
+    # Settings are cached at import time by several modules; drop the cache so
+    # the lifespan's SQLAlchemy engine sees the test URL (Prisma reads env directly).
+    get_settings.cache_clear()
     _app = create_app()
     async with _app.router.lifespan_context(_app):
         yield _app

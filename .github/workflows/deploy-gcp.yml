@@ -151,6 +151,10 @@ jobs:
           uv sync --frozen
           uv run prisma migrate deploy
           uv run prisma migrate status
+          # Alembic owns schema changes from 2026-11-20 (prisma/ is frozen).
+          # On the first run this only records the empty baseline revision.
+          uv run alembic upgrade head
+          uv run alembic current
 
       - name: Deploy to Cloud Run
         run: |

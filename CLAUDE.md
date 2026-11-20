@@ -101,7 +101,8 @@ Backend phases 0–9 ≈ 10 weeks. UI phase 10 ≈ 3 weeks. Total ≈ 13 weeks.
 |---|---|
 | Language | Python 3.11 or 3.12 (`>=3.11,<3.13`) |
 | Web framework | FastAPI |
-| ORM | **Prisma Python** (user explicitly chose over SQLAlchemy) |
+| ORM | **SQLAlchemy 2.x (async) + Alembic**, replacing Prisma Python (archived upstream) area by area per `docs/superpowers/specs/2026-11-20-prisma-to-sqlalchemy-migration-design.md`. Both run until the migration's phase 6. **Schema changes go through Alembic only; `prisma/` is frozen.** |
+| Postgres driver | **psycopg 3** (asyncpg is removed during the migration) |
 | Database | Postgres 15+ (Neon for dev, Docker fallback) |
 | Orchestration | LangGraph Python + LangChain |
 | LLM providers | `langchain-anthropic`, `langchain-openai`, `langchain-google-genai`, `langchain-groq` |
@@ -125,11 +126,21 @@ Backend phases 0–9 ≈ 10 weeks. UI phase 10 ≈ 3 weeks. Total ≈ 13 weeks.
 # Install / update dependencies
 uv sync --all-extras
 
-# Generate Prisma client after schema changes
+# Generate Prisma client (after pulling; Prisma's schema is frozen)
 uv run prisma generate
 
-# Create a new migration after changing prisma/schema.prisma
-uv run prisma migrate dev --name <migration_name>
+# (Frozen) Prisma migrations: do not create new ones
+# Never run prisma migrate dev/diff against a database Alembic has touched (it would see alembic_version as drift).
+# (frozen) uv run prisma migrate dev ...  — do NOT run; schema changes are Alembic revisions
+
+# Schema changes (Prisma's schema is frozen): write an Alembic revision
+uv run alembic revision -m "<what changed>"
+
+# Apply Alembic migrations (after `prisma migrate deploy` while both exist)
+uv run alembic upgrade head
+
+# Apply Alembic to your test database before running integration tests
+DATABASE_URL=$TEST_DATABASE_URL uv run alembic upgrade head
 
 # Run the dev server
 uv run uvicorn src.main:app --reload
@@ -282,6 +293,8 @@ Record of issues hit during scaffolding — watch for these:
 3. **Ruff's UP035** — `AsyncIterator` must come from `collections.abc`, not `typing`.
 4. **Pyright's `reportUnusedFunction`** on FastAPI `@app.get` handlers is a false positive. Suppress inline or use APIRouter pattern.
 5. **LF/CRLF warnings in Git on Windows** — harmless. `.gitattributes` could be added if it becomes annoying.
+6. **psycopg async needs a selector event loop on Windows.** `uv run uvicorn src.main:app --reload` (the documented command) uses one; without `--reload`, uvicorn uses the Proactor loop and SQLAlchemy fails at startup with `Psycopg cannot use the 'ProactorEventLoop'`. Alembic's env.py handles this itself. CI and production are Linux.
+7. **Far from the database? Raise the local startup timeout.** SQLAlchemy's first connection makes extra round trips (about 4 s from a distant region), above the 3 s `DB_CONNECT_TIMEOUT_SECONDS` default that guards Cloud Run against crash loops. Set `DB_CONNECT_TIMEOUT_SECONDS=10` in your local `.env`; keep production at 3.
 
 ---
 

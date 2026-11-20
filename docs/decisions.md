@@ -16,6 +16,8 @@ Entries are numbered sequentially and never renumbered. Superseding decisions ge
 
 ## ADR-0001: LangGraph checkpointer — Prisma owns schema, thin custom saver
 
+> **Superseded by ADR-0035** (2026-11-20): the checkpointer moves to `langgraph-checkpoint-postgres` in the SQLAlchemy migration's phase 5.
+
 **Status:** Accepted (2026-04-20)
 
 **Context.** LangGraph Python persists execution state (for interrupts, resume, time-travel) through a `BaseCheckpointSaver` implementation. Two offs-the-shelf options existed — the official `langgraph-checkpoint-postgres` package (psycopg-based, manages its own tables), or writing a custom saver over our Prisma client. Three alternatives considered:
@@ -1021,3 +1023,16 @@ Timeouts fail with `execution_timeout`, expired leases with `lease_expired`, aba
 **Consequences and rollout.** Long human waits remain supported without long-running workers, while timed-out or lost attempts become visible failures needing an operator/user decision. There is no exactly-once guarantee for external side effects already started. Apply `20261117000000_execution_attempt_timing` before new backend code, workers, or sweeps; it adds nullable `running_since` and `failure_code` without backfilling history. Generate the matching client, deploy the timing settings, and validate real-Postgres race tests against the migrated schema before promotion. New claims/resumes populate attempt timestamps; inspect legacy running rows with null timestamps separately.
 
 **Related.** ADR-0033; [API lifecycle](api-reference.md#executions); [production rollout](operations/production-deployment.md#phase-3--run-migrations--seed-templates); [Cloud Run setup](operations/gcp-cloud-run-setup.md#step-2--run-the-first-deploy); `tests/integration/test_durable_execution.py`.
+
+
+## ADR-0035: Replace Prisma Python with SQLAlchemy 2.x + Alembic on psycopg 3
+
+**Date.** 2026-11-20. **Supersedes** ADR-0001 (custom Prisma checkpointer) once phase 5 ships.
+
+**Context.** Prisma Client Python was archived by its maintainer in March 2025 (no releases since 0.15.0, August 2024; supports Python up to 3.12). It sits under 234 query call sites and ties the backend image to Node.js. Nothing is broken today, but nothing upstream will fix it.
+
+**Decision.** Move to SQLAlchemy 2.x async + Alembic on psycopg 3, mapped onto the existing tables (no data migration), behind repository modules tested against real Postgres. Switch the LangGraph checkpointer to the official `langgraph-checkpoint-postgres`. Migrate in eight PRs with both ORMs live; Alembic owns schema changes from the first PR. Full design: `docs/superpowers/specs/2026-11-20-prisma-to-sqlalchemy-migration-design.md`.
+
+**Consequences.** Composer gains a maintained ORM, one database driver, and no Node.js in the backend. For about three weeks two ORMs share the tables, guarded by a schema-parity test, a Prisma-schema freeze and an import boundary. Python 3.15 is unblocked from the ORM side once Prisma is removed.
+
+**Related.** ADR-0001, ADR-0033, ADR-0034.
