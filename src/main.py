@@ -59,7 +59,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         # execution (src/llm/providers.py reads from settings.*_api_key)
         # can see them.  Env-set values win; DB fills in the blanks.  A
         # revision restart picks up edits made via the admin UI.
-        await sync_llm_keys_from_db(db)
+        async with app.state.db_sessionmaker() as session:
+            await sync_llm_keys_from_db(session)
 
         sweeper_task = start_sweeper(
             app,

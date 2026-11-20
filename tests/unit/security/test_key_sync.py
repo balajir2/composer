@@ -6,25 +6,26 @@ import base64
 import os
 from dataclasses import dataclass
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
+from src.db.repos import llm_api_keys as keys_repo
 from src.security.encryption import encrypt
+from tests.unit.db_fakes import FakeSession
 
 
 @dataclass
 class _Row:
-    """Stand-in for a `LlmApiKey` Prisma row.
+    """Stand-in for an `LlmApiKeyRecord`.
 
-    The real model also has updatedAt/createdAt/keyPrefix; the sync only
-    touches `provider` + `encryptedKey` + `keyPrefix` (the latter only for
-    the decrypt-failure warning), so that's all we model here.
+    The sync only touches `provider` + `encrypted_key` + `key_prefix` (the
+    latter only for the decrypt-failure warning), so that's all we model here.
     """
 
     provider: str
-    encryptedKey: str
-    keyPrefix: str
+    encrypted_key: str
+    key_prefix: str
 
 
 def _set_valid_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -51,14 +52,18 @@ def _clear_provider_fields(*fields: str) -> None:
         setattr(settings, f, "")
 
 
-def _make_db(rows: list[_Row], *, query_raises: BaseException | None = None) -> Any:
-    """Build a minimal mock Prisma client that returns `rows` from llmapikey.find_many()."""
-    db = MagicMock()
+def _make_db(
+    monkeypatch: pytest.MonkeyPatch,
+    rows: list[_Row],
+    *,
+    query_raises: BaseException | None = None,
+) -> Any:
+    """Return a fake session whose repo read (`keys_repo.list_keys`) yields `rows`."""
     if query_raises is None:
-        db.llmapikey.find_many = AsyncMock(return_value=rows)
+        monkeypatch.setattr(keys_repo, "list_keys", AsyncMock(return_value=rows))
     else:
-        db.llmapikey.find_many = AsyncMock(side_effect=query_raises)
-    return db
+        monkeypatch.setattr(keys_repo, "list_keys", AsyncMock(side_effect=query_raises))
+    return FakeSession()
 
 
 @pytest.mark.asyncio
@@ -72,11 +77,12 @@ async def test_sync_populates_empty_fields(monkeypatch: pytest.MonkeyPatch) -> N
     _clear_provider_fields("anthropic_api_key", "openai_api_key", "resend_api_key")
 
     db = _make_db(
+        monkeypatch,
         [
             _Row("anthropic", encrypt("sk-ant-real"), "sk-ant"),
             _Row("openai", encrypt("sk-openai-real"), "sk-ope"),
             _Row("resend", encrypt("re-live-real"), "re-liv"),
-        ]
+        ],
     )
     populated = await sync_llm_keys_from_db(db)
 
@@ -104,7 +110,7 @@ async def test_sync_preserves_env_set_values(monkeypatch: pytest.MonkeyPatch) ->
     from src.security.key_sync import sync_llm_keys_from_db
 
     get_settings.cache_clear()
-    db = _make_db([_Row("anthropic", encrypt("sk-ant-from-db"), "sk-ant")])
+    db = _make_db(monkeypatch, [_Row("anthropic", encrypt("sk-ant-from-db"), "sk-ant")])
     populated = await sync_llm_keys_from_db(db)
 
     assert populated == {}, "env-set fields must not be overridden"
@@ -118,7 +124,7 @@ async def test_sync_skips_unknown_provider(
     _set_valid_encryption_key(monkeypatch)
     from src.security.key_sync import sync_llm_keys_from_db
 
-    db = _make_db([_Row("aurora-borealis", encrypt("whatever"), "whatev")])
+    db = _make_db(monkeypatch, [_Row("aurora-borealis", encrypt("whatever"), "whatev")])
     with caplog.at_level("WARNING", logger="src.security.key_sync"):
         populated = await sync_llm_keys_from_db(db)
 
@@ -145,10 +151,11 @@ async def test_sync_handles_decrypt_failure(
     # Garbage ciphertext: valid base64 but won't decrypt.
     bad_ct = base64.b64encode(b"x" * 64).decode()
     db = _make_db(
+        monkeypatch,
         [
             _Row("anthropic", bad_ct, "sk-ant"),
             _Row("openai", encrypt("sk-openai-ok"), "sk-ope"),
-        ]
+        ],
     )
 
     with caplog.at_level("WARNING", logger="src.security.key_sync"):
@@ -171,7 +178,7 @@ async def test_sync_survives_db_query_failure(
     _set_valid_encryption_key(monkeypatch)
     from src.security.key_sync import sync_llm_keys_from_db
 
-    db = _make_db([], query_raises=RuntimeError("connection refused"))
+    db = _make_db(monkeypatch, [], query_raises=RuntimeError("connection refused"))
 
     with caplog.at_level("WARNING", logger="src.security.key_sync"):
         populated = await sync_llm_keys_from_db(db)
@@ -195,7 +202,7 @@ async def test_sync_empty_table_is_noop(monkeypatch: pytest.MonkeyPatch) -> None
     get_settings.cache_clear()
     _clear_provider_fields("anthropic_api_key")
 
-    db = _make_db([])
+    db = _make_db(monkeypatch, [])
     populated = await sync_llm_keys_from_db(db)
 
     assert populated == {}

@@ -9,10 +9,11 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from src.db.repos import llm_api_keys as keys_repo
+from src.db.session import get_session
 from src.security.auth import ensure_admin
-from src.storage.db import get_db
 from src.tools.base import HealthStatus
 from src.tools.registry import UnknownProviderError, get_provider, list_providers
 
@@ -49,7 +50,7 @@ async def list_built_in_tools(
 @router.post("/{tool_id}/test-connection", response_model=ToolTestResponse)
 async def test_built_in_tool(
     tool_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> ToolTestResponse:  # pyright: ignore[reportUnusedFunction]
     try:
@@ -62,14 +63,12 @@ async def test_built_in_tool(
     # admin can diagnose DB-vs-runtime drift (keys live in Postgres SoT and are
     # synced to deploy env at build time).
     try:
-        db_row = await asyncio.wait_for(
-            db.llmapikey.find_unique(where={"provider": tool_id}),  # pyright: ignore[reportAttributeAccessIssue]
-            timeout=3.0,
-        )
-        has_db_key = db_row is not None
+        has_db_key = await asyncio.wait_for(keys_repo.exists(session, tool_id), timeout=3.0)
     except TimeoutError:
         logger.warning("admin-tools DB lookup timed out for provider=%s", tool_id)
         has_db_key = False
+    # Release the pooled connection before the (slow) provider health check.
+    await session.rollback()
 
     from src.config import get_settings
     from src.tools.base import ApiKeyAuth

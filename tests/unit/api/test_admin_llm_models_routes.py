@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from src.api import admin_llm_models as mod
 from src.api.admin_llm_models_verify import ModelVerifyResult, VerifyStatus
 from src.db.errors import AlreadyExists
+from src.db.repos import llm_api_keys as keys_repo
 from src.db.repos import llm_models as models_repo
 from src.db.repos.common import UNSET
 from src.db.repos.llm_models import LlmModelRecord
@@ -228,14 +229,13 @@ def _verify_setup(
     key_row: SimpleNamespace | None,
     updated: LlmModelRecord | None = None,
 ) -> tuple[TestClient, AsyncMock, FakeSession, _FakeVerify]:
-    client, db, session = _build(monkeypatch, admin=True)
+    client, _, session = _build(monkeypatch, admin=True)
     fake = _FakeVerify(status)
     monkeypatch.setattr(mod, "run_model_verify", fake)
     monkeypatch.setattr(models_repo, "get_by_id", AsyncMock(return_value=row))
     record = AsyncMock(return_value=updated or row)
     monkeypatch.setattr(models_repo, "record_verification", record)
-    # The key lookup stays on Prisma until the LLM API keys task.
-    db.llmapikey.find_unique = AsyncMock(return_value=key_row)
+    monkeypatch.setattr(keys_repo, "get", AsyncMock(return_value=key_row))
     return client, record, session, fake
 
 
@@ -258,7 +258,7 @@ def test_verify_without_configured_provider_key_returns_400(
 def test_verify_undecryptable_key_returns_500_without_leaking_ciphertext(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    key_row = SimpleNamespace(encryptedKey="not-valid-ciphertext")
+    key_row = SimpleNamespace(encrypted_key="not-valid-ciphertext")
     client, _, _, fake = _verify_setup(monkeypatch, "ok", row=_row(), key_row=key_row)
     resp = client.post("/admin/llm-models/m1/verify")
     assert resp.status_code == 500
@@ -269,7 +269,7 @@ def test_verify_undecryptable_key_returns_500_without_leaking_ciphertext(
 def test_verify_ok_stamps_row_and_never_returns_the_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    key_row = SimpleNamespace(encryptedKey=_encrypted(monkeypatch))
+    key_row = SimpleNamespace(encrypted_key=_encrypted(monkeypatch))
     updated = _row(verification_status="ok", verification_message="probe-msg", verified_at=_NOW)
     client, record, session, fake = _verify_setup(
         monkeypatch, "ok", row=_row(), key_row=key_row, updated=updated
@@ -291,7 +291,7 @@ def test_verify_ok_stamps_row_and_never_returns_the_api_key(
 def test_verify_releases_the_connection_before_the_slow_probe_and_commits_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    key_row = SimpleNamespace(encryptedKey=_encrypted(monkeypatch))
+    key_row = SimpleNamespace(encrypted_key=_encrypted(monkeypatch))
     client, _, session, fake = _verify_setup(monkeypatch, "ok", row=_row(), key_row=key_row)
     rollbacks_at_probe: list[int] = []
     original = fake.__call__
@@ -307,7 +307,7 @@ def test_verify_releases_the_connection_before_the_slow_probe_and_commits_once(
 
 
 def test_verify_unavailable_auto_disables_enabled_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    key_row = SimpleNamespace(encryptedKey=_encrypted(monkeypatch))
+    key_row = SimpleNamespace(encrypted_key=_encrypted(monkeypatch))
     client, record, session, _ = _verify_setup(
         monkeypatch,
         "unavailable",
@@ -324,7 +324,7 @@ def test_verify_unavailable_auto_disables_enabled_model(monkeypatch: pytest.Monk
 def test_verify_unavailable_on_already_disabled_model_does_not_report_auto_disable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    key_row = SimpleNamespace(encryptedKey=_encrypted(monkeypatch))
+    key_row = SimpleNamespace(encrypted_key=_encrypted(monkeypatch))
     client, record, _, _ = _verify_setup(
         monkeypatch, "unavailable", row=_row(enabled=False), key_row=key_row
     )
@@ -337,7 +337,7 @@ def test_verify_unavailable_on_already_disabled_model_does_not_report_auto_disab
 def test_verify_key_or_network_problems_do_not_touch_the_row(
     monkeypatch: pytest.MonkeyPatch, status: VerifyStatus
 ) -> None:
-    key_row = SimpleNamespace(encryptedKey=_encrypted(monkeypatch))
+    key_row = SimpleNamespace(encrypted_key=_encrypted(monkeypatch))
     client, record, session, _ = _verify_setup(monkeypatch, status, row=_row(), key_row=key_row)
     resp = client.post("/admin/llm-models/m1/verify")
     assert resp.status_code == 200
