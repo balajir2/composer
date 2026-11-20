@@ -178,3 +178,26 @@ def test_data_transform_custom_item_var_is_known_only_in_its_own_node() -> None:
 def test_genuinely_undeclared_variable_is_still_flagged() -> None:
     issues = _vars_issues(_wf(_prompt_node("For {{audience}}")))
     assert len(issues) == 1 and "audience" in issues[0]
+
+
+def test_jira_extract_needs_no_instructions_but_agent_operation_does() -> None:
+    extract = {"id": "j", "type": "jira", "data": {"label": "J", "operation": "extract"}}
+    assert collect_completeness_issues(_wf(extract), model_catalog=CATALOG) == []
+    agent_op = {"id": "j", "type": "jira", "data": {"label": "J", "operation": "agent"}}
+    assert any("instructions" in i for i in collect_completeness_issues(_wf(agent_op)))
+
+
+def test_mcp_single_tool_mode_needs_neither_instructions_nor_model() -> None:
+    single = {
+        "id": "m",
+        "type": "mcp",
+        "data": {"label": "M", "mcpServerId": "srv", "toolName": "search", "arguments": {}},
+    }
+    assert collect_completeness_issues(_wf(single), model_catalog=CATALOG) == []
+
+
+def test_mcp_agent_mode_is_still_checked() -> None:
+    agent_mode = {"id": "m", "type": "mcp", "data": {"label": "M", "mcpServerId": "srv"}}
+    issues = collect_completeness_issues(_wf(agent_mode), model_catalog=CATALOG)
+    assert any("instructions" in i for i in issues)
+    assert any("`model`" in i for i in issues)

@@ -47,7 +47,14 @@ def collect_completeness_issues(
         if only is not None and node_id not in only:
             continue
         where = f"{node_type} node {node_id!r}"
-        field = _INSTRUCTION_FIELD.get(node_type)
+        # Modes that run without an LLM need no prompt or model: jira
+        # "extract" is a JQL search; an mcp node with a toolName and no
+        # instructions calls that one tool (src/executors/mcp.py arun).
+        uses_llm = not (
+            (node_type == "jira" and data.get("operation") == "extract")
+            or (node_type == "mcp" and data.get("toolName") and not data.get("instructions"))
+        )
+        field = _INSTRUCTION_FIELD.get(node_type) if uses_llm else None
         if field and not str(data.get(field) or "").strip():
             issues.append(f"{where} has no `{field}`: say what this step must do.")
         if node_type == "guardrails" and not any(data.get(f) for f in _GUARDRAIL_FLAGS):
@@ -64,7 +71,7 @@ def collect_completeness_issues(
                 f"{where} has no `mcpServerId`: call request_credential with kind "
                 "'mcp-server' instead of guessing an id."
             )
-        if model_catalog and node_type in _MODEL_CHECKED_TYPES:
+        if model_catalog and uses_llm and node_type in _MODEL_CHECKED_TYPES:
             model = data.get("model")
             if not model:
                 issues.append(f"{where} has no `model`: pick one of the available models.")
