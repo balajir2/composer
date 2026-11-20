@@ -179,7 +179,13 @@ def test_test_connection_releases_the_connection_before_the_provider_probe(
 
     client, session = _client_admin(monkeypatch)
     row = _llm_row("openai", encrypted_key=encrypt("sk-real"))
-    monkeypatch.setattr(keys_repo, "get", AsyncMock(return_value=row))
+    at_lookup: list[int] = []
+
+    async def lookup(_session: object, _provider: str) -> LlmApiKeyRecord:
+        at_lookup.append(session.rollback.await_count)
+        return row
+
+    monkeypatch.setattr(keys_repo, "get", lookup)
     seen: list[tuple[int, str]] = []
 
     async def probe(provider: str, key: str) -> KeyTestResult:
@@ -189,6 +195,8 @@ def test_test_connection_releases_the_connection_before_the_provider_probe(
     monkeypatch.setattr(mod, "run_key_test", probe)
     resp = client.post("/admin/llm-keys/openai/test-connection")
     assert resp.status_code == 200 and resp.json()["ok"] is True
+    # Rollback must come AFTER the lookup (else the lookup re-opens a transaction).
+    assert at_lookup == [0]
     assert seen == [(1, "sk-real")]
     session.commit.assert_not_called()
 

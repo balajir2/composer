@@ -293,8 +293,15 @@ def test_verify_releases_the_connection_before_the_slow_probe_and_commits_once(
 ) -> None:
     key_row = SimpleNamespace(encrypted_key=_encrypted(monkeypatch))
     client, _, session, fake = _verify_setup(monkeypatch, "ok", row=_row(), key_row=key_row)
+    rollbacks_at_lookup: list[int] = []
     rollbacks_at_probe: list[int] = []
     original = fake.__call__
+
+    async def lookup(_session: object, _provider: str) -> SimpleNamespace:
+        rollbacks_at_lookup.append(session.rollback.await_count)
+        return key_row
+
+    monkeypatch.setattr(keys_repo, "get", lookup)
 
     async def probe(provider: str, model_id: str, key: str) -> ModelVerifyResult:
         rollbacks_at_probe.append(session.rollback.await_count)
@@ -302,6 +309,8 @@ def test_verify_releases_the_connection_before_the_slow_probe_and_commits_once(
 
     monkeypatch.setattr(mod, "run_model_verify", probe)
     assert client.post("/admin/llm-models/m1/verify").status_code == 200
+    # Rollback must come AFTER the lookup (else the lookup re-opens a transaction).
+    assert rollbacks_at_lookup == [0]
     assert rollbacks_at_probe == [1]
     session.commit.assert_awaited_once()
 

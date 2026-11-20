@@ -202,8 +202,13 @@ def test_test_connection_releases_the_connection_before_the_health_check(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     provider = _FakeProvider()
+    rollbacks_at_lookup: list[int] = []
     rollbacks_at_probe: list[int] = []
     original = provider.health_check
+
+    async def lookup(_session: object, _provider: str) -> bool:
+        rollbacks_at_lookup.append(session.rollback.await_count)
+        return False
 
     async def probe() -> HealthStatus:
         rollbacks_at_probe.append(session.rollback.await_count)
@@ -212,6 +217,9 @@ def test_test_connection_releases_the_connection_before_the_health_check(
     provider.health_check = probe  # type: ignore[method-assign]
     _install(monkeypatch, provider)
     client, session = _build(monkeypatch, admin=True)
+    monkeypatch.setattr(keys_repo, "exists", lookup)
     assert client.post("/admin/tools/fake/test-connection").status_code == 200
+    # Rollback must come AFTER the lookup (else the lookup re-opens a transaction).
+    assert rollbacks_at_lookup == [0]
     assert rollbacks_at_probe == [1]
     session.commit.assert_not_called()
