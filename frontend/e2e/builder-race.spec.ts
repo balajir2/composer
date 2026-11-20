@@ -28,7 +28,9 @@ async function seedWorkflow(page: Page, user: TestUser, edges: object[]): Promis
       isPublic: false,
       nodes: [
         { id: "start-1", type: "start", position: { x: 0, y: 0 }, data: { label: "Start" } },
-        { id: "end-1", type: "end", position: { x: 400, y: 0 }, data: { label: "End" } },
+        // Offset vertically: a perfectly horizontal start->end edge has a zero-height
+        // bounding box, which Playwright treats as hidden, so it cannot be clicked.
+        { id: "end-1", type: "end", position: { x: 400, y: 150 }, data: { label: "End" } },
         { id: "note-1", type: "note", position: { x: 200, y: 200 }, data: { label: "Note" } },
       ],
       edges,
