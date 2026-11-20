@@ -321,6 +321,23 @@ Target spans: `composer.execution.enqueue`, `composer.execution.claim`, `compose
 
 ## Baseline query definitions
 
+### Current sources
+
+These PostgreSQL definitions use `workflow_executions` as mapped in `prisma/schema.prisma`. Bind `:start` and `:end` to UTC timestamps and use the same half-open reporting window for comparisons. Execute in an authorized environment; save query definitions only, never customer results. The source is current database state, not an immutable event ledger: deleted executions disappear and historical values can change. Results are aggregate only.
+
+| Question | Current-source definition |
+|---|---|
+| Execution count | `SELECT count(*) FROM workflow_executions WHERE started_at >= :start AND started_at < :end` (creations in window). |
+| Failure count | `SELECT count(*) FROM workflow_executions WHERE status = 'failed' AND completed_at >= :start AND completed_at < :end` (terminal failures in window, including failures without a failure code). |
+| p50 duration | `SELECT percentile_cont(0.50) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - started_at))) FROM workflow_executions WHERE completed_at >= :start AND completed_at < :end AND completed_at >= started_at` (seconds). |
+| p95 duration | `SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY EXTRACT(EPOCH FROM (completed_at - started_at))) FROM workflow_executions WHERE completed_at >= :start AND completed_at < :end AND completed_at >= started_at` (seconds). |
+| Lease expiry | `SELECT count(*) FROM workflow_executions WHERE failure_code = 'lease_expired' AND completed_at >= :start AND completed_at < :end` (successful terminal lease-expiry writes). Alternatively sum the `F failed` count from expired-lease sweep logs or `leases_expired` from `/internal/sweep` responses; do not combine sources or treat a null component as zero. |
+| Provider failure rate | Unavailable from current application DB/logs: neither all provider requests nor their outcomes are consistently counted, so there is no reliable numerator and denominator. Optional LangSmith may offer a partial provider-specific view if enabled, but cannot establish the application-wide rate. Do not substitute execution failures for provider failures. |
+
+The duration queries measure elapsed execution wall time from row creation to terminal completion, including queue and approval waits. They include completed, failed and canceled rows with completion timestamps; they do not measure individual attempts. Percentiles are null when no qualifying rows exist. Counts for lease expiry may miss deleted rows; log coverage and retention also limit log-based counts.
+
+### Target PromQL
+
 These PromQL templates describe future OTLP-to-Prometheus translation (dots become underscores, counters gain `_total`, histogram buckets gain `_bucket`); the backend and exporter do not exist yet. Record definitions only, never customer results. Use a 5-minute window and aggregate away labels:
 
 | Question | Query |

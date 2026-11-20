@@ -7,20 +7,22 @@ from typing import Any
 import pytest
 
 CATALOG = Path(__file__).resolve().parents[3] / "docs/telemetry/signal-catalog.md"
-FORBIDDEN = {
-    "request_id",
-    "workflow_id",
-    "execution_id",
-    "thread_id",
-    "attempt_id",
-    "node_id",
-    "user_id",
-    "email",
-    "url",
-    "prompt",
-    "response",
-    "exception",
-    "payload",
+APPROVED_ATTRIBUTES = {
+    "trigger_kind",
+    "environment",
+    "status",
+    "failure_code",
+    "result",
+    "node_type",
+    "provider",
+    "operation",
+    "decision",
+    "expired",
+    "eligibility_reason",
+    "model_family",
+    "token_type",
+    "cost_source",
+    "component",
 }
 
 
@@ -34,9 +36,7 @@ def validate(contract: dict[str, Any]) -> None:
         for field in ("owner", "type", "unit", "retention", "redaction"):
             assert metric.get(field), f"{name}: missing {field}"
         for attribute in metric["attributes"]:
-            assert attribute not in FORBIDDEN and not attribute.endswith("_id"), (
-                f"forbidden attribute: {attribute}"
-            )
+            assert attribute in APPROVED_ATTRIBUTES, f"forbidden attribute: {attribute}"
             assert attribute in vocabularies, f"unknown vocabulary: {attribute}"
             values = vocabularies[attribute]
             assert (
@@ -83,6 +83,28 @@ def test_validator_rejects_invalid_contracts(mutation: str, message: str) -> Non
     elif mutation == "identifier":
         metric["attributes"] = ["execution_id"]
     else:
-        metric["attributes"] = ["missing"]
+        metric["attributes"] = ["provider"]
     with pytest.raises(AssertionError, match=message):
+        validate(contract)
+
+
+@pytest.mark.parametrize(
+    "attribute", ["executionId", "email_address", "exception_text", "prompt_text", "response_body"]
+)
+def test_validator_rejects_sensitive_attribute_aliases(attribute: str) -> None:
+    contract: dict[str, Any] = {
+        "vocabularies": {attribute: ["example"]},
+        "metrics": [
+            {
+                "name": "example",
+                "owner": "team",
+                "type": "Counter",
+                "unit": "s",
+                "retention": "operational",
+                "redaction": "metadata",
+                "attributes": [attribute],
+            }
+        ],
+    }
+    with pytest.raises(AssertionError, match="forbidden attribute"):
         validate(contract)
