@@ -16,6 +16,8 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
+from src.db.repos import llm_models as models_repo
+from src.db.runtime import get_registered_sessionmaker
 from src.engine.context import get_current_db, get_current_langsmith
 from src.engine.state import WorkflowStateDict
 from src.engine.workflow import AgentNode
@@ -95,18 +97,17 @@ async def _ensure_model_available(model_string: str) -> None:
     if "/" not in model_string:
         return
     provider, _, model_name = model_string.partition("/")
-    db = get_current_db()
-    if db is None:
+    sessionmaker = get_registered_sessionmaker()
+    if sessionmaker is None:
         return
-    row = await db.llmmodel.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"provider_modelId": {"provider": provider, "modelId": model_name}}
-    )
+    async with sessionmaker() as session:
+        row = await models_repo.get_by_provider_model(session, provider, model_name)
     if row is None:
         return
-    if row.verificationStatus == "unavailable":
+    if row.verification_status == "unavailable":
         raise ModelUnavailableError(
             f"Model {model_string!r} is marked unavailable: "
-            f"{row.verificationMessage or 'see Admin → LLM models for details'}. "
+            f"{row.verification_message or 'see Admin → LLM models for details'}. "
             "Update the workflow's agent node to use a different model, or "
             "re-verify the row in Admin → LLM models if the provider has restored access."
         )

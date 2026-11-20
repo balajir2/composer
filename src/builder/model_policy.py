@@ -13,7 +13,11 @@ enabled in the catalog, so disabling a model there also removes it here.
 
 import json
 from dataclasses import dataclass, field
-from typing import Any
+
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from src.db.repos import deployment_settings as settings_repo
+from src.db.repos import llm_models as models_repo
 
 DEFAULT_BUILDER_MODEL = "anthropic/claude-sonnet-4-5"
 SETTING_DEFAULT = "builder_model"
@@ -47,14 +51,14 @@ class BuilderModelPolicy:
         return requested
 
 
-async def _setting(db: Any, key: str) -> str | None:
-    row = await db.deploymentsetting.find_unique(where={"key": key})
+async def _setting(session: AsyncSession, key: str) -> str | None:
+    row = await settings_repo.get(session, key)
     return row.value if row else None
 
 
-async def enabled_model_catalog(db: Any) -> dict[str, str | None]:
-    rows = await db.llmmodel.find_many(where={"enabled": True})
-    return {f"{r.provider}/{r.modelId}": r.label for r in rows}
+async def enabled_model_catalog(session: AsyncSession) -> dict[str, str | None]:
+    rows = await models_repo.list_models(session, enabled_only=True)
+    return {f"{r.provider}/{r.model_id}": r.label for r in rows}
 
 
 def _parse_allowed(raw: str | None) -> list[str]:
@@ -69,10 +73,10 @@ def _parse_allowed(raw: str | None) -> list[str]:
     return [item for item in data if isinstance(item, str)]  # pyright: ignore[reportUnknownVariableType]
 
 
-async def load_policy(db: Any) -> BuilderModelPolicy:
-    default = (await _setting(db, SETTING_DEFAULT)) or DEFAULT_BUILDER_MODEL
-    catalog = await enabled_model_catalog(db)
-    extras = [m for m in _parse_allowed(await _setting(db, SETTING_ALLOWED)) if m in catalog]
+async def load_policy(session: AsyncSession) -> BuilderModelPolicy:
+    default = (await _setting(session, SETTING_DEFAULT)) or DEFAULT_BUILDER_MODEL
+    catalog = await enabled_model_catalog(session)
+    extras = [m for m in _parse_allowed(await _setting(session, SETTING_ALLOWED)) if m in catalog]
     ids = [default, *[m for m in dict.fromkeys(extras) if m != default]]
     return BuilderModelPolicy(
         default=default,
@@ -80,14 +84,11 @@ async def load_policy(db: Any) -> BuilderModelPolicy:
     )
 
 
-async def save_policy(db: Any, *, default: str, allowed: list[str]) -> None:
-    catalog = await enabled_model_catalog(db)
+async def save_policy(session: AsyncSession, *, default: str, allowed: list[str]) -> None:
+    catalog = await enabled_model_catalog(session)
     unknown = [m for m in [default, *allowed] if m not in catalog]
     if unknown:
         raise ValueError("Not enabled in the LLM model catalog: " + ", ".join(sorted(set(unknown))))
     extras = [m for m in dict.fromkeys(allowed) if m != default]
     for key, value in ((SETTING_DEFAULT, default), (SETTING_ALLOWED, json.dumps(extras))):
-        await db.deploymentsetting.upsert(
-            where={"key": key},
-            data={"create": {"key": key, "value": value}, "update": {"value": value}},
-        )
+        await settings_repo.upsert(session, key, value)

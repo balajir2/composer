@@ -24,7 +24,6 @@ def _client_admin(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MagicMoc
     db.user = MagicMock()
     db.apikey = MagicMock()
     db.llmapikey = MagicMock()
-    db.deploymentsetting = MagicMock()
     app.state.db = db
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
@@ -47,7 +46,6 @@ def _client_member(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MagicMo
     db.user = MagicMock()
     db.user.find_unique = AsyncMock(return_value=None)  # dev-mode 'dev' → member
     db.llmapikey = MagicMock()
-    db.deploymentsetting = MagicMock()
     app.state.db = db
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
