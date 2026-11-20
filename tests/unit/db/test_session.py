@@ -1,11 +1,14 @@
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from fastapi import Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.session import build_sessionmaker, get_session
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 
 class _FakeSessionmaker:
@@ -50,3 +53,15 @@ def test_sessions_do_not_expire_objects_on_commit() -> None:
     sessionmaker = build_sessionmaker(engine)
     assert sessionmaker.kw["expire_on_commit"] is False
     assert sessionmaker.class_ is AsyncSession
+
+
+async def test_get_session_closes_session_when_the_request_raises() -> None:
+    sessionmaker = _FakeSessionmaker()
+    generator = cast(
+        "AsyncGenerator[AsyncSession]",
+        get_session(_request(SimpleNamespace(db_sessionmaker=sessionmaker))),
+    )
+    await anext(generator)
+    with pytest.raises(ValueError, match="boom"):
+        await generator.athrow(ValueError("boom"))
+    assert sessionmaker.closed is True
