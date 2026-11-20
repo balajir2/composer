@@ -1,3 +1,5 @@
+"""Users and their API keys."""
+
 from datetime import datetime
 
 from sqlalchemy import ForeignKey, Index, Text, text
@@ -9,6 +11,8 @@ from src.db.types import UTCDateTime
 
 
 class User(Base):
+    """An application user: credentials, display name, role and active state."""
+
     __tablename__ = "users"
     __table_args__ = (
         Index("users_email_idx", "email"),
@@ -32,6 +36,8 @@ class User(Base):
 
 
 class ApiKey(Base):
+    """A hashed per-user API key used for external workflow invocation."""
+
     __tablename__ = "api_keys"
     __table_args__ = (
         Index("api_keys_user_id_idx", "user_id"),

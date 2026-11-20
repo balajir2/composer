@@ -1,3 +1,5 @@
+"""LLM provider API keys and the enabled model catalog."""
+
 from datetime import datetime
 
 from sqlalchemy import Index, Text
@@ -8,6 +10,8 @@ from src.db.types import UTCDateTime
 
 
 class LlmApiKey(Base):
+    """The encrypted API key stored for one LLM provider."""
+
     __tablename__ = "llm_api_keys"
     __table_args__ = (Index("llm_api_keys_provider_key", "provider", unique=True),)
 
@@ -20,6 +24,8 @@ class LlmApiKey(Base):
 
 
 class LlmModel(Base):
+    """An LLM model offered under a provider, with enabled flag and verification status."""
+
     __tablename__ = "llm_models"
     __table_args__ = (
         Index("llm_models_provider_enabled_idx", "provider", "enabled"),

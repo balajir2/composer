@@ -1,3 +1,5 @@
+"""Workflow runs, their approval decisions and streamed events."""
+
 from datetime import datetime
 from typing import Any
 
@@ -11,6 +13,8 @@ from src.db.types import UTCDateTime
 
 
 class WorkflowExecution(Base):
+    """One run of a workflow: status, node results, input/output and delivery lease state."""
+
     __tablename__ = "workflow_executions"
     __table_args__ = (
         Index("workflow_executions_workflow_id_idx", "workflow_id"),
@@ -42,7 +46,7 @@ class WorkflowExecution(Base):
     input: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
     output: Mapped[Any | None] = mapped_column(JSONB(none_as_null=True))
     error: Mapped[str | None] = mapped_column(Text)
-    started_at: Mapped[datetime] = created_at_column()
+    started_at: Mapped[datetime] = created_at_column()  # the row's creation time
     completed_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     thread_id: Mapped[str] = mapped_column(Text)
     original_owner_email: Mapped[str | None] = mapped_column(Text)
@@ -57,6 +61,8 @@ class WorkflowExecution(Base):
 
 
 class Approval(Base):
+    """A user-approval decision (approved or rejected) recorded for a paused execution node."""
+
     __tablename__ = "approvals"
     __table_args__ = (
         Index("approvals_execution_id_idx", "execution_id"),
@@ -83,6 +89,8 @@ class Approval(Base):
 
 
 class ExecutionEvent(Base):
+    """A sequence-numbered event emitted during an execution, replayed to streaming clients."""
+
     __tablename__ = "execution_events"
     __table_args__ = (
         Index("execution_events_execution_id_idx", "execution_id"),

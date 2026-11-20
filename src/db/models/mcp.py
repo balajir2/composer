@@ -1,3 +1,5 @@
+"""MCP server registrations and their OAuth tokens and in-flight authorization states."""
+
 from datetime import datetime
 from typing import Any
 
@@ -10,6 +12,8 @@ from src.db.types import UTCDateTime
 
 
 class McpServer(Base):
+    """A registered MCP server: connection details, auth settings, cached tools and sharing flags."""
+
     __tablename__ = "mcp_servers"
     __table_args__ = (
         Index("mcp_servers_user_id_idx", "user_id"),
@@ -42,6 +46,8 @@ class McpServer(Base):
 
 
 class McpOAuthToken(Base):
+    """Encrypted OAuth tokens for one user on one MCP server."""
+
     __tablename__ = "mcp_oauth_tokens"
     __table_args__ = (
         Index("mcp_oauth_tokens_mcp_server_id_idx", "mcp_server_id"),
@@ -66,6 +72,8 @@ class McpOAuthToken(Base):
 
 
 class McpOAuthState(Base):
+    """A short-lived OAuth authorization state (PKCE verifier and redirect) awaiting its callback."""
+
     __tablename__ = "mcp_oauth_states"
     __table_args__ = (
         Index("mcp_oauth_states_state_idx", "state"),

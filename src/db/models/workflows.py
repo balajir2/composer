@@ -1,3 +1,5 @@
+"""Workflow definitions and their per-user assignments."""
+
 from datetime import datetime
 from typing import Any
 
@@ -9,6 +11,8 @@ from src.db.models.base import Base, bool_column, created_at_column, id_column, 
 
 
 class Workflow(Base):
+    """A workflow definition: its graph (nodes, edges) and publishing flags."""
+
     __tablename__ = "workflows"
     __table_args__ = (
         Index("workflows_user_id_idx", "user_id"),
@@ -37,6 +41,8 @@ class Workflow(Base):
 
 
 class WorkflowAssignment(Base):
+    """Grants a user access to a workflow, recording who assigned it and when."""
+
     __tablename__ = "workflow_assignments"
     __table_args__ = (
         Index("workflow_assignments_workflow_id_idx", "workflow_id"),
@@ -58,4 +64,4 @@ class WorkflowAssignment(Base):
     )
     user_id: Mapped[str] = mapped_column(Text)
     assigned_by_id: Mapped[str] = mapped_column(Text)
-    assigned_at: Mapped[datetime] = created_at_column()
+    assigned_at: Mapped[datetime] = created_at_column()  # the row's creation time

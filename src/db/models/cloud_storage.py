@@ -1,3 +1,5 @@
+"""Cloud storage account connections."""
+
 from datetime import datetime
 
 from sqlalchemy import Index, Text
@@ -8,6 +10,8 @@ from src.db.types import UTCDateTime
 
 
 class CloudStorageConnection(Base):
+    """A user's connection to a cloud storage account, with encrypted OAuth tokens."""
+
     __tablename__ = "cloud_storage_connections"
     __table_args__ = (
         Index("cloud_storage_connections_user_id_idx", "user_id"),

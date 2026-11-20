@@ -1,3 +1,5 @@
+"""Persistent rate-limit state."""
+
 from datetime import datetime
 
 from sqlalchemy import Index, Text
@@ -9,6 +11,8 @@ from src.db.types import UTCDateTime
 
 
 class RateLimitBucket(Base):
+    """A token bucket for one route and client, used for rate limiting."""
+
     __tablename__ = "rate_limit_buckets"
     __table_args__ = (
         Index(
