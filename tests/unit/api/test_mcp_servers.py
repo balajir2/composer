@@ -9,8 +9,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.repos import users as users_repo
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
+from tests.unit.db_fakes import make_user, override_session
 
 
 def _set_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -57,9 +59,8 @@ def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     db.mcpserver.update = AsyncMock(return_value=_server_row())
     db.mcpserver.delete = AsyncMock()
     # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=None)
     app.state.db = db
+    override_session(app)
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
     return TestClient(app), db
@@ -294,13 +295,13 @@ def test_delete_shared_by_non_owner_denied() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_patch_mcp_server_owner_by_user_id() -> None:
+def test_patch_mcp_server_owner_by_user_id(monkeypatch: pytest.MonkeyPatch) -> None:
     """Admin reassigns MCP server ownership by userId."""
     from src.security.auth import ensure_admin
 
     client, db = _client_with_mock_db()
-    target = SimpleNamespace(id="new-owner", email="target@x.com")
-    db.user.find_unique = AsyncMock(return_value=target)
+    target = make_user(id="new-owner", email="target@x.com")
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=target))
     updated = _server_row(userId="new-owner")
     db.mcpserver.update = AsyncMock(return_value=updated)
     client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
@@ -314,13 +315,14 @@ def test_patch_mcp_server_owner_by_user_id() -> None:
     assert call_data["userId"] == "new-owner"
 
 
-def test_patch_mcp_server_owner_by_email() -> None:
+def test_patch_mcp_server_owner_by_email(monkeypatch: pytest.MonkeyPatch) -> None:
     """Admin reassigns MCP server ownership by email lookup."""
     from src.security.auth import ensure_admin
 
     client, db = _client_with_mock_db()
-    target = SimpleNamespace(id="uid-email", email="target@x.com")
-    db.user.find_unique = AsyncMock(return_value=target)
+    target = make_user(id="uid-email", email="target@x.com")
+    get_by_email = AsyncMock(return_value=target)
+    monkeypatch.setattr(users_repo, "get_by_email", get_by_email)
     updated = _server_row(userId="uid-email")
     db.mcpserver.update = AsyncMock(return_value=updated)
     client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
@@ -329,17 +331,19 @@ def test_patch_mcp_server_owner_by_email() -> None:
     finally:
         client.app.dependency_overrides.pop(ensure_admin, None)  # type: ignore[attr-defined]
     assert resp.status_code == 200
+    assert get_by_email.await_args is not None
+    assert get_by_email.await_args.args[1] == "target@x.com"
     db.mcpserver.update.assert_awaited_once()
     call_data = db.mcpserver.update.await_args.kwargs["data"]  # type: ignore[union-attr]
     assert call_data["userId"] == "uid-email"
 
 
-def test_patch_mcp_server_owner_unknown_email_404() -> None:
+def test_patch_mcp_server_owner_unknown_email_404(monkeypatch: pytest.MonkeyPatch) -> None:
     """PATCH with unknown email → 404."""
     from src.security.auth import ensure_admin
 
-    client, db = _client_with_mock_db()
-    db.user.find_unique = AsyncMock(return_value=None)
+    client, _ = _client_with_mock_db()
+    monkeypatch.setattr(users_repo, "get_by_email", AsyncMock(return_value=None))
     client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
     try:
         resp = client.patch("/mcp-servers/srv1/owner", json={"email": "ghost@x.com"})
@@ -348,13 +352,13 @@ def test_patch_mcp_server_owner_unknown_email_404() -> None:
     assert resp.status_code == 404
 
 
-def test_patch_mcp_server_owner_unknown_server_404() -> None:
+def test_patch_mcp_server_owner_unknown_server_404(monkeypatch: pytest.MonkeyPatch) -> None:
     """PATCH with unknown server → 404."""
     from src.security.auth import ensure_admin
 
     client, db = _client_with_mock_db()
-    target = SimpleNamespace(id="new-owner", email="t@x.com")
-    db.user.find_unique = AsyncMock(return_value=target)
+    target = make_user(id="new-owner", email="t@x.com")
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=target))
     db.mcpserver.find_unique = AsyncMock(return_value=None)
     client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
     try:

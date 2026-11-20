@@ -1,21 +1,24 @@
 """Tests for /auth/me (both modes)."""
 
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from jose import jwt as jose_jwt  # pyright: ignore[reportMissingImports, reportMissingTypeStubs]
 
+from src.db.models import UserRole
+from src.db.repos import users as users_repo
+from tests.unit.db_fakes import make_user, override_session
+
 
 def _app_with_router(
     monkeypatch: pytest.MonkeyPatch,
     *,
     mode: str = "standalone",
-) -> tuple[TestClient, MagicMock]:
+) -> tuple[TestClient, None]:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", mode)
     monkeypatch.setenv("ENVIRONMENT", "production")
     if mode == "embedded":
@@ -30,24 +33,17 @@ def _app_with_router(
     app = FastAPI()
     app.include_router(auth_router)
 
-    db = MagicMock()
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            id="u1",
-            email="alice@example.com",
-            displayName="Alice",
-            role="member",
-        )
+    override_session(app)
+    monkeypatch.setattr(
+        users_repo, "get_by_id", AsyncMock(return_value=make_user(role=UserRole.ADMIN))
     )
-    app.state.db = db
-    return TestClient(app), db
+    return TestClient(app), None
 
 
 def test_me_standalone_returns_user_row(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.security.jwt import create_access_token
 
-    client, _db = _app_with_router(monkeypatch, mode="standalone")
+    client, _ = _app_with_router(monkeypatch, mode="standalone")
     token = create_access_token("u1")
     resp = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200, resp.text
@@ -55,14 +51,14 @@ def test_me_standalone_returns_user_row(monkeypatch: pytest.MonkeyPatch) -> None
     assert body["id"] == "u1"
     assert body["email"] == "alice@example.com"
     assert body["displayName"] == "Alice"
-    assert body["role"] == "member"
+    assert body["role"] == "admin"  # the enum value, not its repr
 
 
 def test_me_standalone_user_not_found_404(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.security.jwt import create_access_token
 
-    client, db = _app_with_router(monkeypatch, mode="standalone")
-    db.user.find_unique = AsyncMock(return_value=None)
+    client, _ = _app_with_router(monkeypatch, mode="standalone")
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=None))
     token = create_access_token("ghost")
     resp = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 404
@@ -108,15 +104,15 @@ def test_me_dev_mode_fallback_returns_dev_user(monkeypatch: pytest.MonkeyPatch) 
     app = FastAPI()
     app.include_router(auth_router)
 
-    db = MagicMock()
-    db.user = MagicMock()
+    override_session(app)
     # 'dev' fallback user doesn't exist in the User table → 404
-    db.user.find_unique = AsyncMock(return_value=None)
-    app.state.db = db
+    get_by_id = AsyncMock(return_value=None)
+    monkeypatch.setattr(users_repo, "get_by_id", get_by_id)
 
     client = TestClient(app)
     resp = client.get("/auth/me")  # no Authorization header
     # dev fallback → user_id='dev' → /auth/me looks up User where id='dev'
     # → 404 since there's no such row.  Auth middleware fell through cleanly.
     assert resp.status_code == 404
-    db.user.find_unique.assert_awaited_once_with(where={"id": "dev"})
+    assert get_by_id.await_args is not None
+    assert get_by_id.await_args.args[1] == "dev"

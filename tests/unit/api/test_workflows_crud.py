@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.repos import users as users_repo
 from src.main import create_app
+from tests.unit.db_fakes import make_user, override_session
 
 
 def _wf_row_create(**overrides: Any) -> SimpleNamespace:
@@ -662,9 +664,13 @@ def _client_patch_owner(
     db.workflow = MagicMock()
     db.workflow.find_unique = AsyncMock(return_value=wf_row)
     db.workflow.update = AsyncMock(return_value=updated_row)
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=target_user)
     app.state.db = db
+    override_session(app)
+    target = (
+        make_user(id=target_user.id, email=target_user.email) if target_user is not None else None
+    )
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=target))
+    monkeypatch.setattr(users_repo, "get_by_email", AsyncMock(return_value=target))
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 

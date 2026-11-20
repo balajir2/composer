@@ -2,10 +2,14 @@
 
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock
 
 from fastapi import FastAPI
 
+from src.db.models import UserRole
+from src.db.repos.users import UserRecord
 from src.db.session import get_session
 
 
@@ -55,3 +59,21 @@ class FakeSessionmaker:
 @asynccontextmanager
 async def fake_scope(session: FakeSession) -> AsyncGenerator[FakeSession]:
     yield session
+
+
+def make_user(**overrides: Any) -> UserRecord:
+    """A UserRecord with sensible defaults; override any field by name."""
+    now = datetime(2026, 4, 21, tzinfo=UTC)
+    base: dict[str, Any] = {
+        "id": "u1",
+        "email": "alice@example.com",
+        "password_hash": "$2b$12$placeholder",
+        "display_name": "Alice",
+        "role": UserRole.MEMBER,
+        "is_active": True,
+        "must_change_password": False,
+        "created_at": now,
+        "updated_at": now,
+    }
+    base.update(overrides)
+    return UserRecord(**base)

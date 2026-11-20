@@ -8,6 +8,7 @@ directly via jose.jwt.encode to avoid being constrained by Phase 1's helper.
 """
 
 import time
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -15,16 +16,19 @@ import pytest
 from fastapi import HTTPException
 from jose import jwt as jose_jwt
 
+from src.db.models import UserRole
+from src.db.repos import users as users_repo
 from src.security.auth import (
     AuthError,
-    _ensure_active_and_no_pending_password_change,  # pyright: ignore[reportPrivateUsage]
-    _ensure_active_user,  # pyright: ignore[reportPrivateUsage]
+    _ensure_active,  # pyright: ignore[reportPrivateUsage]
     _extract_bearer,  # pyright: ignore[reportPrivateUsage]
     _verify_embedded_jwt,  # pyright: ignore[reportPrivateUsage]
     _verify_standalone_jwt,  # pyright: ignore[reportPrivateUsage]
+    get_current_role,
     get_current_user_id,
     get_user_id_allow_password_change,
 )
+from tests.unit.db_fakes import FakeSessionmaker
 
 # ─── Mock helpers ────────────────────────────────────────────────────────────
 
@@ -38,6 +42,7 @@ def _mock_request(auth_header: str | None = None) -> Any:
         return default
 
     req.headers.get = _get
+    req.app.state.db_sessionmaker = None  # no database attached: no live user check
     return req
 
 
@@ -175,40 +180,55 @@ async def test_verify_standalone_jwt_rejects_refresh_token() -> None:
         await _verify_standalone_jwt(token, settings)
 
 
-@pytest.mark.asyncio
-async def test_ensure_active_user_rejects_deactivated_account() -> None:
-    db = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=MagicMock(isActive=False))
-    with pytest.raises(AuthError, match="deactivated"):
-        await _ensure_active_user(db, "user-1")
-
-
-# ─── _ensure_active_and_no_pending_password_change ──────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_ensure_active_and_no_pending_password_change_rejects_deactivated() -> None:
-    db = MagicMock()
-    db.user.find_unique = AsyncMock(
-        return_value=MagicMock(isActive=False, mustChangePassword=False)
+def _user(
+    *, active: bool = True, must_change: bool = False, role: UserRole = UserRole.MEMBER
+) -> users_repo.UserRecord:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    return users_repo.UserRecord(
+        id="user-1",
+        email="u@example.com",
+        password_hash="h",
+        display_name=None,
+        role=role,
+        is_active=active,
+        must_change_password=must_change,
+        created_at=now,
+        updated_at=now,
     )
-    with pytest.raises(AuthError, match="deactivated"):
-        await _ensure_active_and_no_pending_password_change(db, "user-1")
 
 
-@pytest.mark.asyncio
-async def test_ensure_active_and_no_pending_password_change_rejects_must_change() -> None:
-    db = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=MagicMock(isActive=True, mustChangePassword=True))
-    with pytest.raises(AuthError, match="password change required"):
-        await _ensure_active_and_no_pending_password_change(db, "user-1")
+def test_ensure_active_rejects_missing_user() -> None:
+    with pytest.raises(AuthError, match="user no longer exists"):
+        _ensure_active(None)
 
 
-@pytest.mark.asyncio
-async def test_ensure_active_and_no_pending_password_change_allows_normal_user() -> None:
-    db = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=MagicMock(isActive=True, mustChangePassword=False))
-    await _ensure_active_and_no_pending_password_change(db, "user-1")
+def test_ensure_active_rejects_deactivated_account() -> None:
+    with pytest.raises(AuthError, match="account is deactivated"):
+        _ensure_active(_user(active=False))
+
+
+def test_ensure_active_allows_active_user() -> None:
+    user = _user()
+    assert _ensure_active(user) is user
+
+
+def patch_user(
+    monkeypatch: pytest.MonkeyPatch,
+    req: Any,
+    *,
+    active: bool = True,
+    must_change: bool = False,
+    role: UserRole = UserRole.MEMBER,
+) -> FakeSessionmaker:
+    """Attach a fake database to ``req`` whose users lookup returns one user."""
+    sessionmaker = FakeSessionmaker()
+    req.app.state.db_sessionmaker = sessionmaker
+    monkeypatch.setattr(
+        users_repo,
+        "get_by_id",
+        AsyncMock(return_value=_user(active=active, must_change=must_change, role=role)),
+    )
+    return sessionmaker
 
 
 # ─── _verify_embedded_jwt ────────────────────────────────────────────────────
@@ -331,24 +351,22 @@ async def test_get_current_user_id_invalid_token_raises_401() -> None:
 
 
 @pytest.mark.asyncio
-async def test_get_current_user_id_rejects_pending_password_change() -> None:
+async def test_get_current_user_id_rejects_pending_password_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A still-valid access token must not authorize a user whose password
     change is pending — an admin-forced reset must cut off the session
     immediately rather than waiting for the token to expire naturally.
 
     Mirrors get_user_id_allow_password_change's deactivation-guard test: the
-    live user row is checked whenever an app-wide Prisma client is available
-    on request.app.state.db.
+    live user row is checked whenever an app has a database
+    attached (request.app.state.db_sessionmaker).
     """
-    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
-
     secret = "test-secret-at-least-32-chars-long-for-hs256"
     settings = _mock_settings(deployment_mode="standalone", jwt_secret=secret)
     token = _make_jose_token(sub="u1", secret=secret)
     req = _mock_request(f"Bearer {token}")
-    db = MagicMock(spec=Prisma)
-    db.user.find_unique = AsyncMock(return_value=MagicMock(isActive=True, mustChangePassword=True))
-    req.app.state.db = db
+    patch_user(monkeypatch, req, active=True, must_change=True)
 
     with pytest.raises(AuthError, match="password change required"):
         await get_current_user_id(req, settings)
@@ -387,40 +405,88 @@ async def test_get_user_id_allow_password_change_rejects_missing_header() -> Non
         await get_user_id_allow_password_change(req)
 
 
-async def test_get_user_id_allow_password_change_rejects_deactivated_user() -> None:
+async def test_get_user_id_allow_password_change_rejects_deactivated_user(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A still-valid access token must not authorize a deactivated account.
 
     Mirrors get_current_user_id's deactivation guarantee: the live user row
-    is checked whenever an app-wide Prisma client is available on
-    request.app.state.db.
+    is checked whenever an app has a database attached
+    (request.app.state.db_sessionmaker).
     """
-    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
     from src.security.jwt import create_access_token
 
     token = create_access_token("u1")
     req = _mock_request(f"Bearer {token}")
-    db = MagicMock(spec=Prisma)
-    db.user.find_unique = AsyncMock(return_value=MagicMock(isActive=False))
-    req.app.state.db = db
+    patch_user(monkeypatch, req, active=False)
 
     with pytest.raises(AuthError, match="deactivated"):
         await get_user_id_allow_password_change(req)
 
 
-async def test_get_user_id_allow_password_change_allows_pending_password_change() -> None:
+async def test_get_user_id_allow_password_change_allows_pending_password_change(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Critical regression guard: a user with mustChangePassword=True must
     still be able to authenticate here — this is precisely the endpoint that
     completes an admin-forced reset (via /auth/change-password). It must NOT
     be rejected by the same guard that now cuts off get_current_user_id.
     """
-    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
     from src.security.jwt import create_access_token
 
     token = create_access_token("u1")
     req = _mock_request(f"Bearer {token}")
-    db = MagicMock(spec=Prisma)
-    db.user.find_unique = AsyncMock(return_value=MagicMock(isActive=True, mustChangePassword=True))
-    req.app.state.db = db
+    patch_user(monkeypatch, req, active=True, must_change=True)
 
     user_id = await get_user_id_allow_password_change(req)
     assert user_id == "u1"
+
+
+async def test_live_checks_use_a_short_session_that_is_closed_before_returning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "test-secret-at-least-32-chars-long-for-hs256"
+    settings = _mock_settings(deployment_mode="standalone", jwt_secret=secret)
+    req = _mock_request(f"Bearer {_make_jose_token(sub='u1', secret=secret)}")
+    sessionmaker = patch_user(monkeypatch, req)
+    entered: list[bool] = []
+
+    original_call = FakeSessionmaker.__call__
+
+    def _spy(self: FakeSessionmaker) -> Any:
+        entered.append(True)
+        return original_call(self)
+
+    monkeypatch.setattr(FakeSessionmaker, "__call__", _spy)
+    assert await get_current_user_id(req, settings) == "u1"
+    assert entered == [True]
+    assert sessionmaker is req.app.state.db_sessionmaker
+
+
+async def test_get_current_user_id_rejects_missing_and_deactivated_users(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "test-secret-at-least-32-chars-long-for-hs256"
+    settings = _mock_settings(deployment_mode="standalone", jwt_secret=secret)
+    req = _mock_request(f"Bearer {_make_jose_token(sub='u1', secret=secret)}")
+    patch_user(monkeypatch, req, active=False)
+    with pytest.raises(AuthError, match="account is deactivated"):
+        await get_current_user_id(req, settings)
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=None))
+    with pytest.raises(AuthError, match="user no longer exists"):
+        await get_current_user_id(req, settings)
+
+
+async def test_get_current_role_reads_the_live_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    secret = "test-secret-at-least-32-chars-long-for-hs256"
+    settings = _mock_settings(deployment_mode="standalone", jwt_secret=secret)
+    req = _mock_request(f"Bearer {_make_jose_token(sub='u1', secret=secret)}")
+    patch_user(monkeypatch, req, role=UserRole.ADMIN)
+    assert await get_current_role(req, settings) == ("u1", "admin")
+
+
+async def test_get_current_role_is_member_without_a_database() -> None:
+    secret = "test-secret-at-least-32-chars-long-for-hs256"
+    settings = _mock_settings(deployment_mode="standalone", jwt_secret=secret)
+    req = _mock_request(f"Bearer {_make_jose_token(sub='u1', secret=secret)}")
+    assert await get_current_role(req, settings) == ("u1", "member")

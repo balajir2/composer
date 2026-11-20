@@ -16,6 +16,8 @@ import asyncpg
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
 
 from src.config import Settings, get_settings
+from src.db.repos import users as users_repo
+from src.db.runtime import request_sessionmaker
 from src.engine.events import ExecutionEvent
 from src.engine.events_notify import NOTIFY_CHANNEL
 from src.security.auth import AuthError, verify_user_token
@@ -87,16 +89,15 @@ async def events_ws(  # pyright: ignore[reportUnusedFunction]
         return
 
     # fetch role (admin bypass)
-    user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
-    if settings.deployment_mode == "standalone" and (
-        user is None or getattr(user, "isActive", True) is False
-    ):
+    user = None
+    sessionmaker = request_sessionmaker(ws)
+    if sessionmaker is not None:
+        async with sessionmaker() as session:
+            user = await users_repo.get_by_id(session, user_id)
+    if settings.deployment_mode == "standalone" and (user is None or not user.is_active):
         await ws.close(code=4401, reason="unauthenticated")
         return
-    role = getattr(user, "role", None)
-    role_str = (
-        str(role.value) if role is not None and hasattr(role, "value") else str(role or "member")
-    )
+    role_str = user.role.value if user is not None else "member"
     if role_str != "admin" and execution.userId != user_id:
         await ws.close(code=4403, reason="forbidden")
         return

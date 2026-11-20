@@ -6,9 +6,12 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.db.repos import users as users_repo
+from src.db.session import get_session
 from src.engine.graph_builder import (
     WorkflowValidationError,
     dedupe_edges,
@@ -725,18 +728,19 @@ async def assign_workflow_owner(
     workflow_id: str,
     payload: OwnerAssignRequest,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
     target_user_id = payload.user_id
     if target_user_id is None:
         if not payload.email:
             raise HTTPException(422, "must provide user_id or email")
-        target_user = await db.user.find_unique(where={"email": payload.email.lower()})  # pyright: ignore[reportAttributeAccessIssue]
+        target_user = await users_repo.get_by_email(session, payload.email.lower())
         if target_user is None:
             raise HTTPException(404, f"user with email {payload.email!r} not found")
         target_user_id = target_user.id
     else:
-        target_user = await db.user.find_unique(where={"id": target_user_id})  # pyright: ignore[reportAttributeAccessIssue]
+        target_user = await users_repo.get_by_id(session, target_user_id)
         if target_user is None:
             raise HTTPException(404, f"user {target_user_id!r} not found")
 
@@ -777,6 +781,7 @@ async def grant_workflow_assignment(
     workflow_id: str,
     target_user_id: str,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
 ) -> WorkflowAssignmentRead:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
@@ -785,7 +790,7 @@ async def grant_workflow_assignment(
         raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
     if role != "admin" and existing.userId != user_id:
         raise HTTPException(403, "Forbidden: not workflow owner.")
-    target_user = await db.user.find_unique(where={"id": target_user_id})  # pyright: ignore[reportAttributeAccessIssue]
+    target_user = await users_repo.get_by_id(session, target_user_id)
     if target_user is None:
         raise HTTPException(404, f"user {target_user_id!r} not found")
     try:

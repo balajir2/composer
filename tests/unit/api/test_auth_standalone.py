@@ -1,30 +1,17 @@
 """Tests for /auth/register, /login, /refresh, /disconnect (standalone mode)."""
 
-from types import SimpleNamespace
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.errors import AlreadyExists
+from src.db.repos import users as users_repo
 from src.security.rate_limit import RateLimiter
+from tests.unit.db_fakes import FakeSession, make_user, override_session
 
 
-def _user_row(**overrides: Any) -> SimpleNamespace:
-    base: dict[str, Any] = {
-        "id": "u1",
-        "email": "alice@example.com",
-        "passwordHash": "$2b$12$placeholder",
-        "displayName": "Alice",
-        "role": "member",
-        "createdAt": "2026-04-21T00:00:00Z",
-        "updatedAt": "2026-04-21T00:00:00Z",
-    }
-    base.update(overrides)
-    return SimpleNamespace(**base)
-
-
-def _client_standalone(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MagicMock]:
+def _client_standalone(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, FakeSession]:
     from fastapi import FastAPI
 
     from src.api.auth_standalone import router as auth_router
@@ -36,18 +23,16 @@ def _client_standalone(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, Mag
     get_settings.cache_clear()
     app = FastAPI()
     app.include_router(auth_router)
-    db = MagicMock()
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=None)
-    db.user.create = AsyncMock(return_value=_user_row())
-    app.state.db = db
+    session = override_session(app)
     app.state.rate_limiter = RateLimiter()
-    # get_db dependency reads from request.app.state.db — set above
-    return TestClient(app), db
+    monkeypatch.setattr(users_repo, "get_by_email", AsyncMock(return_value=None))
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=None))
+    monkeypatch.setattr(users_repo, "create", AsyncMock(return_value=make_user()))
+    return TestClient(app), session
 
 
 def test_register_creates_user(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _client_standalone(monkeypatch)
+    client, session = _client_standalone(monkeypatch)
     resp = client.post(
         "/auth/register",
         json={
@@ -61,22 +46,39 @@ def test_register_creates_user(monkeypatch: pytest.MonkeyPatch) -> None:
     assert body["email"] == "alice@example.com"
     assert "accessToken" in body
     assert "refreshToken" in body
-    db.user.create.assert_awaited_once()
+    users_repo.create.assert_awaited_once()  # type: ignore[attr-defined]
     # Ensure we hashed the password (not stored plaintext)
-    call = db.user.create.await_args
-    created = call.kwargs["data"]
-    assert created["passwordHash"] != "correct-horse-battery-staple"
-    assert created["passwordHash"].startswith("$2")
+    created = users_repo.create.await_args.kwargs  # type: ignore[attr-defined]
+    assert created["password_hash"] != "correct-horse-battery-staple"
+    assert created["password_hash"].startswith("$2")
+    assert created["display_name"] == "Alice"
+    session.commit.assert_awaited_once()
 
 
 def test_register_duplicate_email_409(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _client_standalone(monkeypatch)
-    db.user.find_unique = AsyncMock(return_value=_user_row())  # email taken
+    client, session = _client_standalone(monkeypatch)
+    monkeypatch.setattr(users_repo, "get_by_email", AsyncMock(return_value=make_user()))  # taken
     resp = client.post(
         "/auth/register",
         json={"email": "alice@example.com", "password": "any-password-8-chars"},
     )
     assert resp.status_code == 409
+    users_repo.create.assert_not_awaited()  # type: ignore[attr-defined]
+    session.commit.assert_not_awaited()
+
+
+def test_register_losing_the_unique_email_race_is_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, session = _client_standalone(monkeypatch)
+    monkeypatch.setattr(
+        users_repo, "create", AsyncMock(side_effect=AlreadyExists("users_email_key"))
+    )
+    resp = client.post(
+        "/auth/register",
+        json={"email": "alice@example.com", "password": "any-password-8-chars"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "email already registered"
+    session.commit.assert_not_awaited()
 
 
 def test_register_short_password_422(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -91,9 +93,11 @@ def test_register_short_password_422(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_login_happy(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.security.passwords import hash_password
 
-    client, db = _client_standalone(monkeypatch)
-    db.user.find_unique = AsyncMock(
-        return_value=_user_row(passwordHash=hash_password("right-pass"))
+    client, _ = _client_standalone(monkeypatch)
+    monkeypatch.setattr(
+        users_repo,
+        "get_by_email",
+        AsyncMock(return_value=make_user(password_hash=hash_password("right-pass"))),
     )
     resp = client.post(
         "/auth/login",
@@ -108,9 +112,11 @@ def test_login_happy(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_login_wrong_password_401(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.security.passwords import hash_password
 
-    client, db = _client_standalone(monkeypatch)
-    db.user.find_unique = AsyncMock(
-        return_value=_user_row(passwordHash=hash_password("right-pass"))
+    client, _ = _client_standalone(monkeypatch)
+    monkeypatch.setattr(
+        users_repo,
+        "get_by_email",
+        AsyncMock(return_value=make_user(password_hash=hash_password("right-pass"))),
     )
     resp = client.post(
         "/auth/login",
@@ -120,8 +126,8 @@ def test_login_wrong_password_401(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_login_unknown_email_401(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _client_standalone(monkeypatch)
-    db.user.find_unique = AsyncMock(return_value=None)
+    client, _ = _client_standalone(monkeypatch)
+    monkeypatch.setattr(users_repo, "get_by_email", AsyncMock(return_value=None))
     resp = client.post(
         "/auth/login",
         json={"email": "ghost@example.com", "password": "any-password-8+"},
@@ -132,9 +138,9 @@ def test_login_unknown_email_401(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_refresh_happy(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.security.jwt import create_refresh_token
 
-    client, db = _client_standalone(monkeypatch)
+    client, _ = _client_standalone(monkeypatch)
     refresh = create_refresh_token("u1")
-    db.user.find_unique = AsyncMock(return_value=_user_row(id="u1"))
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=make_user(id="u1")))
     resp = client.post("/auth/refresh", json={"refreshToken": refresh})
     assert resp.status_code == 200, resp.text
     body = resp.json()
@@ -151,9 +157,11 @@ def test_refresh_invalid_token_401(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_refresh_inactive_user_401(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.security.jwt import create_refresh_token
 
-    client, db = _client_standalone(monkeypatch)
+    client, _ = _client_standalone(monkeypatch)
     refresh = create_refresh_token("u1")
-    db.user.find_unique = AsyncMock(return_value=_user_row(id="u1", isActive=False))
+    monkeypatch.setattr(
+        users_repo, "get_by_id", AsyncMock(return_value=make_user(id="u1", is_active=False))
+    )
     resp = client.post("/auth/refresh", json={"refreshToken": refresh})
     assert resp.status_code == 401
     assert resp.json()["detail"] == "account is deactivated"
@@ -165,9 +173,13 @@ def test_refresh_must_change_password_403(monkeypatch: pytest.MonkeyPatch) -> No
     without ever hitting the forced-change gate."""
     from src.security.jwt import create_refresh_token
 
-    client, db = _client_standalone(monkeypatch)
+    client, _ = _client_standalone(monkeypatch)
     refresh = create_refresh_token("u1")
-    db.user.find_unique = AsyncMock(return_value=_user_row(id="u1", mustChangePassword=True))
+    monkeypatch.setattr(
+        users_repo,
+        "get_by_id",
+        AsyncMock(return_value=make_user(id="u1", must_change_password=True)),
+    )
     resp = client.post("/auth/refresh", json={"refreshToken": refresh})
     assert resp.status_code == 403
     assert resp.json()["detail"] == "password change required"
@@ -182,11 +194,17 @@ def test_disconnect_returns_204(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_login_must_change_password_returns_restricted_token(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, db = _client_standalone(monkeypatch)
+    client, _ = _client_standalone(monkeypatch)
     from src.security.passwords import hash_password
 
-    db.user.find_unique = AsyncMock(
-        return_value=_user_row(passwordHash=hash_password("temp-pass-123"), mustChangePassword=True)
+    monkeypatch.setattr(
+        users_repo,
+        "get_by_email",
+        AsyncMock(
+            return_value=make_user(
+                password_hash=hash_password("temp-pass-123"), must_change_password=True
+            )
+        ),
     )
     resp = client.post(
         "/auth/login",
@@ -197,3 +215,28 @@ def test_login_must_change_password_returns_restricted_token(
     assert body["mustChangePassword"] is True
     assert "passwordChangeToken" in body
     assert "accessToken" not in body
+
+
+def test_login_deactivated_user_403(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.security.passwords import hash_password
+
+    client, _ = _client_standalone(monkeypatch)
+    monkeypatch.setattr(
+        users_repo,
+        "get_by_email",
+        AsyncMock(
+            return_value=make_user(password_hash=hash_password("right-pass"), is_active=False)
+        ),
+    )
+    resp = client.post("/auth/login", json={"email": "alice@example.com", "password": "right-pass"})
+    assert resp.status_code == 403
+    assert resp.json()["detail"] == "account is deactivated"
+
+
+def test_refresh_unknown_user_401(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.security.jwt import create_refresh_token
+
+    client, _ = _client_standalone(monkeypatch)
+    resp = client.post("/auth/refresh", json={"refreshToken": create_refresh_token("u1")})
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "user no longer exists"

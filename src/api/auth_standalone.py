@@ -6,13 +6,14 @@ In embedded mode the router isn't included, so these routes 404.
 See Phase 7a spec §8.1.
 """
 
-from typing import Any
-
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.db.errors import AlreadyExists
+from src.db.repos import users as users_repo
+from src.db.session import get_session
 from src.integrations.email.resend import send_password_reset_email
 from src.security.auth import get_user_id_allow_password_change
 from src.security.jwt import (
@@ -30,7 +31,6 @@ from src.security.rate_limit import (
     get_rate_limiter,
     per_minute_config,
 )
-from src.storage.db import get_db
 
 router = APIRouter(tags=["auth"])
 
@@ -119,7 +119,7 @@ def _issue_pair(user_id: str) -> tuple[str, str, int, int]:
 async def register(
     payload: RegisterRequest,
     request: Request,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> AuthResponse:  # pyright: ignore[reportUnusedFunction]
     ip = request.client.host if request.client else "unknown"
@@ -129,24 +129,29 @@ async def register(
         client_key=ip,
         config=per_minute_config(get_settings().rate_limit_register_per_minute),
     )
-    existing = await db.user.find_unique(where={"email": str(payload.email)})  # pyright: ignore[reportAttributeAccessIssue]
+    existing = await users_repo.get_by_email(session, str(payload.email))
     if existing is not None:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="email already registered")
 
-    data: dict[str, Any] = {
-        "email": str(payload.email),
-        "passwordHash": hash_password(payload.password),
-    }
-    if payload.display_name:
-        data["displayName"] = payload.display_name
-
-    user = await db.user.create(data=data)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
+    try:
+        user = await users_repo.create(
+            session,
+            email=str(payload.email),
+            password_hash=hash_password(payload.password),
+            display_name=payload.display_name or None,
+        )
+    except AlreadyExists as exc:
+        # A concurrent registration won the unique-email race after our pre-check.
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT, detail="email already registered"
+        ) from exc
+    await session.commit()
 
     access, refresh, access_exp, refresh_exp = _issue_pair(user.id)
     return AuthResponse(
         id=user.id,
         email=user.email,
-        displayName=getattr(user, "displayName", None),
+        displayName=user.display_name,
         accessToken=access,
         refreshToken=refresh,
         accessTokenExpiresAt=access_exp,
@@ -158,7 +163,7 @@ async def register(
 async def login(
     payload: LoginRequest,
     request: Request,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> TokenPairResponse | MustChangePasswordResponse:  # pyright: ignore[reportUnusedFunction]
     ip = request.client.host if request.client else "unknown"
@@ -168,21 +173,21 @@ async def login(
         client_key=ip,
         config=per_minute_config(get_settings().rate_limit_login_per_minute),
     )
-    user = await db.user.find_unique(where={"email": str(payload.email)})  # pyright: ignore[reportAttributeAccessIssue]
+    user = await users_repo.get_by_email(session, str(payload.email))
     # Uniform 401: don't distinguish unknown-email from wrong-password.
     # SSO-only accounts have a null passwordHash and must reject password
     # logins with the same generic message as bad creds.
     if (
         user is None
-        or user.passwordHash is None
-        or not verify_password(payload.password, user.passwordHash)
+        or user.password_hash is None
+        or not verify_password(payload.password, user.password_hash)
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="invalid email or password"
         )
-    if getattr(user, "isActive", True) is False:
+    if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="account is deactivated")
-    if getattr(user, "mustChangePassword", False):
+    if user.must_change_password:
         return MustChangePasswordResponse(passwordChangeToken=create_password_change_token(user.id))
     access, refresh, access_exp, refresh_exp = _issue_pair(user.id)
     return TokenPairResponse(
@@ -197,7 +202,7 @@ async def login(
 async def refresh(
     payload: RefreshRequest,
     request: Request,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> TokenPairResponse:  # pyright: ignore[reportUnusedFunction]
     ip = request.client.host if request.client else "unknown"
@@ -223,16 +228,16 @@ async def refresh(
             detail="refresh token missing sub",
         )
 
-    user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
+    user = await users_repo.get_by_id(session, user_id)
     if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="user no longer exists"
         )
-    if getattr(user, "isActive", True) is False:
+    if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="account is deactivated"
         )
-    if getattr(user, "mustChangePassword", False):
+    if user.must_change_password:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="password change required"
         )
@@ -255,7 +260,7 @@ async def disconnect() -> None:  # pyright: ignore[reportUnusedFunction]
 async def change_password(
     payload: ChangePasswordRequest,
     request: Request,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     user_id: str = Depends(get_user_id_allow_password_change),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> None:  # pyright: ignore[reportUnusedFunction]
@@ -266,22 +271,19 @@ async def change_password(
         client_key=ip,
         config=per_minute_config(get_settings().rate_limit_change_password_per_minute),
     )
-    user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
+    user = await users_repo.get_by_id(session, user_id)
     if (
         user is None
-        or user.passwordHash is None
-        or not verify_password(payload.current_password, user.passwordHash)
+        or user.password_hash is None
+        or not verify_password(payload.current_password, user.password_hash)
     ):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED, detail="current password is incorrect"
         )
-    await db.user.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": user_id},
-        data={
-            "passwordHash": hash_password(payload.new_password),
-            "mustChangePassword": False,
-        },
+    await users_repo.set_password(
+        session, user_id, hash_password(payload.new_password), must_change=False
     )
+    await session.commit()
     return None
 
 
@@ -289,7 +291,7 @@ async def change_password(
 async def forgot_password(
     payload: ForgotPasswordRequest,
     request: Request,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> None:  # pyright: ignore[reportUnusedFunction]
     ip = request.client.host if request.client else "unknown"
@@ -299,8 +301,10 @@ async def forgot_password(
         client_key=ip,
         config=per_minute_config(get_settings().rate_limit_forgot_password_per_minute),
     )
-    user = await db.user.find_unique(where={"email": str(payload.email)})  # pyright: ignore[reportAttributeAccessIssue]
-    if user is not None and user.passwordHash is not None:
+    user = await users_repo.get_by_email(session, str(payload.email))
+    # Release the pooled connection before the (slow) email call.
+    await session.rollback()
+    if user is not None and user.password_hash is not None:
         token = create_password_change_token(user.id)
         reset_link = f"{get_settings().frontend_url}/reset-password?token={token}"
         try:
@@ -324,7 +328,7 @@ async def forgot_password(
 async def reset_password(
     payload: ResetPasswordRequest,
     request: Request,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> None:  # pyright: ignore[reportUnusedFunction]
     ip = request.client.host if request.client else "unknown"
@@ -342,19 +346,16 @@ async def reset_password(
             detail=f"invalid or expired reset token: {exc}",
         ) from exc
     user_id = claims.sub
-    user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
-    if user is None or getattr(user, "isActive", True) is False:
+    user = await users_repo.get_by_id(session, user_id)
+    if user is None or not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="invalid or expired reset token",
         )
-    await db.user.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": user_id},
-        data={
-            "passwordHash": hash_password(payload.new_password),
-            "mustChangePassword": False,
-        },
+    await users_repo.set_password(
+        session, user_id, hash_password(payload.new_password), must_change=False
     )
+    await session.commit()
     return None
 
 

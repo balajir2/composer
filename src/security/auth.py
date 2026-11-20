@@ -22,8 +22,11 @@ from fastapi import Depends, HTTPException, Request, status
 from jose import JWTError
 from jose import jwt as jose_jwt
 from jose.exceptions import ExpiredSignatureError
+from starlette.requests import HTTPConnection
 
 from src.config import Settings, get_settings
+from src.db.repos import users as users_repo
+from src.db.runtime import request_sessionmaker
 from src.security.jwt import (
     TokenVerificationError,
     verify_access_token,
@@ -84,31 +87,28 @@ async def _verify_standalone_jwt(token: str, settings: Any) -> str:
     return str(sub)
 
 
-async def _ensure_active_user(db: Any, user_id: str) -> None:
-    """Reject credentials for a deactivated or deleted standalone user."""
-    user = await db.user.find_unique(where={"id": user_id})
-    if user is None:
-        raise AuthError("user no longer exists")
-    if getattr(user, "isActive", True) is False:
-        raise AuthError("account is deactivated")
+async def _live_user(
+    request: HTTPConnection, user_id: str
+) -> tuple[bool, users_repo.UserRecord | None]:
+    """(checked, user). checked=False when the app has no database attached.
 
-
-async def _ensure_active_and_no_pending_password_change(db: Any, user_id: str) -> None:
-    """Reject deactivated users AND users with a pending admin-forced password
-    reset, for routes other than /auth/login and /auth/change-password.
-
-    A pending mustChangePassword must cut off existing sessions immediately —
-    otherwise an admin's "force a change on next login" reset only takes
-    effect the next time the user's access/refresh token happens to expire,
-    which can be up to 30 days (the refresh token TTL).
+    Uses its own short session so the pooled connection is released before the
+    route body runs.
     """
-    user = await db.user.find_unique(where={"id": user_id})
+    sessionmaker = request_sessionmaker(request)
+    if sessionmaker is None:
+        return False, None
+    async with sessionmaker() as session:
+        return True, await users_repo.get_by_id(session, user_id)
+
+
+def _ensure_active(user: users_repo.UserRecord | None) -> users_repo.UserRecord:
+    """Reject credentials for a deactivated or deleted standalone user."""
     if user is None:
         raise AuthError("user no longer exists")
-    if getattr(user, "isActive", True) is False:
+    if not user.is_active:
         raise AuthError("account is deactivated")
-    if getattr(user, "mustChangePassword", False):
-        raise AuthError("password change required")
+    return user
 
 
 async def verify_user_token(token: str, settings: Any) -> str:
@@ -177,15 +177,14 @@ async def get_current_user_id(
 
     # Standalone tokens remain cryptographically valid after an account is
     # deactivated, or after an admin forces a password change on the user.
-    # Check the live user row when the app-wide Prisma client is available so
+    # Check the live user row when the app has a database attached so
     # both conditions take effect immediately on every JWT route — otherwise
     # an existing session could keep refreshing (and calling every other
     # route) for up to 30 days without ever hitting the forced-change gate.
-    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
-
-    db = getattr(request.app.state, "db", None)
-    if isinstance(db, Prisma):
-        await _ensure_active_and_no_pending_password_change(db, user_id)
+    # A pending mustChangePassword must cut off existing sessions immediately.
+    checked, user = await _live_user(request, user_id)
+    if checked and _ensure_active(user).must_change_password:
+        raise AuthError("password change required")
     return user_id
 
 
@@ -196,7 +195,7 @@ async def get_user_id_allow_password_change(request: Request) -> str:
     refresh tokens, which must never authorize this endpoint.
 
     Like `get_current_user_id`, this also checks the live user row when the
-    app-wide Prisma client is available, so a deactivated account can't
+    app has a database attached, so a deactivated account can't
     authenticate here even with a still-valid token (see the "Standalone
     tokens remain cryptographically valid..." comment above).
     """
@@ -213,11 +212,9 @@ async def get_user_id_allow_password_change(request: Request) -> str:
         except TokenVerificationError as exc:
             raise AuthError(f"invalid token: {exc}") from exc
 
-    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
-
-    db = getattr(request.app.state, "db", None)
-    if isinstance(db, Prisma):
-        await _ensure_active_user(db, user_id)
+    checked, user = await _live_user(request, user_id)
+    if checked:
+        _ensure_active(user)
     return user_id
 
 
@@ -232,20 +229,13 @@ async def get_current_role(
     is explicitly seeded with role=admin in the DB (which Composer's
     standalone auth does NOT do automatically).
     """
-    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
-
     user_id = await get_current_user_id(request, settings)
 
     # Fetch role from DB — cheap single-row lookup keyed on primary id.
-    db = getattr(request.app.state, "db", None)
-    if db is None or not isinstance(db, Prisma):
+    checked, user = await _live_user(request, user_id)
+    if not checked:
         return user_id, "member"
-    user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
-    role = getattr(user, "role", None)
-    role_str = (
-        str(role.value) if role is not None and hasattr(role, "value") else str(role or "member")
-    )
-    return user_id, role_str
+    return user_id, user.role.value if user is not None else "member"
 
 
 async def ensure_admin(
