@@ -19,7 +19,7 @@ End-to-end recipe for running Composer on GCP. Cheapest possible setup that's st
   ┌──────────────────────┐       ┌──────────────────────┐
   │  Cloud Run service   │       │  Cloud Run service   │
   │  composer-frontend   │       │  composer-backend    │
-  │  Next.js 14          │       │  FastAPI + WS        │
+  │  Next.js 15          │       │  FastAPI + WS        │
   │  256–512 MiB / 1 vCPU│       │  1 GiB / 1 vCPU      │
   │  scale-to-zero       │       │  scale-to-zero,      │
   │                      │       │  default CPU         │

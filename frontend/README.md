@@ -1,36 +1,45 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Composer frontend
 
-## Getting Started
+The Composer web application is a Next.js 15 App Router project. It provides the workflow Designer, end-user Runs experience, and administrator console.
 
-First, run the development server:
+The repository-level [README](../README.md) and [documentation index](../docs/README.md) are the primary product documentation. This file covers frontend development only.
+
+## Prerequisites
+
+- Node.js 20 or newer
+- npm (the committed `package-lock.json` is authoritative)
+- A running Composer backend, normally at `http://localhost:8000`
+
+## Local development
 
 ```bash
+npm ci
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open <http://localhost:3000>. Configure backend and authentication values as described in [Getting Started](../docs/getting-started.md) and [Azure SSO](../docs/operations/azure-sso.md).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Quality gates
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+npm run format:check
+npm run type-check
+npm test
+npm run build
+```
 
-## Learn More
+The GitHub Actions CI workflow runs these gates and a Playwright smoke suite. Full browser tests live in `e2e/`.
 
-To learn more about Next.js, take a look at the following resources:
+## API client
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+With the backend running locally, regenerate the OpenAPI types with:
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```bash
+npm run generate-client
+```
 
-## Deploy on Vercel
+Review the generated diff in `lib/api/generated/schema.ts`; do not edit that file manually.
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## Production
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The current production path builds `frontend/Dockerfile` and deploys the server application to GCP Cloud Run. Vercel remains an alternate deployment path; see [Production Deployment](../docs/operations/production-deployment.md).

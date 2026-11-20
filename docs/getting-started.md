@@ -77,7 +77,7 @@ uv run prisma generate
 # Apply migrations
 uv run prisma migrate deploy
 
-# Seed the 20 reference templates (idempotent — safe to re-run)
+# Seed the 21 reference templates (idempotent — safe to re-run)
 uv run python -m scripts.seed_templates
 ```
 

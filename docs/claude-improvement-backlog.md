@@ -1097,7 +1097,7 @@ Resolved versions observed in the local environment:
 
 1. Lock and test the current dependency graph; add automated compatibility/update checks.
 2. Replace or contain Prisma Client Python risk (ADR and incremental SQLAlchemy/Alembic plan).
-3. Upgrade Next.js 14 + React 18 + NextAuth beta as one planned frontend platform project.
+3. **Partially resolved (2026-11-20):** Next.js is now 15.5.28. React remains 18 and NextAuth remains beta; treat their future upgrade as a separately verified frontend platform project.
 4. Migrate `reactflow` 11 to `@xyflow/react` 12 with persisted-node and canvas interaction tests.
 5. Update LangGraph 1.1.8 to the current v1 LTS minor and align LangChain/provider packages.
 6. Apply routine FastAPI/Pydantic patch/minor updates after the higher-risk platform work.

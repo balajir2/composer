@@ -2,7 +2,7 @@
 
 > **Audience:** customers, prospects, partners, internal contributors.
 > **Maintained by:** Balaji Rajan (`balajirajan@gmail.com`)
-> **Last updated:** 2026-07-21. Reviewed quarterly.
+> **Last reviewed:** 2026-11-20. Dates below are historical targets unless reconfirmed by the owner; this roadmap is directional, not a release commitment.
 > **Status:** Directional planning for product and fundraising discussions; not a contractual
 > delivery commitment and not evidence that every listed item is staffed or funded.
 
@@ -17,10 +17,10 @@ This is what we plan to ship over the next four quarters, what we've shipped rec
 | Branching node UI + branch label routing | 2026-04 | Two-handle UI for if-else / while / user-approval; `sourceHandle` → `branch` field on save |
 | Transform `outputKey` ergonomics | 2026-04 | Compute and persist a named variable in one node — closes the "loop counter is verbose" gap |
 | Vector DB upsert across all 5 providers | 2026-04 | Pinecone, Qdrant, Chroma, Weaviate, Milvus all do query + upsert; auto-chunking for string input |
-| 20 reference templates | 2026-07-15 | Each annotated with the capability it demonstrates; latest is a file-watch → summarize → email pipeline |
+| 21 reference templates | 2026-11-02 | Includes the decision-node routing example in addition to the earlier file-watch pipeline |
 | Single + bulk delete on /runs/history | 2026-04-30 | Members delete their own; admin overrides (with the "admin can't delete other users' workflows" carve-out preserved) |
 | MCP base64-blob sanitiser | 2026-05-04 | Closes the OAB-reported defect class; Highspot xlsx fetches no longer OOM the agent context |
-| Stuck-execution sweeper | 2026-05-04 | Background coroutine flips abandoned `running` rows to `failed` with explanatory error |
+| Attempt-health sweepers | 2026-11-19 | Expired leases and lease-less orphaned attempts are failed with compare-and-set guards; processing is not replayed and durable thread data remains available |
 | Resilient detached-task wrapper for `/api/run/{slug}` | 2026-05-04 | Uncaught crashes from the async invocation path now persist failure before re-raising |
 | World-class SaaS documentation overhaul | 2026-05-04 | This folder. Security / privacy / compliance / SLA / multi-tenancy / pricing / roadmap / support / customer onboarding + new operational runbooks |
 | Workflow assignment & sharing | 2026-07-09 | Many-to-many sharing layered on top of single ownership; full read/write/run, no view-only split |
@@ -28,7 +28,7 @@ This is what we plan to ship over the next four quarters, what we've shipped rec
 | Self-service "Forgot password?" flow | 2026-07-10 | Signed emailed reset link alongside the existing admin-forced reset; closes the account-enumeration vector |
 | Designer autosave | 2026-07-10 | 3-second debounced autosave; fixes an owner's unsaved edits being invisible to a reassigned/shared user |
 | File storage provider framework (`file-trigger` / `file-write`) + `composer watch` CLI | 2026-07-11 | Local folder-watch → production-workflow trigger; generated Markdown/Word/PDF file output |
-| Approve-via-email + waiting-approval auto-expiry | 2026-07-11 | Signed one-click approve/reject email links; auto-fails a pause with no decision after 7 days |
+| Approve-via-email + optional waiting-approval expiry | 2026-07-11 | Signed one-click approve/reject email links; expiry was later changed to opt-in, with the current default disabled so durable threads may wait subject to retention |
 | Codex-audit security & correctness remediation (13 items) | 2026-07-12 | HTTP-node SSRF guard, boot-time production-config validation, scanner-safe email approvals, execution idempotency keys, and more — see the [Improvement Backlog](../claude-improvement-backlog.md) |
 | Credential-disclosure gap closed for vector-DB / HTTP / MCP secrets | 2026-07-13 | Extends Jira's encrypt-at-rest + redact-on-read pattern to every secret-bearing node/server field |
 | Durable execution via Cloud Tasks + Postgres-backed events/rate limits | 2026-07-15 | Runs, real-time events, and rate limits all now survive multi-instance deploys and Cloud Run scale-to-zero |
@@ -38,36 +38,35 @@ This is what we plan to ship over the next four quarters, what we've shipped rec
 
 The full record is in [`../../CHANGELOG.md`](../../CHANGELOG.md).
 
-## In flight (next 90 days)
+## Candidate next investments
 
 These are the highest-priority candidate investments for the next phase. Individual items may have
 design work or prototypes, but sequencing depends on customer discovery, security priorities, and
 available funding.
 
-| Item | Why it matters | Target |
+| Item | Why it matters | Status |
 |---|---|---|
-| **Audit log table + export endpoint** | Today the audit trail is reconstructed from per-table timestamps + structured logs. SOC 2 Type II readiness wants a dedicated `audit_log` table + `GET /admin/audit-log/export?format=csv` for self-serve evidence collection. | Q3 2026 |
-| **Postgres row-level security for shared-tenant prep** | Defence in depth before shared tenancy lands — RLS policies on every customer-data table, with `app.current_org_id` set per-request. | Q3 2026 |
-| **Customer data export endpoint** | `GET /admin/users/{id}/export` returning the user's full data trail as JSON. Currently a custom SQL job for GDPR / CCPA right-of-access requests. | Q3 2026 |
-| **Bring-your-own-encryption-key (KMS-backed)** | Per-org KEK with KMS-issued data keys. The `src/security/encryption.py` interface already accommodates this; the work is the KMS provider integration + key-rotation runbook. | Q3 2026 |
-| **Public status page (managed customers)** | Customer-visible per-deployment status, uptime measurements, incident history. Today individual customers learn about incidents via email; the status page automates it. | Q3 2026 |
+| **Vendor-neutral telemetry + immutable audit log + human-assisted recovery** | Application telemetry is currently host/log-provider dependent, execution history is not a complete audit ledger, and failed flows have no controlled checkpoint override/restart UI. These three controls should be designed together so every override is attributable and observable. | Design required; no committed date |
+| **Postgres row-level security for shared-tenant prep** | Defence in depth before shared tenancy lands — RLS policies on every customer-data table, with `app.current_org_id` set per request. | Candidate; no committed date |
+| **Customer data export endpoint** | A self-service export would replace custom SQL for GDPR/CCPA access requests. | Candidate; no committed date |
+| **Bring-your-own-encryption-key (KMS-backed)** | Per-organisation KEK with KMS-issued data keys and a rotation runbook. | Candidate; no committed date |
+| **Public status page (managed customers)** | Customer-visible uptime and incident history. | Candidate; no committed date |
 
-## On the roadmap (next 6–12 months)
+## Longer-term roadmap
 
 These have direction but the specifics are still moving.
 
 | Item | Status |
 |---|---|
-| **Shared-tenant SaaS** — multiple customer organisations in one Composer instance. Schema and authz design is documented in [multi-tenancy.md](multi-tenancy.md). Gate is SOC 2 Type II + RLS landing first. | Q4 2026 |
-| **SOC 2 Type I** — formal assurance attestation. The pre-audit gap assessment is done; the work is closing process gaps. | Q4 2026 |
-| **SOC 2 Type II** — six-month observation window after Type I. | Q3 2027 |
-| **Workflow versioning + rollback** — every save is a new version; `published` workflows pin to a specific version; rollback to a prior version is one click. Today an unintentional save can break a published workflow until reverted manually. | Q4 2026 |
-| **Workflow staging + promotion** — `production: false` (draft) and `production: true` (published) exist today; an explicit "staging" mode where production callers can hit a candidate workflow without touching production traffic is the next step. | Q1 2027 |
-| **Native cron / scheduled triggers** — today external cron + `POST /api/run/{slug}` works fine; a built-in scheduler that lives on the Composer side simplifies the customer's setup. | Q1 2027 |
-| **Self-serve organisation management** — once shared tenancy lands, "create org," "invite member," "transfer ownership," "delete org" become first-class flows in the UI. | Q1 2027 |
-| **Workflow templates marketplace (read-only)** — bundled templates today; a community-contributed catalog is a logical extension. | Q2 2027 |
-| **Cost attribution per workflow / per-user** — daily token spend by Composer surface; today only the LLM provider has this view. Helps customers finance-side. | Q2 2027 |
-| **Workflow-level guardrails configuration** — per-workflow opt-in to PII / moderation / jailbreak / hallucination guardrails as a deployment policy, not a per-node concern. | Q2 2027 |
+| **Shared-tenant SaaS** — multiple customer organisations in one Composer instance. Schema and authz design is documented in [multi-tenancy.md](multi-tenancy.md). Gate is independently confirmed assurance requirements + RLS landing first. | Candidate; no committed date |
+| **SOC 2 programme** — readiness work, independent assessment, Type I, observation period, and Type II are operator-level initiatives. | Not evidenced by this repository; no committed date |
+| **Workflow versioning + rollback** — every save is a new version; published workflows pin to a specific version; rollback to a prior version is one click. | Candidate; no committed date |
+| **Workflow staging + promotion** — add an explicit staging mode beyond today's draft/production flag. | Candidate; no committed date |
+| **Native cron / scheduled triggers** — today external cron + `POST /api/run/{slug}` is the supported pattern. | Candidate; no committed date |
+| **Self-serve organisation management** — depends on shared tenancy. | Candidate; no committed date |
+| **Workflow templates marketplace (read-only)** — extend today's bundled templates with a community catalog. | Candidate; no committed date |
+| **Cost attribution per workflow / per-user** — expose token spend by Composer surface. | Candidate; no committed date |
+| **Workflow-level guardrails configuration** — deployment policy rather than only per-node configuration. | Candidate; no committed date |
 
 ## Speculative / under consideration
 

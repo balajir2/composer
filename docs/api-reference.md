@@ -215,15 +215,15 @@ Returns `id`/`email`/`displayName` only, rate-limited (`rate_limit_users_search_
 
 ```
 GET    /mcp-servers                       list (own + shared)
-GET    /mcp-servers/{id}
 POST   /mcp-servers                       register
-PUT    /mcp-servers/{id}                  update
 DELETE /mcp-servers/{id}                  owner-only
 PATCH  /mcp-servers/{id}/shared           admin — flip isShared
 PATCH  /mcp-servers/{id}/owner            admin — reassign
+PATCH  /mcp-servers/{id}/oauth-config      owner — replace encrypted OAuth client configuration
 POST   /mcp-servers/{id}/test-connection  health check
-GET    /mcp-oauth/callback                OAuth redirect URI (handled internally)
-GET    /mcp-oauth/authorize-url/{id}      kick off OAuth flow
+POST   /mcp-servers/{id}/oauth/authorize  generate the OAuth authorization URL
+POST   /mcp-servers/{id}/oauth/disconnect remove the caller's stored OAuth token
+GET    /oauth/callback                    OAuth redirect URI (handled internally)
 ```
 
 Six critical MCP fixes from OAB's April 2026 debugging session are encoded — RFC 8707 `resource` parameter on every OAuth grant, manual `tools/list` (skipping Anthropic's native MCP connector that 73K-char tool definitions broke), `inputSchema` (camelCase) tolerance, server-side token retrieval (tokens never transit the client), shared-server token fallback, explicit LangSmith config threading. See [`decisions.md`](decisions.md) ADR-0007–ADR-0010 for the full story.

@@ -171,11 +171,9 @@ concurrent work settles.
 
 ---
 
-## 🔴 P2-4 — Improve dependency and build reproducibility
+## 🟡 P2-4 — Improve dependency and build reproducibility (PARTIALLY RESOLVED)
 
-**Problem:** No enforced guarantee that local/CI/production resolve the same dependency graph;
-several frontend dependencies (Next.js 14, NextAuth beta, `reactflow` 11) are behind supported
-versions; LangChain/LangGraph lower bounds aren't pinned as a tested compatibility set.
+**Update (2026-11-20):** the frontend is now on Next.js 15.5.28, CI uses `npm ci`, backend installs use the committed `uv.lock`, and CI audits production dependencies and container images. NextAuth remains a beta release and React Flow remains v11; compatibility-set pinning and upgrade cadence remain open policy work.
 
 **Why it's a decision:** This is a policy question (how strict should pinning be, what's the
 upgrade cadence) plus a sequencing question — the audit's own recommended order puts this behind
@@ -183,11 +181,8 @@ the Prisma persistence decision (P3-1) and the Next.js/React/NextAuth platform u
 which are bigger, separately-scoped efforts.
 
 **Decisions needed:**
-1. Adopt the audit's recommended upgrade order as-is (lock deps → resolve Prisma risk → Next.js
-   14→15 platform upgrade → `reactflow`→`@xyflow/react` migration → LangGraph/LangChain minor
-   bump → routine patches), or reprioritize?
-2. Frontend platform upgrade (Next.js 14 is past its support window) — separately scoped project
-   or folded into this item?
+1. Decide whether and when to migrate `reactflow` to `@xyflow/react` and NextAuth from beta to a stable release.
+2. Define the supported dependency-update cadence and compatibility policy for LangGraph/LangChain.
 
 **Full spec:** `docs/claude-improvement-backlog.md` §P2-4 (includes a full version-by-version
 table and the audit's recommended upgrade order).
@@ -235,5 +230,4 @@ Dependencies between these argue for roughly this sequence, not strict P0→P3 p
    decision.
 6. **P2-3** (module splits) — whenever the concurrent-session file contention on
    `workflow.py`/`langgraph_executor.py` settles.
-7. **P2-4** (dependency reproducibility) — ongoing hygiene; the frontend platform upgrade
-   (Next.js 14 → supported LTS) is the one time-sensitive piece given Next.js 14 is past support.
+7. **P2-4** (dependency reproducibility) — ongoing hygiene; the Next.js 15 upgrade and lockfile-based CI are complete, while NextAuth/React Flow migrations and compatibility policy remain.

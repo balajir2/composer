@@ -12,8 +12,8 @@ Composer's observability fits the standard three-pillar model:
 
 | Pillar | What it answers | Where it lives |
 |---|---|---|
-| **Logs** | What happened, in human-readable detail | Backend host logs, Vercel logs, Postgres audit |
-| **Metrics** | How much, how fast, how often | Host metrics, custom counters, alarm thresholds |
+| **Logs** | What happened, in human-readable detail | Backend/frontend host logs and Postgres service logs |
+| **Metrics** | How much, how fast, how often | Host metrics and operator-defined DB/log-derived measurements |
 | **Traces** | What did a single workflow execution actually do | LangSmith (when enabled) |
 
 The pillars complement each other. Most investigations start with metrics ("what changed?"), drill into traces ("what happened in that one bad run?"), and confirm with logs ("what was the exact error message?").
@@ -22,7 +22,7 @@ The pillars complement each other. Most investigations start with metrics ("what
 
 ### Backend logs
 
-Every log line is structured JSON via Python's `logging` module. Key fields:
+Composer uses Python's `logging` module. The application does not install a universal JSON formatter or guarantee the enrichment fields below on every record; configure structured formatting and request correlation at the deployment layer if your operations standard requires them. Common application context includes:
 
 | Field | Meaning |
 |---|---|
@@ -30,10 +30,7 @@ Every log line is structured JSON via Python's `logging` module. Key fields:
 | `logger` | Module path (e.g., `src.api.executions`) |
 | `timestamp` | ISO-8601 UTC |
 | `message` | Human-readable text |
-| `extra.user_id` | Calling user (when available) |
-| `extra.execution_id` | Execution id (when within a run) |
-| `extra.workflow_id` | Workflow id (when within a save/run) |
-| `extra.request_id` | Per-request UUID |
+| user/execution/workflow identifiers | Present in selected messages, not guaranteed as structured fields on every record |
 
 Log level is controlled by the `LOG_LEVEL` env var. Production deployments default to `INFO`. `DEBUG` produces request-body logs that may include execution input — only enable temporarily during investigation, not as a permanent setting.
 
@@ -72,9 +69,9 @@ Long-running queries, deadlocks, and slow execution plans appear here. Keep an e
 
 Most production setups don't need to read Postgres logs directly; the host's UI surfaces the relevant signals.
 
-### Frontend logs (Vercel)
+### Frontend host logs
 
-Vercel's runtime logs capture frontend rendering errors and any frontend-to-backend request that didn't reach the backend. Useful for:
+Cloud Run is the current deployment target; Vercel is an alternate. The selected host's runtime logs capture frontend rendering and NextAuth failures. Useful for:
 
 - Rendering failures on the canvas (rare; most errors come from backend responses)
 - NextAuth callback failures during SSO
@@ -199,6 +196,8 @@ Honest about gaps:
 - **No per-customer cost attribution.** We can't (yet) tell you "Customer X cost $Y in tokens last month" without manual SQL across LangSmith + Composer rows. On the [`../saas/roadmap.md`](../saas/roadmap.md).
 - **No real-time per-execution token counter** during the run. LangSmith shows it after the fact.
 - **No SLO dashboards** that aggregate across plan tiers. The SLA is computed per-deployment via the external monitor; cross-deployment aggregation is manual today.
+- **No vendor-neutral application telemetry pipeline.** There is no OpenTelemetry SDK/exporter, Prometheus endpoint, or built-in trace/metric backend. Host telemetry and optional LangSmith tracing must not be described as complete application observability.
+- **No immutable administrator audit ledger.** Execution events and business rows are useful operational evidence, but administrative changes are not all recorded in an append-only, exportable audit table.
 
 ## Adjacent docs
 

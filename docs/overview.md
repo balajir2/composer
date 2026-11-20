@@ -7,8 +7,8 @@ state, and published APIs in one inspectable system.
 ## Product status
 
 Composer is an **early commercial product** with an operational backend, visual Designer, Runs and
-Approvals experience, administration console, production invocation API, and 20 reference
-templates. The current repository collects 1267 backend tests across unit, regression, and
+Approvals experience, administration console, production invocation API, and 21 reference
+templates. The current repository collects 1,751 backend tests across unit, regression, and
 integration suites.
 
 Durable queued execution, cross-instance execution events, and cross-instance rate limits now run
@@ -59,7 +59,7 @@ vector-DB, HTTP, and MCP secrets, but not shared rotation/ownership) and framewo
 | Human oversight | Checkpointed approve/reject steps, in-app decisions, emailed decision links with optional attachments, approval records and expiry. |
 | Product integration | Published workflow endpoints, per-user API keys, sync/async invocation, idempotent retries, execution cancellation, WebSocket events. |
 | Administration | Users, roles, sharing, models, encrypted LLM keys, MCP servers, deployment settings, run history. |
-| Operations | PostgreSQL checkpoints, durable Cloud Tasks execution queueing, stuck-run cleanup, logs, LangSmith integration, deployment and incident runbooks. |
+| Operations | PostgreSQL checkpoints, durable Cloud Tasks execution queueing, guarded attempt-health sweepers, host logs, optional LangSmith integration, deployment and incident runbooks. Vendor-neutral telemetry and a dedicated immutable audit ledger remain roadmap items. |
 
 See [Product Capabilities](product-capabilities.md) and the [Designer Guide](designer-guide.md) for
 the complete feature catalogue.

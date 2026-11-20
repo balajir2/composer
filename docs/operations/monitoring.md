@@ -217,7 +217,7 @@ Run through this checklist in the 48 hours after cutover from OAB to Composer.
 - [ ] LangSmith error rate < 5% of traces.
 - [ ] WebSocket connections stable (check Vercel logs for websocket close code 1011 = internal
   error).
-- [ ] PITR backup window confirmed: verify Neon console shows the last 7 days of WAL retention.
+- [ ] PITR restore window confirmed in the database provider console against the deployment's approved recovery policy.
 - [ ] LLM key rotation scheduled: set a calendar reminder for the next rotation cycle (e.g., 90
   days).
 

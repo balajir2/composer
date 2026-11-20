@@ -69,7 +69,7 @@ Composer routes data to a small set of third parties so we can deliver the Servi
 | Cloud file storage (optional) | Google Drive |
 | Vector databases (optional) | Pinecone, Qdrant, Chroma, Weaviate, Milvus |
 | MCP servers | Whatever your workflow connects to |
-| Hosting | Neon (database), Vercel (frontend), {{BACKEND_HOST}} (backend) |
+| Hosting | {{DATABASE_HOST}} (database), {{FRONTEND_HOST}} (frontend), {{BACKEND_HOST}} (backend) |
 | Tracing (optional) | LangSmith |
 
 Each sub-processor receives only the data necessary for its function, and is contractually committed to confidentiality and data-protection standards we've reviewed.

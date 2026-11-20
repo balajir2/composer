@@ -10,7 +10,7 @@ Composer stores three categories of data:
 
 1. **Identity & access data** — who logs in, what they're allowed to do.
 2. **Workflow & execution data** — what they build and run.
-3. **Operational telemetry** — logs and traces that prove the platform works.
+3. **Operational signals** — application/host logs, persisted execution events, and optional LLM traces.
 
 The full schema lives in [`../../prisma/schema.prisma`](../../prisma/schema.prisma); the table below is the digest with privacy-relevant context.
 
@@ -19,8 +19,7 @@ The full schema lives in [`../../prisma/schema.prisma`](../../prisma/schema.pris
 | Table | What it stores | PII? | Lawful basis (GDPR) |
 |---|---|---|---|
 | `users` | Email, name (if SSO supplies it), bcrypt-hashed password (standalone only), role, `isActive` flag, timestamps | Yes — email, name | Contract / legitimate interest |
-| `accounts` (NextAuth) | OAuth provider linkages | Possibly — provider userId | Contract |
-| `sessions` (NextAuth) | Active session tokens | No (session id only) | Contract |
+| Frontend NextAuth session | JWT-based browser session handled by NextAuth; no Composer `accounts` or `sessions` table exists in the Prisma schema | Possibly — identity claims | Contract |
 | `api_keys` | bcrypt-hashed key, label, prefix, owner, last-used timestamp, expiry | No (label may include PII if user includes their email) | Contract |
 | `mcp_servers` + `mcp_oauth_tokens` | Encrypted OAuth tokens for the MCP server, scopes, issuer | No directly; tokens grant access to *external* systems whose data may include PII | Contract |
 | `cloud_storage_connections` | Encrypted per-user OAuth tokens for cloud file-trigger providers (Google Drive today) | No directly; tokens grant access to the connected Drive folder's contents | Contract |
@@ -40,11 +39,11 @@ The full schema lives in [`../../prisma/schema.prisma`](../../prisma/schema.pris
 
 | Source | What's captured | Where it lives |
 |---|---|---|
-| Backend logs | HTTP method, path, status code, calling user id, request id, timing, error stacks | Container host (Fly logs, CloudWatch, etc.); retention per host configuration |
+| Backend logs | Application lifecycle, execution, security, and error messages emitted by Python logging; exact fields depend on the code path and host configuration | Container host; retention per host configuration |
 | LangSmith (optional) | Full prompt + tool-call trace per execution run | LangSmith SaaS; opt-in via `LANGCHAIN_TRACING_V2=true` |
-| Vercel analytics (frontend, optional) | Page views, web-vital metrics | Vercel; opt-in via Vercel project setting |
+| Frontend host analytics (optional) | Host-provided page or runtime metrics only when the operator enables them | Deployment provider; opt-in and retention are provider-specific |
 
-If you don't enable LangSmith or Vercel analytics, the only telemetry that leaves your deployment is what you choose to ship to your own log aggregator.
+Composer contains no built-in product-analytics or phone-home client. Data can still leave the deployment through configured workflow nodes, LLM/tool/MCP providers, email delivery, OAuth integrations, LangSmith, and infrastructure logging, so operators must document the services they enable.
 
 ## Data we deliberately don't collect
 
@@ -112,17 +111,13 @@ Composer routes data to a small set of third parties, each of which has its own 
 | **LangSmith** (optional) | Full execution trace including prompts + tool calls + outputs | Tracing + debugging | US — opt-out by leaving `LANGCHAIN_TRACING_V2=false` |
 | **Pinecone / Qdrant / Chroma / Weaviate / Milvus** (optional) | Vector embeddings + metadata of customer documents | RAG retrieval | Per provider |
 | **Neon** (recommended Postgres host) | Everything in the database | Hosting | Per region selected at provisioning |
-| **Vercel** (recommended frontend host) | Customer-uploaded data only via the frontend's API proxy | Hosting | Per region |
+| **Frontend/backend host** (GCP Cloud Run in the current reference deployment; Vercel is an alternate frontend path) | Request metadata and data proxied through the application | Hosting | Per configured deployment region |
 
 A static, versioned list intended for legal review is at [legal/subprocessors.md](legal/subprocessors.md). Update it whenever a new provider is added, and notify managed customers per the contract.
 
 ## Data residency
 
-The hosting region is your choice when we provision a managed-single-tenant deployment. Today we offer:
-
-- **EU**: Neon EU + Vercel `fra1` / `cdg1` / `arn1`
-- **US**: Neon US + Vercel `iad1` / `sfo1` / `pdx1`
-- **Asia-Pacific**: Neon AP + Vercel `hnd1` / `sin1`
+Data residency is determined by the regions selected for Postgres, Cloud Run (or the alternate frontend host), logging, backups, and every enabled external provider. A managed-service operator must document the exact regions and cross-border transfers in the customer contract; this repository does not promise a fixed region catalog.
 
 LLM provider calls leave the region by default (Anthropic / OpenAI / Google host primarily in the US). For customers with strict residency requirements, options:
 

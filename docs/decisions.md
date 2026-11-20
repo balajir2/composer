@@ -658,7 +658,7 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 
 **Decision.**
 
-1. **Fresh UX, not OAB visual port.** OAB is behavioral reference; frontend built fresh in Next.js 14 App Router + Tailwind + shadcn/ui.
+1. **Fresh UX, not OAB visual port.** OAB is behavioral reference; frontend was built fresh with the App Router + Tailwind + shadcn/ui. **Current-state update (2026-11-20):** the frontend now runs Next.js 15.5.28; Next.js 14 was the original implementation baseline.
 2. **Monorepo under `composer/frontend/`.** Not a separate repo. OpenAPI TS types generated in-place from Composer's FastAPI schema.
 3. **Single Next.js app, role-aware routes.** `/designer/*`, `/runs/*`, `/admin/*` guarded at layout level. One build, one deploy.
 4. **Tailwind + shadcn/ui over Ant/Mantine.** Installed `base-nova` style (on `@base-ui/react`, not Radix — the default shipped by `shadcn init` as of v4); CSS variables hook for future re-theming. `Button asChild` is unsupported in this style; use `<Link>` + `buttonVariants()`.
@@ -671,7 +671,7 @@ Production deployments set `ENVIRONMENT=production` (unset or typo → not `"dev
 11. **No workflow versioning.** Edits to production workflows propagate immediately. Versioning deferred.
 12. **SSO exchange via backend endpoint.** NextAuth validates Azure token client-side, then calls `POST /auth/sso-exchange` — Composer stays the JWT authority.
 13. **New admin-surgical PATCH endpoints** (`PATCH /mcp-servers/{id}/shared`, `POST /admin/users/{id}/role`) supplant the Phase 9 SQL-only promotion path and avoid the full-body PUT contract.
-14. **Vercel for frontend, container for backend.** Long-lived WebSocket (DES-007) doesn't work on Vercel Serverless Functions; backend recommended on Fly/Render/App Runner. Frontend stays on Vercel.
+14. **Original deployment split: Vercel for frontend, container for backend.** Long-lived WebSocket (DES-007) requires the backend to run on a suitable container host. **Current-state update (2026-11-20):** the reference deployment runs both frontend and backend on GCP Cloud Run; Vercel remains an alternate frontend path.
 
 **Consequences.**
 - **Simpler deployment.** Single Next.js app + single backend; Vercel for frontend; separate container for backend.

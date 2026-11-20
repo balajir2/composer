@@ -4,6 +4,8 @@
 
 Pick the doc that matches what you're trying to do.
 
+Current guides and runbooks describe the present product. Files under `archive/`, and dated files under `superpowers/specs/` or `superpowers/plans/`, are point-in-time engineering records and are not rewritten when implementation changes. The dated `claude-*audit*` files likewise preserve the evidence available at their audit commit; always check their status banner and re-verify against `main`.
+
 ## I want to...
 
 | ...do this | ...read this |
@@ -13,13 +15,14 @@ Pick the doc that matches what you're trying to do.
 | **Run Composer locally and build my first workflow** | [getting-started.md](getting-started.md) |
 | **Understand how the platform works internally** | [architecture.md](architecture.md) |
 | **Build workflows in the Designer (nodes, variables, templates, publishing)** | [designer-guide.md](designer-guide.md) |
-| **Set up one of the 20 example flows, parameter by parameter** | [user-training-flow-setup.md](user-training-flow-setup.md) |
+| **Set up the documented example flows, parameter by parameter** | [user-training-flow-setup.md](user-training-flow-setup.md); the seed script currently contains 21 templates |
 | **Manage users, LLM keys, MCP servers, deployment settings** | [admin-guide.md](admin-guide.md) |
 | **Deploy and operate Composer in production** | [operations.md](operations.md) |
 | **Call Composer's HTTP API or external-invoke endpoint** | [api-reference.md](api-reference.md) |
 | **Understand a specific engineering decision** | [decisions.md](decisions.md) (ADR record) |
 | **Host Composer as a SaaS — security, privacy, compliance, SLA, pricing** | [saas/](saas/) |
 | **See what's changed recently** | [/CHANGELOG.md](../CHANGELOG.md) |
+| **Review the latest documentation accuracy audit** | [documentation-audit-2026-11-20.md](documentation-audit-2026-11-20.md) |
 
 ## By role
 

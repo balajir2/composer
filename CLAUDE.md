@@ -78,7 +78,7 @@ Supporting docs in `docs/design/` provide historical context and product/strateg
 | 4b — Control-flow (if-else, while) | ✅ Complete | add_conditional_edges; while cap 100; both if-else branches + while countdown verified against real Neon |
 | 7a — Deployment-mode toggle + auth middleware | ✅ Complete | standalone vs embedded; User table; dev-mode fallback (ADR-0015); brought forward from Phase 7 |
 | 5a — User-approval + interrupt/resume | ✅ Complete | `interrupt()` pause via `aget_state`; `/executions/{id}/resume`; `Approval` table; both branches verified against real Neon |
-| 5b — SSE streaming | ✅ Complete | `GET /executions/{id}/events` with in-process asyncio bus; 5 event types; full taxonomy verified against real Neon |
+| 5b / 9a — execution streaming | ✅ Complete | persisted, sequence-numbered Postgres events streamed over `GET /executions/{id}/ws`, with `LISTEN/NOTIFY` wake-ups and reconnect replay |
 | 6a — Note + Join-Chunks | ✅ Complete | note visual-only (skip lock-test from Phase 1); join-chunks concatenates chunk lists with separator/prefix/suffix/metadata; verified against real Neon |
 | 6b — Guardrails | ✅ Complete | LLM-classifier (pii/moderation/jailbreak/hallucination); concurrent via asyncio.gather; verified against real Anthropic + Neon |
 | 6c — Gamma-AI | ✅ Complete | HTTP integration with gamma.app; 60s/10s/4min polling; exportAs pptx/pdf supported; 13 unit tests, smoke test manual |
@@ -89,7 +89,7 @@ Supporting docs in `docs/design/` provide historical context and product/strateg
 | 7d — Regression suite port from OAB | ⏸ | deferred; Composer's 600+ tests already cover behavioral parity |
 | 8 — Security + hardening | ✅ Complete | authz (private = 404 for non-owner; execution owner-only), size caps (100 nodes / 200 edges / 1 MB input), in-memory token-bucket rate limits, security regression tests; verified against real Neon (two-user) |
 | 9 — Cutover (Convex→Postgres migration, WebSocket) | ✅ Complete | OAB→Composer migration + email-based reconciliation; admin capabilities; Postgres-SoT LLM keys w/ Vercel sync; WebSocket replaces SSE (DES-007); deployment docs |
-| 10 — Composer frontend + enterprise UX | ✅ Complete | Next.js 14 + Tailwind + shadcn/ui; three role-aware audiences (Designer / End User / Admin); Azure SSO via NextAuth; production workflows + external-invoke API (`POST /api/run/{slug}` with per-user API keys); unified tools/MCPs catalog; Playwright e2e suite |
+| 10 — Composer frontend + enterprise UX | ✅ Complete | Next.js 15 + Tailwind + shadcn/ui; three role-aware audiences (Designer / End User / Admin); Azure SSO via NextAuth; production workflows + external-invoke API (`POST /api/run/{slug}` with per-user API keys); unified tools/MCPs catalog; Playwright e2e suite |
 
 Backend phases 0–9 ≈ 10 weeks. UI phase 10 ≈ 3 weeks. Total ≈ 13 weeks.
 
@@ -128,7 +128,7 @@ uv sync --all-extras
 # Generate Prisma client after schema changes
 uv run prisma generate
 
-# Create a new migration (once Phase 1 adds tables)
+# Create a new migration after changing prisma/schema.prisma
 uv run prisma migrate dev --name <migration_name>
 
 # Run the dev server
@@ -274,7 +274,7 @@ Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
 
 Record of issues hit during scaffolding — watch for these:
 
-1. **Prisma refuses to `generate` with zero models.** Add at least one placeholder model if others aren't ready yet. See `prisma/schema.prisma`'s `ComposerBootstrap` — remove when Phase 1 adds real tables.
+1. **Prisma refuses to `generate` with zero models.** This mattered during initial scaffolding; the current schema contains the production models and no bootstrap placeholder is needed.
 2. **Prisma disallows leading underscore in model names.** Use `@@map("snake_case_name")` if you want a specific underscore-prefixed table name.
 3. **Ruff's UP035** — `AsyncIterator` must come from `collections.abc`, not `typing`.
 4. **Pyright's `reportUnusedFunction`** on FastAPI `@app.get` handlers is a false positive. Suppress inline or use APIRouter pattern.
