@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 from sqlalchemy.exc import OperationalError
+from sqlalchemy.pool import NullPool
 
 from src.config import Settings
 from src.db.engine import build_engine, connect_with_retry
@@ -32,6 +33,15 @@ async def test_build_engine_uses_psycopg_and_configured_pool() -> None:
         assert engine.url.drivername == "postgresql+psycopg"
         assert engine.url.query["sslmode"] == "disable"
         assert engine.pool.size() == 4  # pyright: ignore[reportAttributeAccessIssue, reportUnknownMemberType]
+    finally:
+        await engine.dispose()
+
+
+async def test_build_engine_for_migrations_uses_one_shot_connections() -> None:
+    engine = build_engine(_settings(db_pool_size=4, db_max_overflow=1), for_migrations=True)
+    try:
+        assert isinstance(engine.sync_engine.pool, NullPool)
+        assert engine.url.drivername == "postgresql+psycopg"
     finally:
         await engine.dispose()
 
