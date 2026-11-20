@@ -58,7 +58,11 @@ async def exists(session: AsyncSession, provider: str) -> bool:
 async def upsert(
     session: AsyncSession, provider: str, *, encrypted_key: str, key_prefix: str
 ) -> UpsertResult:
-    """One atomic statement. ``xmax = 0`` is true only for a freshly inserted row."""
+    """One atomic statement. ``xmax = 0`` is true only for a freshly inserted row.
+
+    That is a widely used but undocumented Postgres behaviour, so ``created``
+    is advisory: it only picks the CLI's "created"/"updated" wording.
+    """
     now = utcnow()  # ON CONFLICT bypasses the ORM's onupdate, so set it here
     stmt = (
         insert(LlmApiKey)

@@ -91,13 +91,12 @@ async def upsert_llm_key(
     prefix = _prefix(payload.value)
     result = await keys_repo.upsert(session, provider, encrypted_key=encrypted, key_prefix=prefix)
     await session.commit()
-    # Set only after the commit: a failed commit must not leave the running
-    # app using a key that was never saved.  Immediately reflect the new value
-    # on the in-process Settings so the
-    # next workflow that resolves settings.<provider>_api_key sees the
-    # fresh key without a restart.  Other Cloud Run instances (when scaled
-    # >1) still see the old value until their next boot; src/security/key_sync.py
-    # picks it up via the lifespan sync.
+    # Reflect the new value on the in-process Settings so the next workflow that
+    # resolves settings.<provider>_api_key sees it without a restart. Other
+    # Cloud Run instances (when scaled >1) keep the old value until their next
+    # boot, when src/security/key_sync.py picks it up via the lifespan sync.
+    # Set only after the commit: a failed commit must not leave the running app
+    # using a key that was never saved.
     field = PROVIDER_TO_SETTINGS_FIELD.get(provider)
     if field is not None:
         setattr(get_settings(), field, payload.value)
