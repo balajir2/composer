@@ -42,6 +42,8 @@ Walk through [postgres-setup.md](postgres-setup.md). The end state:
 
 ### 1.1a Apply release migrations before backend startup
 
+**On GCP Cloud Run with the GitHub Actions pipeline, this happens automatically.** `.github/workflows/deploy-gcp.yml` runs `prisma migrate deploy` against the `composer-database-url` secret (direct, non-pooler endpoint) right before `gcloud run deploy`. If the migration fails, the deploy stops and the previous revision keeps serving. Since the old revision briefly runs against the new schema, migrations must be additive and backward-compatible. Run the steps below by hand for first-time setup, for other hosts, or to check a database.
+
 Use an administrative/release environment with the intended `DATABASE_URL` and the release's schema. This step does not need a running new backend:
 
 ```bash
