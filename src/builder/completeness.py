@@ -51,7 +51,8 @@ def _known_names(dumped: list[tuple[str, str, dict[str, Any]]]) -> set[str]:
         if isinstance(node_name, str) and _snake(node_name):
             names.add(_snake(node_name))
         if node_type == "start":
-            names.update(v["name"] for v in data.get("inputVariables") or [])
+            variables: list[dict[str, Any]] = data.get("inputVariables") or []
+            names.update(str(v["name"]) for v in variables)
         state_key = data.get("stateKey")
         if node_type == "set-state" and isinstance(state_key, str):
             names.add(state_key)
