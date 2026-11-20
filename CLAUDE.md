@@ -126,18 +126,21 @@ Backend phases 0–9 ≈ 10 weeks. UI phase 10 ≈ 3 weeks. Total ≈ 13 weeks.
 # Install / update dependencies
 uv sync --all-extras
 
-# Generate Prisma client after schema changes
+# Generate Prisma client (after pulling; Prisma's schema is frozen)
 uv run prisma generate
 
 # (Frozen) Prisma migrations: do not create new ones
 # Never run prisma migrate dev/diff against a database Alembic has touched (it would see alembic_version as drift).
-uv run prisma migrate dev --name <migration_name>
+# (frozen) uv run prisma migrate dev ...  — do NOT run; schema changes are Alembic revisions
 
 # Schema changes (Prisma's schema is frozen): write an Alembic revision
 uv run alembic revision -m "<what changed>"
 
 # Apply Alembic migrations (after `prisma migrate deploy` while both exist)
 uv run alembic upgrade head
+
+# Apply Alembic to your test database before running integration tests
+DATABASE_URL=$TEST_DATABASE_URL uv run alembic upgrade head
 
 # Run the dev server
 uv run uvicorn src.main:app --reload

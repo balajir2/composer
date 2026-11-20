@@ -2448,3 +2448,13 @@ In the deploy run's `Apply database migrations` step, expect `Running upgrade  -
 | 5 | Checkpointer and notifications: add `psycopg-pool` and `langgraph-checkpoint-postgres`; `setup()` in the deploy step; paused-run guard; two-way copy tool; LISTEN/NOTIFY on psycopg |
 | 6 | Removal: Prisma, Node.js, asyncpg; squashed Alembic base for fresh databases; update the frozen fingerprint test into a "prisma/ absent" check |
 | 7 | Cleanup: Alembic revision dropping the old checkpoint tables and `_prisma_migrations` |
+
+### Carry into the phase 1 plan (from the phase 0 final review)
+
+- Settings must be read after any env override (see `tests/conftest.py`).
+- Check whether any Prisma write stores non-JSON-native values (datetime, Decimal, Enum) in Json columns; if so, set the engine's `json_serializer`.
+- Compare `timestamp(3)` columns against bound `utcnow()` values, never `func.now()` (it depends on the session TimeZone).
+- Relationships use `lazy="raise"` and `passive_deletes=True`.
+- Grow `MIGRATED_PATHS` with each ported area.
+- Phase 5: add LangGraph's checkpoint tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`) to `IGNORED_TABLES` in `src/db/schema_filters.py`.
+- Consider a `concurrency:` group on the deploy workflow (pre-existing; owner decision).
