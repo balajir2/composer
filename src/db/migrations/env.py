@@ -21,7 +21,9 @@ MIGRATION_LOCK_KEY = 7_311_190_457
 # a longer connect-timeout floor than app startup. SQLAlchemy's first
 # connection runs extra setup round trips (~4 s from a distant region), and
 # the app's 3 s default exists to stop Cloud Run crash loops, which doesn't
-# apply to a migration run.
+# apply to a migration run. Worst case, a database that is down delays the
+# deploy failure by about attempts x 15 s (~45 s with the default 3 attempts),
+# which is acceptable for a one-shot step.
 MIGRATION_CONNECT_TIMEOUT_FLOOR_SECONDS = 15.0
 
 config = context.config

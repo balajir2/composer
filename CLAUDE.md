@@ -130,6 +130,7 @@ uv sync --all-extras
 uv run prisma generate
 
 # (Frozen) Prisma migrations: do not create new ones
+# Never run prisma migrate dev/diff against a database Alembic has touched (it would see alembic_version as drift).
 uv run prisma migrate dev --name <migration_name>
 
 # Schema changes (Prisma's schema is frozen): write an Alembic revision

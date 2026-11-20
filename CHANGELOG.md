@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
-### Changed — SQLAlchemy foundation, migration phase 0 of 7 (2026-11-20)
+### Changed — SQLAlchemy foundation, migration phase 0 (of phases 0–7) (2026-11-20)
 
 - **Why:** Prisma Client Python, Composer's ORM, is archived upstream. This starts the move to SQLAlchemy 2.x + Alembic on psycopg 3 (ADR-0035).
 - **What:** models for all 17 tables, mapped onto the existing schema; an empty Alembic baseline; a schema-parity test; the SQLAlchemy engine starts alongside Prisma. No behaviour change, and no route uses SQLAlchemy yet.
