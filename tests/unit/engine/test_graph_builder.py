@@ -179,6 +179,20 @@ def _minimal() -> Workflow:
     )
 
 
+def test_build_graph_accepts_duplicate_edges() -> None:
+    wf = _mk(
+        nodes=[
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {"id": "e", "type": "end", "position": {"x": 100, "y": 0}, "data": {"label": "E"}},
+        ],
+        edges=[
+            {"id": "e1", "source": "s", "target": "e"},
+            {"id": "e2", "source": "s", "target": "e"},
+        ],
+    )
+    build_graph(wf, MemorySaver())
+
+
 def test_build_graph_compiles_start_to_end() -> None:
     compiled = build_graph(_minimal(), MemorySaver())
     # CompiledStateGraph exposes .get_graph() which we can use to inspect structure.

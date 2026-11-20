@@ -327,6 +327,49 @@ def test_put_workflow_owner_happy(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resp.json()["name"] == "Updated"
 
 
+_DUP_EDGE_BODY: dict[str, Any] = {
+    **_VALID_BODY,
+    "edges": [
+        {"id": "e1", "source": "s", "target": "e"},
+        {"id": "e2", "source": "s", "target": "e"},
+    ],
+}
+
+
+def test_put_workflow_collapses_duplicate_edges(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A canvas holding duplicate edges must still save, stored without the copies."""
+    existing = _wf_row(id="w1", userId="dev")
+    updated = _wf_row(id="w1", userId="dev", name="Updated")
+    client, db = _client_put(monkeypatch, existing, updated)
+    resp = client.put("/workflows/w1", json=_DUP_EDGE_BODY)
+    assert resp.status_code == 200, resp.text
+    stored = db.workflow.update.await_args.kwargs["data"]["edges"].data
+    assert [e["id"] for e in stored] == ["e1"]
+
+
+def test_post_workflow_collapses_duplicate_edges(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    app = create_app()
+    db = MagicMock()
+    db.workflow = MagicMock()
+    db.workflow.create = AsyncMock(return_value=_wf_row_create(userId="dev"))
+    app.state.db = db
+    app.state.checkpointer = MagicMock()
+    from src.engine.events import ExecutionEventBus
+
+    app.state.event_bus = ExecutionEventBus()
+    client = TestClient(app)
+
+    resp = client.post("/workflows", json=_DUP_EDGE_BODY)
+    assert resp.status_code == 201, resp.text
+    stored = db.workflow.create.await_args.kwargs["data"]["edges"].data
+    assert [e["id"] for e in stored] == ["e1"]
+
+
 def test_put_workflow_not_owner_forbidden(monkeypatch: pytest.MonkeyPatch) -> None:
     existing = _wf_row(id="w1", userId="someone-else")
     client, _ = _client_put(monkeypatch, existing, None)

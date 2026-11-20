@@ -227,6 +227,24 @@ def _mutually_exclusive(markers_a: set[tuple[str, str]], markers_b: set[tuple[st
     return False
 
 
+def dedupe_edges(edges: list[WorkflowEdge]) -> list[WorkflowEdge]:
+    """Keep the first edge per (source, target, branch); drop later copies.
+
+    The engine routes on `branch` only (never `sourceHandle`), so two edges
+    agreeing on all three are indistinguishable at run time. Applied on every
+    save and run path instead of being reported as a violation: rejecting
+    duplicates would make workflows that already contain them unsaveable.
+    """
+    seen: set[tuple[str, str, str | None]] = set()
+    kept: list[WorkflowEdge] = []
+    for edge in edges:
+        key = (edge.source, edge.target, edge.branch)
+        if key not in seen:
+            seen.add(key)
+            kept.append(edge)
+    return kept
+
+
 def collect_workflow_violations(workflow: Workflow) -> list[str]:
     """Return every structural violation as human-readable strings (empty = valid).
 
@@ -497,6 +515,7 @@ def build_graph(
     it, but pyright can't bridge the runtime-inferred type to the compile-time
     generics. Any is the honest annotation rather than fighting the type system.
     """
+    workflow = workflow.model_copy(update={"edges": dedupe_edges(workflow.edges)})
     validate_workflow_shape(workflow)
 
     builder: StateGraph[Any, Any, Any, Any] = StateGraph(WorkflowStateDict)
