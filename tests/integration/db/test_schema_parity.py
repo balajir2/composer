@@ -1,5 +1,6 @@
 # compare_metadata does not compare enum labels, CHECK constraints or column order.
 # Enum labels are pinned by tests/unit/db/test_models_metadata.py.
+from pathlib import Path
 from pprint import pformat
 from typing import Any
 
@@ -40,7 +41,9 @@ def _current_revision(connection: Connection) -> str | None:
 
 
 async def test_database_is_at_the_alembic_head(engine: AsyncEngine) -> None:
-    head = ScriptDirectory.from_config(Config("alembic.ini")).get_current_head()
+    head = ScriptDirectory.from_config(
+        Config(str(Path(__file__).resolve().parents[3] / "alembic.ini"))
+    ).get_current_head()
     async with engine.connect() as conn:
         current = await conn.run_sync(_current_revision)
     assert current == head
