@@ -28,3 +28,13 @@ def test_cache_clear_makes_get_settings_see_a_changed_database_url(
     finally:
         monkeypatch.undo()
         get_settings.cache_clear()
+
+
+def test_pool_size_must_be_positive() -> None:
+    with pytest.raises(ValidationError):
+        Settings(db_pool_size=0)
+
+
+def test_max_overflow_cannot_be_negative() -> None:
+    with pytest.raises(ValidationError):
+        Settings(db_max_overflow=-1)

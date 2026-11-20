@@ -56,10 +56,12 @@ class Settings(BaseSettings):
     # two together stay within Neon's connection limit (migration spec 3.1).
     db_pool_size: int = Field(
         default=2,
+        ge=1,
         description="Persistent SQLAlchemy connections per process.",
     )
     db_max_overflow: int = Field(
         default=3,
+        ge=0,
         description="Extra SQLAlchemy connections allowed under load.",
     )
 
