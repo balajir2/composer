@@ -3,6 +3,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import (
@@ -178,3 +179,9 @@ async def test_updated_at_changes_on_update(session: AsyncSession) -> None:
     setting.value = "b"
     await session.flush()
     assert setting.updated_at > datetime.now(UTC) - timedelta(minutes=5)
+
+
+async def test_none_in_a_required_json_column_fails_like_prisma(session: AsyncSession) -> None:
+    session.add(Workflow(name=_unique("null-nodes"), nodes=None, edges=[]))
+    with pytest.raises(IntegrityError):
+        await session.flush()

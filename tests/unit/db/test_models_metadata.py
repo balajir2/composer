@@ -124,3 +124,16 @@ def test_optional_json_columns_store_none_as_sql_null() -> None:
     for name, column in nullable_jsonb.items():
         assert isinstance(column.type, JSONB)
         assert column.type.none_as_null is True, name
+
+
+def test_every_jsonb_column_rejects_none_instead_of_storing_json_null() -> None:
+    jsonb_columns = [
+        (f"{table.name}.{column.name}", column)
+        for table in Base.metadata.tables.values()
+        for column in table.columns
+        if isinstance(column.type, JSONB)
+    ]
+    assert jsonb_columns
+    for name, column in jsonb_columns:
+        assert isinstance(column.type, JSONB)
+        assert column.type.none_as_null is True, name
