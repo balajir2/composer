@@ -1,4 +1,4 @@
-from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import ENUM, JSONB
 
 from src.db.models import Base
 
@@ -68,10 +68,43 @@ def test_unique_keys_are_unique_indexes_named_like_prisma() -> None:
 def test_enum_types_are_reused_not_created() -> None:
     role = Base.metadata.tables["users"].c.role.type
     decision = Base.metadata.tables["approvals"].c.decision.type
-    assert getattr(role, "name", None) == "UserRole"
-    assert getattr(decision, "name", None) == "ApprovalDecision"
-    assert getattr(role, "create_type", True) is False
-    assert getattr(decision, "create_type", True) is False
+    assert isinstance(role, ENUM)
+    assert isinstance(decision, ENUM)
+    assert role.name == "UserRole"
+    assert decision.name == "ApprovalDecision"
+    assert role.create_type is False
+    assert decision.create_type is False
+
+
+def test_enum_labels_match_the_database() -> None:
+    role = Base.metadata.tables["users"].c.role.type
+    decision = Base.metadata.tables["approvals"].c.decision.type
+    assert isinstance(role, ENUM)
+    assert isinstance(decision, ENUM)
+    assert list(role.enums) == ["admin", "member"]
+    assert list(decision.enums) == ["approved", "rejected"]
+
+
+def test_checkpoint_writes_primary_key_order() -> None:
+    table = Base.metadata.tables["langgraph_checkpoint_writes"]
+    assert [c.name for c in table.primary_key.columns] == [
+        "thread_id",
+        "checkpoint_ns",
+        "checkpoint_id",
+        "task_id",
+        "idx",
+    ]
+    assert table.c.idx.autoincrement is False
+
+
+def test_timestamp_defaults_are_owned_by_the_right_side() -> None:
+    created = {"created_at", "started_at", "assigned_at"}
+    for table in Base.metadata.tables.values():
+        for column in table.columns:
+            if column.name in created:
+                assert column.server_default is not None, f"{table.name}.{column.name}"
+            elif column.name == "updated_at":
+                assert column.server_default is None, f"{table.name}.{column.name}"
 
 
 def test_optional_json_columns_store_none_as_sql_null() -> None:
