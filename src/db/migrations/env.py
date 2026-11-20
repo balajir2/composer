@@ -17,6 +17,13 @@ from src.db.schema_filters import include_name
 # transaction-level advisory lock is released at commit.
 MIGRATION_LOCK_KEY = 7_311_190_457
 
+# Migrations are a one-shot step, not a crash-loop-prone service, so they get
+# a longer connect-timeout floor than app startup. SQLAlchemy's first
+# connection runs extra setup round trips (~4 s from a distant region), and
+# the app's 3 s default exists to stop Cloud Run crash loops, which doesn't
+# apply to a migration run.
+MIGRATION_CONNECT_TIMEOUT_FLOOR_SECONDS = 15.0
+
 config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name, disable_existing_loggers=False)
@@ -37,10 +44,17 @@ def _run_migrations(connection: Connection) -> None:
 
 async def _run_online() -> None:
     settings = get_settings()
-    engine = build_engine(settings, for_migrations=True)
+    migration_settings = settings.model_copy(
+        update={
+            "db_connect_timeout_seconds": max(
+                settings.db_connect_timeout_seconds, MIGRATION_CONNECT_TIMEOUT_FLOOR_SECONDS
+            )
+        }
+    )
+    engine = build_engine(migration_settings, for_migrations=True)
     try:
         # A Neon cold start must not fail a deploy.
-        await connect_with_retry(engine, settings)
+        await connect_with_retry(engine, migration_settings)
         async with engine.connect() as connection:
             await connection.run_sync(_run_migrations)
     finally:
