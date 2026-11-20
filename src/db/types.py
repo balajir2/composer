@@ -39,6 +39,10 @@ class UTCDateTime(TypeDecorator[datetime]):
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("UTCDateTime requires a timezone-aware datetime")
         value = value.astimezone(UTC).replace(tzinfo=None)
+        # Matches Postgres's timestamp(3) rounding for times after 2000-01-01 (an
+        # exact half before 2000 can differ by 1 ms). This changes only the value
+        # sent to the database: the attribute on the object keeps its original
+        # microseconds, and query filters bound with this type are rounded too.
         us = value.microsecond
         rounded = (us + 500) // 1000 * 1000
         return value + timedelta(microseconds=rounded - us)

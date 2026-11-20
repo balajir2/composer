@@ -2458,3 +2458,4 @@ In the deploy run's `Apply database migrations` step, expect `Running upgrade  -
 - Grow `MIGRATED_PATHS` with each ported area.
 - Phase 5: add LangGraph's checkpoint tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`) to `IGNORED_TABLES` in `src/db/schema_filters.py`.
 - Consider a `concurrency:` group on the deploy workflow (pre-existing; owner decision).
+- Timestamp rounding happens on bind only: a model attribute keeps its microseconds while the row stores milliseconds, and filters round too — if phase 1 needs object and row to match, round on assignment (an attribute `set` event).

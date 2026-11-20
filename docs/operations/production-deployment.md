@@ -42,7 +42,7 @@ Walk through [postgres-setup.md](postgres-setup.md). The end state:
 
 ### 1.1a Apply release migrations before backend startup
 
-**On GCP Cloud Run with the GitHub Actions pipeline, this happens automatically.** `.github/workflows/deploy-gcp.yml` runs `prisma migrate deploy` against the `composer-database-url` secret (direct, non-pooler endpoint) right before `gcloud run deploy`. If the migration fails, the deploy stops and the previous revision keeps serving. Since the old revision briefly runs against the new schema, migrations must be additive and backward-compatible. Run the steps below by hand for first-time setup, for other hosts, or to check a database.
+**On GCP Cloud Run with the GitHub Actions pipeline, this happens automatically.** `.github/workflows/deploy-gcp.yml` runs `prisma migrate deploy` and then `alembic upgrade head` (Alembic owns schema changes from 2026-11-20) against the `composer-database-url` secret (direct, non-pooler endpoint) right before `gcloud run deploy`. If a migration fails, the deploy stops and the previous revision keeps serving. Since the old revision briefly runs against the new schema, migrations must be additive and backward-compatible. Run the steps below by hand for first-time setup, for other hosts, or to check a database.
 
 If `alembic upgrade head` fails after `prisma migrate deploy` succeeded, fix the cause and re-run the deploy job — both steps are idempotent. Rolling back a Cloud Run revision needs no database action; the `alembic_version` table is ignored by Prisma and by older code.
 
