@@ -21,6 +21,9 @@ def build_engine(settings: Settings) -> AsyncEngine:
     which Neon's transaction-mode pooler does not support. ``pool_pre_ping``
     checks a pooled connection before reuse, because Neon suspends idle
     compute and drops its connections.
+
+    ``asyncio.timeout`` in ``connect_with_retry`` is the authoritative bound
+    on a connect; libpq's ``connect_timeout`` is only a backstop.
     """
     return create_async_engine(
         to_sqlalchemy_url(settings.database_url),
@@ -52,6 +55,8 @@ async def connect_with_retry(engine: AsyncEngine, settings: Settings) -> None:
             if attempt > 1:
                 logger.info("sqlalchemy: connected on attempt %d", attempt)
             return
+        # OperationalError includes auth errors; they are retried harmlessly
+        # within the tight budget, same as Prisma's policy.
         except (OperationalError, TimeoutError) as exc:
             if attempt == max_attempts:
                 logger.error("sqlalchemy: giving up after %d attempts", max_attempts)
