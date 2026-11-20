@@ -52,6 +52,7 @@ async def test_update_refreshes_row_already_loaded_in_session(session: AsyncSess
     assert held is not None and held.label == "old"
     updated = await repo.update(session, m.id, label="new")
     assert updated is not None and updated.label == "new"
+    assert held.label == "new"
     after = await repo.get_by_id(session, m.id)
     assert after is not None and after.label == "new"
 

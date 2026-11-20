@@ -15,6 +15,7 @@ from typing import Any, cast
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
+from sqlalchemy.exc import SQLAlchemyError
 
 from src.db.repos import llm_models as models_repo
 from src.db.runtime import get_registered_sessionmaker
@@ -100,8 +101,14 @@ async def _ensure_model_available(model_string: str) -> None:
     sessionmaker = get_registered_sessionmaker()
     if sessionmaker is None:
         return
-    async with sessionmaker() as session:
-        row = await models_repo.get_by_provider_model(session, provider, model_name)
+    # Advisory pre-flight: fail open on database trouble; the provider call
+    # surfaces real problems.
+    try:
+        async with sessionmaker() as session:
+            row = await models_repo.get_by_provider_model(session, provider, model_name)
+    except (SQLAlchemyError, OSError) as exc:
+        logger.warning("model availability check skipped: %s", type(exc).__name__)
+        return
     if row is None:
         return
     if row.verification_status == "unavailable":

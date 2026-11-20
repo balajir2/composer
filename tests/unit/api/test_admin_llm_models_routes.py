@@ -288,6 +288,24 @@ def test_verify_ok_stamps_row_and_never_returns_the_api_key(
     session.commit.assert_awaited_once()
 
 
+def test_verify_releases_the_connection_before_the_slow_probe_and_commits_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_row = SimpleNamespace(encryptedKey=_encrypted(monkeypatch))
+    client, _, session, fake = _verify_setup(monkeypatch, "ok", row=_row(), key_row=key_row)
+    rollbacks_at_probe: list[int] = []
+    original = fake.__call__
+
+    async def probe(provider: str, model_id: str, key: str) -> ModelVerifyResult:
+        rollbacks_at_probe.append(session.rollback.await_count)
+        return await original(provider, model_id, key)
+
+    monkeypatch.setattr(mod, "run_model_verify", probe)
+    assert client.post("/admin/llm-models/m1/verify").status_code == 200
+    assert rollbacks_at_probe == [1]
+    session.commit.assert_awaited_once()
+
+
 def test_verify_unavailable_auto_disables_enabled_model(monkeypatch: pytest.MonkeyPatch) -> None:
     key_row = SimpleNamespace(encryptedKey=_encrypted(monkeypatch))
     client, record, session, _ = _verify_setup(

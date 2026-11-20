@@ -133,6 +133,9 @@ async def verify_llm_model(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Model {model_id!r} not found.",
         )
+    # Release the pooled connection before the key lookup and the slow provider
+    # probe; record_verification below autobegins a fresh transaction.
+    await session.rollback()
     # TODO(task 5): the key lookup moves to the llm_api_keys repo.
     key_row = await db.llmapikey.find_unique(where={"provider": row.provider})  # pyright: ignore[reportAttributeAccessIssue]
     if key_row is None:

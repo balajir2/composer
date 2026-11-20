@@ -143,6 +143,7 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
     payload: BuilderMessageRequest,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    # TODO(prisma removal): merge db and sa_session
     sa_session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
@@ -193,6 +194,9 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
 
     workflow = _to_engine_workflow(existing)
     model_catalog = await enabled_model_catalog(sa_session)
+    # Release the pooled connection before the slow LLM loop: reads autobegin a
+    # transaction that would otherwise pin it until the request ends.
+    await sa_session.rollback()
     events, reply, updated = await run_builder_turn(
         model=model,
         workflow_id=workflow_id,

@@ -190,3 +190,25 @@ def test_members_cannot_change_the_allowed_models(monkeypatch: pytest.MonkeyPatc
 
     assert resp.status_code == 403
     session.commit.assert_not_called()
+
+
+def test_pooled_connection_is_released_before_the_slow_builder_turn(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base, session = _client(monkeypatch, {})
+    seen: list[int] = []
+
+    async def fake_turn(**_kwargs: Any) -> Any:
+        seen.append(session.rollback.await_count)
+        raise RuntimeError("stop after the turn starts")
+
+    def fake_build(_model_string: str) -> object:
+        return object()
+
+    monkeypatch.setattr(builder_mod, "build_chat_model", fake_build)
+    monkeypatch.setattr(builder_mod, "run_builder_turn", fake_turn)
+    client = TestClient(base.app, raise_server_exceptions=False)
+
+    client.post("/builder/w1/message", json={"message": "hi"})
+
+    assert seen == [1]

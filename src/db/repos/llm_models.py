@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import datetime
+from typing import TypedDict
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
@@ -43,8 +44,9 @@ def _record(r: LlmModel) -> LlmModelRecord:
     )
 
 
-# get_by_id may answer from the session's identity map; the UPDATE ... RETURNING
-# statements use populate_existing so rows already loaded are refreshed.
+# get_by_id may answer from the session's identity map. The ORM UPDATE ... RETURNING
+# statements refresh already-loaded rows through synchronize_session's default
+# 'evaluate' strategy; populate_existing is belt-and-braces here.
 async def list_models(
     session: AsyncSession, *, provider: str | None = None, enabled_only: bool = False
 ) -> list[LlmModelRecord]:
@@ -78,9 +80,15 @@ async def create(
     return _record(row)
 
 
-async def _update(
-    session: AsyncSession, model_pk: str, values: dict[str, object]
-) -> LlmModelRecord | None:
+class _Changes(TypedDict, total=False):
+    label: str | None
+    enabled: bool
+    verification_status: str
+    verification_message: str
+    verified_at: datetime
+
+
+async def _update(session: AsyncSession, model_pk: str, values: _Changes) -> LlmModelRecord | None:
     stmt = (
         sa_update(LlmModel)
         .where(LlmModel.id == model_pk)
@@ -99,7 +107,7 @@ async def update(
     label: str | Unset | None = UNSET,
     enabled: bool | Unset = UNSET,
 ) -> LlmModelRecord | None:
-    values: dict[str, object] = {}
+    values = _Changes()
     if not isinstance(label, Unset):
         values["label"] = label
     if not isinstance(enabled, Unset):
@@ -116,11 +124,9 @@ async def record_verification(
     verified_at: datetime,
     disable: bool,
 ) -> LlmModelRecord | None:
-    values: dict[str, object] = {
-        "verification_status": status,
-        "verification_message": message,
-        "verified_at": verified_at,
-    }
+    values = _Changes(
+        verification_status=status, verification_message=message, verified_at=verified_at
+    )
     if disable:
         values["enabled"] = False
     return await _update(session, model_pk, values)
