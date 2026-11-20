@@ -63,7 +63,7 @@ alembic/           migrations from now on; first revision is an empty baseline
 
 ### 2.3 Dependencies
 
-Added: `sqlalchemy[asyncio]` (2.1), `alembic`, `psycopg[binary]` 3 in phase 0; `psycopg-pool` and `langgraph-checkpoint-postgres`, in phase 5, (needs `langgraph-checkpoint` ≥ 4.3; currently 4.1.1). Removed at the end: `prisma`, `asyncpg`, `asyncpg-stubs`.
+Added in phase 0: `sqlalchemy[asyncio]` (2.1), `alembic`, `psycopg[binary]` 3. Added in phase 5: `psycopg-pool` and `langgraph-checkpoint-postgres` (which needs `langgraph-checkpoint` ≥ 4.3; currently 4.1.1). Removed at the end: `prisma`, `asyncpg`, `asyncpg-stubs`.
 
 ### 2.4 Documentation updates (in the foundation PR)
 
