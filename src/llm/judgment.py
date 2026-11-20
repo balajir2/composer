@@ -128,9 +128,12 @@ class LLMJudgmentProvider:
         labels = tuple(opt.label for opt in options)
         from typing import Literal
 
+        # Built at runtime from the node's configured options, so it is not a
+        # static type form; typed as Any so pydantic's create_model accepts it.
+        option_type: Any = Literal[labels]
         schema = create_model(
             "ChoiceDecision",
-            option=(Literal[labels], ...),
+            option=(option_type, ...),
             confidence=(float, ...),
         )
         llm = build_chat_model(

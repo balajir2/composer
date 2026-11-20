@@ -35,9 +35,7 @@ async def test_create_or_update_page_creates_when_no_existing_page(
     # must NOT issue a GET to the labels endpoint before deciding what to
     # add — pytest_httpx raises if a request has no matching registered
     # response, so an extra unwanted GET would fail this test.
-    httpx_mock.add_response(
-        method="GET", json={"results": []}
-    )  # find-by-title: none  # pyright: ignore[reportUnknownMemberType]
+    httpx_mock.add_response(method="GET", json={"results": []})  # find-by-title: none  # pyright: ignore[reportUnknownMemberType]
     httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
         method="POST",
         url="https://test.atlassian.net/wiki/rest/api/content",
@@ -65,9 +63,7 @@ async def test_create_page_with_labels_adds_without_a_preceding_get(
 ) -> None:
     """Create path with a non-empty labels list: still no GET to the labels
     endpoint (known_current=set() short-circuits it), straight to POST."""
-    httpx_mock.add_response(
-        method="GET", json={"results": []}
-    )  # find-by-title: none  # pyright: ignore[reportUnknownMemberType]
+    httpx_mock.add_response(method="GET", json={"results": []})  # find-by-title: none  # pyright: ignore[reportUnknownMemberType]
     httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
         method="POST",
         url="https://test.atlassian.net/wiki/rest/api/content",
@@ -144,9 +140,7 @@ async def test_create_or_update_page_updates_and_reconciles_labels(
 async def test_create_page_substitutes_templated_labels(
     httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
 ) -> None:
-    httpx_mock.add_response(
-        method="GET", json={"results": []}
-    )  # find-by-title: none  # pyright: ignore[reportUnknownMemberType]
+    httpx_mock.add_response(method="GET", json={"results": []})  # find-by-title: none  # pyright: ignore[reportUnknownMemberType]
     httpx_mock.add_response(  # pyright: ignore[reportUnknownMemberType]
         method="POST",
         url="https://test.atlassian.net/wiki/rest/api/content",
