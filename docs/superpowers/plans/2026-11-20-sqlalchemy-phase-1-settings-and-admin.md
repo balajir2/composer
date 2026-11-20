@@ -1441,13 +1441,14 @@ async def test_create_get_and_duplicate(session: AsyncSession) -> None:
         await repo.create(session, email=email, password_hash="h", display_name=None)
 
 
-async def test_search_escapes_like_wildcards_and_skips_inactive(session: AsyncSession) -> None:
+async def test_search_keeps_unescaped_wildcards_and_skips_inactive(session: AsyncSession) -> None:
     tag = secrets.token_hex(4)
     hit = await repo.create(session, email=f"x-{tag}@example.com", password_hash=None, display_name=None)
     off = await repo.create(session, email=f"y-{tag}@example.com", password_hash=None, display_name=None)
     await repo.set_active(session, off.id, False)
     assert [u.id for u in await repo.search_active(session, tag.upper(), 20)] == [hit.id]
-    assert await repo.search_active(session, f"x_{tag}", 20) == []   # "_" is literal
+    # Task 2 found Prisma does not escape LIKE wildcards: "_" matches any one character.
+    assert [u.id for u in await repo.search_active(session, f"x_{tag}", 20)] == [hit.id]
 
 
 async def test_setters(session: AsyncSession) -> None:
@@ -1459,7 +1460,7 @@ async def test_setters(session: AsyncSession) -> None:
     assert await repo.set_role(session, "missing", UserRole.ADMIN) is None
     assert await repo.delete(session, u.id) is True and await repo.get_by_id(session, u.id) is None
 ```
-If Task 2's wildcard behaviour test showed Prisma does **not** escape wildcards, change the second search assertion to match that and drop the escaping in Step 3 (behaviour stays identical; record it in the commit message).
+**Decided after Task 2:** Prisma's `contains` does not escape `_` or `%` (pinned by `test_user_search_does_not_escape_like_wildcards_today`). The port keeps that: no escaping. Changing it would be a product decision, out of scope for the migration.
 
 - [ ] **Step 2: Run; expect ImportError.**
 
@@ -1501,9 +1502,9 @@ def _record(u: User) -> UserRecord:
     )
 
 
-def _like_pattern(q: str) -> str:
-    escaped = q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-    return f"%{escaped}%"
+def _contains_pattern(q: str) -> str:
+    """Prisma's `contains` semantics: wildcards in ``q`` are NOT escaped (pinned in Task 2)."""
+    return f"%{q}%"
 
 
 async def get_by_id(session: AsyncSession, user_id: str) -> UserRecord | None:
@@ -1529,12 +1530,12 @@ async def list_all(session: AsyncSession) -> list[UserRecord]:
 
 
 async def search_active(session: AsyncSession, q: str, limit: int) -> list[UserRecord]:
-    pattern = _like_pattern(q)
+    pattern = _contains_pattern(q)
     stmt = (
         select(User)
         .where(
             User.is_active.is_(True),
-            or_(User.email.ilike(pattern, escape="\\"), User.display_name.ilike(pattern, escape="\\")),
+            or_(User.email.ilike(pattern), User.display_name.ilike(pattern)),
         )
         .order_by(User.email)
         .limit(limit)
