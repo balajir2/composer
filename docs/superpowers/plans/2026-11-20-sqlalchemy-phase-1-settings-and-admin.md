@@ -77,7 +77,7 @@ Callers converted (by task): `src/api/admin_deployment_settings.py` (Task 3); `s
 **Interfaces:**
 - Produces:
   - `class AlreadyExists(Exception)` with attribute `constraint: str | None`
-  - `async def flush_or_already_exists(session: AsyncSession) -> None`: flushes inside a savepoint; raises `AlreadyExists` on a unique violation and leaves the outer transaction usable
+  - `async def add_or_already_exists(session: AsyncSession, *rows: object) -> None`: adds and flushes `rows` inside a savepoint; raises `AlreadyExists` on a unique violation and leaves the outer transaction usable. **Revised after Task 1 review:** the original `flush_or_already_exists(session)` (called after `session.add`) did not protect the caller's transaction, because `begin_nested()` flushes pending rows before it opens the savepoint. Task 1's code below shows the original version; the shipped helper is `add_or_already_exists`.
   - `def register_sessionmaker(sm: async_sessionmaker[AsyncSession] | None) -> None`
   - `def get_registered_sessionmaker() -> async_sessionmaker[AsyncSession] | None`
   - `def request_sessionmaker(conn: HTTPConnection) -> async_sessionmaker[AsyncSession] | None` (works for `Request` and `WebSocket`)
@@ -990,7 +990,7 @@ Expected: all pass.
 - Test: convert `tests/unit/api/test_admin_llm_models_routes.py`, `test_llm_models_live.py`, `test_llm_models_live_fetch.py`, and every unit test that fakes `db.llmmodel` or `db.deploymentsetting` for model policy, the builder routes or the agent (`grep -rlnE "llmmodel|deploymentsetting" tests/unit`)
 
 **Interfaces:**
-- Consumes: `AlreadyExists`, `flush_or_already_exists`, `UNSET`/`Unset`, `get_registered_sessionmaker`
+- Consumes: `AlreadyExists`, `add_or_already_exists`, `UNSET`/`Unset`, `get_registered_sessionmaker`
 - Produces:
   ```python
   @dataclass(frozen=True)
@@ -1074,7 +1074,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.errors import flush_or_already_exists
+from src.db.errors import add_or_already_exists
 from src.db.models import LlmModel
 from src.db.repos.common import UNSET, Unset
 from src.db.types import utcnow
@@ -1129,8 +1129,7 @@ async def create(
     session: AsyncSession, *, provider: str, model_id: str, label: str | None, enabled: bool
 ) -> LlmModelRecord:
     row = LlmModel(provider=provider, model_id=model_id, label=label, enabled=enabled)
-    session.add(row)
-    await flush_or_already_exists(session)
+    await add_or_already_exists(session, row)
     return _record(row)
 
 
@@ -1476,7 +1475,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import or_, select, update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.errors import flush_or_already_exists
+from src.db.errors import add_or_already_exists
 from src.db.models import User, UserRole
 from src.db.types import utcnow
 
@@ -1521,8 +1520,7 @@ async def create(
     session: AsyncSession, *, email: str, password_hash: str | None, display_name: str | None
 ) -> UserRecord:
     row = User(email=email, password_hash=password_hash, display_name=display_name)
-    session.add(row)
-    await flush_or_already_exists(session)
+    await add_or_already_exists(session, row)
     return _record(row)
 
 
