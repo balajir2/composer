@@ -92,7 +92,7 @@ Anything missing in `.env` is skipped quietly (the script logs which were skippe
 
 ## Step 2 — Run the first deploy
 
-Apply `uv run prisma migrate deploy` against the intended database **before** running the deploy script for this release. Verify `20261117000000_execution_attempt_timing` is applied: new code and workers require the nullable `running_since` and `failure_code` columns. Generate the matching Prisma client with `uv run prisma generate` for local management commands; the backend image generates its client during the build. Historical rows are preserved without backfill. New claims and approval resumes stamp fresh attempt timestamps; inspect legacy running rows without `runningSince` separately. See [production deployment order](production-deployment.md#phase-3--run-migrations--seed-templates).
+Apply `uv run prisma migrate deploy` and then `uv run alembic upgrade head` against the intended database **before** running the deploy script for this release (the GitHub deploy workflow does both automatically). Verify `20261117000000_execution_attempt_timing` is applied: new code and workers require the nullable `running_since` and `failure_code` columns. Generate the matching Prisma client with `uv run prisma generate` for local management commands; the backend image generates its client during the build. Historical rows are preserved without backfill. New claims and approval resumes stamp fresh attempt timestamps; inspect legacy running rows without `runningSince` separately. See [production deployment order](production-deployment.md#phase-3--run-migrations--seed-templates).
 
 The backend uses these three timing settings:
 

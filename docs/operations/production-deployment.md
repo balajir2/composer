@@ -42,7 +42,9 @@ Walk through [postgres-setup.md](postgres-setup.md). The end state:
 
 ### 1.1a Apply release migrations before backend startup
 
-**On GCP Cloud Run with the GitHub Actions pipeline, this happens automatically.** `.github/workflows/deploy-gcp.yml` runs `prisma migrate deploy` against the `composer-database-url` secret (direct, non-pooler endpoint) right before `gcloud run deploy`. If the migration fails, the deploy stops and the previous revision keeps serving. Since the old revision briefly runs against the new schema, migrations must be additive and backward-compatible. Run the steps below by hand for first-time setup, for other hosts, or to check a database.
+**On GCP Cloud Run with the GitHub Actions pipeline, this happens automatically.** `.github/workflows/deploy-gcp.yml` runs `prisma migrate deploy` and then `alembic upgrade head` (Alembic owns schema changes from 2026-11-20) against the `composer-database-url` secret (direct, non-pooler endpoint) right before `gcloud run deploy`. If a migration fails, the deploy stops and the previous revision keeps serving. Since the old revision briefly runs against the new schema, migrations must be additive and backward-compatible. Run the steps below by hand for first-time setup, for other hosts, or to check a database.
+
+If `alembic upgrade head` fails after `prisma migrate deploy` succeeded, fix the cause and re-run the deploy job — both steps are idempotent. Rolling back a Cloud Run revision needs no database action; the `alembic_version` table is ignored by Prisma and by older code.
 
 Use an administrative/release environment with the intended `DATABASE_URL` and the release's schema. This step does not need a running new backend:
 
@@ -50,7 +52,11 @@ Use an administrative/release environment with the intended `DATABASE_URL` and t
 uv run prisma generate
 uv run prisma migrate deploy
 uv run prisma migrate status
+uv run alembic upgrade head
+uv run alembic current
 ```
+
+Alembic owns schema changes from 2026-11-20. On a database that has only Prisma's migrations, the first `alembic upgrade head` records the empty baseline revision and changes nothing.
 
 For this lifecycle release, verify `20261117000000_execution_attempt_timing` is applied before any new backend code, workers, or sweepers run. It adds nullable `running_since` and `failure_code`; historical rows stay unchanged and new claims/resumes establish attempt timestamps. Inspect legacy running rows with null attempt timestamps separately because orphan sweeping requires `runningSince`. Validate real-Postgres integration races against the migrated schema before promotion.
 

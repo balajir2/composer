@@ -67,6 +67,9 @@ jobs:
       - name: Apply migrations
         run: uv run prisma migrate deploy
 
+      - name: Apply Alembic migrations
+        run: uv run alembic upgrade head
+
       - name: Lint (ruff)
         run: uv run ruff check src tests
 
@@ -341,6 +344,9 @@ jobs:
 
       - name: Apply migrations
         run: uv run prisma migrate deploy
+
+      - name: Apply Alembic migrations
+        run: uv run alembic upgrade head
 
       - name: Start backend
         run: |

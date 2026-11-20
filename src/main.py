@@ -35,6 +35,7 @@ from src.api.users import router as users_router
 from src.api.workflows import router as workflows_router
 from src.config import get_settings
 from src.config_validation import validate_execution_timing, validate_production_config
+from src.db.lifespan import sqlalchemy_lifespan
 from src.maintenance.execution_sweeper import start_sweeper, stop_sweeper
 from src.security.key_sync import sync_llm_keys_from_db
 from src.security.proxy_headers import TrustedProxyHeadersMiddleware
@@ -53,7 +54,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # src/config_validation.py for what this catches and why.
     validate_production_config(settings)
 
-    async with prisma_lifespan(app) as db:
+    async with prisma_lifespan(app) as db, sqlalchemy_lifespan(app):
         # Pull admin-UI-managed LLM keys into runtime Settings so workflow
         # execution (src/llm/providers.py reads from settings.*_api_key)
         # can see them.  Env-set values win; DB fills in the blanks.  A
