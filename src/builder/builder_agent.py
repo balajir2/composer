@@ -3,6 +3,7 @@
 import json
 import re
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any, cast
 
@@ -10,6 +11,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from src.builder.builder_tools import BuilderContext, make_builder_tools
+from src.builder.completeness import collect_completeness_issues
 from src.builder.diagnostics import build_diagnosis
 from src.builder.draft import Draft
 from src.builder.layout import compute_layout
@@ -19,8 +21,11 @@ from src.engine.graph_builder import collect_workflow_violations
 from src.engine.workflow import Workflow
 
 MAX_TOOL_ITERATIONS = 12
+MAX_REPAIR_ROUNDS = 2
 _APPROVE_PATCH = "__APPROVE_PATCH__"
 _REJECT_PATCH = "__REJECT_PATCH__"
+
+ModelCatalog = Mapping[str, str | None]
 
 
 @dataclass
@@ -35,14 +40,32 @@ class BuildSession:
         self.last_activity = time.monotonic()
 
 
-def _system_messages(workflow: Workflow) -> list[BaseMessage]:
+def _system_messages(workflow: Workflow, models: ModelCatalog | None) -> list[BaseMessage]:
     canvas = describe_canvas(workflow.nodes, workflow.edges)
-    return [SystemMessage(content=build_system_prompt(canvas))]
+    return [SystemMessage(content=build_system_prompt(canvas, models))]
 
 
-def _draft_system_messages(draft: Draft) -> list[BaseMessage]:
+def _draft_system_messages(draft: Draft, models: ModelCatalog | None) -> list[BaseMessage]:
     nodes, edges = draft.snapshot()
-    return [SystemMessage(content=build_system_prompt(describe_canvas(nodes, edges)))]
+    return [SystemMessage(content=build_system_prompt(describe_canvas(nodes, edges), models))]
+
+
+def _turn_issues(workflow: Workflow, ctx: BuilderContext, models: ModelCatalog | None) -> list[str]:
+    requested = {str(e.get("node_id")) for e in ctx.events if e.get("type") == "credential_request"}
+    return [
+        *collect_workflow_violations(workflow),
+        *collect_completeness_issues(
+            workflow, model_catalog=models, credential_requested=requested
+        ),
+    ]
+
+
+def _repair_prompt(issues: list[str]) -> str:
+    listed = "\n".join(f"- {i}" for i in issues)
+    return (
+        "Automatic check: the workflow is not finished. Fix each item with the "
+        f"tools, then reply with a one-line summary.\n{listed}"
+    )
 
 
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
@@ -67,10 +90,15 @@ def _extract_text(response: Any) -> str:
     return content if isinstance(content, str) else str(content)
 
 
-async def _tool_loop(model: BaseChatModel, ctx: BuilderContext, session: BuildSession) -> str:
+async def _tool_loop(
+    model: BaseChatModel,
+    ctx: BuilderContext,
+    session: BuildSession,
+    models: ModelCatalog | None = None,
+) -> str:
     tools = make_builder_tools(ctx)
     bound = model.bind_tools(tools)
-    messages: list[BaseMessage] = [*_draft_system_messages(ctx.draft), *session.messages]
+    messages: list[BaseMessage] = [*_draft_system_messages(ctx.draft, models), *session.messages]
     for _ in range(MAX_TOOL_ITERATIONS):
         response = await bound.ainvoke(messages)
         messages.append(response)
@@ -171,6 +199,7 @@ async def run_builder_turn(
     message: str,
     execution_id: str | None,
     db: Any,
+    model_catalog: ModelCatalog | None = None,
 ) -> tuple[list[dict[str, Any]], str, Workflow]:
     """Run one turn. Returns (events, reply, workflow-to-persist)."""
     session.touch()
@@ -217,7 +246,7 @@ async def run_builder_turn(
             ctx.draft.nodes[node.id] = node
         for edge in workflow.edges:
             ctx.draft.edges[edge.id] = edge
-        reply = await _tool_loop(model, ctx, session)
+        reply = await _tool_loop(model, ctx, session, model_catalog)
         candidate = _draft_to_workflow(workflow, ctx.draft)
         diff = _diff_workflows(workflow, candidate)
         session.pending_patch = {
@@ -230,7 +259,9 @@ async def run_builder_turn(
 
     # 3. Planning turn.
     if session.pending_plan is None:
-        response = await model.ainvoke([*_system_messages(workflow), *session.messages])
+        response = await model.ainvoke(
+            [*_system_messages(workflow, model_catalog), *session.messages]
+        )
         text = _extract_text(response)
         plan = _try_parse_plan(text)
         if plan is not None:
@@ -249,14 +280,23 @@ async def run_builder_turn(
         ctx.draft.nodes[node.id] = node
     for edge in workflow.edges:
         ctx.draft.edges[edge.id] = edge
-    reply = await _tool_loop(model, ctx, session)
+    reply = await _tool_loop(model, ctx, session, model_catalog)
     normalize_orchestration(ctx.draft)
     updated = _draft_to_workflow(workflow, ctx.draft)
-    violations = collect_workflow_violations(updated)
-    if violations:
-        events.append(
-            {"type": "message", "content": "Remaining issues: " + "; ".join(violations[:5])}
-        )
+    issues = _turn_issues(updated, ctx, model_catalog)
+    for _ in range(MAX_REPAIR_ROUNDS):
+        if not issues:
+            break
+        # A HumanMessage, not a SystemMessage: Anthropic only accepts a system
+        # prompt at the start of the conversation.
+        session.messages.append(AIMessage(content=reply))
+        session.messages.append(HumanMessage(content=_repair_prompt(issues)))
+        reply = await _tool_loop(model, ctx, session, model_catalog)
+        normalize_orchestration(ctx.draft)
+        updated = _draft_to_workflow(workflow, ctx.draft)
+        issues = _turn_issues(updated, ctx, model_catalog)
+    if issues:
+        events.append({"type": "message", "content": "Remaining issues: " + "; ".join(issues[:5])})
     events.extend(ctx.events)
     events.append(
         {
