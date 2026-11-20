@@ -96,6 +96,10 @@ async def test_users_keys_and_enum_default(session: AsyncSession) -> None:
 async def test_bytes_text_defaults_and_double_precision(session: AsyncSession) -> None:
     thread_id = _unique("thread")
     now = datetime.now(UTC)
+    server_row = McpServer(name=_unique("mcp"), url="https://example.com", auth_type="none")
+    bucket_row = RateLimitBucket(
+        route_key=_unique("route"), client_key=_unique("c"), tokens=2.5, last_refill=now
+    )
     session.add_all(
         [
             LangGraphCheckpoint(
@@ -109,7 +113,7 @@ async def test_bytes_text_defaults_and_double_precision(session: AsyncSession) -
                 channel="x",
                 value=b"\xff",
             ),
-            McpServer(name="m", url="https://example.com", auth_type="none"),
+            server_row,
             McpOAuthToken(mcp_server_id="s", user_id=_unique("u"), encrypted_access_token="enc"),
             McpOAuthState(
                 mcp_server_id="s",
@@ -128,10 +132,11 @@ async def test_bytes_text_defaults_and_double_precision(session: AsyncSession) -
             LlmApiKey(provider=_unique("provider"), encrypted_key="enc", key_prefix="sk-"),
             LlmModel(provider="anthropic", model_id=_unique("model")),
             DeploymentSetting(key=_unique("setting"), value="on"),
-            RateLimitBucket(route_key="r", client_key=_unique("c"), tokens=2.5, last_refill=now),
+            bucket_row,
         ]
     )
     await session.flush()
+    server_id, bucket_id = server_row.id, bucket_row.id
     session.expunge_all()
 
     checkpoint = (
@@ -142,19 +147,18 @@ async def test_bytes_text_defaults_and_double_precision(session: AsyncSession) -
     assert checkpoint.checkpoint == b"\x00\x01"
     assert checkpoint.checkpoint_ns == ""
     server = (
-        (await session.execute(select(McpServer).where(McpServer.name == "m"))).scalars().first()
-    )
-    assert server is not None and server.connection_status == "untested" and server.enabled is True
+        await session.execute(select(McpServer).where(McpServer.id == server_id))
+    ).scalar_one()
+    assert server.connection_status == "untested" and server.enabled is True
     bucket = (
-        (await session.execute(select(RateLimitBucket).where(RateLimitBucket.route_key == "r")))
-        .scalars()
-        .first()
-    )
-    assert bucket is not None and bucket.tokens == 2.5
+        await session.execute(select(RateLimitBucket).where(RateLimitBucket.id == bucket_id))
+    ).scalar_one()
+    assert bucket.tokens == 2.5
 
 
-async def test_timestamps_store_utc_with_millisecond_precision(session: AsyncSession) -> None:
-    moment = datetime(2026, 11, 20, 10, 0, 0, 123456, tzinfo=UTC)
+async def test_timestamps_round_to_milliseconds(session: AsyncSession) -> None:
+    """timestamp(3) rounds to milliseconds (123999us -> 124000us); it does not truncate."""
+    moment = datetime(2026, 11, 20, 10, 0, 0, 123999, tzinfo=UTC)
     setting = DeploymentSetting(key=_unique("ts"), value="v", updated_at=moment)
     session.add(setting)
     await session.flush()
@@ -162,7 +166,7 @@ async def test_timestamps_store_utc_with_millisecond_precision(session: AsyncSes
     loaded = (
         await session.execute(select(DeploymentSetting).where(DeploymentSetting.key == setting.key))
     ).scalar_one()
-    assert loaded.updated_at == datetime(2026, 11, 20, 10, 0, 0, 123000, tzinfo=UTC)
+    assert loaded.updated_at == datetime(2026, 11, 20, 10, 0, 0, 124000, tzinfo=UTC)
 
 
 async def test_updated_at_changes_on_update(session: AsyncSession) -> None:
@@ -173,4 +177,4 @@ async def test_updated_at_changes_on_update(session: AsyncSession) -> None:
     await session.flush()
     setting.value = "b"
     await session.flush()
-    assert setting.updated_at > datetime(2026, 1, 1, tzinfo=UTC)
+    assert setting.updated_at > datetime.now(UTC) - timedelta(minutes=5)

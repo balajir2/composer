@@ -1,3 +1,5 @@
+# compare_metadata does not compare enum labels, CHECK constraints or column order.
+# Enum labels are pinned by tests/unit/db/test_models_metadata.py.
 from pprint import pformat
 from typing import Any
 
