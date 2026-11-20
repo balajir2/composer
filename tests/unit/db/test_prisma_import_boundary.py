@@ -2,6 +2,10 @@
 
 Each migration phase adds the areas it ported to MIGRATED_PATHS. The list
 only grows, until phase 6 removes Prisma entirely.
+
+Limits: relative imports (``from . import x``) are skipped, and transitive
+imports (a migrated module importing a helper that imports Prisma) are not
+followed. Only direct absolute imports are checked.
 """
 
 import ast
@@ -21,13 +25,15 @@ def _forbidden_imports(source: str) -> list[str]:
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.Import):
             found.extend(alias.name for alias in node.names if _is_forbidden(alias.name))
-        elif (
-            isinstance(node, ast.ImportFrom)
-            and node.module
-            and node.level == 0
-            and _is_forbidden(node.module)
-        ):
-            found.append(node.module)
+        elif isinstance(node, ast.ImportFrom) and node.module and node.level == 0:
+            if _is_forbidden(node.module):
+                found.append(node.module)
+                continue
+            found.extend(
+                qualified
+                for alias in node.names
+                if _is_forbidden(qualified := f"{node.module}.{alias.name}")
+            )
     return found
 
 
@@ -55,3 +61,8 @@ def test_detector_ignores_lookalikes() -> None:
     assert _forbidden_imports("import prisma_tools") == []
     assert _forbidden_imports('"""import prisma"""\nx = 1') == []
     assert _forbidden_imports("from src.storage_x import y") == []
+
+
+def test_detector_catches_submodule_imported_from_a_package() -> None:
+    assert _forbidden_imports("from src import storage") == ["src.storage"]
+    assert _forbidden_imports("from src import db") == []
