@@ -112,6 +112,26 @@ async def test_approve_patch_applies_pending_patch() -> None:
     assert len(wf.nodes) == 2
 
 
+async def test_approved_patch_collapses_duplicate_edges() -> None:
+    wf0 = _empty_workflow()
+    edge = wf0.edges[0].model_dump(by_alias=True)
+    session = BuildSession(workflow_id="w1")
+    session.pending_patch = {
+        "nodes": [n.model_dump(by_alias=True) for n in wf0.nodes],
+        "edges": [edge, {**edge, "id": "dup"}],
+    }
+    _events, _reply, wf = await run_builder_turn(
+        model=_model(""),
+        workflow_id="w1",
+        workflow=wf0,
+        session=session,
+        message="__APPROVE_PATCH__",
+        execution_id=None,
+        db=None,
+    )
+    assert [e.id for e in wf.edges] == ["e1"]
+
+
 async def test_reject_patch_discards_pending_patch() -> None:
     session = BuildSession(workflow_id="w1")
     session.pending_patch = {"nodes": [], "edges": []}

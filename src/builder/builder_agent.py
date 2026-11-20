@@ -17,8 +17,8 @@ from src.builder.draft import Draft
 from src.builder.layout import compute_layout
 from src.builder.normalize import normalize_orchestration
 from src.builder.prompts import build_system_prompt, describe_canvas
-from src.engine.graph_builder import collect_workflow_violations
-from src.engine.workflow import Workflow
+from src.engine.graph_builder import collect_workflow_violations, dedupe_edges
+from src.engine.workflow import Workflow, WorkflowEdge
 
 MAX_TOOL_ITERATIONS = 12
 MAX_REPAIR_ROUNDS = 2
@@ -203,7 +203,7 @@ def _workflow_from_patch(workflow: Workflow, patch: dict[str, Any]) -> Workflow:
             name=workflow.name,
             description=workflow.description,
             nodes=patch["nodes"],
-            edges=patch["edges"],
+            edges=dedupe_edges([WorkflowEdge.model_validate(e) for e in patch["edges"]]),
         )
     )
 
