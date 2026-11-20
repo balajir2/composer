@@ -1,4 +1,3 @@
-import re
 import secrets
 from datetime import datetime
 
@@ -8,10 +7,9 @@ from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.db.models import DeploymentSetting, LlmModel
-from tests.integration.sqla_phase1.conftest import Member
+from tests.integration.sqla_phase1.conftest import ISO, Member
 
 pytestmark = pytest.mark.integration
-ISO = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{6})?Z$")
 
 
 async def test_deployment_setting_create_update_list_get(

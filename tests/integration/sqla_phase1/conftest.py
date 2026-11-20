@@ -1,4 +1,5 @@
 import os
+import re
 import secrets
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
@@ -24,7 +25,14 @@ class Member:
     email: str
     password: str
     headers: dict[str, str]
-    refresh_token: str = ""
+    refresh_token: str
+
+
+ISO = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{6})?Z$")
+
+
+def bearer(token: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {token}"}
 
 
 MakeUser = Callable[..., Awaitable[Member]]
@@ -33,6 +41,7 @@ MakeUser = Callable[..., Awaitable[Member]]
 @pytest.fixture
 def phase1_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Standalone mode with a known secret and encryption key, mirroring CI."""
+    monkeypatch.setenv("DATABASE_URL", os.environ["TEST_DATABASE_URL"])
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("JWT_SECRET", "ci-test-only-not-a-real-secret")
     monkeypatch.setenv("ENCRYPTION_KEY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=")
@@ -43,15 +52,15 @@ def phase1_env(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
 
 @pytest_asyncio.fixture
 async def app(phase1_env: None) -> AsyncIterator[FastAPI]:
-    """Same as tests/conftest.py's `app`, but built after the phase 1 env is set."""
-    os.environ["DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]
+    """Mirrors tests/conftest.py's `app`, overridden so the phase 1 env (DATABASE_URL, mode,
+    secrets) is applied before create_app() reads settings."""
     get_settings.cache_clear()
     _app = create_app()
     async with _app.router.lifespan_context(_app):
         yield _app
 
 
-async def register_user(
+async def _register_user(
     client: AsyncClient, *, email: str | None = None, display_name: str | None = None
 ) -> Member:
     email = email or f"p1-{secrets.token_hex(6)}@example.com"
@@ -66,7 +75,7 @@ async def register_user(
         body["id"],
         email,
         password,
-        {"Authorization": f"Bearer {body['accessToken']}"},
+        bearer(body["accessToken"]),
         body["refreshToken"],
     )
 
@@ -84,7 +93,7 @@ async def make_user(
     made: list[str] = []
 
     async def _make(*, email: str | None = None, display_name: str | None = None) -> Member:
-        m = await register_user(client, email=email, display_name=display_name)
+        m = await _register_user(client, email=email, display_name=display_name)
         made.append(m.id)
         return m
 

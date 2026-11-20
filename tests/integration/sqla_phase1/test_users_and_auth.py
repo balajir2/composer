@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.db.models import ApiKey
-from tests.integration.sqla_phase1.conftest import MakeUser, Member
+from tests.integration.sqla_phase1.conftest import MakeUser, Member, bearer
 
 pytestmark = pytest.mark.integration
 
@@ -59,7 +59,7 @@ async def test_deactivate_revokes_api_keys_and_blocks_access(
 ) -> None:
     created = await client.post("/api-keys", json={"label": "k"}, headers=member.headers)
     key = created.json()
-    auth = {"Authorization": f"Bearer {key['key']}"}
+    auth = bearer(key["key"])
     r = await client.post(
         f"/admin/users/{member.id}/role", json={"role": "admin"}, headers=admin_headers
     )
@@ -108,16 +108,14 @@ async def test_admin_reset_password_flow(
     change = await client.post(
         "/auth/change-password",
         json={"currentPassword": temp, "newPassword": "after-reset-password-3"},
-        headers={"Authorization": f"Bearer {login.json()['passwordChangeToken']}"},
+        headers=bearer(login.json()["passwordChangeToken"]),
     )
     assert change.status_code == 204, change.text
     again = await client.post(
         "/auth/login", json={"email": member.email, "password": "after-reset-password-3"}
     )
     assert again.status_code == 200 and "accessToken" in again.json()
-    me = await client.get(
-        "/auth/me", headers={"Authorization": f"Bearer {again.json()['accessToken']}"}
-    )
+    me = await client.get("/auth/me", headers=bearer(again.json()["accessToken"]))
     assert me.status_code == 200 and me.json()["id"] == member.id
 
 

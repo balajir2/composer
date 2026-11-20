@@ -1,5 +1,4 @@
 import asyncio
-import re
 
 import pytest
 from httpx import AsyncClient
@@ -7,15 +6,10 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.db.models import ApiKey
-from tests.integration.sqla_phase1.conftest import Member
+from tests.integration.sqla_phase1.conftest import ISO, Member, bearer
 
 pytestmark = pytest.mark.integration
-ISO = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{6})?Z$")
 RUN = "/api/run/does-not-exist"  # POST /api/run/{slug}: valid key + unknown slug is 404
-
-
-def _bearer(key: str) -> dict[str, str]:
-    return {"Authorization": f"Bearer {key}"}
 
 
 async def test_api_key_lifecycle_and_external_auth(client: AsyncClient, member: Member) -> None:
@@ -32,7 +26,7 @@ async def test_api_key_lifecycle_and_external_auth(client: AsyncClient, member: 
     assert [k["id"] for k in listed] == [body["id"]] and "key" not in listed[0]
     assert listed[0]["lastUsedAt"] is None and listed[0]["revokedAt"] is None
     assert listed[0]["expiresAt"] == "2099-01-01T00:00:00Z"
-    auth = _bearer(body["key"])
+    auth = bearer(body["key"])
     ext = await client.post(RUN, json={}, headers=auth)
     assert ext.status_code == 404, ext.text
     after = (await client.get("/api-keys", headers=member.headers)).json()
@@ -58,7 +52,7 @@ async def test_api_keys_list_newest_first(client: AsyncClient, member: Member) -
         r = await client.post("/api-keys", json={"label": label}, headers=member.headers)
         assert r.status_code == 201
         ids.append(r.json()["id"])
-        await asyncio.sleep(0.02)
+        await asyncio.sleep(0.02)  # distinct created_at for newest-first ordering
     listed = (await client.get("/api-keys", headers=member.headers)).json()
     assert [k["id"] for k in listed] == list(reversed(ids))
     assert [k["label"] for k in listed] == ["k3", "k2", "k1"]
@@ -74,7 +68,7 @@ async def test_expired_api_key_is_rejected(
             text("UPDATE api_keys SET expires_at='2000-01-01' WHERE id=:i"), {"i": key["id"]}
         )
         await s.commit()
-    r = await client.post(RUN, json={}, headers=_bearer(key["key"]))
+    r = await client.post(RUN, json={}, headers=bearer(key["key"]))
     assert r.status_code == 401 and r.json() == {"detail": "API key expired"}
 
 
@@ -87,7 +81,7 @@ async def test_cannot_revoke_another_members_key(
     assert (await client.get("/api-keys", headers=second_member.headers)).json() == []
     listed = (await client.get("/api-keys", headers=member.headers)).json()
     assert listed[0]["revokedAt"] is None
-    assert (await client.post(RUN, json={}, headers=_bearer(key["key"]))).status_code == 404
+    assert (await client.post(RUN, json={}, headers=bearer(key["key"]))).status_code == 404
 
 
 async def test_admin_revoke_api_key(
@@ -107,7 +101,7 @@ async def test_admin_revoke_api_key(
     assert r.status_code == 404
     r = await client.post(url, headers=member.headers)
     assert r.status_code == 403
-    assert (await client.post(RUN, json={}, headers=_bearer(key["key"]))).status_code == 404
+    assert (await client.post(RUN, json={}, headers=bearer(key["key"]))).status_code == 404
     assert (await client.post(url, headers=admin_headers)).status_code == 204
     async with sessionmaker_() as s:
         first = await s.scalar(select(ApiKey.revoked_at).where(ApiKey.id == key["id"]))
@@ -115,7 +109,7 @@ async def test_admin_revoke_api_key(
     async with sessionmaker_() as s:
         second = await s.scalar(select(ApiKey.revoked_at).where(ApiKey.id == key["id"]))
     assert first is not None and second == first  # not re-stamped
-    r = await client.post(RUN, json={}, headers=_bearer(key["key"]))
+    r = await client.post(RUN, json={}, headers=bearer(key["key"]))
     assert r.status_code == 401 and r.json() == {"detail": "invalid API key"}
     listed = (await client.get("/api-keys", headers=member.headers)).json()
     assert ISO.match(listed[0]["revokedAt"])
