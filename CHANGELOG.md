@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — run history and new runs failing in production after a deploy without its migration (2026-11-20)
+
+- **Symptom:** `/runs/history` showed "Could not load history", and starting runs failed. Every `GET`/`POST /executions` returned 500 from 2026-11-19 11:30 UTC: `column workflow_executions.running_since does not exist`.
+- **Cause:** the auto-deploy pipeline shipped the backend for `20261117000000_execution_attempt_timing` but never applies migrations. That step was manual, and it was missed. Prisma's client selects every schema column, so even plain list reads failed.
+- **Fix:** applied the pending migration to the production database (now 20/20 applied; verified the endpoint's list query against production). `deploy-gcp.yml` now runs `prisma migrate deploy` before `gcloud run deploy`, so code can no longer reach production ahead of its schema.
+
 ### Fixed — "Build with AI" duplicate edges that reappeared after deletion (2026-11-19)
 
 - **Lost manual edits:** the builder reads the workflow from the database and saves its result back, but canvas edits autosave on a 3-second debounce. Deleting edges and messaging the builder inside that window made it build on (and save over) the stale graph, so deleted edges came back. The panel now saves pending canvas edits before every builder request. If that save fails, the request does not run and the user is told why.
