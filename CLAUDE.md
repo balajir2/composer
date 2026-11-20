@@ -236,12 +236,15 @@ Then design Composer's Python implementation to produce behaviorally-equivalent 
 
 ### Commit messages
 
-Every commit ends with these two co-author lines (both required):
+Balaji Rajan is the **author** of every commit: author and committer email must be `balajirajan@gmail.com`. This repo's local git config sets it; verify with `git log -1 --format='%an <%ae>'`. Do not use the GitHub noreply address.
+
+When Claude helped write the change, end the message with one co-author line naming the model that actually did the work (the current session's model, not a copied older name). For example:
 
 ```
-Co-Authored-By: Balaji Rajan <balajirajan@gmail.com>
-Co-Authored-By: Claude Opus 4.6 (1M context) <noreply@anthropic.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ```
+
+Don't add a `Co-Authored-By` line for Balaji, since he is already the author.
 
 ### Git discipline
 
