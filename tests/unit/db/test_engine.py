@@ -1,3 +1,4 @@
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any, cast
@@ -64,3 +65,12 @@ async def test_connect_with_retry_gives_up_after_max_attempts() -> None:
     with pytest.raises(OperationalError):
         await connect_with_retry(cast("AsyncEngine", engine), _settings())
     assert engine.attempts == 3
+
+
+async def test_connect_with_retry_logs_when_giving_up(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    engine = _FlakyEngine(failures=10)
+    with caplog.at_level(logging.ERROR, logger="src.db.engine"), pytest.raises(OperationalError):
+        await connect_with_retry(cast("AsyncEngine", engine), _settings())
+    assert "giving up after 3 attempts" in caplog.text

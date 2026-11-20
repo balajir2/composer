@@ -41,6 +41,7 @@ class Settings(BaseSettings):
     # second, so this budget is generous for the case it's meant to handle.
     db_connect_max_attempts: int = Field(
         default=3,
+        ge=1,
         description="Max db.connect() attempts during startup before giving up.",
     )
     db_connect_timeout_seconds: float = Field(

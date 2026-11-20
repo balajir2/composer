@@ -44,7 +44,6 @@ async def connect_with_retry(engine: AsyncEngine, settings: Settings) -> None:
     """
     max_attempts = settings.db_connect_max_attempts
     backoff = settings.db_connect_initial_backoff_seconds
-    last_exc: Exception | None = None
     for attempt in range(1, max_attempts + 1):
         try:
             async with asyncio.timeout(settings.db_connect_timeout_seconds):
@@ -54,9 +53,9 @@ async def connect_with_retry(engine: AsyncEngine, settings: Settings) -> None:
                 logger.info("sqlalchemy: connected on attempt %d", attempt)
             return
         except (OperationalError, TimeoutError) as exc:
-            last_exc = exc
             if attempt == max_attempts:
-                break
+                logger.error("sqlalchemy: giving up after %d attempts", max_attempts)
+                raise
             logger.warning(
                 "sqlalchemy: connect attempt %d/%d failed (%s); retrying in %.1fs",
                 attempt,
@@ -66,5 +65,5 @@ async def connect_with_retry(engine: AsyncEngine, settings: Settings) -> None:
             )
             await asyncio.sleep(backoff)
             backoff *= 2
-    assert last_exc is not None
-    raise last_exc
+    # Unreachable while max_attempts >= 1 (enforced by Settings); defensive.
+    raise RuntimeError("connect_with_retry made no attempts")
