@@ -6,6 +6,12 @@ in sync with the node-type set so a new node type can't be silently missing
 from the builder's vocabulary.
 """
 
+from collections.abc import Mapping
+from types import UnionType
+from typing import Any, Literal, Union, get_args, get_origin
+
+from pydantic import BaseModel
+
 NODE_PURPOSES: dict[str, str] = {
     "start": "workflow entry; declares input variables the caller must supply",
     "end": "workflow termination; may capture a final output",
@@ -58,3 +64,55 @@ def build_node_catalog() -> str:
         creds = ", ".join(NODE_CREDENTIALS.get(node_type, [])) or "none"
         lines.append(f"- `{node_type}` — {purpose} (credentials: {creds})")
     return "\n".join(lines)
+
+
+# label is its own create_node argument; nodeName is a UI alias field.
+_GUIDE_SKIP = {"label", "nodeName"}
+
+
+def _describe_type(annotation: Any) -> str:
+    origin = get_origin(annotation)
+    if origin in (Union, UnionType):
+        inner = [a for a in get_args(annotation) if a is not type(None)]
+        return _describe_type(inner[0]) if len(inner) == 1 else "value"
+    if origin is Literal:
+        return "|".join(str(a) for a in get_args(annotation))
+    if annotation is bool:
+        return "bool"
+    if annotation is str:
+        return "text"
+    if annotation in (int, float):
+        return "number"
+    if annotation is list or origin is list:
+        return "list"
+    return "object"
+
+
+def build_field_guide(node_classes: Mapping[str, type[BaseModel]]) -> str:
+    """One line per node type: its `data` keys (camelCase), `*` = required.
+
+    Generated from the Pydantic models so the prompt cannot drift from what
+    create_node actually validates.
+    """
+    lines: list[str] = []
+    for node_type in sorted(node_classes):
+        data_cls = node_classes[node_type].model_fields["data"].annotation
+        if not (isinstance(data_cls, type) and issubclass(data_cls, BaseModel)):
+            continue
+        fields = [
+            f"{info.alias or name}{'*' if info.is_required() else ''} "
+            f"({_describe_type(info.annotation)})"
+            for name, info in data_cls.model_fields.items()
+            if (info.alias or name) not in _GUIDE_SKIP
+        ]
+        lines.append(f"- `{node_type}`: " + (", ".join(fields) or "no fields"))
+    return "\n".join(lines)
+
+
+def describe_models(catalog: Mapping[str, str | None] | None) -> str:
+    if not catalog:
+        return "(none listed: leave `model` unset so the deployment default is used)"
+    return "\n".join(
+        f"- `{model_id}`" + (f" ({label})" if label else "")
+        for model_id, label in sorted(catalog.items())
+    )

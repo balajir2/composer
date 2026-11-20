@@ -49,7 +49,7 @@ from src.engine.workflow import (
     WorkflowNode,
 )
 
-_NODE_CLASSES: dict[str, type[BaseModel]] = {
+NODE_CLASSES: dict[str, type[BaseModel]] = {
     "start": StartNode,
     "end": EndNode,
     "note": NoteNode,
@@ -102,11 +102,11 @@ def _try_build_node(
     node_type: str, node_id: str, data: dict[str, Any]
 ) -> tuple[WorkflowNode | None, str]:
     """Build a node, or explain in model-readable terms why it can't be built."""
-    cls = _NODE_CLASSES.get(node_type)
+    cls = NODE_CLASSES.get(node_type)
     if cls is None:
         return (
             None,
-            f"unknown node type {node_type!r}; valid types: {', '.join(sorted(_NODE_CLASSES))}",
+            f"unknown node type {node_type!r}; valid types: {', '.join(sorted(NODE_CLASSES))}",
         )
     if not _ID_RE.match(node_id):
         return None, "node_id must be 1-64 characters of letters, digits, '_' or '-'"
