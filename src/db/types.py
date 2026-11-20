@@ -8,8 +8,13 @@ from sqlalchemy.types import TypeDecorator
 
 
 def utcnow() -> datetime:
-    """Current time as a timezone-aware UTC datetime."""
-    return datetime.now(UTC)
+    """Current time as a timezone-aware UTC datetime, in whole milliseconds.
+
+    Columns store milliseconds, so truncating here makes in-memory values
+    equal the stored ones.
+    """
+    now = datetime.now(UTC)
+    return now.replace(microsecond=now.microsecond // 1000 * 1000)
 
 
 class UTCDateTime(TypeDecorator[datetime]):

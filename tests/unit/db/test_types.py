@@ -44,3 +44,7 @@ def test_column_is_millisecond_precision_without_time_zone() -> None:
 def test_utcnow_is_aware_utc() -> None:
     now = utcnow()
     assert now.tzinfo is UTC
+
+
+def test_utcnow_is_truncated_to_whole_milliseconds() -> None:
+    assert utcnow().microsecond % 1000 == 0

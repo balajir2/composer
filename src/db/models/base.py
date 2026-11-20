@@ -4,6 +4,10 @@ Models map the tables Prisma created. Names, types, nullability, defaults
 and index names must match the database exactly; the schema-parity test
 (tests/integration/db/test_schema_parity.py) enforces this. When it fails,
 change the model, never the database.
+
+JSONB and ARRAY values are replaced, never mutated in place: assign a new
+object (SQLAlchemy does not track in-place changes such as
+``row.tags.append(...)``).
 """
 
 from datetime import datetime
@@ -25,7 +29,11 @@ def id_column() -> MappedColumn[str]:
 
 
 def created_at_column() -> MappedColumn[datetime]:
-    """``NOT NULL DEFAULT CURRENT_TIMESTAMP``; Python sets it too, so the value is known after insert."""
+    """``NOT NULL DEFAULT CURRENT_TIMESTAMP``; Python sets it too, so the value is known after insert.
+
+    ORM inserts take the time from the application clock; rows written by
+    Prisma or plain SQL get the database's ``CURRENT_TIMESTAMP``.
+    """
     return mapped_column(
         UTCDateTime(), nullable=False, default=utcnow, server_default=text("CURRENT_TIMESTAMP")
     )
