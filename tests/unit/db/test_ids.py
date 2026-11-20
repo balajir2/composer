@@ -27,6 +27,8 @@ def test_new_ids_are_unique() -> None:
 
 def test_new_ids_sort_by_creation_time_across_milliseconds() -> None:
     first = new_id()
-    time.sleep(0.002)
+    start_ms = time.time_ns() // 1_000_000
+    while time.time_ns() // 1_000_000 == start_ms:
+        time.sleep(0.001)
     second = new_id()
     assert first < second
