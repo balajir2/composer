@@ -50,7 +50,11 @@ Use an administrative/release environment with the intended `DATABASE_URL` and t
 uv run prisma generate
 uv run prisma migrate deploy
 uv run prisma migrate status
+uv run alembic upgrade head
+uv run alembic current
 ```
+
+Alembic owns schema changes from 2026-11-20. On a database that has only Prisma's migrations, the first `alembic upgrade head` records the empty baseline revision and changes nothing.
 
 For this lifecycle release, verify `20261117000000_execution_attempt_timing` is applied before any new backend code, workers, or sweepers run. It adds nullable `running_since` and `failure_code`; historical rows stay unchanged and new claims/resumes establish attempt timestamps. Inspect legacy running rows with null attempt timestamps separately because orphan sweeping requires `runningSince`. Validate real-Postgres integration races against the migrated schema before promotion.
 
