@@ -51,7 +51,7 @@ When you connect from an `if-else`/`while`/`user-approval` node, the edge label 
 
 The chat panel on the canvas builds and edits the workflow from a description. Beyond placing and wiring nodes, it fills them in: agent, MCP and Jira instructions, decision prompts, Gamma prompts, which guardrail checks are on, and the model. After each build it re-checks its own work and fixes empty or inconsistent nodes automatically (up to two extra rounds).
 
-- **Models:** it chooses models only from the ones your admin has enabled. A model that is unset or not enabled is treated as a mistake and corrected.
+- **Models:** it chooses models only from the ones your admin has enabled. On agent and MCP nodes, a model that is unset or not enabled is treated as a mistake and corrected; other nodes keep their default.
 - **Credentials:** it does not invent API tokens or keys. It asks you for them, and an MCP node with no server selected is flagged unless it has asked you for credentials.
 - **Edits stay scoped:** it only checks and fixes nodes it created or changed in that turn. A node you left unfinished on purpose, or didn't mention, is not touched.
 - **"Remaining issues: ..." notice:** the builder could not fix everything within its rounds. The notice lists up to 5 problems, such as a node with no instructions or a `{{name}}` that matches nothing. Fix those nodes yourself in their panels, or ask the builder to fix them. These are warnings only: they never stop you saving or running.
