@@ -128,19 +128,20 @@ async def preserved_llm_keys(
     Also restores the in-process Settings fields the admin routes overwrite.
     """
     saved: list[dict[str, Any]] = []
-    async with sessionmaker_() as s:
-        for p in providers:
-            row = await s.scalar(select(LlmApiKey).where(LlmApiKey.provider == p))
-            if row is not None:
-                saved.append(
-                    {c.key: getattr(row, c.key) for c in LlmApiKey.__mapper__.column_attrs}
-                )
-        await s.execute(delete(LlmApiKey).where(LlmApiKey.provider.in_(providers)))
-        await s.commit()
     settings = get_settings()
     fields = {p: PROVIDER_TO_SETTINGS_FIELD[p] for p in providers}
     before = {f: getattr(settings, f) for f in fields.values()}
     try:
+        # The delete is inside the try so a failure between it and the restore can't lose a row.
+        async with sessionmaker_() as s:
+            for p in providers:
+                row = await s.scalar(select(LlmApiKey).where(LlmApiKey.provider == p))
+                if row is not None:
+                    saved.append(
+                        {c.key: getattr(row, c.key) for c in LlmApiKey.__mapper__.column_attrs}
+                    )
+            await s.execute(delete(LlmApiKey).where(LlmApiKey.provider.in_(providers)))
+            await s.commit()
         yield
     finally:
         async with sessionmaker_() as s:

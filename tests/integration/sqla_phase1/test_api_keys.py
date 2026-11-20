@@ -3,9 +3,10 @@ import re
 
 import pytest
 from httpx import AsyncClient
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.db.models import ApiKey
 from tests.integration.sqla_phase1.conftest import Member
 
 pytestmark = pytest.mark.integration
@@ -38,8 +39,11 @@ async def test_api_key_lifecycle_and_external_auth(client: AsyncClient, member: 
     assert ISO.match(after[0]["lastUsedAt"]) and ISO.match(after[0]["createdAt"])
     r = await client.delete(f"/api-keys/{body['id']}", headers=member.headers)
     assert r.status_code == 204
+    first = (await client.get("/api-keys", headers=member.headers)).json()[0]["revokedAt"]
     r = await client.delete(f"/api-keys/{body['id']}", headers=member.headers)
     assert r.status_code == 204  # idempotent
+    second = (await client.get("/api-keys", headers=member.headers)).json()[0]["revokedAt"]
+    assert first is not None and second == first  # not re-stamped
     revoked = await client.post(RUN, json={}, headers=auth)
     assert revoked.status_code == 401 and revoked.json() == {"detail": "invalid API key"}
     after = (await client.get("/api-keys", headers=member.headers)).json()
@@ -91,6 +95,7 @@ async def test_admin_revoke_api_key(
     admin_headers: dict[str, str],
     member: Member,
     second_member: Member,
+    sessionmaker_: async_sessionmaker[AsyncSession],
 ) -> None:
     key = (await client.post("/api-keys", json={"label": "adm"}, headers=member.headers)).json()
     url = f"/admin/users/{member.id}/api-keys/{key['id']}/revoke"
@@ -104,7 +109,12 @@ async def test_admin_revoke_api_key(
     assert r.status_code == 403
     assert (await client.post(RUN, json={}, headers=_bearer(key["key"]))).status_code == 404
     assert (await client.post(url, headers=admin_headers)).status_code == 204
+    async with sessionmaker_() as s:
+        first = await s.scalar(select(ApiKey.revoked_at).where(ApiKey.id == key["id"]))
     assert (await client.post(url, headers=admin_headers)).status_code == 204  # idempotent
+    async with sessionmaker_() as s:
+        second = await s.scalar(select(ApiKey.revoked_at).where(ApiKey.id == key["id"]))
+    assert first is not None and second == first  # not re-stamped
     r = await client.post(RUN, json={}, headers=_bearer(key["key"]))
     assert r.status_code == 401 and r.json() == {"detail": "invalid API key"}
     listed = (await client.get("/api-keys", headers=member.headers)).json()

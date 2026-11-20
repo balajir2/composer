@@ -124,6 +124,9 @@ async def test_admin_reset_password_flow(
 async def test_admin_user_errors_and_listing_order(
     client: AsyncClient, admin_headers: dict[str, str], make_user: MakeUser
 ) -> None:
+    # Register limit: rate_limit_register_per_minute=5. tests/integration/conftest.py resets the
+    # buckets per test, so this test (admin + 3 users = 4 registrations) fits; a 6th
+    # registration in one test would get 429.
     tok = secrets.token_hex(4)
     for x in ("c", "b", "a"):  # registered in reverse order
         await make_user(email=f"p1-{tok}-{x}@example.com")
@@ -141,6 +144,9 @@ async def test_admin_user_errors_and_listing_order(
 async def test_user_search_order_deactivation_and_display_name(
     client: AsyncClient, admin_headers: dict[str, str], make_user: MakeUser
 ) -> None:
+    # Register limit: rate_limit_register_per_minute=5. tests/integration/conftest.py resets the
+    # buckets per test, so this test (admin + 3 users = 4 registrations) fits; a 6th
+    # registration in one test would get 429.
     tok = secrets.token_hex(4)
     c = await make_user(email=f"p1-{tok}-c@example.com", display_name=f"Quokka{tok} Cee")
     b = await make_user(email=f"p1-{tok}-b@example.com")
