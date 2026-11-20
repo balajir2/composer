@@ -73,6 +73,15 @@ _GUIDE_SKIP = {"label", "nodeName", "nodeType"}
 # invent values, and credentials must come from the user (request_credential).
 # Deliberately narrow: plain "...Key" fields such as stateKey are real settings.
 _SECRET_FIELD = re.compile(r"(?i)token|apikey|secret|password")
+# Bare `domain` / `email` (Jira, Confluence) name the account that owns the API
+# token. They are connection identity, not workflow settings, so they come from
+# the user with the token. Exact names only: emailTo, approverEmail are settings.
+_CONNECTION_IDENTITY = {"domain", "email"}
+
+
+def is_hidden_from_builder(field_name: str) -> bool:
+    """True for credential and connection-identity fields the model must not fill or see."""
+    return field_name in _CONNECTION_IDENTITY or bool(_SECRET_FIELD.search(field_name))
 
 
 def _describe_type(annotation: Any) -> str:
@@ -109,7 +118,7 @@ def build_field_guide(node_classes: Mapping[str, type[BaseModel]]) -> str:
             f"({_describe_type(info.annotation)})"
             for name, info in data_cls.model_fields.items()
             if (info.alias or name) not in _GUIDE_SKIP
-            and not _SECRET_FIELD.search(info.alias or name)
+            and not is_hidden_from_builder(info.alias or name)
         ]
         lines.append(f"- `{node_type}`: " + (", ".join(fields) or "no fields"))
     return "\n".join(lines)

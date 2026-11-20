@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — Build with AI repair rounds can see what they are fixing (2026-11-20)
+
+Follow-ups to the completeness work below.
+
+- **Repair rounds now show node settings.** The canvas listing in the system prompt carries only each node's id, type and label, so a repair round was asked to fix a node it could not read (which guardrail checks were off, what instructions it had already written). The "Automatic check" message now ends with a "Current settings of those nodes" block: the `data` of every node an issue names, with credential and connection-identity fields removed (`_flagged_node_settings` in `src/builder/builder_agent.py`).
+- **Jira and Confluence `domain` / `email` left out of the field guide.** They identify the Atlassian account that owns the API token, so listing them invited the model to invent values such as `acme.atlassian.net`. They are now hidden like `apiToken`, through one shared rule (`is_hidden_from_builder` in `src/builder/node_catalog.py`) that both the guide and the repair prompt use. Only these exact field names are hidden: `emailTo`, `approverEmail` and other email fields are real settings and stay in the guide.
+
 ### Added — Build with AI fills in nodes completely (2026-11-20)
 
 Builder output often left nodes empty (an agent with no instructions, a guardrails node with every check off, a model that is not enabled), and an empty node does nothing at run time. The builder now checks its own work and fixes it before handing the canvas back.

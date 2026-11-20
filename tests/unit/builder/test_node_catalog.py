@@ -61,6 +61,22 @@ def test_field_guide_names_the_fields_the_model_kept_leaving_out() -> None:
     assert "label" not in lines["agent"]  # passed separately to create_node
 
 
+def test_field_guide_leaves_out_atlassian_connection_identity() -> None:
+    """domain/email identify the Atlassian account that goes with the API token.
+
+    Listed in the guide, the model fills them with invented values
+    (``acme.atlassian.net``) instead of calling request_credential.
+    """
+    lines = {line.split("`")[1]: line for line in build_field_guide(NODE_CLASSES).splitlines()}
+    for node_type, real_setting in (("jira", "jql (text)"), ("confluence", "spaceKey (text)")):
+        assert "domain (" not in lines[node_type]
+        assert "email (" not in lines[node_type]
+        assert real_setting in lines[node_type]
+    # Other email fields are real workflow settings, not connection identity.
+    assert "emailTo" in lines["email"]
+    assert "approverEmail" in lines["user-approval"]
+
+
 def test_field_guide_marks_required_fields_and_literal_choices() -> None:
     lines = {line.split("`")[1]: line for line in build_field_guide(NODE_CLASSES).splitlines()}
     assert "instruction* (text)" in lines["decision"]

@@ -385,6 +385,54 @@ async def test_model_that_never_fixes_gets_one_repair_round_then_user_sees_issue
     assert any("Remaining issues" in c and "pii" in c and "piiEnabled" in c for c in remaining)
 
 
+async def test_repair_prompt_shows_the_current_settings_of_each_flagged_node() -> None:
+    """The canvas listing has only id/type/label, so without this the model
+    repairs blind: it cannot see which checks are off or what it already wrote."""
+    script = [
+        AIMessage(
+            content="",
+            tool_calls=[  # pyright: ignore[reportArgumentType]
+                _call(
+                    "create_node",
+                    {"node_type": "guardrails", "node_id": "pii", "label": "PII"},
+                    "1",
+                ),
+            ],
+        ),
+        AIMessage(content="Built."),
+    ]
+    model, _, _, _ = await _build(script)
+    feedback = _last_feedback(model)
+    assert "Current settings" in feedback
+    assert "`pii`" in feedback
+    assert '"piiEnabled": false' in feedback
+
+
+async def test_repair_prompt_never_echoes_secret_values() -> None:
+    script = [
+        AIMessage(
+            content="",
+            tool_calls=[  # pyright: ignore[reportArgumentType]
+                _call(
+                    "create_node",
+                    {
+                        "node_type": "jira",
+                        "node_id": "j1",
+                        "label": "Jira",
+                        "data": {"jql": "project = X", "apiToken": "plain-secret-123"},
+                    },
+                    "1",
+                ),
+            ],
+        ),
+        AIMessage(content="Built."),
+    ]
+    model, _, _, _ = await _build(script)
+    feedback = _last_feedback(model)
+    assert "`j1`" in feedback and "project = X" in feedback
+    assert "plain-secret-123" not in feedback
+
+
 async def test_empty_closing_reply_never_becomes_an_empty_assistant_message() -> None:
     script = [
         AIMessage(

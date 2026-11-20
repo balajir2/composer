@@ -15,6 +15,7 @@ from src.builder.completeness import collect_completeness_issues
 from src.builder.diagnostics import build_diagnosis
 from src.builder.draft import Draft
 from src.builder.layout import compute_layout
+from src.builder.node_catalog import is_hidden_from_builder
 from src.builder.normalize import normalize_orchestration
 from src.builder.prompts import build_system_prompt, describe_canvas
 from src.engine.graph_builder import collect_workflow_violations, dedupe_edges
@@ -77,12 +78,34 @@ def _turn_issues(
     ]
 
 
-def _repair_prompt(issues: list[str]) -> str:
+def _flagged_node_settings(workflow: Workflow, issues: list[str]) -> list[str]:
+    """`data` of each node an issue names, minus fields the builder must not see.
+
+    The system prompt's canvas listing carries only id/type/label; without
+    this the model repairs a node it cannot read. Every issue quotes ids as
+    repr (`node 'pii'`), which is how flagged nodes are found.
+    """
+    text = "\n".join(issues)
+    lines: list[str] = []
+    for node in workflow.nodes:
+        if repr(node.id) not in text:
+            continue
+        data = node.data.model_dump(by_alias=True, exclude_none=True, mode="json")
+        shown = {k: v for k, v in data.items() if k != "label" and not is_hidden_from_builder(k)}
+        lines.append(f"- `{node.id}` ({node.type}): {json.dumps(shown, default=str)}")
+    return lines
+
+
+def _repair_prompt(issues: list[str], workflow: Workflow) -> str:
     listed = "\n".join(f"- {i}" for i in issues)
-    return (
+    prompt = (
         "Automatic check: the workflow is not finished. Fix each item with the "
         f"tools, then reply with a one-line summary.\n{listed}"
     )
+    settings = _flagged_node_settings(workflow, issues)
+    if settings:
+        prompt += "\n\nCurrent settings of those nodes:\n" + "\n".join(settings)
+    return prompt
 
 
 _JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
@@ -309,7 +332,7 @@ async def run_builder_turn(
         # A HumanMessage, not a SystemMessage: Anthropic only accepts a system
         # prompt at the start of the conversation.
         session.messages.append(AIMessage(content=reply or _EMPTY_REPLY))
-        session.messages.append(HumanMessage(content=_repair_prompt(issues)))
+        session.messages.append(HumanMessage(content=_repair_prompt(issues, updated)))
         reply = await _tool_loop(
             model, ctx, session, model_catalog, max_iterations=REPAIR_ROUND_ITERATIONS
         )
