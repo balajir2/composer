@@ -205,3 +205,7 @@ Honest about gaps:
 - [incident-response.md](incident-response.md) — what to do when an alarm fires
 - [scaling.md](scaling.md) — capacity-related signals
 - [`../decisions.md`](../decisions.md) — ADR-0003 (LangSmith tracing config threading) is the source of truth on how traces flow
+
+## Telemetry contract roadmap
+
+The [signal catalog](../telemetry/signal-catalog.md) and [privacy and cardinality contract](../telemetry/privacy-and-cardinality.md) specify future vendor-neutral instrumentation and baseline query definitions. These instruments, distributed correlation and centralized redaction are not implemented yet. Existing host/log-derived measurements and optional LangSmith tracing remain the current capabilities; LangSmith may capture sensitive payloads and requires appropriate destination controls. Operational telemetry, durable audit and privileged recovery remain separate systems.
