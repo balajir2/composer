@@ -366,7 +366,9 @@ def test_post_workflow_collapses_duplicate_edges(monkeypatch: pytest.MonkeyPatch
 
     resp = client.post("/workflows", json=_DUP_EDGE_BODY)
     assert resp.status_code == 201, resp.text
-    stored = db.workflow.create.await_args.kwargs["data"]["edges"].data
+    call = db.workflow.create.await_args
+    assert call is not None
+    stored = call.kwargs["data"]["edges"].data
     assert [e["id"] for e in stored] == ["e1"]
 
 
