@@ -48,3 +48,24 @@ def test_utcnow_is_aware_utc() -> None:
 
 def test_utcnow_is_truncated_to_whole_milliseconds() -> None:
     assert utcnow().microsecond % 1000 == 0
+
+
+def _bound(value: datetime) -> datetime:
+    bound = UTCDateTime().process_bind_param(value, DIALECT)
+    assert bound is not None
+    return bound
+
+
+def test_bind_rounds_up_to_the_nearest_millisecond() -> None:
+    value = datetime(2026, 11, 20, 10, 0, 0, 123999, tzinfo=UTC)
+    assert _bound(value) == datetime(2026, 11, 20, 10, 0, 0, 124000)
+
+
+def test_bind_rounds_down_below_half_a_millisecond() -> None:
+    value = datetime(2026, 11, 20, 10, 0, 0, 123499, tzinfo=UTC)
+    assert _bound(value) == datetime(2026, 11, 20, 10, 0, 0, 123000)
+
+
+def test_bind_rounding_carries_into_the_next_second_and_day() -> None:
+    value = datetime(2026, 11, 20, 23, 59, 59, 999600, tzinfo=UTC)
+    assert _bound(value) == datetime(2026, 11, 21, 0, 0, 0, 0)

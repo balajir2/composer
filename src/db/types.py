@@ -1,6 +1,6 @@
 """Column types shared by Composer's SQLAlchemy models."""
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 from sqlalchemy.engine import Dialect
@@ -38,7 +38,10 @@ class UTCDateTime(TypeDecorator[datetime]):
             return None
         if value.tzinfo is None or value.utcoffset() is None:
             raise ValueError("UTCDateTime requires a timezone-aware datetime")
-        return value.astimezone(UTC).replace(tzinfo=None)
+        value = value.astimezone(UTC).replace(tzinfo=None)
+        us = value.microsecond
+        rounded = (us + 500) // 1000 * 1000
+        return value + timedelta(microseconds=rounded - us)
 
     def process_result_value(self, value: datetime | None, dialect: Dialect) -> datetime | None:
         if value is None:
