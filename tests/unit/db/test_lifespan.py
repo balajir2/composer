@@ -68,3 +68,14 @@ async def test_lifespan_registers_sessionmaker_for_non_request_code(
     async with sqlalchemy_lifespan(app):
         assert runtime.get_registered_sessionmaker() is app.state.db_sessionmaker
     assert runtime.get_registered_sessionmaker() is None
+
+
+async def test_lifespan_unregisters_when_the_body_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = _FakeEngine()
+    _patch(monkeypatch, engine, fail=False)
+    app = FastAPI()
+    runtime.register_sessionmaker(None)
+    with pytest.raises(ValueError):
+        async with sqlalchemy_lifespan(app):
+            raise ValueError("boom")
+    assert runtime.get_registered_sessionmaker() is None

@@ -24,6 +24,13 @@ def register_sessionmaker(sm: async_sessionmaker[AsyncSession] | None) -> None:
     _sessionmaker = sm
 
 
+def unregister_sessionmaker(sm: async_sessionmaker[AsyncSession]) -> None:
+    """Clear the registration only if ``sm`` is still the registered one."""
+    global _sessionmaker
+    if _sessionmaker is sm:
+        _sessionmaker = None
+
+
 def get_registered_sessionmaker() -> async_sessionmaker[AsyncSession] | None:
     return _sessionmaker
 

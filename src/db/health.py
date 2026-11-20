@@ -14,19 +14,21 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-_ALEMBIC_INI = Path(__file__).resolve().parents[2] / "alembic.ini"
+_MIGRATIONS_DIR = Path(__file__).resolve().parent / "migrations"
 
 
 @dataclass(frozen=True)
 class DatabaseHealth:
     reachable: bool
-    schema_current: bool | None  # None when no expected revision was given or it was unreachable
+    schema_current: bool | None  # None: not checked, or the database was unreachable
     error: str | None
 
 
 @cache
 def alembic_head_revision() -> str:
-    head = ScriptDirectory.from_config(Config(str(_ALEMBIC_INI))).get_current_head()
+    config = Config()
+    config.set_main_option("script_location", str(_MIGRATIONS_DIR))
+    head = ScriptDirectory.from_config(config).get_current_head()
     if head is None:
         raise RuntimeError("alembic has no head revision")
     return head
@@ -40,6 +42,8 @@ async def check_database(
             await conn.execute(text("SELECT 1"))
             if expected_revision is None:
                 return DatabaseHealth(reachable=True, schema_current=None, error=None)
+            if (await conn.execute(text("SELECT to_regclass('alembic_version')"))).scalar() is None:
+                return DatabaseHealth(reachable=True, schema_current=False, error=None)
             current = (
                 await conn.execute(text("SELECT version_num FROM alembic_version"))
             ).scalar_one_or_none()

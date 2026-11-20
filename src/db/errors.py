@@ -13,14 +13,17 @@ class AlreadyExists(Exception):
         self.constraint = constraint
 
 
-async def flush_or_already_exists(session: AsyncSession) -> None:
-    """Flush pending inserts in a savepoint, translating unique violations.
+async def add_or_already_exists(session: AsyncSession, *rows: object) -> None:
+    """Insert ``rows`` in a savepoint, translating unique violations to AlreadyExists.
 
-    The savepoint means a duplicate leaves the caller's transaction usable,
-    so a route can still answer 409 and keep working with the session.
+    The rows are added inside the savepoint (begin_nested() flushes anything
+    already pending first), so a duplicate rolls back only the savepoint and
+    the caller's transaction stays usable. Callers must not have other
+    unflushed changes they expect to survive a duplicate.
     """
     try:
         async with session.begin_nested():
+            session.add_all(rows)
             await session.flush()
     except IntegrityError as exc:
         if isinstance(exc.orig, psycopg.errors.UniqueViolation):
