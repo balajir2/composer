@@ -50,12 +50,25 @@ def _draft_system_messages(draft: Draft, models: ModelCatalog | None) -> list[Ba
     return [SystemMessage(content=build_system_prompt(describe_canvas(nodes, edges), models))]
 
 
-def _turn_issues(workflow: Workflow, ctx: BuilderContext, models: ModelCatalog | None) -> list[str]:
+def _node_dumps(workflow: Workflow) -> dict[str, dict[str, Any]]:
+    # Position is excluded: layout repositions every node on every build turn.
+    return {n.id: n.model_dump(by_alias=True, exclude={"position"}) for n in workflow.nodes}
+
+
+def _turn_issues(
+    workflow: Workflow,
+    ctx: BuilderContext,
+    models: ModelCatalog | None,
+    before: Mapping[str, dict[str, Any]],
+) -> list[str]:
+    """Structural violations workflow-wide; content issues only for nodes this turn touched."""
+    now = _node_dumps(workflow)
+    touched = {node_id for node_id, dump in now.items() if before.get(node_id) != dump}
     requested = {str(e.get("node_id")) for e in ctx.events if e.get("type") == "credential_request"}
     return [
         *collect_workflow_violations(workflow),
         *collect_completeness_issues(
-            workflow, model_catalog=models, credential_requested=requested
+            workflow, model_catalog=models, credential_requested=requested, only=touched
         ),
     ]
 
@@ -280,10 +293,11 @@ async def run_builder_turn(
         ctx.draft.nodes[node.id] = node
     for edge in workflow.edges:
         ctx.draft.edges[edge.id] = edge
+    before = _node_dumps(workflow)
     reply = await _tool_loop(model, ctx, session, model_catalog)
     normalize_orchestration(ctx.draft)
     updated = _draft_to_workflow(workflow, ctx.draft)
-    issues = _turn_issues(updated, ctx, model_catalog)
+    issues = _turn_issues(updated, ctx, model_catalog, before)
     for _ in range(MAX_REPAIR_ROUNDS):
         if not issues:
             break
@@ -294,7 +308,7 @@ async def run_builder_turn(
         reply = await _tool_loop(model, ctx, session, model_catalog)
         normalize_orchestration(ctx.draft)
         updated = _draft_to_workflow(workflow, ctx.draft)
-        issues = _turn_issues(updated, ctx, model_catalog)
+        issues = _turn_issues(updated, ctx, model_catalog, before)
     if issues:
         events.append({"type": "message", "content": "Remaining issues: " + "; ".join(issues[:5])})
     events.extend(ctx.events)

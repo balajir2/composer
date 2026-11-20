@@ -434,3 +434,60 @@ async def test_requested_credential_silences_the_mcp_server_issue() -> None:
     model, events, _, _ = await _build(script)
     assert len(model.seen) == 2  # no repair round
     assert any(e.get("type") == "credential_request" for e in events)
+
+
+def _with_old_bare_agent() -> Workflow:
+    base = _empty_workflow()
+    old = AgentNode(
+        id="old",
+        type="agent",
+        position=Position(x=200, y=0),
+        data=AgentNodeData(label="Old"),
+    )
+    return base.model_copy(
+        update={
+            "nodes": [*base.nodes, old],
+            # old -> End is left for normalize to wire, so a new node can hang off old.
+            "edges": [WorkflowEdge(id="e1", source="s", target="old")],
+        }
+    )
+
+
+async def test_untouched_incomplete_nodes_do_not_trigger_repair() -> None:
+    script = [
+        AIMessage(
+            content="",
+            tool_calls=[  # pyright: ignore[reportArgumentType]
+                _call(
+                    "create_node",
+                    {
+                        "node_type": "agent",
+                        "node_id": "a",
+                        "label": "A",
+                        "data": {"instructions": "go"},
+                    },
+                    "1",
+                ),
+                _call("connect_nodes", {"source": "old", "target": "a"}, "2"),
+            ],
+        ),
+        AIMessage(content="Done."),
+    ]
+    model, events, _, _ = await _build(script, workflow=_with_old_bare_agent())
+    assert len(model.seen) == 2
+    assert not any("old" in str(e.get("content")) for e in events)
+
+
+async def test_existing_node_the_builder_edits_is_checked() -> None:
+    script = [
+        AIMessage(
+            content="",
+            tool_calls=[  # pyright: ignore[reportArgumentType]
+                _call("update_node", {"node_id": "old", "data": {"label": "Old step"}}, "1"),
+            ],
+        ),
+        AIMessage(content="Renamed."),
+    ]
+    model, _, _, _ = await _build(script, workflow=_with_old_bare_agent())
+    assert len(model.seen) > 2
+    assert "'old'" in _last_feedback(model)

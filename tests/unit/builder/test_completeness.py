@@ -109,3 +109,15 @@ def test_set_state_key_is_a_known_name() -> None:
         _agent("b", instructions="use {{summary}}"),
     )
     assert collect_completeness_issues(wf) == []
+
+
+def test_only_limits_issues_to_the_named_nodes() -> None:
+    wf = _wf(_agent("a"), _agent("b"))
+    assert len(collect_completeness_issues(wf)) == 2
+    issues = collect_completeness_issues(wf, only={"b"})
+    assert len(issues) == 1 and "'b'" in issues[0]
+
+
+def test_only_still_resolves_references_to_untouched_nodes() -> None:
+    wf = _wf(_agent("a", instructions="use {{prior_step}}"), _agent("prior_step", instructions="x"))
+    assert collect_completeness_issues(wf, only={"a"}) == []

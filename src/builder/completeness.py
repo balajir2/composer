@@ -64,12 +64,19 @@ def collect_completeness_issues(
     *,
     model_catalog: Mapping[str, str | None] | None = None,
     credential_requested: Set[str] = frozenset(),
+    only: Set[str] | None = None,
 ) -> list[str]:
-    """Return one fix-it message per unfilled node (empty = complete)."""
+    """Return one fix-it message per unfilled node (empty = complete).
+
+    `only` limits the report to those node ids. Variable names are still
+    collected from every node, so references to untouched nodes resolve.
+    """
     dumped = [(n.id, n.type, n.data.model_dump(by_alias=True)) for n in workflow.nodes]
     known = _known_names(dumped)
     issues: list[str] = []
     for node_id, node_type, data in dumped:
+        if only is not None and node_id not in only:
+            continue
         where = f"{node_type} node {node_id!r}"
         field = _INSTRUCTION_FIELD.get(node_type)
         if field and not str(data.get(field) or "").strip():
