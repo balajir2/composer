@@ -82,6 +82,8 @@ jobs:
 
       - name: Apply migrations
         run: uv run prisma migrate deploy
+      - name: Apply Alembic migrations
+        run: uv run alembic upgrade head
 
       - name: Run live-provider tests
         run: |
