@@ -283,7 +283,11 @@ The OpenAPI schema is generated from FastAPI at `/openapi.json` and consumed by 
 
 ## Build with AI (`src/builder/`)
 
-The builder runs a tool-using LLM loop over a draft copy of the canvas, then persists the result. Two kinds of rules apply to what it produces:
+The builder runs a tool-using LLM loop over a draft created from the stored workflow, then persists the result. It does not operate directly on the browser's live React Flow state. Before every builder request, the designer page saves canvas edits that are dirty, already saving, or in an autosave error state; if that save fails, the request does not run. The client mirrors the persisted builder result back onto the canvas. This boundary prevents edits waiting for the autosave debounce from being overwritten by a turn based on an older stored graph.
+
+The workflow-mutation tools in [`builder_tools.py`](../src/builder/builder_tools.py) are `create_node`, `update_node`, `remove_node`, `connect_nodes`, `disconnect_nodes`, and `set_start_inputs`, alongside the planning, credential, diagnosis, and patch-proposal tools. `connect_nodes` is idempotent for an existing `(source, target, branch)` connection. `disconnect_nodes(source, target, branch?)` removes matching edges without deleting either endpoint; omitting `branch` removes every edge between that source and target.
+
+Two kinds of rules apply to what the builder produces:
 
 - **Structural rules gate saves and runs.** `collect_workflow_violations` / `validate_workflow_shape` ([`src/engine/graph_builder.py`](../src/engine/graph_builder.py)) run on every save and before every run. Duplicate edges are not a violation: `dedupe_edges` collapses them (first edge per `(source, target, branch)` wins) in `POST`/`PUT /workflows`, in `build_graph` and on each builder turn ([`normalize.py`](../src/builder/normalize.py)), because rejecting them would make existing workflows unsaveable and unrunnable.
 - **Content rules only steer the builder.** `collect_completeness_issues` ([`completeness.py`](../src/builder/completeness.py)) reports unfilled nodes (missing instructions or prompt, all-off guardrails, missing MCP server, model unset or not enabled, unresolved `{{name}}`). It never blocks a save or run.
