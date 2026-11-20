@@ -223,8 +223,8 @@ Dependencies between these argue for roughly this sequence, not strict P0→P3 p
 3. ~~**P1-2** + **P1-4**~~ — **done**, see ADR-0033. Not one shared backend after all, per the
    evidence: Cloud Tasks for the execution queue (purpose-built, solves the confirmed-active
    Cloud-Run-scale-to-zero risk directly), Postgres for events/rate limits (no new infra, reuses
-   this session's already-proven patterns). One new service total; implemented on
-   `feat/durable-execution-cloud-tasks`, not yet merged to `main`.
+   this session's already-proven patterns). One new service total; merged to `main` in
+   `7e9a4ef` (follow-up hardening in ADR-0034).
 4. **P2-2** (connections UI) — needs P0-5's `Credential` model decision made first (still open).
 5. **P2-1** (dry-run mode) — independent of the above; blocked only on the control-flow semantics
    decision.
