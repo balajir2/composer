@@ -4,9 +4,9 @@
 # Run:     docker run -e DATABASE_URL=... -e JWT_SECRET=... -p 8080:8080 composer-backend
 #
 # Multi-stage build:
-#   builder  - Python 3.12 + Node.js + uv.  Installs deps, generates
+#   builder  - Python 3.14 + Node.js + uv.  Installs deps, generates
 #              the Prisma client + downloads the query-engine binary.
-#   runtime  - Python 3.12 only.  Copies /app from builder (the venv,
+#   runtime  - Python 3.14 only.  Copies /app from builder (the venv,
 #              the source, and the Prisma cache).  No Node.js, no uv,
 #              no apt-cache.  Final image ~400 MB instead of ~1.3 GB.
 #
@@ -21,7 +21,7 @@
 # Base images are pinned by multi-arch index digest (captured 2026-11-19 via
 # `docker buildx imagetools inspect`).  Bump the tag AND digest together,
 # deliberately; never re-point to a floating tag.
-FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS builder
+FROM python:3.14-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f AS builder
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -66,7 +66,7 @@ COPY src/ ./src/
 RUN uv sync --frozen --no-dev
 
 # ─── runtime ──────────────────────────────────────────────────────────
-FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b AS runtime
+FROM python:3.14-slim@sha256:9aaa474097d094040649f2162a627c0049b408f52138d980916788d80f04802f AS runtime
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
