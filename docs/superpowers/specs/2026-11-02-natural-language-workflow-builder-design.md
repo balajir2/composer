@@ -73,7 +73,7 @@ These are the product-level constraints agreed before design, and this spec trea
 | File | Responsibility |
 |---|---|
 | `builder_agent.py` | The agent loop. Given a turn (message + in-memory session + optional `execution_id`), binds the builder tools, iterates tool-call → result (bounded, like `agent.py`'s max-iterations), and returns typed events + a final reply + the updated workflow. The session holds the agent's message history between turns — see "Turn model" below. |
-| `builder_tools.py` | LangChain `StructuredTool` definitions: `plan_workflow`, `create_node`, `update_node`, `remove_node`, `connect_nodes`, `set_start_inputs`, `request_credential`, `diagnose`, `propose_patch`. Each returns a structured result; an invalid mutation returns the violation text (schema *or* shape) as the tool *result* so the model can self-correct. |
+| `builder_tools.py` | LangChain `StructuredTool` definitions: `plan_workflow`, `create_node`, `update_node`, `remove_node`, `connect_nodes`, `disconnect_nodes`, `set_start_inputs`, `request_credential`, `diagnose`, `propose_patch`. `connect_nodes` is idempotent for an existing `(source, target, branch)` connection; `disconnect_nodes` removes matching edges without deleting either endpoint. Each tool returns a structured result; an invalid mutation returns the violation text (schema *or* shape) as the tool *result* so the model can self-correct. |
 | `node_catalog.py` | Builds a compact LLM-friendly catalog of all node types (type, purpose, key fields, credential dependencies) by reflecting over `src/engine/workflow.py`'s Pydantic models. Injected into the system prompt every turn so the agent knows the valid vocabulary. |
 | `diagnostics.py` | Assembles a diagnosis context from an `execution_id` (reads `db.workflowexecution`, extracts `status`, `error`, `nodeResults`, a bounded tail of `variables`). Redacts secrets before the context reaches the model. |
 | `layout.py` | Dependency-free deterministic layered layout (topological depth → column/row with fixed spacing). Advisory only — positions are ordinary `Position{x,y}` values the user can drag afterward. |
@@ -182,7 +182,10 @@ uses `src/llm/structured_output.py`'s `structured_invoke`.
 - **Canvas integration:** node/edge results from the `workflow` response are applied to the same
   React Flow state `workflow-canvas.tsx` already renders — generated nodes are ordinary, draggable,
   editable nodes. The designer page (`frontend/app/designer/[workflowId]/page.tsx`) hosts the panel
-  alongside the canvas.
+  alongside the canvas. Before every builder request, the page saves canvas edits that are dirty,
+  already saving, or in an autosave error state. If that save fails, the panel does not call the
+  builder endpoint and tells the user to save the canvas and retry. This is required because the
+  builder reads and writes the stored workflow rather than the browser's live canvas state.
 
 ### Credential resolution map
 
@@ -215,14 +218,18 @@ surface the currently-available resources so the agent can reference them.
    mutation.
 3. Frontend renders the plan card with Approve/Edit. (Edit lets the user annotate stages before
    approving.)
-4. User approves → `POST /builder/{id}/message` (`{ message: "approve", session_id }`).
-5. Agent applies stage 1 (several `create_node`/`connect_nodes` tool calls), persists the end-of-turn
-   state at the stage boundary — even if still invalid, with `validation_errors` reported — and emits
-   `stage_applied` + the updated `workflow`. Frontend renders the new nodes on the canvas and asks
-   for the next confirmation.
-6. Repeat per stage. At any point a `credential_request` may appear; the frontend shows the card and
+4. User approves the plan.
+5. Before sending `POST /builder/{id}/message` (`{ message: "approve", session_id }`), the frontend
+   saves pending canvas edits. If the save fails, it does
+   not send the request and tells the user to save and retry.
+6. Agent applies stage 1 (several `create_node`/`connect_nodes`/`disconnect_nodes` tool calls), then
+   `normalize_orchestration` keeps the first edge for each `(source, target, branch)` tuple and drops
+   later duplicates. The server persists the end-of-turn state at the stage boundary — even if still
+   invalid, with `validation_errors` reported — and emits `stage_applied` + the updated `workflow`.
+   Frontend renders the new nodes and edges on the canvas and asks for the next confirmation.
+7. Repeat per stage. At any point a `credential_request` may appear; the frontend shows the card and
    opens the relevant existing flow; once resolved, the user says "done" and the agent continues.
-7. When the flow is complete, the user runs it through the existing inline-test path.
+8. When the flow is complete, the user runs it through the existing inline-test path.
 
 ### Sequence B — test & fix
 
