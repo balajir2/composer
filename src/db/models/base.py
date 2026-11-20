@@ -8,6 +8,9 @@ change the model, never the database.
 JSONB and ARRAY values are replaced, never mutated in place: assign a new
 object (SQLAlchemy does not track in-place changes such as
 ``row.tags.append(...)``).
+
+Optional JSONB columns store Python None as SQL NULL (as Prisma does); assign
+``sqlalchemy.JSON.NULL`` to store a literal JSON null.
 """
 
 from datetime import datetime
