@@ -191,6 +191,20 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
     }
   }
 
+  // The builder reads the stored workflow, not the live canvas, and saves its
+  // result over it. Edits still inside the autosave debounce (or whose save
+  // failed) must land first, or the builder undoes them — e.g. deleted edges
+  // reappearing. A save already in flight is re-sent; the PUT is idempotent.
+  async function flushCanvasEdits() {
+    if (
+      autosave.status === "dirty" ||
+      autosave.status === "saving" ||
+      autosave.status === "error"
+    ) {
+      await autosave.saveNow();
+    }
+  }
+
   // Apply a builder turn's output to the canvas. The backend persists the
   // workflow before responding, so we mirror it into the canvas refs, take it
   // as the new "as-loaded" baseline (so autosave does not immediately flag the
@@ -385,6 +399,7 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
         <BuilderPanel
           workflowId={workflowId}
           onWorkflowUpdated={applyBuilderWorkflow}
+          beforeSend={flushCanvasEdits}
           executionId={failedExecutionId}
         />
         {draftExecutionId && (

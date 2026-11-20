@@ -257,3 +257,48 @@ describe("BuilderPanel model choice", () => {
     expect(sendBuilderMessage.mock.calls[0]?.[1].model).toBeUndefined();
   });
 });
+
+// 2026-11-19 defect: the builder reads the workflow from the database, but
+// canvas edits autosave on a 3 s debounce. Deleting edges and then messaging
+// the builder inside that window made it work from (and write back) the stale
+// graph, so the deleted edges reappeared. Unsaved edits must land first.
+describe("BuilderPanel flushes unsaved canvas edits", () => {
+  beforeEach(() => {
+    sendBuilderMessage.mockReset();
+    listBuilderModels.mockReset();
+    listBuilderModels.mockResolvedValue({ default: "a/m", models: [{ id: "a/m", label: "M" }] });
+  });
+
+  function type(text: string) {
+    const input = screen.getByPlaceholderText("Describe your workflow…");
+    fireEvent.change(input, { target: { value: text } });
+    fireEvent.keyDown(input, { key: "Enter" });
+  }
+
+  it("awaits the flush before the builder request goes out", async () => {
+    const order: string[] = [];
+    const beforeSend = vi.fn(async () => {
+      order.push("flush");
+    });
+    sendBuilderMessage.mockImplementation(async () => {
+      order.push("send");
+      return reply();
+    });
+    render(<BuilderPanel workflowId="wf-1" onWorkflowUpdated={vi.fn()} beforeSend={beforeSend} />);
+
+    type("remove the duplicate edges");
+    await screen.findByText("ok");
+
+    expect(order).toEqual(["flush", "send"]);
+  });
+
+  it("does not run the builder on a stale graph when the save fails", async () => {
+    const beforeSend = vi.fn().mockRejectedValue(new Error("save failed"));
+    render(<BuilderPanel workflowId="wf-1" onWorkflowUpdated={vi.fn()} beforeSend={beforeSend} />);
+
+    type("tidy up");
+
+    expect(await screen.findByText(/couldn't save your latest canvas edits/i)).toBeTruthy();
+    expect(sendBuilderMessage).not.toHaveBeenCalled();
+  });
+});

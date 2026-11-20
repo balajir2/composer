@@ -91,10 +91,17 @@ export function BuilderPanel({
   workflowId,
   onWorkflowUpdated,
   executionId,
+  beforeSend,
 }: {
   workflowId: string;
   onWorkflowUpdated: (workflow: { nodes: unknown[]; edges: unknown[] }) => void;
   executionId?: string;
+  /**
+   * Persist any unsaved canvas edits. The builder reads the workflow from the
+   * database and writes its result back, so an edit still waiting on the
+   * autosave debounce would otherwise be overwritten by the builder's turn.
+   */
+  beforeSend?: () => Promise<void>;
 }) {
   const [sessionId, setSessionId] = useState<string | undefined>();
   const [transcript, setTranscript] = useState<Msg[]>([]);
@@ -138,6 +145,31 @@ export function BuilderPanel({
       setTranscript((t) => [...t, { role: "user", text, events: [] }]);
     }
     setInput("");
+    if (beforeSend) {
+      try {
+        await beforeSend();
+      } catch {
+        // Running the builder now would build on (and save over) the stale
+        // graph, silently undoing the user's edits. Stop and say so instead,
+        // and re-enable the card that was clicked so the user can retry.
+        if (cardKey)
+          setResolved((r) => {
+            const next = new Set(r);
+            next.delete(cardKey);
+            return next;
+          });
+        setTranscript((t) => [
+          ...t,
+          {
+            role: "assistant",
+            text: "I couldn't save your latest canvas edits, so I didn't run that request. Save the canvas and try again.",
+            events: [],
+          },
+        ]);
+        setBusy(false);
+        return;
+      }
+    }
     try {
       const res = await sendBuilderMessage(workflowId, {
         message: text,

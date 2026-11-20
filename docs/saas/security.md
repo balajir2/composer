@@ -150,14 +150,14 @@ The application does not enforce an admin-configurable destination allowlist bey
 
 ## Logging & audit trail
 
-Every meaningful action is logged with the calling user id, request ip, timestamp, and outcome. Locations:
+Composer has durable execution records and targeted application logs, but it does **not** yet provide a comprehensive immutable administrator audit log. Do not represent ordinary application logs or mutable business tables as equivalent to one. Current evidence sources are:
 
-- **Backend logs**: structured JSON via Python's `logging` module → your container host (Fly logs, CloudWatch, etc.). Set `log_level=INFO` for production; `DEBUG` produces request-body logs that may include execution input.
-- **Postgres tables** that double as audit trails:
+- **Backend logs**: Python application logs → the configured container host. Formatting, enrichment, collection, retention, and alerting are deployment responsibilities.
+- **Postgres operational-history tables**:
   - `workflow_executions` — every run, with status / inputs / outputs / errors / timestamps / actor
   - `approvals` — every human-approval decision (approved/rejected/pending), with the deciding user id and rationale
   - `api_keys.last_used_at` — touched on every successful external invoke; lets you spot stale or compromised keys
-- **LangSmith** (optional) — full execution trace, prompt-by-prompt, tool-by-tool. Useful for security review and incident analysis.
+- **LangSmith** (optional) — LLM-focused execution traces when configured. It is not the application audit system.
 
 Log retention is whatever your container host + Postgres backups dictate. We don't enforce retention from the application; configure it operationally based on your compliance posture.
 

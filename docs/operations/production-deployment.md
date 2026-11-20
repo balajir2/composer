@@ -19,7 +19,7 @@ Decisions you'll be locked into until the next major maintenance window. Make th
 | Hosting region | EU / US / APAC | Anchored by data residency commitments to your customers. See [`../saas/privacy.md`](../saas/privacy.md). |
 | Database host | Neon (recommended) / RDS / self-hosted Postgres | Neon's branching + PITR shorten DR drills considerably. |
 | Backend host | Fly / Render / Cloud Run / your container platform | Must be **long-lived** for WebSocket support; not Vercel Serverless Functions. |
-| Frontend host | Vercel (recommended) / any static + edge host | The frontend is Next.js 14 with App Router — Vercel's first-class. |
+| Frontend host | GCP Cloud Run (current deployment); Vercel is supported as an alternate | The frontend is a Next.js 15 App Router server application, not a static-only export. |
 | Auth mode | Standalone (username/password) / Azure AD SSO / Embedded (IE-issued JWT) | SSO recommended for any customer-facing deployment. See [azure-sso.md](azure-sso.md). |
 | LangSmith tracing | Enabled / disabled | Strongly recommended; opt out only if your privacy policy demands it. |
 | Initial admin email | A real human's email | Not a shared inbox; promote a second admin on Day 1 ([../admin-guide.md](../admin-guide.md)). |
@@ -36,7 +36,7 @@ Walk through [postgres-setup.md](postgres-setup.md). The end state:
 
 - A Postgres 15+ database in your chosen region
 - A connection string in your secret store under the name `DATABASE_URL`
-- Point-in-time recovery enabled (Neon: default; RDS: explicitly enabled with retention ≥7 days)
+- Point-in-time recovery enabled with a verified retention window that meets the deployment's recovery policy
 - Daily backup job verified by checking the most recent backup timestamp in the host's UI
 - Network ACL configured so only your backend host's egress IPs (or VPC) can reach the database
 
@@ -173,7 +173,7 @@ Migration application was a hard prerequisite in Phase 1.1a, before backend star
 # Confirm the prerequisite completed against the intended database
 uv run prisma migrate status
 
-# Seed the 20 reference templates (idempotent — safe to re-run)
+# Seed the 21 reference templates (idempotent — safe to re-run)
 uv run python -m scripts.seed_templates
 ```
 

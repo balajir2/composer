@@ -63,7 +63,7 @@ For each, the response is below.
 If any of these isn't true today, fix it before you need this runbook for real.
 
 - [ ] Postgres backups are running daily, with verification (the host's backup-status indicator says "successful" within the last 24 hours).
-- [ ] Point-in-time recovery is enabled with at least 7 days of retention (Neon: default; RDS: explicitly).
+- [ ] Point-in-time recovery is enabled and the configured retention window meets the deployment's approved RPO/RTO policy.
 - [ ] The encryption key is stored in a system that will survive the backend host being destroyed (e.g., a separate secret store, a password manager exported to encrypted offline storage, or a managed KMS).
 - [ ] The encryption key has been **tested for restoration** at least once — you've decrypted a known secret using the stored key, not just confirmed the file exists.
 - [ ] You have admin access to the Postgres host's UI (not just the application's connection string).

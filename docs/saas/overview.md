@@ -18,7 +18,7 @@ A single Composer deployment supports three audiences inside your organisation:
 | **End users** | Run published workflows, watch live execution, approve human-in-the-loop steps, manage personal API keys | `/runs/*` |
 | **Admins** | Manage users, LLM API keys, MCP servers, model catalog, deployment settings, global execution history | `/admin/*` |
 
-What you can build with it: RAG pipelines, multi-source research agents, classify-and-branch ticket triage, document-intake-to-action-items flows, presentation generation, code review assistants, lead-enrichment pipelines, human-in-the-loop approvals. Composer ships with 20 reference templates that double as the recommended starting point.
+What you can build with it: RAG pipelines, multi-source research agents, classify-and-branch ticket triage, document-intake-to-action-items flows, presentation generation, code review assistants, lead-enrichment pipelines, human-in-the-loop approvals. Composer ships with 21 reference templates that double as the recommended starting point.
 
 ## Proposed managed deployment package
 
@@ -35,7 +35,7 @@ Whether you self-host or we host for you, the contract is the same. Each Compose
 - **LangSmith tracing** on every run
 - **Document upload** with text extraction (PDF / DOCX / Markdown / TXT) — no persistence, no S3 dependency
 - **File watching** — a local `composer watch` CLI or a server-side, OAuth-connected Google Drive poller can trigger a published workflow when a file lands, with generated output written back out via the `file-write` node (Markdown / Word / PDF)
-- **20 reference templates** that demonstrate common patterns, so designers don't start from a blank canvas
+- **21 reference templates** that demonstrate common patterns, so designers don't start from a blank canvas
 
 ## The deployment shapes we support
 
@@ -60,7 +60,7 @@ Stack we're committed to (see [`../decisions.md`](../decisions.md) for the ratio
 | ORM | Prisma Python | Type-safe, schema-first ORM |
 | Database | Postgres 15+ (Neon recommended) | Battle-tested transactional store; PITR available |
 | Orchestration | LangGraph Python + LangChain | Resumable state machines with first-class checkpoint persistence |
-| Frontend | Next.js 14 + Tailwind + shadcn/ui | Modern App Router; the canvas uses React Flow |
+| Frontend | Next.js 15 + Tailwind + shadcn/ui | Modern App Router; the canvas uses React Flow |
 | Auth | NextAuth v5 + Composer JWT (HS256) + per-user API keys | Three-layer model — covers SSO, password, and machine-to-machine |
 | Real-time | WebSocket | Long-lived connections for execution events |
 | Encryption at rest | `cryptography` AES-256-GCM | NIST-blessed; what we use to protect API keys + OAuth tokens |

@@ -55,7 +55,7 @@ A completed deployment passes all of these smoke tests:
 
 | Layer | What runs where |
 |---|---|
-| **Frontend** | Next.js 14 → GCP Cloud Run (recommended + actually deployed — [`gcp-cloud-run-setup.md`](operations/gcp-cloud-run-setup.md)); Vercel is an alternate path ([`vercel-setup.md`](operations/vercel-setup.md)) |
+| **Frontend** | Next.js 15 → GCP Cloud Run (recommended + actually deployed — [`gcp-cloud-run-setup.md`](operations/gcp-cloud-run-setup.md)); Vercel is an alternate path ([`vercel-setup.md`](operations/vercel-setup.md)) |
 | **Backend HTTP** | FastAPI → GCP Cloud Run (recommended + actually deployed) or any other long-lived container host (Fly / Render / App Runner). Not Vercel Serverless Functions — they can't keep WS connections open |
 | **Database** | Postgres 15+ → Neon (managed) or self-hosted |
 | **Durable execution queue** | Google Cloud Tasks (`POST /internal/claim-and-run` push target) + Cloud Scheduler (`POST /internal/sweep`, `POST /internal/poll-file-triggers`) — falls back to in-process `asyncio` dispatch when `CLOUD_TASKS_SERVICE_ACCOUNT` is unset (local/CI) |
@@ -93,7 +93,7 @@ For Azure SSO add `AUTH_AZURE_AD_*` plus the NextAuth secret. For LangSmith trac
 
 ## Disaster recovery
 
-- **Postgres**: Neon's PITR covers the last 7 days on the free tier (longer on paid). Branch from a point-in-time, switch `DATABASE_URL`, restart.
+- **Postgres**: enable PITR with a retention window that meets your RPO. Provider plan limits change; verify the configured window in the database console, restore/branch from the required point, switch `DATABASE_URL`, and restart.
 - **LLM keys**: Sourced from Postgres. Lose Postgres → re-encrypt and re-insert from your secret store of record. The keys never live only in env vars.
 - **Per-user API keys**: Hashed; can't be recovered if Postgres is lost. Users regenerate via the Runs page.
 - **Workflow definitions**: Postgres only. Lose Postgres → workflows are gone unless you've been exporting via `GET /workflows` periodically. Recommend doing so for production-published workflows at minimum.

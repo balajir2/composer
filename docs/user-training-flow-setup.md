@@ -1,6 +1,6 @@
 # User Training: Setting Up Example Flows
 
-A parameter-by-parameter walkthrough of the 20 reference templates seeded by `scripts/seed_templates.py`. Use this doc when you've already skimmed [getting-started.md](getting-started.md) and want to know exactly what to fill in on a specific template rather than build a workflow from a blank canvas.
+A parameter-by-parameter walkthrough of the 21 reference templates seeded by `scripts/seed_templates.py`. Use it when you've already skimmed [getting-started.md](getting-started.md) and want to know exactly what to fill in on a specific template rather than build a workflow from a blank canvas.
 
 For what each node type does in general (every field, not just the ones a given template happens to use), see [designer-guide.md](designer-guide.md)'s [Node reference](designer-guide.md#node-reference) — this doc assumes that one as background and only calls out the fields that matter for getting each specific example running.
 
@@ -37,6 +37,7 @@ For what each node type does in general (every field, not just the ones a given 
 | 18 | [Approved Email Distribution](#18-approved-email-distribution) | Intermediate | LLM + Resend | No (sender domain must be verified in Resend) |
 | 19 | [Arcade Tool Call](#19-arcade-tool-call) | Intermediate | LLM + Arcade | No (but requires one-time OAuth authorization on first run) |
 | 20 | [File Watch to Summarize and Email](#20-file-watch-to-summarize-and-email) | Intermediate | LLM + Resend | **Yes** — `composer watch` CLI setup |
+| 21 | [Decision Node Routing (TypeSafe Jev)](#21-decision-node-routing-typesafe-jev) | Intermediate | LLM + TypeSafe | **Yes** — TypeSafe key + `jev-latest` model |
 
 Deployment-level API keys (Anthropic/OpenAI/Google/Groq, Tavily, Firecrawl, Gamma, Resend, Arcade, OpenAI-for-embeddings) are set once by an admin under **Admin → LLM keys** — see [admin-guide.md](admin-guide.md). They apply to every workflow; individual templates don't carry their own copies. The two exceptions are **Jira** and **Confluence** node credentials, which are entered per-node (see designer-guide.md's [`jira`](designer-guide.md#jira)/[`confluence`](designer-guide.md#confluence) sections) — no example template currently uses either node, but if you add one to a cloned template, expect to fill in domain/email/API token yourself.
 
@@ -432,6 +433,28 @@ composer watch --api-url <backend-url> --slug <your-slug> --api-key ck_... \
 ```
 
 `composer watch` is a local process — it has to run on whatever machine has filesystem access to the watched folder, since a hosted backend has no visibility into your local disk. (For a folder you'd rather have Composer poll server-side with no local process, see the `file-trigger` node's Google Drive OAuth mode in [designer-guide.md](designer-guide.md#file-trigger) — a separate configuration path not used by this template.)
+
+---
+
+## 21. Decision Node Routing (TypeSafe Jev)
+
+Classify an incoming support ticket into `billing`, `technical`, or `sales` with the purpose-built TypeSafe Jev decision model, then route directly to the matching specialist agent.
+
+**Nodes:** `start` → `decision` (choice mode) → one of three `agent` nodes → `end`
+
+**Start input:**
+
+| Name | Type | Required | Purpose |
+|---|---|---|---|
+| `ticket` | text | Yes | Customer support message to classify |
+
+**Required external services:**
+
+1. Save a TypeSafe API key under **Admin → LLM keys**.
+2. Add and enable a `jev-latest` TypeSafe model under **Admin → LLM models**.
+3. Configure the specialist agent model through one of Composer's normal LLM providers.
+
+The Decision node is already configured in `choice` mode with three options and examples. Its output exposes the selected option and confidence; each branch uses `{{route_ticket.confidence}}` while drafting its response. This example contrasts with Template 14, which performs classification through an Agent's custom JSON schema and an if-else node.
 
 ---
 

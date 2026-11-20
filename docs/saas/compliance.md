@@ -2,9 +2,9 @@
 
 > **Audience:** customer security teams, procurement, GRC reviewers.
 > **Maintained by:** Balaji Rajan (`balajirajan@gmail.com`)
-> **Last reviewed:** 2026-07-21. The certification status section is the part most likely to change.
+> **Repository accuracy review:** 2026-11-20. External certification, audit, contract, and organisational-process claims must be confirmed by the operator before this document is shared with a customer.
 
-This document is the formal counterpart to [security.md](security.md). Where that doc explains the controls we've built, this one explains the **third-party assertions** customers can rely on, the regulatory frameworks Composer maps to, and the audit-log capabilities we expose.
+This document is a deployment-operator template. [security.md](security.md) describes controls visible in the repository; certifications, audit reports, contractual commitments, and organisational processes are external facts and are not proven by source code.
 
 We are honest about what we have, what we don't, and what we're working on. If a question matters to your procurement and we don't have a clear answer below, escalate via [support.md](support.md) and we'll commit to a date.
 
@@ -12,7 +12,7 @@ We are honest about what we have, what we don't, and what we're working on. If a
 
 | Framework | Status | Evidence available |
 |---|---|---|
-| **SOC 2 Type II** | In progress (Type I targeted Q4 2026; Type II Q3 2027) | Gap-assessment report on request under NDA |
+| **SOC 2 Type II** | No certification is evidenced in this repository | Operator must supply current attestation or gap-assessment evidence |
 | **ISO 27001** | Not pursuing — SOC 2 covers our customers' needs | n/a |
 | **GDPR** (data controller / processor) | Controls and templates available; deployment/operator assessment required | [legal/data-processing-addendum.md](legal/data-processing-addendum.md), [privacy.md](privacy.md) |
 | **CCPA / CPRA** | Controls and templates available; legal assessment required | [privacy.md](privacy.md) "Customer rights mapping" |
@@ -21,18 +21,18 @@ We are honest about what we have, what we don't, and what we're working on. If a
 | **FedRAMP** | Not in scope today | Roadmap candidate if a federal customer materialises |
 | **SOX** | Composer is not a financial system; customer can use it inside a SOX-controlled workflow with their own controls | n/a |
 
-The **status** column is the truth as of the doc's last reviewed date. We'll update with the same change-notice protocol as [privacy.md](privacy.md) when a status moves.
+The status column records only what can be supported by this repository. An operator publishing this document must replace it with current, independently verifiable organisational status.
 
 ## SOC 2 — what we hold today
 
-We are working toward SOC 2 Type II. A pre-audit gap assessment was completed and the controls mapped to the AICPA Trust Services Criteria. The current state:
+The repository includes technical controls that may contribute to a SOC 2 programme, but it does not demonstrate that a gap assessment, Type I audit, observation period, or Type II examination has occurred. The following is a readiness checklist, not an attestation:
 
 | Trust Services Criterion | What we have | Gap to Type II readiness |
 |---|---|---|
 | **CC1 — Control environment** | Org-level governance + Composer-specific code review + ADR-backed change management | Formal information-security policy needs sign-off |
 | **CC2 — Communication & information** | All policies in this folder + onboarding docs | Internal policy distribution log |
 | **CC3 — Risk assessment** | Threat model in [security.md](security.md); incident-class write-ups in [archive/incident-history](../archive/incident-history/) | Annual formal risk-assessment ritual |
-| **CC4 — Monitoring** | Per-route logging, per-execution audit, optional LangSmith tracing | Continuous-monitoring tooling (vendor TBD) |
+| **CC4 — Monitoring** | Application logs, persisted execution events, optional LangSmith tracing | Vendor-neutral application telemetry, alert policy, and evidence-retention process |
 | **CC5 — Control activities** | RBAC + access reviews via admin UI + SQL audit | Quarterly access-review attestation |
 | **CC6 — Logical & physical access** | RBAC, MFA via Azure AD when SSO enabled, least-privilege DB roles | Documented termination procedure |
 | **CC7 — System operations** | Runbooks under `../operations/` | Change-management ticket trail (we use git, but auditors usually want issue-tracker linkage) |
@@ -41,10 +41,10 @@ We are working toward SOC 2 Type II. A pre-audit gap assessment was completed an
 
 What that means in practice:
 
-- The **technical** controls a Type II auditor cares about are largely in place. The encryption, RBAC, audit logging, change management, and incident history primitives work today.
-- The **process** controls — formal policies on paper, attestation rituals, vendor-management binders, evidence-preservation tooling — are in flight. The gap assessment laid them out; we expect to land Type I in Q4 2026.
+- Technical controls present in code include encryption of stored credentials, RBAC, durable execution history, dependency/security gates, and operational runbooks.
+- A dedicated immutable audit log, vendor-neutral telemetry, formal control ownership, evidence preservation, access-review attestations, vendor management, and independent examination are not established by the repository.
 
-For customers who need SOC 2 today: we provide controls evidence under NDA. The gap items above are documented honestly in the request response so your security team isn't surprised at the audit table later.
+For customers who require SOC 2, the deployment operator must provide its own current report or explicitly state that no report is available.
 
 ## GDPR
 
@@ -111,7 +111,7 @@ Every Composer deployment captures the trail described below. For SOC 2 / GDPR /
 
 ## Penetration testing
 
-Independent penetration testing is performed annually (managed deployments) and on-demand for material releases. The most recent report is available to managed customers under NDA. Findings are tracked publicly in [`../archive/incident-history/`](../archive/incident-history/) once the customer review window closes.
+No independent penetration-test schedule or current report is evidenced in this repository. A managed-service operator must insert its actual testing cadence, report date, scope, and disclosure policy before making a customer commitment.
 
 We welcome **customer-led penetration testing** of any deployment under your control. For managed deployments, please coordinate with the support contact in [support.md](support.md) so we can flag the activity to monitoring and arrange a rules-of-engagement document. We commit to a 5-business-day acknowledgement of pen-test requests.
 

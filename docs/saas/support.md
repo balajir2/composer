@@ -2,6 +2,7 @@
 
 > **Audience:** customers operating Composer day-to-day; admins; primary technical contacts.
 > **Maintained by:** Balaji Rajan (`balajirajan@gmail.com`)
+> **Status:** Operator template. Channels, staffing hours, and response targets are commercial commitments only when confirmed in a signed agreement.
 
 ## Channels
 

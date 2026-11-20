@@ -132,14 +132,7 @@ See [admin-operations.md](admin-operations.md) for a complete list of admin capa
 
 ## 5. Neon point-in-time recovery (PITR)
 
-Neon retains write-ahead log (WAL) history for point-in-time recovery. The retention window depends
-on your Neon plan:
-
-| Plan | PITR window |
-|---|---|
-| Free | 7 days |
-| Pro | 7 days (configurable up to 30 days) |
-| Enterprise | 30 days (configurable) |
+Neon retains write-ahead log (WAL) history for point-in-time recovery when the selected plan and project configuration support it. Plan names and retention limits change over time; verify the actual restore window in the Neon console and contract rather than relying on a hard-coded value in this repository.
 
 ### Creating a PITR restore
 

@@ -6,7 +6,7 @@ How Composer is built today. This is the document to read before adding a node t
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│                       Browser (Next.js 14 frontend)                    │
+│                       Browser (Next.js 15 frontend)                    │
 │  Designer canvas (React Flow)  •  Runs page  •  Admin console          │
 └──────────┬───────────────────────┬───────────────────────┬─────────────┘
            │ JWT (NextAuth)        │ WebSocket             │ JWT
@@ -123,8 +123,8 @@ composer/
 │   ├── lib/api/                    typed REST clients (OpenAPI-generated schema)
 │   └── e2e/                        Playwright suite
 ├── prisma/schema.prisma            Single source of truth for the data model
-├── tests/                          1267 currently collected backend tests
-├── scripts/seed_templates.py       Seeds the 20 reference templates
+├── tests/                          1,751 backend tests collected on 2026-11-20
+├── scripts/seed_templates.py       Seeds the 21 reference templates
 └── docs/                           ← you are here
 ```
 
@@ -211,7 +211,7 @@ status: completed / failed / waiting_approval / canceled
 
 Because Cloud Tasks delivery is a genuine inbound HTTP request, Cloud Run keeps the instance alive for the full duration of the execution — this is the actual fix for the scale-to-zero risk, not Cloud Tasks' retry/backoff/dead-letter behavior (which is a secondary benefit). `POST /executions/{id}/resume` (approval decisions, in-app and via email) and `POST /api/run/{slug}` (external invoke) enqueue the same kind of task rather than calling `BackgroundTasks.add_task()`.
 
-**Recovery.** `WorkflowExecution.leaseOwner`/`leaseExpiresAt`/`deliveryAttempts` track which worker currently owns a `running` execution. `POST /internal/sweep` — a Cloud Scheduler-triggered endpoint, **not** an in-process loop — runs on a fixed interval and recovers executions whose worker died mid-run (lease expired with no heartbeat) by re-enqueueing them, up to a bounded retry count before dead-lettering. `src/maintenance/execution_sweeper.py`'s `sweep_expired_leases` does the recovery; the same endpoint also runs the pre-existing stuck-execution and expired-approval sweeps, plus `sweep_old_execution_events` retention cleanup. Because a re-enqueued execution resumes the *same* LangGraph `thread_id`, the checkpointer resumes from the last committed checkpoint rather than restarting the graph — nodes that already ran (and had side effects, e.g. a Jira create) are not re-executed, only the node in progress at the time of death and anything after it.
+**Attempt failure and retained state.** `WorkflowExecution.leaseOwner`/`leaseExpiresAt`/`deliveryAttempts` track which worker owns a `running` attempt. `POST /internal/sweep` is triggered by Cloud Scheduler and conditionally fails expired leases and lease-less orphaned attempts; it does **not** automatically replay processing or side effects. The same endpoint can apply opt-in approval expiration and event-retention cleanup. The LangGraph thread/checkpoints remain durable until retention or explicit deletion, but ordinary approval resume accepts only `waiting_approval`; a failed or canceled execution currently requires a separately designed, audited human-recovery mechanism rather than silently restarting.
 
 This replaces the old model, which required Cloud Run's `--no-cpu-throttling` flag to keep an in-process `while True: ... await asyncio.sleep()` sweeper loop ticking between requests — the dominant cost driver before this ADR (see ADR-0033's 2026-07-14 addendum). A real inbound request needs no background CPU allocation, so the flag was removed.
 
@@ -271,7 +271,7 @@ Admin role is set on the `User.role` column; admin-only routes use `Depends(ensu
 
 ## Frontend
 
-Next.js 14 App Router, three role-aware audiences:
+Next.js 15 App Router, three role-aware audiences:
 
 - **`/designer/*`** — workflow authors. Canvas, templates gallery, settings, publish dialog.
 - **`/runs/*`** — end users. Run list, run details, approval dialog, API key management.

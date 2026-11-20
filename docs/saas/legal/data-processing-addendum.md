@@ -179,8 +179,8 @@ The measures described in [`../security.md`](../security.md) form part of this D
 |---|---|
 | **Pseudonymisation and encryption** | AES-256-GCM at rest for secrets; TLS 1.2+ in transit; bcrypt for password and per-user API key hashing |
 | **Confidentiality** | Role-based access control; least-privilege database roles; admin operations logged separately; named-employee access reviews |
-| **Integrity** | Postgres transactional integrity; immutable execution audit trail; signed commits in CI |
-| **Availability and resilience** | Daily backups with point-in-time restore (Neon); resilient detached-task wrapper; stuck-execution sweeper; quarterly DR drills |
+| **Integrity** | Postgres transactional integrity; durable execution/approval/event history; CI quality and security gates. A dedicated immutable administrator audit ledger is not yet implemented. |
+| **Availability and resilience** | Postgres transactions; operator-configured backups/PITR; durable Cloud Tasks execution; guarded attempt-health sweepers. Backup frequency and DR-test cadence are deployment-operator commitments, not application guarantees. |
 | **Restoration after incident** | Documented DR runbook ([`../../operations/disaster-recovery.md`](../../operations/disaster-recovery.md)) with stated RPO/RTO per plan |
 | **Regular testing** | Annual independent penetration testing; continuous CI gates (lint + format + type check + tests); quarterly access reviews |
 | **Sub-processor management** | Documented sub-processor list with notification protocol; security review prior to onboarding; contractual data-protection commitments from each |

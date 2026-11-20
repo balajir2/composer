@@ -102,3 +102,57 @@ def test_create_node_error_names_the_invalid_field() -> None:
     )
     assert r.startswith("ERROR")
     assert "maxIterations" in r
+
+
+def _three_node_draft() -> tuple[BuilderContext, dict[str, BaseTool]]:
+    ctx = BuilderContext(draft=Draft(), events=[])
+    t = _tools(ctx)
+    for nid, ntype in [("s", "start"), ("a", "agent"), ("e", "end")]:
+        t["create_node"].invoke({"node_type": ntype, "node_id": nid, "label": nid, "data": {}})
+    return ctx, t
+
+
+def test_connect_nodes_is_idempotent_for_an_existing_edge() -> None:
+    """2026-11-19 defect: the canvas lists existing edges, the model re-adds them,
+    and each call minted a fresh edge id, so duplicate edges piled up."""
+    ctx, t = _three_node_draft()
+    assert "ok" in t["connect_nodes"].invoke({"source": "s", "target": "a"})
+    again = t["connect_nodes"].invoke({"source": "s", "target": "a"})
+    assert "already" in again
+    assert not again.startswith("ERROR")
+    assert len(ctx.draft.edges) == 1
+
+
+def test_connect_nodes_treats_a_different_branch_as_a_different_edge() -> None:
+    ctx, t = _three_node_draft()
+    t["connect_nodes"].invoke({"source": "a", "target": "e", "branch": "true"})
+    t["connect_nodes"].invoke({"source": "a", "target": "e", "branch": "false"})
+    assert len(ctx.draft.edges) == 2
+
+
+def test_disconnect_nodes_removes_every_matching_edge_and_keeps_nodes() -> None:
+    """The builder could only drop an edge by deleting a whole node."""
+    ctx, t = _three_node_draft()
+    t["connect_nodes"].invoke({"source": "s", "target": "a"})
+    t["connect_nodes"].invoke({"source": "a", "target": "e"})
+    # Simulate duplicates already persisted on the canvas.
+    ctx.draft.edges["dup"] = ctx.draft.edges[next(iter(ctx.draft.edges))].model_copy(
+        update={"id": "dup"}
+    )
+    r = t["disconnect_nodes"].invoke({"source": "s", "target": "a"})
+    assert r.startswith("ok")
+    assert {(e.source, e.target) for e in ctx.draft.edges.values()} == {("a", "e")}
+    assert set(ctx.draft.nodes) == {"s", "a", "e"}
+
+
+def test_disconnect_nodes_reports_a_missing_edge() -> None:
+    _, t = _three_node_draft()
+    assert t["disconnect_nodes"].invoke({"source": "s", "target": "e"}).startswith("ERROR")
+
+
+def test_disconnect_nodes_with_branch_only_removes_that_branch() -> None:
+    ctx, t = _three_node_draft()
+    t["connect_nodes"].invoke({"source": "a", "target": "e", "branch": "true"})
+    t["connect_nodes"].invoke({"source": "a", "target": "e", "branch": "false"})
+    t["disconnect_nodes"].invoke({"source": "a", "target": "e", "branch": "true"})
+    assert [e.branch for e in ctx.draft.edges.values()] == ["false"]

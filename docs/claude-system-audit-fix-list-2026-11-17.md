@@ -1,5 +1,7 @@
 # Composer System Audit — Application-Level Fix List (2026-11-17)
 
+> **Point-in-time record, not current-state documentation.** Findings and line references describe commit `ac584ab`. Several execution-correctness findings were subsequently remediated. Re-verify every item against `main`; see [documentation-audit-2026-11-20.md](documentation-audit-2026-11-20.md) for the current documentation review and `CHANGELOG.md` for shipped fixes.
+
 **Audit date:** 2026-11-17
 **Audited commit:** `ac584ab` (branch `main`)
 **Scope:** backend application logic (auth, authorization, execution engine, durable-execution path, node executors, API surface), deploy configuration, and product-level missing functionality.

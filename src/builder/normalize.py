@@ -80,8 +80,24 @@ def _ensure_endpoints(draft: Draft) -> None:
         )
 
 
+def _collapse_duplicate_edges(draft: Draft) -> None:
+    """Keep the first edge per (source, target, branch); drop the rest.
+
+    Duplicates already persisted on a canvas otherwise ride along on every
+    build turn, since each turn starts from the stored graph.
+    """
+    seen: set[tuple[str, str, str | None]] = set()
+    for edge_id, edge in list(draft.edges.items()):
+        key = (edge.source, edge.target, edge.branch)
+        if key in seen:
+            del draft.edges[edge_id]
+        else:
+            seen.add(key)
+
+
 def normalize_orchestration(draft: Draft) -> None:
     """Repair start/end wiring in place. A no-op for an already-valid graph."""
+    _collapse_duplicate_edges(draft)
     _merge_extra_starts(draft)
     _ensure_endpoints(draft)
 

@@ -7,7 +7,7 @@
 > human approvals, published APIs, and node-level execution visibility.
 
 [![Status](https://img.shields.io/badge/status-early%20commercial-blue)](docs/overview.md#product-status)
-[![Tests](https://img.shields.io/badge/tests-1252%20collected-success)](#testing)
+[![Tests](https://img.shields.io/badge/tests-1751%20collected-success)](#testing)
 [![Stack](https://img.shields.io/badge/stack-FastAPI%20%7C%20Postgres%20%7C%20LangGraph%20%7C%20Next.js-blueviolet)](docs/architecture.md)
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
@@ -41,7 +41,7 @@ Composer turns a visual node graph into a running, observable, resumable AI work
 5. **Resume**: paused workflows pick up exactly where they left off after a human approval — given in-app or via a one-click emailed link — even across process restarts.
 6. **Publish**: a workflow becomes an external API endpoint (`POST /api/run/{slug}`) that customers' systems can call with a per-user API key — sync (block until done) or async (fire-and-forget with a stream URL).
 
-The whole loop is what most agentic-AI teams build from scratch: prompt + tool definitions + retry logic + human approval + audit log + observability. Composer ships it as a single product.
+The whole loop is what most agentic-AI teams build from scratch: prompt + tool definitions + retry logic + human approval + durable execution history + operational visibility. Composer ships it as a single product. A dedicated immutable administrator audit log and vendor-neutral application telemetry remain roadmap items; see [SaaS Security](docs/saas/security.md#logging--audit-trail).
 
 ---
 
@@ -58,7 +58,7 @@ The whole loop is what most agentic-AI teams build from scratch: prompt + tool d
 | **Lead enrichment** | Company name in → multi-source research → schema-validated profile out (industry, size, products, recent news, executives, competitors) |
 | **Code review assistant** | Diff in → review agent flags issues with severity tags → guardrails screen the *output* for accidental secret leaks → branched delivery |
 
-**20 reference templates** ship out of the box covering each pattern above and more — see [`docs/designer-guide.md`](docs/designer-guide.md).
+**21 reference templates** ship out of the box covering each pattern above and more — see [`docs/designer-guide.md`](docs/designer-guide.md).
 
 ---
 
@@ -111,16 +111,16 @@ The whole loop is what most agentic-AI teams build from scratch: prompt + tool d
 
 - **WebSocket streaming** of `node_started` / `node_completed` / `node_failed` / `workflow_completed` / `approval_required` events
 - **Resumable execution** via LangGraph checkpoints stored in Postgres — paused workflows survive process restarts
-- **Stuck-execution sweeper** — background task flips abandoned `running` rows to `failed` with explanatory error after a configurable threshold
-- **Approval-timeout sweeper** — independently auto-fails `waiting_approval` executions left undecided past a configurable threshold (default 168h), bounding Postgres/checkpoint row growth for runs nobody ever approves or rejects
+- **Attempt-health sweepers** — expired processing leases and lease-less orphaned attempts are conditionally failed without replaying workflow side effects; durable threads and checkpoints are retained
+- **Approval-timeout sweeper** — optionally auto-fails `waiting_approval` executions after an operator-configured threshold; disabled by default so durable threads may wait for months subject to retention
 - **Resilient detached-task wrapper** — async invocations stamp `failed` to the row even on uncaught crash or worker shutdown
 - **Designer autosave** — 3s-debounced background save (same `PUT /workflows/{id}` path as manual Save) with an `idle → dirty → saving → saved/error` status indicator and a `beforeunload` guard against closing the tab with unsaved changes
 
 ### Observability
 
 - **LangSmith tracing** on every workflow run (when configured) — full prompt + tool-call detail
-- **Structured JSON logs** with `user_id`, `execution_id`, `workflow_id`, `request_id` fields
-- **Execution audit trail** in Postgres — every run, every approval, every API key use
+- **Application and host logs** through Python logging; collection, formatting, retention, and alerting depend on the deployment platform
+- **Durable execution history** in Postgres — execution state, node results/timing, approvals, and persisted WebSocket events; this is operational history, not a complete immutable administrator audit ledger
 - **OpenAPI spec** auto-generated from FastAPI; consumed by the frontend's typed API client
 
 ### Document handling
@@ -141,7 +141,7 @@ The whole loop is what most agentic-AI teams build from scratch: prompt + tool d
 
 ## Quick start
 
-**Prerequisites:** Python 3.11 or 3.12, Node.js 18.17+, [`uv`](https://docs.astral.sh/uv/), a Postgres 15+ database (a free [Neon](https://neon.tech) project is the fastest way to get one), and an API key for at least one LLM provider (Anthropic, OpenAI, Google, or Groq).
+**Prerequisites:** Python 3.11 or 3.12, Node.js 20+, [`uv`](https://docs.astral.sh/uv/), a Postgres 15+ database, and an API key for at least one LLM provider (Anthropic, OpenAI, Google, or Groq).
 
 ```bash
 # 1. Clone + install
@@ -177,7 +177,7 @@ In **dev mode** (no `ENVIRONMENT=production` env var set) Composer accepts an un
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│                  Browser (Next.js 14 frontend)                     │
+│                  Browser (Next.js 15 frontend)                     │
 │   Designer canvas (React Flow)  •  Runs page  •  Admin console     │
 └────────┬─────────────────────────┬─────────────────────────┬───────┘
          │ JWT (NextAuth)          │ WebSocket               │ JWT
@@ -202,7 +202,7 @@ A workflow is a JSON pair of `nodes[]` + `edges[]`. The executor:
 2. **Compiles** a LangGraph `StateGraph`. Plain edges become plain edges; `if-else` / `while` / `user-approval` edges become conditional edges keyed off the source node's branch label.
 3. **Runs** `compiled.ainvoke(...)`. Each node receives the current state and returns a delta; LangGraph's reducers merge deltas back. Checkpoints persist after every node.
 4. **Pauses** at `user-approval` via LangGraph's `interrupt()`. The execution row flips to `waiting_approval`; the original API call returns; the run resumes when `POST /executions/{id}/resume` arrives — from the canvas, the runs page, or (if the node has an `approverEmail` set) a signed one-click Approve/Reject link emailed to the approver and resolved by the public `GET /approvals/email/{token}` endpoint, no Composer account needed.
-5. **Emits** events to a shared in-process bus. The WebSocket endpoint subscribes and streams events to the client.
+5. **Persists and emits** sequence-numbered events in Postgres. `LISTEN/NOTIFY` wakes connected WebSocket handlers, and reconnecting clients can replay missed events by sequence number.
 6. **Persists** the terminal state (status, output, variables, node results, error) to the execution row before returning.
 
 Deeper architecture: [`docs/architecture.md`](docs/architecture.md).
@@ -220,12 +220,12 @@ Deeper architecture: [`docs/architecture.md`](docs/architecture.md).
 | **LLM providers** | Anthropic Claude · OpenAI · Google Gemini · Groq |
 | **Vector DBs** | Pinecone · Qdrant · Chroma · Weaviate · Milvus (query + upsert) |
 | **Tool providers** | Tavily · Firecrawl · Serper · Browserless · Gamma · Arcade · MCP (static + OAuth) |
-| **Frontend** | Next.js 14 App Router, Tailwind, shadcn/ui, React Flow |
+| **Frontend** | Next.js 15 App Router, Tailwind, shadcn/ui, React Flow |
 | **Auth** | NextAuth v5 (Azure AD / Credentials) · Composer JWT (HS256) · per-user API keys |
 | **Real-time** | WebSocket — node-by-node execution events |
 | **Encryption at rest** | `cryptography` AES-256-GCM |
 | **Sandboxing** | `simpleeval` (expressions) + `e2b_code_interpreter` (code) |
-| **Tests** | pytest + pytest-asyncio (1252 currently collected), Vitest, Playwright |
+| **Tests** | pytest + pytest-asyncio (1,751 collected on 2026-11-19), Vitest, Playwright |
 | **Tooling** | `uv` · `ruff` · `pyright` (strict) · Prisma migrations |
 
 Why each piece was chosen, with alternatives considered: [`docs/decisions.md`](docs/decisions.md) (full ADR record).
@@ -273,7 +273,7 @@ uv run pytest -m "not integration"
 cd frontend && ./node_modules/.bin/tsc --noEmit -p tsconfig.json
 ```
 
-The current tree collects **1252 backend tests**, including unit, regression, and integration coverage.
+The current tree collects **1,751 backend tests** (verified 2026-11-19), including unit, regression, and integration coverage.
 Integration tests that require real Postgres or external providers are environment-gated. The
 frontend adds Vitest component/unit coverage and Playwright end-to-end suites. Pyright runs in
 strict mode.
@@ -288,15 +288,15 @@ composer/
 │   ├── main.py                       #   App entry + router wiring + lifespan
 │   ├── api/                          #   REST + WebSocket endpoints (workflows, executions, run, uploads, admin, mcp_servers, ...)
 │   ├── engine/                       #   LangGraph executor + workflow Pydantic models + event bus
-│   ├── executors/                    #   23 node-type implementations
+│   ├── executors/                    #   Executable node implementations
 │   ├── llm/                          #   Provider dispatch (Anthropic / OpenAI / Google / Groq)
 │   ├── mcp/                          #   MCP client + OAuth + base64-blob sanitiser
 │   ├── tools/                        #   Built-in tool providers (Tavily, Firecrawl, ...)
 │   ├── vectordb/                     #   5 vector DB providers with query + upsert
 │   ├── security/                     #   Auth, JWT, encryption, rate limiting, password hashing
 │   ├── storage/                      #   Prisma client lifecycle + LangGraph checkpointer
-│   └── maintenance/                  #   Background tasks (stuck-execution sweeper)
-├── frontend/                         # Next.js 14 app
+│   └── maintenance/                  #   Attempt/approval/event-retention sweepers
+├── frontend/                         # Next.js 15 app
 │   ├── app/                          #   App Router pages: designer/, runs/, admin/, (auth)/
 │   ├── components/composer/          #   Canvas, panels, role-aware nav
 │   ├── lib/api/                      #   Typed REST clients (OpenAPI-generated schema)
@@ -317,9 +317,9 @@ A deeper map is in [`docs/architecture.md#repository-layout`](docs/architecture.
 Composer is **operational end-to-end** and in early commercial hardening:
 
 - **Backend**: FastAPI + Postgres + LangGraph, all node types implemented + tested
-- **Frontend**: Next.js 14 canvas + runs page + admin console, all role-aware audiences shipped
+- **Frontend**: Next.js 15 canvas + runs page + admin console, all role-aware audiences shipped
 - **Auth**: standalone username/password, Azure AD SSO, embedded JWT (for hosting Composer as a module inside a larger platform), per-user API keys
-- **Reference content**: 19 templates seed into every fresh deployment
+- **Reference content**: 21 templates seed into every fresh deployment
 - **Operations**: full runbook collection + DR procedures + incident-response playbook
 - **SaaS readiness**: security / privacy / compliance / SLA / pricing / legal templates ready for customer review
 

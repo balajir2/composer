@@ -79,7 +79,7 @@ Detailed configuration examples live in the [Designer Guide](designer-guide.md).
 - Explicit branching and bounded loops.
 - PostgreSQL-backed LangGraph checkpoints.
 - In-application and emailed approval paths, with optional file attachments on the approval email.
-- Approval audit records and expiry sweeper.
+- Durable approval decision records and an operator-configurable expiry sweeper (disabled by default).
 - Named variables, node aliases, and structured output references.
 - Draft execution and published production endpoints.
 - Idempotency keys and execution cancellation for safe client retries.
@@ -98,11 +98,11 @@ Detailed configuration examples live in the [Designer Guide](designer-guide.md).
 
 - Node-started, node-completed, node-failed, approval-required, and workflow-completed events.
 - WebSocket live execution feed with a durable, sequence-numbered event log and reconnect cursor — no missed events across a dropped connection or backend instance.
-- Durable, queued execution via Cloud Tasks with lease/heartbeat recovery, surviving Cloud Run scale-to-zero mid-run.
+- Durable queueing via Cloud Tasks with processing leases and heartbeats. Worker loss is detected and the attempt is failed without automatic side-effect replay; checkpoints remain available for diagnosis and a future controlled recovery workflow.
 - Execution inputs, outputs, variables, node results, timing, and error persistence.
 - LangSmith support for LLM traces.
-- Structured backend logging and request correlation.
-- Stuck-run, expired-approval, expired-lease, and event-retention maintenance sweepers.
+- Python application logging, with structured formatting/correlation supplied by the deployment when required.
+- Orphan-attempt, expired-approval, expired-lease, and event-retention maintenance sweepers.
 
 ## Developer and operator experience
 
@@ -110,7 +110,7 @@ Detailed configuration examples live in the [Designer Guide](designer-guide.md).
 - Strict Pyright, Ruff, pytest, Vitest, and Playwright tooling.
 - Docker, Vercel, GCP Cloud Run, Postgres, SSO, monitoring, incident, scaling, and disaster-recovery guidance.
 - ADR history explaining material architectural decisions.
-- Twenty seeded workflow templates covering common patterns.
+- Twenty-one seeded workflow templates covering common patterns.
 
 ## Current boundaries
 
