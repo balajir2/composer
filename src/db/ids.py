@@ -15,7 +15,11 @@ _TIMESTAMP_MASK = (1 << 48) - 1
 
 
 def new_id() -> str:
-    """Return a new UUIDv7 (RFC 9562) as its canonical 36-character string."""
+    """Return a new UUIDv7 (RFC 9562) as its canonical 36-character string.
+
+    Ids are time-ordered across milliseconds but not strictly monotonic within
+    one, so never rely on id order for event ordering.
+    """
     timestamp_ms = time.time_ns() // 1_000_000
     value = ((timestamp_ms & _TIMESTAMP_MASK) << _RAND_BITS) | int.from_bytes(os.urandom(10), "big")
     value = (value & ~(0xF << 76)) | (0x7 << 76)  # version 7
