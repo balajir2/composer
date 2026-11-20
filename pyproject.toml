@@ -30,7 +30,11 @@ dependencies = [
     "langgraph>=1.2.22",
     "langchain>=1.5.0",
     "langchain-core>=0.3.0",
-    "langchain-anthropic>=1.7.10",
+    # Capped below 1.7: 1.7+ pulls the anthropic SDK 2.x, which switches every
+    # Claude call to API version 2026-10-21, where temperature/top_p/top_k
+    # return 400. Lifting this cap is the deliberate API-version migration
+    # (guardrails, decision and agent nodes send temperature today).
+    "langchain-anthropic>=1.6.1,<1.7",
     "langchain-openai>=1.8.0",
     "langchain-google-genai>=4.5.0",
     "langchain-groq>=1.2.0",

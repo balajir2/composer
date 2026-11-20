@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Python:** FastAPI 0.163, Pydantic 2.14, LangGraph 1.2.22, LangChain 1.5 and its provider packages, LangSmith 0.15, uvicorn 0.54 and 21 other packages (Dependabot #17), plus raised floors for uvicorn (#14) and python-jose 3.5 (#13).
 - **Frontend:** 14 minor and patch updates, including React Query, react-hook-form, Base UI, Playwright and shadcn (#16).
 - **Compatibility fixes:** FastAPI now nests included routers in `app.routes`, so route-listing tests read `app.openapi()` instead. Context-manager lifespans are annotated `AsyncGenerator`. A Pydantic `create_model` typing change is handled. ruff 0.17 formatting is applied.
+- **Held back on purpose:** `langchain-anthropic` stays on 1.6.1 (capped `<1.7` in `pyproject.toml`) and the `anthropic` SDK on 0.125. Dependabot's 1.7.10 pulled in `anthropic` 2.x, which moves every Claude call to API version `2026-10-21`. That version rejects `temperature`, `top_p` and `top_k` with a 400, which broke guardrails in CI. Moving to the new API version is a separate decision: those calls lose `temperature=0.0` on Haiku 4.5 and the 4.6 models.
 - **Not included (needs review):** Python 3.15 image (#15, outside the locked `<3.13` stack), Node 26 image (#5), zod 4 (#10), @hookform/resolvers 6 (#9), eslint 10 (#11), @types/node 26 (#8) and the GitHub Actions major-version group (#6).
 
 ### Fixed — run history and new runs failing in production after a deploy without its migration (2026-11-20)
