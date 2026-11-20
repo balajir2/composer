@@ -31,6 +31,10 @@ _PATTERN = re.compile(r"\{\{([^}]+)\}\}")
 # fallback names guardrails/final-output selection read directly.
 _BUILTIN_VARIABLES = frozenset({"lastOutput", "input", "finalOutput"})
 
+# Roots that src/executors/_eval.py injects into every expression scope
+# (variables / node_results as whole-dict handles; see _RESERVED_SCOPE_NAMES).
+_EVAL_SCOPE_ROOTS = frozenset({"variables", "node_results"})
+
 
 @dataclass(frozen=True)
 class UnknownVariableReference:
@@ -70,7 +74,7 @@ def _extract_references(value: Any) -> list[str]:
 
 def _available_variable_names(workflow: Workflow) -> set[str]:
     """The set of valid top-level `{{...}}` root names for `workflow`."""
-    names: set[str] = set(_BUILTIN_VARIABLES)
+    names: set[str] = set(_BUILTIN_VARIABLES | _EVAL_SCOPE_ROOTS)
     for node in workflow.nodes:
         names.add(_sanitize_node_id(node.id))
         node_name = getattr(node.data, "node_name", None)
@@ -81,7 +85,29 @@ def _available_variable_names(workflow: Workflow) -> set[str]:
         if node.type == "start":
             for input_var in node.data.input_variables:  # pyright: ignore[reportAttributeAccessIssue]
                 names.add(input_var.name)
+        # Executors that write a named entry into state["variables"]:
+        # set_state.py (stateKey), transform.py (outputKey, when set),
+        # vector_db.py (vectorDbOutputVariable, default "vectorDbResults").
+        if node.type == "set-state":
+            state_key = node.data.state_key  # pyright: ignore[reportAttributeAccessIssue]
+            if isinstance(state_key, str) and state_key:
+                names.add(state_key)
+        elif node.type == "transform":
+            output_key = node.data.output_key  # pyright: ignore[reportAttributeAccessIssue]
+            if isinstance(output_key, str) and output_key.strip():
+                names.add(output_key.strip())
+        elif node.type == "vector-db":
+            names.add(node.data.output_variable)  # pyright: ignore[reportAttributeAccessIssue]
     return names
+
+
+def _node_local_names(node: Any) -> frozenset[str]:
+    """Names bound only inside one node's own expressions: data-transform
+    evaluates its fields per item with `itemVar` (default `item`) and, for
+    reduce, `acc` (src/executors/data_transform.py)."""
+    if node.type == "data-transform":
+        return frozenset({node.data.item_var, "acc"})
+    return frozenset()
 
 
 def find_unknown_variable_references(workflow: Workflow) -> list[UnknownVariableReference]:
@@ -92,6 +118,7 @@ def find_unknown_variable_references(workflow: Workflow) -> list[UnknownVariable
     available = _available_variable_names(workflow)
     problems: list[UnknownVariableReference] = []
     for node in workflow.nodes:
+        local = _node_local_names(node)
         node_data: dict[str, Any] = node.data.model_dump(by_alias=True)
         for field_path, value in node_data.items():
             for placeholder in _extract_references(value):
@@ -100,7 +127,7 @@ def find_unknown_variable_references(workflow: Workflow) -> list[UnknownVariable
                 root = placeholder.split(".")[0]
                 if root == "state":
                     continue
-                if root not in available:
+                if root not in available and root not in local:
                     problems.append(
                         UnknownVariableReference(
                             node_id=node.id,

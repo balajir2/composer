@@ -47,6 +47,16 @@ Everything you need to build workflows on the canvas. If this is your first time
 
 When you connect from an `if-else`/`while`/`user-approval` node, the edge label is auto-set from the source handle (`true`/`false`, `body`/`exit`, `approved`/`rejected`). Both edges are required for the workflow to validate — a half-wired conditional won't save (the backend rejects with "leaves … node but has no branch label").
 
+## Build with AI
+
+The chat panel on the canvas builds and edits the workflow from a description. Beyond placing and wiring nodes, it fills them in: agent, MCP and Jira instructions, decision prompts, Gamma prompts, which guardrail checks are on, and the model. After each build it re-checks its own work and fixes empty or inconsistent nodes automatically (up to two short extra rounds, stopping early if a round fixes nothing).
+
+- **Models:** it chooses models only from the ones your admin has enabled. On agent and MCP nodes, a model that is unset or not enabled is treated as a mistake and corrected; other nodes keep their default.
+- **Credentials:** it does not invent API tokens or keys. It asks you for them, and an MCP node with no server selected is flagged unless it has asked you for credentials.
+- **Edits stay scoped:** it only checks and fixes nodes it created or changed in that turn. A node you left unfinished on purpose, or didn't mention, is not touched. A label-only edit to a node also counts as changing it, so the builder then checks that node.
+- **"Remaining issues: ..." notice:** the builder could not fix everything within its rounds. The notice lists up to 5 problems, such as a node with no instructions or a `{{name}}` that matches nothing. Fix those nodes yourself in their panels, or ask the builder to fix them. These are warnings only: they never stop you saving or running.
+- **Duplicate connections:** if two identical connections (same source, target and branch) exist, only the first is kept on save.
+
 ## Variables and references
 
 Workflow state lives in `state.variables` — a flat dict keyed by name. Every node reads from and writes to it.

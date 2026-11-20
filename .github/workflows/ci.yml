@@ -391,7 +391,7 @@ jobs:
         env:
           CI: "true"
           PW_BASE_URL: http://localhost:3000
-        run: npx playwright test e2e/auth.spec.ts e2e/security-headers.spec.ts
+        run: npx playwright test e2e/auth.spec.ts e2e/security-headers.spec.ts e2e/builder-race.spec.ts
 
       - name: Upload Playwright artifacts and server logs
         if: failure()

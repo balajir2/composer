@@ -1,6 +1,9 @@
 """System-prompt templates for the builder agent."""
 
-from src.builder.node_catalog import build_node_catalog
+from collections.abc import Mapping
+
+from src.builder.builder_tools import NODE_CLASSES
+from src.builder.node_catalog import build_field_guide, build_node_catalog, describe_models
 from src.engine.workflow import WorkflowEdge, WorkflowNode
 
 SYSTEM_PROMPT_BUILDER = """\
@@ -40,12 +43,22 @@ Orchestration rules (the canvas is validated, so follow these exactly):
 - If a tool returns an ERROR, read it, fix the arguments and retry.
 - Node `data` uses the camelCase field names from the catalog notes below.
 
-Useful node fields:
-- agent: instructions (what to do, may reference {{{{variables}}}}), model
-- mcp: instructions, mcpServerId, selectedToolNames
-- http: method, url, headers, body
-- set-state: stateKey, stateValue
-- end: nothing required; it returns {{{{lastOutput}}}}
+Fill every node completely; a node with empty settings does nothing at run time:
+- agent / mcp / jira: write `instructions` saying exactly what the step does,
+  referencing inputs with {{{{name}}}}.
+- guardrails: turn on at least one check (piiEnabled, moderationEnabled,
+  jailbreakEnabled, hallucinationEnabled).
+- Set `model` on agent and mcp nodes to one of the available models below.
+- Every {{{{name}}}} you use must be a start input (set_start_inputs),
+  {{{{lastOutput}}}}, or a node id with '-' written as '_'.
+- After you finish, an automatic check lists anything left unfilled; fix
+  each item it reports.
+
+Node `data` fields (`*` = required; use these exact keys):
+{fields}
+
+Available models for `model`:
+{models}
 
 Available node types:
 {catalog}
@@ -66,5 +79,12 @@ def describe_canvas(nodes: list[WorkflowNode], edges: list[WorkflowEdge]) -> str
     return "\n".join(lines)
 
 
-def build_system_prompt(canvas: str = "(empty)") -> str:
-    return SYSTEM_PROMPT_BUILDER.format(catalog=build_node_catalog(), canvas=canvas)
+def build_system_prompt(
+    canvas: str = "(empty)", models: Mapping[str, str | None] | None = None
+) -> str:
+    return SYSTEM_PROMPT_BUILDER.format(
+        catalog=build_node_catalog(),
+        canvas=canvas,
+        fields=build_field_guide(NODE_CLASSES),
+        models=describe_models(models),
+    )
