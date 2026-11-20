@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — dependency refresh, minor and patch only (2026-11-20)
+
+- **Python:** FastAPI 0.163, Pydantic 2.14, LangGraph 1.2.22, LangChain 1.5 and its provider packages, LangSmith 0.15, uvicorn 0.54 and 21 other packages (Dependabot #17), plus raised floors for uvicorn (#14) and python-jose 3.5 (#13).
+- **Frontend:** 14 minor and patch updates, including React Query, react-hook-form, Base UI, Playwright and shadcn (#16).
+- **Compatibility fixes:** FastAPI now nests included routers in `app.routes`, so route-listing tests read `app.openapi()` instead. Context-manager lifespans are annotated `AsyncGenerator`. A Pydantic `create_model` typing change is handled. ruff 0.17 formatting is applied.
+- **Not included (needs review):** Python 3.15 image (#15, outside the locked `<3.13` stack), Node 26 image (#5), zod 4 (#10), @hookform/resolvers 6 (#9), eslint 10 (#11), @types/node 26 (#8) and the GitHub Actions major-version group (#6).
+
 ### Fixed — run history and new runs failing in production after a deploy without its migration (2026-11-20)
 
 - **Symptom:** `/runs/history` showed "Could not load history", and starting runs failed. Every `GET`/`POST /executions` returned 500 from 2026-11-19 11:30 UTC: `column workflow_executions.running_since does not exist`.
