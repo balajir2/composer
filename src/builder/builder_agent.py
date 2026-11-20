@@ -22,6 +22,8 @@ from src.engine.workflow import Workflow
 
 MAX_TOOL_ITERATIONS = 12
 MAX_REPAIR_ROUNDS = 2
+# A repair round fixes a few named items; it gets a smaller tool budget.
+REPAIR_ROUND_ITERATIONS = 4
 _APPROVE_PATCH = "__APPROVE_PATCH__"
 _REJECT_PATCH = "__REJECT_PATCH__"
 
@@ -108,11 +110,12 @@ async def _tool_loop(
     ctx: BuilderContext,
     session: BuildSession,
     models: ModelCatalog | None = None,
+    max_iterations: int = MAX_TOOL_ITERATIONS,
 ) -> str:
     tools = make_builder_tools(ctx)
     bound = model.bind_tools(tools)
     messages: list[BaseMessage] = [*_draft_system_messages(ctx.draft, models), *session.messages]
-    for _ in range(MAX_TOOL_ITERATIONS):
+    for _ in range(max_iterations):
         response = await bound.ainvoke(messages)
         messages.append(response)
         tool_calls: list[Any] = getattr(response, "tool_calls", None) or []
@@ -305,10 +308,15 @@ async def run_builder_turn(
         # prompt at the start of the conversation.
         session.messages.append(AIMessage(content=reply))
         session.messages.append(HumanMessage(content=_repair_prompt(issues)))
-        reply = await _tool_loop(model, ctx, session, model_catalog)
+        reply = await _tool_loop(
+            model, ctx, session, model_catalog, max_iterations=REPAIR_ROUND_ITERATIONS
+        )
         normalize_orchestration(ctx.draft)
         updated = _draft_to_workflow(workflow, ctx.draft)
+        previous = sorted(issues)
         issues = _turn_issues(updated, ctx, model_catalog, before)
+        if sorted(issues) == previous:
+            break  # the round fixed nothing; another would only repeat it
     if issues:
         events.append({"type": "message", "content": "Remaining issues: " + "; ".join(issues[:5])})
     events.extend(ctx.events)

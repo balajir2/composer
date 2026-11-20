@@ -12,7 +12,12 @@ from typing import TYPE_CHECKING, Any, cast
 
 from langchain_core.messages import AIMessage, HumanMessage
 
-from src.builder.builder_agent import MAX_REPAIR_ROUNDS, BuildSession, run_builder_turn
+from src.builder.builder_agent import (
+    MAX_REPAIR_ROUNDS,
+    REPAIR_ROUND_ITERATIONS,
+    BuildSession,
+    run_builder_turn,
+)
 from src.engine.graph_builder import collect_workflow_violations
 from src.engine.workflow import (
     AgentNode,
@@ -337,7 +342,7 @@ async def test_bare_node_is_sent_back_and_the_fix_is_kept() -> None:
     assert not any("Remaining issues" in str(e.get("content")) for e in events)
 
 
-async def test_model_that_never_fixes_gets_bounded_rounds_then_user_sees_issues() -> None:
+async def test_model_that_never_fixes_gets_one_repair_round_then_user_sees_issues() -> None:
     script = [
         AIMessage(
             content="",
@@ -352,10 +357,37 @@ async def test_model_that_never_fixes_gets_bounded_rounds_then_user_sees_issues(
         AIMessage(content="Built."),
     ]
     model, events, _, _ = await _build(script)
-    # 1 build call + 1 closing call, then MAX_REPAIR_ROUNDS repair calls, then stop.
-    assert len(model.seen) == 1 + 1 + MAX_REPAIR_ROUNDS
+    # 1 build call + 1 closing call + 1 repair call. The repair fixed nothing
+    # (same issue list), so the second allowed round is skipped.
+    assert MAX_REPAIR_ROUNDS >= 2
+    assert len(model.seen) == 1 + 1 + 1
     remaining = [e["content"] for e in events if e.get("type") == "message"]
     assert any("Remaining issues" in c and "pii" in c and "piiEnabled" in c for c in remaining)
+
+
+async def test_one_repair_round_is_capped_at_repair_round_iterations() -> None:
+    build = [
+        AIMessage(
+            content="",
+            tool_calls=[  # pyright: ignore[reportArgumentType]
+                _call(
+                    "create_node",
+                    {"node_type": "guardrails", "node_id": "pii", "label": "PII"},
+                    "1",
+                ),
+            ],
+        ),
+        AIMessage(content="Built."),
+    ]
+    endless = [
+        AIMessage(
+            content="",
+            tool_calls=[_call("no_such_tool", {}, str(i))],  # pyright: ignore[reportArgumentType]
+        )
+        for i in range(20)
+    ]
+    model, _, _, _ = await _build([*build, *endless])
+    assert len(model.seen) == 2 + REPAIR_ROUND_ITERATIONS
 
 
 async def test_undeclared_variable_is_reported_back_to_the_model() -> None:
