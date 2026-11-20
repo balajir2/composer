@@ -290,7 +290,7 @@ Record of issues hit during scaffolding — watch for these:
 4. **Pyright's `reportUnusedFunction`** on FastAPI `@app.get` handlers is a false positive. Suppress inline or use APIRouter pattern.
 5. **LF/CRLF warnings in Git on Windows** — harmless. `.gitattributes` could be added if it becomes annoying.
 6. **psycopg async needs a selector event loop on Windows.** `uv run uvicorn src.main:app --reload` (the documented command) uses one; without `--reload`, uvicorn uses the Proactor loop and SQLAlchemy fails at startup with `Psycopg cannot use the 'ProactorEventLoop'`. Alembic's env.py handles this itself. CI and production are Linux.
-7. **Far from the database? Raise the local startup timeout.** SQLAlchemy's first connection makes extra round trips (about 4 s from India to Neon us-east-1), above the 3 s `DB_CONNECT_TIMEOUT_SECONDS` default that guards Cloud Run against crash loops. Set `DB_CONNECT_TIMEOUT_SECONDS=10` in your local `.env`; keep production at 3.
+7. **Far from the database? Raise the local startup timeout.** SQLAlchemy's first connection makes extra round trips (about 4 s from a distant region), above the 3 s `DB_CONNECT_TIMEOUT_SECONDS` default that guards Cloud Run against crash loops. Set `DB_CONNECT_TIMEOUT_SECONDS=10` in your local `.env`; keep production at 3.
 
 ---
 
