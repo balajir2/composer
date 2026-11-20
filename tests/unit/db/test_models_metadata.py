@@ -1,3 +1,5 @@
+from sqlalchemy.dialects.postgresql import JSONB
+
 from src.db.models import Base
 
 EXPECTED_TABLES = {
@@ -70,3 +72,22 @@ def test_enum_types_are_reused_not_created() -> None:
     assert getattr(decision, "name", None) == "ApprovalDecision"
     assert getattr(role, "create_type", True) is False
     assert getattr(decision, "create_type", True) is False
+
+
+def test_optional_json_columns_store_none_as_sql_null() -> None:
+    nullable_jsonb = {
+        f"{table.name}.{column.name}": column
+        for table in Base.metadata.tables.values()
+        for column in table.columns
+        if isinstance(column.type, JSONB) and column.nullable
+    }
+    assert set(nullable_jsonb) == {
+        "workflow_executions.input",
+        "workflow_executions.output",
+        "mcp_servers.oauth_config",
+        "mcp_servers.tools",
+        "mcp_servers.headers",
+    }
+    for name, column in nullable_jsonb.items():
+        assert isinstance(column.type, JSONB)
+        assert column.type.none_as_null is True, name
