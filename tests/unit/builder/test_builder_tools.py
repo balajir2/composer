@@ -156,3 +156,15 @@ def test_disconnect_nodes_with_branch_only_removes_that_branch() -> None:
     t["connect_nodes"].invoke({"source": "a", "target": "e", "branch": "false"})
     t["disconnect_nodes"].invoke({"source": "a", "target": "e", "branch": "true"})
     assert [e.branch for e in ctx.draft.edges.values()] == ["false"]
+
+
+def test_repeated_request_credential_adds_one_event() -> None:
+    ctx = BuilderContext(draft=Draft(), events=[])
+    t = _tools(ctx)
+    args = {"kind": "mcp-server", "node_id": "m", "detail": "needs a server"}
+    first = t["request_credential"].invoke(args)
+    second = t["request_credential"].invoke(args)
+    assert first == second
+    assert len([e for e in ctx.events if e["type"] == "credential_request"]) == 1
+    t["request_credential"].invoke({**args, "node_id": "other"})
+    assert len(ctx.events) == 2

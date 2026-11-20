@@ -365,6 +365,27 @@ async def test_model_that_never_fixes_gets_one_repair_round_then_user_sees_issue
     assert any("Remaining issues" in c and "pii" in c and "piiEnabled" in c for c in remaining)
 
 
+async def test_empty_closing_reply_never_becomes_an_empty_assistant_message() -> None:
+    script = [
+        AIMessage(
+            content="",
+            tool_calls=[  # pyright: ignore[reportArgumentType]
+                _call(
+                    "create_node",
+                    {"node_type": "guardrails", "node_id": "pii", "label": "PII"},
+                    "1",
+                ),
+            ],
+        ),
+        AIMessage(content=""),
+    ]
+    model, _, _, _ = await _build(script)
+    repair_call = model.seen[2]
+    assistant_turns = [m for m in repair_call if isinstance(m, AIMessage) and not m.tool_calls]
+    assert assistant_turns
+    assert all(str(m.content).strip() for m in assistant_turns)
+
+
 async def test_one_repair_round_is_capped_at_repair_round_iterations() -> None:
     build = [
         AIMessage(

@@ -24,6 +24,8 @@ MAX_TOOL_ITERATIONS = 12
 MAX_REPAIR_ROUNDS = 2
 # A repair round fixes a few named items; it gets a smaller tool budget.
 REPAIR_ROUND_ITERATIONS = 4
+# Anthropic rejects an empty assistant message mid-conversation.
+_EMPTY_REPLY = "(done)"
 _APPROVE_PATCH = "__APPROVE_PATCH__"
 _REJECT_PATCH = "__REJECT_PATCH__"
 
@@ -306,7 +308,7 @@ async def run_builder_turn(
             break
         # A HumanMessage, not a SystemMessage: Anthropic only accepts a system
         # prompt at the start of the conversation.
-        session.messages.append(AIMessage(content=reply))
+        session.messages.append(AIMessage(content=reply or _EMPTY_REPLY))
         session.messages.append(HumanMessage(content=_repair_prompt(issues)))
         reply = await _tool_loop(
             model, ctx, session, model_catalog, max_iterations=REPAIR_ROUND_ITERATIONS
@@ -327,5 +329,5 @@ async def run_builder_turn(
             "edge_count": len(updated.edges),
         }
     )
-    session.messages.append(AIMessage(content=reply))
+    session.messages.append(AIMessage(content=reply or _EMPTY_REPLY))
     return events, reply, updated

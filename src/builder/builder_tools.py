@@ -218,6 +218,14 @@ def make_builder_tools(ctx: BuilderContext) -> list[BaseTool]:
     @tool
     def request_credential(kind: str, node_id: str, detail: str) -> str:
         """Declare that a node needs a credential the user must supply (kind e.g. mcp-server, vector-db, jira, google-drive)."""
+        already = any(
+            e.get("type") == "credential_request"
+            and e.get("kind") == kind
+            and e.get("node_id") == node_id
+            for e in ctx.events
+        )
+        if already:
+            return f"credential requested: {kind} for node {node_id!r}."
         ctx.events.append(
             {
                 "type": "credential_request",
