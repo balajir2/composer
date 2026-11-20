@@ -63,7 +63,7 @@ alembic/           migrations from now on; first revision is an empty baseline
 
 ### 2.3 Dependencies
 
-Added: `sqlalchemy[asyncio]` (2.0), `alembic`, `psycopg[binary]` 3, `psycopg-pool`, `langgraph-checkpoint-postgres` (needs `langgraph-checkpoint` ≥ 4.3; currently 4.1.1). Removed at the end: `prisma`, `asyncpg`, `asyncpg-stubs`.
+Added: `sqlalchemy[asyncio]` (2.1), `alembic`, `psycopg[binary]` 3 in phase 0; `psycopg-pool` and `langgraph-checkpoint-postgres`, in phase 5, (needs `langgraph-checkpoint` ≥ 4.3; currently 4.1.1). Removed at the end: `prisma`, `asyncpg`, `asyncpg-stubs`.
 
 ### 2.4 Documentation updates (in the foundation PR)
 
@@ -155,7 +155,7 @@ The parity test (3.1) checks all of the above against the real database.
 
 | Layer | Runs against | Proves |
 |---|---|---|
-| Repository tests (new, marker `db`) | Real Postgres 15: CI service; locally a Neon test branch or Docker | Queries, guarded updates, constraints, timestamps |
+| Repository tests (new, marker `integration`, which already means "needs real Postgres") | Real Postgres 15: CI service; locally a Neon test branch or Docker | Queries, guarded updates, constraints, timestamps |
 | Race tests (new) | Real Postgres, concurrent sessions | Exactly one winner per guarded update and claim |
 | API behaviour tests (new, per phase) | Real Postgres through FastAPI | The area behaves the same before and after |
 | Route and engine unit tests (converted) | Fake repository functions | Business logic, without a database |
