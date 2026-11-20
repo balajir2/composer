@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 
 from src.config import get_settings
 from src.db.engine import build_engine, connect_with_retry
+from src.db.runtime import register_sessionmaker
 from src.db.session import build_sessionmaker
 
 logger = logging.getLogger(__name__)
@@ -23,8 +24,10 @@ async def sqlalchemy_lifespan(app: FastAPI) -> AsyncGenerator[AsyncEngine, None]
         await connect_with_retry(engine, settings)
         app.state.db_engine = engine
         app.state.db_sessionmaker = build_sessionmaker(engine)
+        register_sessionmaker(app.state.db_sessionmaker)
         yield engine
     finally:
+        register_sessionmaker(None)
         for name in ("db_sessionmaker", "db_engine"):
             if hasattr(app.state, name):
                 delattr(app.state, name)
