@@ -52,7 +52,7 @@ async def _setting(db: Any, key: str) -> str | None:
     return row.value if row else None
 
 
-async def _enabled_catalog(db: Any) -> dict[str, str | None]:
+async def enabled_model_catalog(db: Any) -> dict[str, str | None]:
     rows = await db.llmmodel.find_many(where={"enabled": True})
     return {f"{r.provider}/{r.modelId}": r.label for r in rows}
 
@@ -71,7 +71,7 @@ def _parse_allowed(raw: str | None) -> list[str]:
 
 async def load_policy(db: Any) -> BuilderModelPolicy:
     default = (await _setting(db, SETTING_DEFAULT)) or DEFAULT_BUILDER_MODEL
-    catalog = await _enabled_catalog(db)
+    catalog = await enabled_model_catalog(db)
     extras = [m for m in _parse_allowed(await _setting(db, SETTING_ALLOWED)) if m in catalog]
     ids = [default, *[m for m in dict.fromkeys(extras) if m != default]]
     return BuilderModelPolicy(
@@ -81,7 +81,7 @@ async def load_policy(db: Any) -> BuilderModelPolicy:
 
 
 async def save_policy(db: Any, *, default: str, allowed: list[str]) -> None:
-    catalog = await _enabled_catalog(db)
+    catalog = await enabled_model_catalog(db)
     unknown = [m for m in [default, *allowed] if m not in catalog]
     if unknown:
         raise ValueError("Not enabled in the LLM model catalog: " + ", ".join(sorted(set(unknown))))

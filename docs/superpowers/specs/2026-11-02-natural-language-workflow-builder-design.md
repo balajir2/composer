@@ -309,6 +309,16 @@ surface the currently-available resources so the agent can reference them.
   `rate_limit_builder_per_minute` and `builder_model` settings default safely. A deployment that
   never configures a model simply gets the existing default-model behavior.
 
+## 2026-11-20 update — completeness checks and repair rounds
+
+Builder output was often structurally valid but empty (no instructions, all guardrail checks off, unset or disabled model). Added:
+
+- **Completeness checks** (`src/builder/completeness.py`): agent/mcp/jira instructions, decision instruction, gamma-ai prompt, guardrails with every check off, mcp without `mcpServerId` (unless `request_credential` was called for that node), agent/mcp model unset or outside the admin-enabled catalog, and unresolved `{{name}}` references. Separate from structural validation by design; they never block a save or run.
+- **Repair rounds** (`builder_agent.py`): after a build turn, structural violations and content issues go back to the model as an "Automatic check" message, up to `MAX_REPAIR_ROUNDS = 2`. Content issues cover only nodes created or changed that turn. Unfixed items surface as a "Remaining issues: ..." chat notice (up to 5).
+- **Field guide and model list in the prompt:** `build_field_guide` generates per-node-type fields from the Pydantic models, omitting credential fields so the model asks for them; `enabled_model_catalog` supplies the models an admin enabled; plus "fill every node" rules.
+- **Duplicate-edge rule:** `dedupe_edges` collapses duplicate `(source, target, branch)` edges (first wins) on workflow create/update, in `build_graph` and on each builder turn. Collapsed rather than rejected because validation runs on every autosave and run, and rejection would strand workflows that already contain duplicates.
+- **Tests:** misbehaving-model unit tests, a weekly `@pytest.mark.live` check (`live-provider-smoke.yml`), and a Playwright race test in the e2e smoke list.
+
 ## Explicitly deferred / out of scope
 
 - Streaming the agent's token/step output in real time (v1 is turn-based; the existing WS/SSE

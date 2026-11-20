@@ -9,7 +9,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
-from src.engine.graph_builder import WorkflowValidationError, validate_workflow_shape
+from src.engine.graph_builder import (
+    WorkflowValidationError,
+    dedupe_edges,
+    validate_workflow_shape,
+)
 from src.engine.workflow import (
     JIRA_TOKEN_REDACTED,
     Workflow,
@@ -361,6 +365,7 @@ async def create_workflow(
 ) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
     # Re-validate as Workflow to run graph_builder's shape check.
     workflow = Workflow.model_validate(payload.model_dump(by_alias=True))
+    workflow = workflow.model_copy(update={"edges": dedupe_edges(workflow.edges)})
     try:
         validate_workflow_shape(workflow)
     except WorkflowValidationError as exc:
@@ -543,6 +548,7 @@ async def update_workflow(
         )
 
     workflow = Workflow.model_validate(payload.model_dump(by_alias=True))
+    workflow = workflow.model_copy(update={"edges": dedupe_edges(workflow.edges)})
     try:
         validate_workflow_shape(workflow)
     except WorkflowValidationError as exc:

@@ -18,7 +18,7 @@ from src.api.workflows import (  # reuse existing secret helpers (additive impor
     _to_workflow_read,  # pyright: ignore[reportPrivateUsage]
 )
 from src.builder.builder_agent import BuildSession, run_builder_turn
-from src.builder.model_policy import ModelNotAllowedError, load_policy
+from src.builder.model_policy import ModelNotAllowedError, enabled_model_catalog, load_policy
 from src.config import get_settings
 from src.engine.graph_builder import collect_workflow_violations
 from src.engine.workflow import Workflow
@@ -189,6 +189,7 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
     model = build_chat_model(model_string)
 
     workflow = _to_engine_workflow(existing)
+    model_catalog = await enabled_model_catalog(db)
     events, reply, updated = await run_builder_turn(
         model=model,
         workflow_id=workflow_id,
@@ -197,6 +198,7 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
         message=payload.message,
         execution_id=payload.execution_id,
         db=db,
+        model_catalog=model_catalog,
     )
 
     _check_workflow_size_limits(updated)

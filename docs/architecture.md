@@ -281,6 +281,17 @@ A single `RoleNav` component reads the user's role and renders the appropriate h
 
 The OpenAPI schema is generated from FastAPI at `/openapi.json` and consumed by `frontend/lib/api/generated/schema.ts` for end-to-end typing.
 
+## Build with AI (`src/builder/`)
+
+The builder runs a tool-using LLM loop over a draft copy of the canvas, then persists the result. Two kinds of rules apply to what it produces:
+
+- **Structural rules gate saves and runs.** `collect_workflow_violations` / `validate_workflow_shape` ([`src/engine/graph_builder.py`](../src/engine/graph_builder.py)) run on every save and before every run. Duplicate edges are not a violation: `dedupe_edges` collapses them (first edge per `(source, target, branch)` wins) in `POST`/`PUT /workflows`, in `build_graph` and on each builder turn ([`normalize.py`](../src/builder/normalize.py)), because rejecting them would make existing workflows unsaveable and unrunnable.
+- **Content rules only steer the builder.** `collect_completeness_issues` ([`completeness.py`](../src/builder/completeness.py)) reports unfilled nodes (missing instructions or prompt, all-off guardrails, missing MCP server, model unset or not enabled, unresolved `{{name}}`). It never blocks a save or run.
+
+**Repair loop** ([`builder_agent.py`](../src/builder/builder_agent.py), `run_builder_turn`): after a build turn and `normalize_orchestration`, `_turn_issues` combines structural violations (whole workflow) with content issues (only nodes created or changed this turn). If any exist, they are sent back as an "Automatic check" message and the tool loop runs again, up to `MAX_REPAIR_ROUNDS = 2`. Leftovers are emitted as a "Remaining issues: ..." chat message (first 5).
+
+**Prompt inputs** ([`prompts.py`](../src/builder/prompts.py)): the per-node field guide (`build_field_guide` in [`node_catalog.py`](../src/builder/node_catalog.py), generated from the Pydantic node models, credential fields excluded) and the admin-enabled model list (`enabled_model_catalog` in [`model_policy.py`](../src/builder/model_policy.py), passed in by [`src/api/builder.py`](../src/api/builder.py)).
+
 ## Adding a new node type
 
 1. **Schema** — add a `*NodeData` Pydantic class in [`src/engine/workflow.py`](../src/engine/workflow.py) and add the type to the discriminated union.
