@@ -22,6 +22,8 @@ def _record(row: DeploymentSetting) -> SettingRecord:
     return SettingRecord(key=row.key, value=row.value, updated_at=row.updated_at)
 
 
+# get/list_all may answer from the session's identity map; upsert uses populate_existing
+# so rows already loaded in the session are refreshed with the new values.
 async def list_all(session: AsyncSession) -> list[SettingRecord]:
     rows = await session.scalars(select(DeploymentSetting).order_by(DeploymentSetting.key))
     return [_record(r) for r in rows]

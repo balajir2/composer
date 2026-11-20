@@ -29,7 +29,7 @@ def _client_admin(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, FakeSess
 
     app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
 
-    return TestClient(app), session
+    return TestClient(app, raise_server_exceptions=False), session
 
 
 def _client_member(monkeypatch: pytest.MonkeyPatch) -> TestClient:
@@ -44,7 +44,7 @@ def _client_member(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
     override_session(app)  # route resolves its session before the admin gate runs
-    # No dependency_overrides for ensure_admin and no db_sessionmaker -> 'dev' is a member -> 403
+    # ensure_admin is deliberately not overridden
     return TestClient(app)
 
 
@@ -54,7 +54,7 @@ def _record(key: str = "tool.tavily.enabled", value: str = "true") -> SettingRec
 
 def test_list_all(monkeypatch: pytest.MonkeyPatch) -> None:
     """GET /admin/deployment-settings returns all settings."""
-    client, _ = _client_admin(monkeypatch)
+    client, session = _client_admin(monkeypatch)
     monkeypatch.setattr(
         settings_repo,
         "list_all",
@@ -69,6 +69,7 @@ def test_list_all(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert len(body) == 2
+    assert session.commit.await_count == 0
     keys = {s["key"] for s in body}
     assert "tool.tavily.enabled" in keys
     assert "tool.serper.enabled" in keys
@@ -76,10 +77,11 @@ def test_list_all(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_get_missing_404(monkeypatch: pytest.MonkeyPatch) -> None:
     """GET on an unknown key returns 404."""
-    client, _ = _client_admin(monkeypatch)
+    client, session = _client_admin(monkeypatch)
     monkeypatch.setattr(settings_repo, "get", AsyncMock(return_value=None))
     resp = client.get("/admin/deployment-settings/unknown.key")
     assert resp.status_code == 404
+    assert session.commit.await_count == 0
 
 
 def test_get_existing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -107,16 +109,20 @@ def test_put_upserts_and_commits(monkeypatch: pytest.MonkeyPatch) -> None:
     assert session.commit.await_count == 1
 
 
-def test_put_new_value_returned(monkeypatch: pytest.MonkeyPatch) -> None:
-    """PUT of a changed value returns the stored value."""
+def test_put_upsert_failure_is_500(monkeypatch: pytest.MonkeyPatch) -> None:
     client, session = _client_admin(monkeypatch)
-    upsert = AsyncMock(return_value=_record("tool.tavily.enabled", "false"))
-    monkeypatch.setattr(settings_repo, "upsert", upsert)
-    resp = client.put("/admin/deployment-settings/tool.tavily.enabled", json={"value": "false"})
-    assert resp.status_code == 200
-    assert resp.json()["value"] == "false"
-    upsert.assert_awaited_once()
-    assert session.commit.await_count == 1
+    monkeypatch.setattr(settings_repo, "upsert", AsyncMock(side_effect=RuntimeError("boom")))
+    resp = client.put("/admin/deployment-settings/k", json={"value": "v"})
+    assert resp.status_code == 500
+    assert session.commit.await_count == 0
+
+
+def test_put_commit_failure_is_500(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, session = _client_admin(monkeypatch)
+    monkeypatch.setattr(settings_repo, "upsert", AsyncMock(return_value=_record("k", "v")))
+    session.commit.side_effect = RuntimeError("commit failed")
+    resp = client.put("/admin/deployment-settings/k", json={"value": "v"})
+    assert resp.status_code == 500
 
 
 def test_member_cannot_put_403(monkeypatch: pytest.MonkeyPatch) -> None:
