@@ -51,6 +51,16 @@ class Settings(BaseSettings):
         default=0.5,
         description="Backoff before the 2nd connect attempt; doubles each retry after.",
     )
+    # SQLAlchemy pool. Kept small while Prisma also holds connections, so the
+    # two together stay within Neon's connection limit (migration spec 3.1).
+    db_pool_size: int = Field(
+        default=2,
+        description="Persistent SQLAlchemy connections per process.",
+    )
+    db_max_overflow: int = Field(
+        default=3,
+        description="Extra SQLAlchemy connections allowed under load.",
+    )
 
     # ─── Auth ─────────────────────────────────────
     jwt_secret: str = Field(
