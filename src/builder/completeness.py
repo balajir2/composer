@@ -6,11 +6,10 @@ save. These checks only steer the builder (its repair rounds) and warn the
 user; they never block a save.
 """
 
-import re
-from collections.abc import Iterator, Mapping, Set
-from typing import Any
+from collections.abc import Mapping, Set
 
 from src.engine.workflow import Workflow
+from src.variable_validation import find_unknown_variable_references
 
 _INSTRUCTION_FIELD: dict[str, str] = {
     "agent": "instructions",
@@ -22,41 +21,6 @@ _INSTRUCTION_FIELD: dict[str, str] = {
 # Types whose `model` is a "provider/modelId" string, the catalog's key format.
 _MODEL_CHECKED_TYPES = {"agent", "mcp"}
 _GUARDRAIL_FLAGS = ("piiEnabled", "moderationEnabled", "jailbreakEnabled", "hallucinationEnabled")
-# Mirrors the run-time scope in src/executors/_eval.py.
-_BUILTIN_NAMES = {"lastOutput", "input", "variables", "node_results"}
-_MUSTACHE_HEAD = re.compile(r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)")
-
-
-def _snake(text: str) -> str:
-    # Same rule as events_wrapper._sanitize_node_name.
-    return re.sub(r"[^a-z0-9]+", "_", text.strip().lower()).strip("_")
-
-
-def _strings(value: Any) -> Iterator[str]:
-    if isinstance(value, str):
-        yield value
-    elif isinstance(value, dict):
-        for item in value.values():  # pyright: ignore[reportUnknownVariableType]
-            yield from _strings(item)
-    elif isinstance(value, list):
-        for item in value:  # pyright: ignore[reportUnknownVariableType]
-            yield from _strings(item)
-
-
-def _known_names(dumped: list[tuple[str, str, dict[str, Any]]]) -> set[str]:
-    names = set(_BUILTIN_NAMES)
-    for node_id, node_type, data in dumped:
-        names.add(node_id.replace("-", "_"))
-        node_name = data.get("nodeName")
-        if isinstance(node_name, str) and _snake(node_name):
-            names.add(_snake(node_name))
-        if node_type == "start":
-            variables: list[dict[str, Any]] = data.get("inputVariables") or []
-            names.update(str(v["name"]) for v in variables)
-        state_key = data.get("stateKey")
-        if node_type == "set-state" and isinstance(state_key, str):
-            names.add(state_key)
-    return names
 
 
 def collect_completeness_issues(
@@ -69,10 +33,15 @@ def collect_completeness_issues(
     """Return one fix-it message per unfilled node (empty = complete).
 
     `only` limits the report to those node ids. Variable names are still
-    collected from every node, so references to untouched nodes resolve.
+    resolved from every node (via the publish-time rules in
+    `src.variable_validation`), so references to untouched nodes resolve.
     """
     dumped = [(n.id, n.type, n.data.model_dump(by_alias=True)) for n in workflow.nodes]
-    known = _known_names(dumped)
+    unknown: dict[str, list[str]] = {}
+    for ref in find_unknown_variable_references(workflow):
+        names = unknown.setdefault(ref.node_id, [])
+        if ref.root_name not in names:
+            names.append(ref.root_name)
     issues: list[str] = []
     for node_id, node_type, data in dumped:
         if only is not None and node_id not in only:
@@ -104,7 +73,7 @@ def collect_completeness_issues(
                     f"{where} uses model {model!r}, which is not available: "
                     "pick one of the available models."
                 )
-        missing = sorted({m for s in _strings(data) for m in _MUSTACHE_HEAD.findall(s)} - known)
+        missing = sorted(unknown.get(node_id, []))
         if missing:
             issues.append(
                 f"{where} references undeclared variable(s) {', '.join(missing)}: "

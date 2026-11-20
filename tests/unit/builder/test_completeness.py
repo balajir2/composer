@@ -121,3 +121,60 @@ def test_only_limits_issues_to_the_named_nodes() -> None:
 def test_only_still_resolves_references_to_untouched_nodes() -> None:
     wf = _wf(_agent("a", instructions="use {{prior_step}}"), _agent("prior_step", instructions="x"))
     assert collect_completeness_issues(wf, only={"a"}) == []
+
+
+def _prompt_node(text: str) -> dict[str, Any]:
+    return _agent("p", instructions=text)
+
+
+def _vars_issues(wf: Workflow) -> list[str]:
+    return [i for i in collect_completeness_issues(wf) if "undeclared variable" in i]
+
+
+def test_vector_db_custom_output_variable_is_known() -> None:
+    vdb = {"id": "v", "type": "vector-db", "data": {"label": "V", "vectorDbOutputVariable": "hits"}}
+    assert _vars_issues(_wf(vdb, _prompt_node("Use {{hits}}"))) == []
+
+
+def test_vector_db_default_output_variable_is_known() -> None:
+    vdb = {"id": "v", "type": "vector-db", "data": {"label": "V"}}
+    assert _vars_issues(_wf(vdb, _prompt_node("Use {{vectorDbResults}}"))) == []
+
+
+def test_transform_output_key_is_known() -> None:
+    tr = {"id": "t", "type": "transform", "data": {"label": "T", "outputKey": "total"}}
+    assert _vars_issues(_wf(tr, _prompt_node("Total {{total}}"))) == []
+
+
+def test_state_prefixed_and_final_output_are_known() -> None:
+    wf = _wf(_prompt_node("{{state.variables.x}} and {{finalOutput}}"))
+    assert _vars_issues(wf) == []
+
+
+def test_data_transform_loop_names_are_known() -> None:
+    dt = {
+        "id": "d",
+        "type": "data-transform",
+        "data": {
+            "label": "D",
+            "operation": "reduce",
+            "collection": "{{lastOutput}}",
+            "expression": "{{acc}} + {{item.price}}",
+        },
+    }
+    assert _vars_issues(_wf(dt)) == []
+
+
+def test_data_transform_custom_item_var_is_known_only_in_its_own_node() -> None:
+    dt = {
+        "id": "d",
+        "type": "data-transform",
+        "data": {"label": "D", "itemVar": "row", "expression": "{{row.price}}"},
+    }
+    assert _vars_issues(_wf(dt)) == []
+    assert _vars_issues(_wf(dt, _prompt_node("Leak {{row.price}}")))
+
+
+def test_genuinely_undeclared_variable_is_still_flagged() -> None:
+    issues = _vars_issues(_wf(_prompt_node("For {{audience}}")))
+    assert len(issues) == 1 and "audience" in issues[0]

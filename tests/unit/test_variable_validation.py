@@ -194,3 +194,47 @@ def test_multiple_unknown_references_all_reported() -> None:
     )
     problems = find_unknown_variable_references(wf)
     assert {p.root_name for p in problems} == {"missing_a", "missing_b"}
+
+
+def test_executor_written_names_and_loop_names_are_valid() -> None:
+    """Names the executors really write into state["variables"] (set-state
+    stateKey, transform outputKey, vector-db output variable incl. default)
+    and a data-transform node's own loop names must not be flagged."""
+    wf = _workflow(
+        [
+            _start(),
+            {
+                "id": "t-1",
+                "type": "transform",
+                "position": {"x": 0, "y": 0},
+                "data": {"label": "T", "outputKey": "total"},
+            },
+            {
+                "id": "v-1",
+                "type": "vector-db",
+                "position": {"x": 0, "y": 0},
+                "data": {"label": "V", "vectorDbOutputVariable": "hits"},
+            },
+            {
+                "id": "v-2",
+                "type": "vector-db",
+                "position": {"x": 0, "y": 0},
+                "data": {"label": "V2"},
+            },
+            {
+                "id": "d-1",
+                "type": "data-transform",
+                "position": {"x": 0, "y": 0},
+                "data": {"label": "D", "expression": "{{item.price}} + {{total}}"},
+            },
+            {
+                "id": "a-1",
+                "type": "agent",
+                "position": {"x": 0, "y": 0},
+                "data": {"label": "A", "instructions": "{{hits}} {{vectorDbResults}} {{item}}"},
+            },
+            _end(),
+        ]
+    )
+    problems = find_unknown_variable_references(wf)
+    assert [(p.node_id, p.root_name) for p in problems] == [("a-1", "item")]
