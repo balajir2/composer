@@ -51,6 +51,10 @@ When you connect from an `if-else`/`while`/`user-approval` node, the edge label 
 
 The chat panel on the canvas builds and edits the workflow from a description. Beyond placing and wiring nodes, it fills them in: agent, MCP and Jira instructions, decision prompts, Gamma prompts, which guardrail checks are on, and the model. After each build it re-checks its own work and fixes empty or inconsistent nodes automatically (up to two short extra rounds, stopping early if a round fixes nothing).
 
+Build with AI reads the workflow stored in the database and saves its changes back to that workflow. Before Composer sends any builder request—including plan approvals and other builder-card actions—it first saves canvas edits that are still unsaved, currently saving, or in an error state. This prevents a builder turn from using an older stored graph and restoring an edge or node you just changed on the canvas.
+
+If that save fails, Composer does not run the builder request. The chat shows: “I couldn't save your latest canvas edits, so I didn't run that request. Save the canvas and try again.” Resolve the save error, save the canvas, and retry the request.
+
 - **Models:** it chooses models only from the ones your admin has enabled. On agent and MCP nodes, a model that is unset or not enabled is treated as a mistake and corrected; other nodes keep their default.
 - **Credentials:** it does not invent API tokens or keys. It asks you for them, and an MCP node with no server selected is flagged unless it has asked you for credentials.
 - **Edits stay scoped:** it only checks and fixes nodes it created or changed in that turn. A node you left unfinished on purpose, or didn't mention, is not touched. A label-only edit to a node also counts as changing it, so the builder then checks that node.
