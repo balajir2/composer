@@ -7,6 +7,8 @@ support external invoke use this dep instead of get_current_user_id.
 
 from __future__ import annotations
 
+import logging
+
 from fastapi import HTTPException, Request, status
 
 from src.db.repos import api_keys as keys_repo
@@ -14,6 +16,8 @@ from src.db.repos import users as users_repo
 from src.db.runtime import request_sessionmaker
 from src.db.types import utcnow
 from src.security.api_keys import extract_prefix, verify_api_key
+
+logger = logging.getLogger(__name__)
 
 
 class ApiKeyAuthResult:
@@ -63,10 +67,14 @@ async def get_current_api_key_user(request: Request) -> ApiKeyAuthResult:
         try:
             await keys_repo.touch_last_used(session, row.id, utcnow())
             await session.commit()
-        except Exception:
+        except Exception as exc:
+            # Class name only: DB error text can contain connection URLs.
+            logger.warning("api key last_used_at update failed (%s)", type(exc).__name__)
             await session.rollback()
 
         user = await users_repo.get_by_id(session, row.user_id)
+    # The owner was loaded inside the block; the session is closed before the
+    # route body (and any workflow run) starts.
     if user is None or not user.is_active:
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "API key owner is inactive")
     return ApiKeyAuthResult(user_id=row.user_id, role=user.role.value, api_key_id=row.id)

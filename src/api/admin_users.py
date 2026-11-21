@@ -38,7 +38,7 @@ class UserSummary(BaseModel):
     model_config = ConfigDict(populate_by_name=True, from_attributes=True)
 
 
-def _summary_from_row(row: users_repo.UserRecord) -> "UserSummary":
+def _summary_from_row(row: users_repo.UserRecord) -> UserSummary:
     return UserSummary(
         id=row.id,
         email=row.email,

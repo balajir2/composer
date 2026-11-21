@@ -179,6 +179,19 @@ def test_touch_failure_rolls_back_and_still_authenticates(monkeypatch: pytest.Mo
     assert sm.session.rollback.await_count == 1
 
 
+def test_touch_failure_is_logged_without_the_error_text(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Operators should see that last_used_at stopped updating; DB error text can hold URLs."""
+    client = _app(monkeypatch, key=_key(), sessionmaker=FakeSessionmaker())
+    secret = RuntimeError("postgresql://u:secret-pw@host/db unreachable")
+    monkeypatch.setattr(keys_repo, "touch_last_used", AsyncMock(side_effect=secret))
+    with caplog.at_level("WARNING", logger="src.security.api_key_auth"):
+        assert client.get("/probe", headers=AUTH).status_code == 200
+    assert "RuntimeError" in caplog.text
+    assert "secret-pw" not in caplog.text
+
+
 @pytest.mark.parametrize("missing", [True, False])
 def test_owner_check_still_runs_after_touch_failure(
     monkeypatch: pytest.MonkeyPatch, missing: bool
