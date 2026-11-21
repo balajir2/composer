@@ -89,6 +89,55 @@ def test_me_embedded_returns_jwt_claims(monkeypatch: pytest.MonkeyPatch) -> None
     assert body["claims"]["iss"] == "https://iep.test"
 
 
+def test_me_embedded_needs_no_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Embedded /auth/me only echoes JWT claims, so it must work with no database attached.
+
+    Regression: Phase 1 first gave the handler a request-scoped session for every
+    mode, so an app without a sessionmaker crashed on embedded /auth/me.
+    """
+    monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "embedded")
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("IEP_SHARED_SECRET", "iep-test-secret-32-chars-min-here-please")
+    monkeypatch.setenv("IEP_JWT_ISSUER", "https://iep.test")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    from src.api.auth_common import router as auth_router
+
+    app = FastAPI()
+    app.include_router(auth_router)  # no session override, no sessionmaker
+    now = datetime.now(UTC)
+    token = jose_jwt.encode(
+        {
+            "sub": "external-user",
+            "iss": "https://iep.test",
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(hours=1)).timestamp()),
+        },
+        "iep-test-secret-32-chars-min-here-please",
+        algorithm="HS256",
+    )
+    resp = TestClient(app).get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["id"] == "external-user"
+
+
+def test_me_standalone_without_database_is_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Standalone /auth/me needs the user row; with no database it says so instead of crashing."""
+    # Development, so the auth dependency itself doesn't fail closed first.
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    from src.api.auth_common import router as auth_router
+
+    app = FastAPI()
+    app.include_router(auth_router)
+    resp = TestClient(app).get("/auth/me")  # dev fallback user, no sessionmaker
+    assert (resp.status_code, resp.json()["detail"]) == (503, "database unavailable")
+
+
 def test_me_missing_auth_401_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _ = _app_with_router(monkeypatch, mode="standalone")
     resp = client.get("/auth/me")
@@ -108,7 +157,9 @@ def test_me_dev_mode_fallback_returns_dev_user(monkeypatch: pytest.MonkeyPatch) 
     app = FastAPI()
     app.include_router(auth_router)
 
-    override_session(app)
+    # /auth/me opens its own short session; the dev fallback ("dev", no token)
+    # skips the auth dependency's live check, so only the handler looks up.
+    app.state.db_sessionmaker = FakeSessionmaker()
     # 'dev' fallback user doesn't exist in the User table → 404
     get_by_id = AsyncMock(return_value=None)
     monkeypatch.setattr(users_repo, "get_by_id", get_by_id)

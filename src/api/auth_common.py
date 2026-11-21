@@ -17,6 +17,7 @@ from src.api.auth_standalone import TokenPairResponse
 from src.config import Settings, get_settings
 from src.db.errors import AlreadyExists
 from src.db.repos import users as users_repo
+from src.db.runtime import request_sessionmaker
 from src.db.session import get_session
 from src.security.auth import AuthError, get_current_user_id
 from src.security.jwt import create_access_token, create_refresh_token
@@ -42,11 +43,18 @@ class EmbeddedMeResponse(BaseModel):
 async def me(
     request: Request,
     user_id: str = Depends(get_current_user_id),
-    session: AsyncSession = Depends(get_session),
     settings: Settings = Depends(get_settings),  # pyright: ignore[reportCallIssue]
 ) -> StandaloneMeResponse | EmbeddedMeResponse:  # pyright: ignore[reportUnusedFunction]
     if settings.deployment_mode == "standalone":
-        user = await users_repo.get_by_id(session, user_id)
+        # A short session of our own, opened only here: embedded mode never
+        # touches the database, so it must not depend on one being attached.
+        sessionmaker = request_sessionmaker(request)
+        if sessionmaker is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="database unavailable"
+            )
+        async with sessionmaker() as session:
+            user = await users_repo.get_by_id(session, user_id)
         if user is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user not found")
         return StandaloneMeResponse(
