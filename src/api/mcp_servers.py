@@ -23,6 +23,7 @@ from src.mcp.oauth import (
     build_authorize_url,
     exchange_code_for_tokens,
 )
+from src.mcp.resolver import user_can_use_server
 from src.mcp.schema_adapter import (
     UnresolvedUrlTemplateError,
     substitute_url_placeholders,
@@ -251,7 +252,9 @@ async def test_mcp_connection(
         config=per_minute_config(get_settings().rate_limit_mcp_test_per_minute),
     )
     server = await db.mcpserver.find_unique(where={"id": server_id})  # pyright: ignore[reportAttributeAccessIssue]
-    if server is None:
+    # Same visibility rule as the resolver: owner or shared.  A private server
+    # of another user answers exactly like an unknown id (no existence leak).
+    if server is None or not user_can_use_server(user_id, server):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"MCP server {server_id!r} not found.",
@@ -392,7 +395,9 @@ async def oauth_authorize(
     user_id: str = Depends(get_current_user_id),
 ) -> OAuthAuthorizeResponse:
     server = await db.mcpserver.find_unique(where={"id": server_id})  # pyright: ignore[reportAttributeAccessIssue]
-    if server is None:
+    # Same visibility rule as the resolver: owner or shared.  A private server
+    # of another user answers exactly like an unknown id (no existence leak).
+    if server is None or not user_can_use_server(user_id, server):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"MCP server {server_id!r} not found.",

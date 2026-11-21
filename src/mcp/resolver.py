@@ -25,7 +25,7 @@ class McpPermissionError(PermissionError):
     """Raised when a user tries to use an MCP server they don't own and isn't shared."""
 
 
-def _user_can_use(user_id: str | None, server: Any) -> bool:
+def user_can_use_server(user_id: str | None, server: Any) -> bool:
     """Owner always allowed; shared servers allowed for any user_id.
 
     Phase 3a: no OAuth, so the service-account token fallback isn't needed.
@@ -51,7 +51,7 @@ async def resolve_mcp_tools_for_node(
         server = await db.mcpserver.find_unique(where={"id": server_id})
         if server is None:
             raise McpServerNotFound(f"MCP server {server_id!r} not found")
-        if not _user_can_use(context.user_id, server):
+        if not user_can_use_server(context.user_id, server):
             raise McpPermissionError(
                 f"User {context.user_id!r} cannot use MCP server {server_id!r} "
                 f"(owner={server.userId!r}, isShared={server.isShared})"
@@ -85,7 +85,7 @@ async def resolve_mcp_tools_by_names(
     server = await db.mcpserver.find_unique(where={"id": mcp_server_id})
     if server is None:
         raise McpServerNotFound(f"MCP server {mcp_server_id!r} not found")
-    if not _user_can_use(user_id, server):
+    if not user_can_use_server(user_id, server):
         raise McpPermissionError(f"User {user_id!r} cannot use MCP server {mcp_server_id!r}")
 
     provider = McpToolProvider(server, db=db, user_id=user_id)
@@ -118,7 +118,7 @@ async def resolve_single_mcp_tool(
     server = await db.mcpserver.find_unique(where={"id": mcp_server_id})
     if server is None:
         raise McpServerNotFound(f"MCP server {mcp_server_id!r} not found")
-    if not _user_can_use(user_id, server):
+    if not user_can_use_server(user_id, server):
         raise McpPermissionError(f"User {user_id!r} cannot use MCP server {mcp_server_id!r}")
 
     provider = McpToolProvider(server, db=db, user_id=user_id)
