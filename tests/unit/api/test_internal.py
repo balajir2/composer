@@ -7,18 +7,16 @@ import contextlib
 import re
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 from opentelemetry import trace
+from opentelemetry.trace import NonRecordingSpan, SpanContext
 from starlette.requests import Request
 
 from src.main import create_app
-
-if TYPE_CHECKING:
-    from opentelemetry.trace import SpanContext
 
 
 class _FakeTx:
@@ -113,6 +111,72 @@ def test_claim_and_run_attaches_remote_context_only_during_execution(
     assert len(observed) == 1
     assert observed[0].is_remote
     assert observed[0].trace_id == 0x0123456789ABCDEF0123456789ABCDEF
+
+
+@pytest.mark.parametrize("outcome", ["success", "error", "cancel"])
+def test_claim_and_run_uses_clean_context_when_attachment_fails(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    from opentelemetry import context as otel_context
+
+    from src.api import internal
+    from src.api.internal import ClaimAndRunRequest
+
+    ambient = SpanContext(
+        trace_id=0xAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,
+        span_id=0xBBBBBBBBBBBBBBBB,
+        is_remote=False,
+    )
+    ambient_token = otel_context.attach(trace.set_span_in_context(NonRecordingSpan(ambient)))
+    observed: list[SpanContext] = []
+
+    async def _observe_execution(*_args: object, **_kwargs: object) -> dict[str, str]:
+        observed.append(trace.get_current_span().get_span_context())
+        if outcome == "error":
+            raise RuntimeError("worker failure")
+        if outcome == "cancel":
+            raise asyncio.CancelledError
+        return {"status": "completed"}
+
+    def _failing_attach(_context: object) -> object:
+        raise RuntimeError("context attach unavailable")
+
+    monkeypatch.setattr(internal, "claim_and_run_execution", _observe_execution)
+    monkeypatch.setattr(internal.otel_context, "attach", _failing_attach)
+
+    def _fake_dependency(_request: Request) -> object:
+        return object()
+
+    monkeypatch.setattr(internal, "get_checkpointer", _fake_dependency)
+    monkeypatch.setattr(internal, "get_event_bus", _fake_dependency)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/internal/claim-and-run",
+            "headers": [
+                (b"traceparent", b"00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")
+            ],
+            "client": ("127.0.0.1", 1234),
+        }
+    )
+
+    async def _invoke() -> None:
+        with contextlib.suppress(RuntimeError, asyncio.CancelledError):
+            await internal.claim_and_run(
+                payload=ClaimAndRunRequest(executionId="exec-1", kind="run"),
+                request=request,
+                db=MagicMock(),
+                _oidc=None,
+            )
+
+    try:
+        asyncio.run(_invoke())
+        assert len(observed) == 1
+        assert not observed[0].is_valid
+        assert trace.get_current_span().get_span_context() == ambient
+    finally:
+        otel_context.detach(ambient_token)
 
 
 async def test_claim_and_run_execution_runs_directly_without_a_request(
