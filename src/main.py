@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager, suppress
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse
+from starlette.types import ASGIApp
 
 from src import __version__
 from src.api.admin_builder import router as admin_builder_router
@@ -95,6 +96,15 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             runtime.shutdown()
 
 
+class CorrelatedFastAPI(FastAPI):
+    """Wrap Starlette's error handler while keeping trusted proxy processing outermost."""
+
+    def build_middleware_stack(self) -> ASGIApp:
+        app = super().build_middleware_stack()
+        app = CorrelationMiddleware(app, runtime=self.state.telemetry_runtime)
+        return TrustedProxyHeadersMiddleware(app, trusted_hops=self.state.telemetry_trusted_hops)
+
+
 def create_app() -> FastAPI:
     """Application factory. Keeps tests and scripts free to construct their own."""
     settings = get_settings()
@@ -120,7 +130,7 @@ def create_app() -> FastAPI:
             "Set ENVIRONMENT=production to require real auth."
         )
 
-    app = FastAPI(
+    app = CorrelatedFastAPI(
         title="Composer",
         description="Python rebuild of Open Agent Builder on IE-compatible stack.",
         version=__version__,
@@ -135,6 +145,7 @@ def create_app() -> FastAPI:
 
     runtime = TelemetryRuntime(settings)
     app.state.telemetry_runtime = runtime
+    app.state.telemetry_trusted_hops = settings.trusted_proxy_hops
 
     # Mode-aware CORS (Phase 7a)
     if settings.deployment_mode == "embedded":
@@ -163,12 +174,6 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
-
-    app.add_middleware(CorrelationMiddleware, runtime=runtime)
-
-    # Added last so it is the OUTERMOST middleware: the client address must be
-    # corrected before CORS, rate limiting, or any route sees the request.
-    app.add_middleware(TrustedProxyHeadersMiddleware, trusted_hops=settings.trusted_proxy_hops)
 
     app.include_router(admin_builder_router)
     app.include_router(admin_deployment_settings_router)

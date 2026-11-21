@@ -1,9 +1,12 @@
 """Request-scoped correlation identifiers."""
 
+import asyncio
+import weakref
 from collections.abc import Generator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
+from typing import cast
 
 from opentelemetry import trace
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
@@ -22,6 +25,34 @@ class CorrelationContext:
 
 
 _context: ContextVar[CorrelationContext | None] = ContextVar("correlation", default=None)
+_exception_marker = object()
+_request_generation: ContextVar[object | None] = ContextVar(
+    "telemetry_request_generation", default=None
+)
+
+
+def exception_correlation(exc: BaseException) -> CorrelationContext | None:
+    """Recover a snapshot written at the request boundary for server error logging."""
+    try:
+        value = getattr(exc, "_composer_correlation", None)
+        task = asyncio.current_task()
+        if not isinstance(value, tuple):
+            return None
+        value = cast("tuple[object, ...]", value)
+        if (
+            task is not None
+            and len(value) == 4
+            and value[0] is _exception_marker
+            and isinstance(value[1], weakref.ReferenceType)
+            and value[1]() is task
+            and value[2] is not None
+            and value[2] is _request_generation.get()
+            and isinstance(value[3], CorrelationContext)
+        ):
+            return value[3]
+    except Exception:
+        pass
+    return None
 
 
 @contextmanager
@@ -55,7 +86,6 @@ class CorrelationMiddleware:
         self.runtime = runtime
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        import asyncio
         from contextlib import ExitStack, suppress
         from uuid import uuid4
 
@@ -65,6 +95,9 @@ class CorrelationMiddleware:
         if scope["type"] != "http":
             await self.app(scope, receive, send)
             return
+        # Invalidate earlier exception snapshots even if a server reuses this task.
+        generation = object()
+        _request_generation.set(generation)
         request_id = uuid4().hex
         scope.setdefault("state", {})["telemetry_request_id"] = request_id
         span = None
@@ -135,6 +168,20 @@ class CorrelationMiddleware:
             try:
                 await self.app(scope, receive, send_response)
             except BaseException as exc:
+                with suppress(Exception):
+                    correlation = current_correlation()
+                    snapshot = CorrelationContext(
+                        request_id=correlation.request_id,
+                        trace_id=correlation.trace_id,
+                        span_id=correlation.span_id,
+                    )
+                    task = asyncio.current_task()
+                    if task is not None:
+                        BaseException.__setattr__(
+                            exc,
+                            "_composer_correlation",
+                            (_exception_marker, weakref.ref(task), generation, snapshot),
+                        )
                 if span is not None:
                     with suppress(Exception):
                         kind = (

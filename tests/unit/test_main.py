@@ -553,3 +553,132 @@ async def test_failed_response_send_does_not_record_unsent_status() -> None:
         )
     assert "http.response.status_code" not in exporter.get_finished_spans()[-1].attributes
     provider.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("signal", ["access", "error", "span"])
+async def test_uvicorn_h11_unhandled_error_keeps_request_correlation(signal, monkeypatch):
+    import asyncio
+    import io
+    import json
+    import logging
+
+    import httpx
+    import uvicorn
+    from fastapi import Request
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from src.main import create_app
+    from src.telemetry.context import current_correlation
+    from src.telemetry.logging import JSONFormatter
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider(shutdown_on_exit=False)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    app = create_app()
+    app.state.telemetry_runtime.tracer_provider = provider
+
+    traceparents = []
+    client_hosts = []
+
+    @app.get("/h11-failure/{item_id}")
+    async def fail(item_id: str, request: Request) -> None:
+        traceparents.append(request.headers.get("traceparent"))
+        client_hosts.append(request.client.host if request.client else None)
+        raise RuntimeError("private body secret")
+
+    @app.get("/h11-ok")
+    async def ok() -> dict[str, str | None]:
+        return {"request_id": current_correlation().request_id}
+
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(JSONFormatter())
+    for name in ("uvicorn.error", "uvicorn.access"):
+        logger = logging.getLogger(name)
+        monkeypatch.setattr(logger, "handlers", [handler])
+        monkeypatch.setattr(logger, "propagate", False)
+        monkeypatch.setattr(logger, "level", logging.INFO)
+    config = uvicorn.Config(
+        app, host="127.0.0.1", port=0, http="h11", lifespan="off", log_config=None
+    )
+    server = uvicorn.Server(config)
+    task = asyncio.create_task(server.serve())
+    try:
+        for _ in range(500):
+            if server.started:
+                break
+            if task.done():
+                await task
+            await asyncio.sleep(0.01)
+        assert server.started
+        port = server.servers[0].sockets[0].getsockname()[1]
+        async with httpx.AsyncClient(base_url=f"http://127.0.0.1:{port}") as client:
+            response = await client.get(
+                "/h11-failure/private-id?token=secret",
+                headers={
+                    "traceparent": "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01",
+                    "x-request-id": "forged",
+                    "x-forwarded-for": "9.9.9.9, 203.0.113.7",
+                    "x-forwarded-proto": "https",
+                },
+            )
+            assert response.status_code == 500
+            assert traceparents == ["00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"]
+            assert client_hosts == ["203.0.113.7"]
+            from src.security.proxy_headers import TrustedProxyHeadersMiddleware
+            from src.telemetry.context import CorrelationMiddleware
+
+            assert isinstance(app.middleware_stack, TrustedProxyHeadersMiddleware)
+            assert isinstance(app.middleware_stack.app, CorrelationMiddleware)
+            request_id = response.headers["x-request-id"]
+            assert request_id != "forged"
+            later = await client.get("/h11-ok")
+            assert later.json()["request_id"] == later.headers["x-request-id"] != request_id
+        for _ in range(100):
+            if (
+                len(exporter.get_finished_spans()) >= 2
+                and '"logger": "uvicorn.error"' in stream.getvalue()
+            ):
+                break
+            await asyncio.sleep(0.01)
+        spans = exporter.get_finished_spans()
+        failed = next(
+            span
+            for span in spans
+            if span.name == "GET /h11-failure/{item_id}"
+            or span.attributes.get("request_id") == request_id
+        )
+        rows = [json.loads(line) for line in stream.getvalue().splitlines()]
+        assert "private body" not in stream.getvalue() and "token=secret" not in stream.getvalue()
+        healthy_log = next(
+            row
+            for row in rows
+            if row["logger"] == "uvicorn.access" and row.get("status_code") == 200
+        )
+        assert healthy_log["request_id"] == later.headers["x-request-id"]
+        assert healthy_log["trace_id"] != "0123456789abcdef0123456789abcdef"
+        if signal == "span":
+            assert failed.attributes["http.response.status_code"] == 500
+        else:
+            selected = [
+                row
+                for row in rows
+                if row["logger"] == f"uvicorn.{signal}"
+                and (
+                    (signal == "error" and row.get("level") == "ERROR")
+                    or row.get("status_code") == 500
+                )
+            ]
+            assert len(selected) == 1
+            row = selected[0]
+            assert row["request_id"] == request_id
+            assert row["trace_id"] == "0123456789abcdef0123456789abcdef"
+            assert row["span_id"] == f"{failed.context.span_id:016x}"
+        assert current_correlation().request_id is None
+    finally:
+        server.should_exit = True
+        await task
+        provider.shutdown()

@@ -36,3 +36,117 @@ async def test_context_isolated_across_tasks_and_cleaned_on_cancel() -> None:
     with pytest.raises(asyncio.CancelledError):
         await task
     assert current_correlation().request_id is None
+
+
+@pytest.mark.asyncio
+async def test_server_error_snapshot_does_not_leak_into_another_task() -> None:
+    import json
+    import logging
+    from types import SimpleNamespace
+
+    from src.telemetry.context import CorrelationMiddleware
+    from src.telemetry.logging import JSONFormatter
+
+    error = RuntimeError("payload secret")
+
+    async def app(scope, receive, send):
+        raise error
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        pass
+
+    middleware = CorrelationMiddleware(app, runtime=SimpleNamespace(tracer_provider=None))
+
+    async def first_request():
+        with pytest.raises(RuntimeError):
+            await middleware(
+                {"type": "http", "path": "/", "method": "GET", "headers": []}, receive, send
+            )
+        assert current_correlation().request_id is None
+
+    await asyncio.create_task(first_request())
+    record = logging.LogRecord(
+        "uvicorn.error",
+        logging.ERROR,
+        "",
+        0,
+        "Exception in ASGI application",
+        (),
+        (RuntimeError, error, None),
+    )
+    assert "request_id" not in json.loads(JSONFormatter().format(record))
+
+
+@pytest.mark.asyncio
+async def test_dead_snapshot_is_not_used_by_event_loop_callback() -> None:
+    import json
+    import logging
+    import weakref
+
+    from src.telemetry.context import CorrelationContext, _exception_marker, _request_generation
+    from src.telemetry.logging import JSONFormatter
+
+    class Token:
+        pass
+
+    token = Token()
+    reference = weakref.ref(token)
+    del token
+    error = RuntimeError("payload")
+    generation = object()
+    generation_token = _request_generation.set(generation)
+    error._composer_correlation = (
+        _exception_marker,
+        reference,
+        generation,
+        CorrelationContext(request_id="old"),
+    )
+    record = logging.LogRecord(
+        "uvicorn.error",
+        logging.ERROR,
+        "",
+        0,
+        "Exception in ASGI application",
+        (),
+        (RuntimeError, error, None),
+    )
+    result = asyncio.get_running_loop().create_future()
+    asyncio.get_running_loop().call_soon(
+        lambda: result.set_result(json.loads(JSONFormatter().format(record)))
+    )
+    try:
+        assert "request_id" not in await result
+    finally:
+        _request_generation.reset(generation_token)
+
+
+@pytest.mark.asyncio
+async def test_same_task_new_request_invalidates_old_exception_snapshot() -> None:
+    from types import SimpleNamespace
+
+    from src.telemetry.context import CorrelationMiddleware, exception_correlation
+
+    error = RuntimeError("payload")
+    observed = []
+
+    async def failing(scope, receive, send):
+        raise error
+
+    async def later(scope, receive, send):
+        observed.append(exception_correlation(error))
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        pass
+
+    runtime = SimpleNamespace(tracer_provider=None)
+    scope = {"type": "http", "path": "/", "method": "GET", "headers": []}
+    with pytest.raises(RuntimeError):
+        await CorrelationMiddleware(failing, runtime=runtime)(scope, receive, send)
+    await CorrelationMiddleware(later, runtime=runtime)(scope, receive, send)
+    assert observed == [None]

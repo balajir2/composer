@@ -5,7 +5,7 @@ import logging
 from dataclasses import asdict
 from typing import cast
 
-from src.telemetry.context import current_correlation
+from src.telemetry.context import current_correlation, exception_correlation
 from src.telemetry.redaction import redact
 
 # Only fixed, application-owned templates can supply legacy event names and counts.
@@ -125,7 +125,12 @@ class JSONFormatter(logging.Formatter):
             if isinstance(event, str) and event in _EVENT_FIELDS and isinstance(supplied, dict):
                 fields["event"] = event
                 fields.update(_approved_fields(event, cast("dict[str, object]", supplied)))
-        fields.update({k: v for k, v in asdict(current_correlation()).items() if v is not None})
+        correlation = current_correlation()
+        if correlation.request_id is None and record.name == "uvicorn.error" and record.exc_info:
+            exc = record.exc_info[1]
+            if exc is not None:
+                correlation = exception_correlation(exc) or correlation
+        fields.update({k: v for k, v in asdict(correlation).items() if v is not None})
         return json.dumps(redact(fields, max_bytes=4096), ensure_ascii=False)
 
 
