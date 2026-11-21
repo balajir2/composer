@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.auth_standalone import TokenPairResponse
 from src.config import Settings, get_settings
+from src.db.errors import AlreadyExists
 from src.db.repos import users as users_repo
 from src.db.session import get_session
 from src.security.auth import AuthError, get_current_user_id
@@ -103,10 +104,22 @@ async def sso_exchange(
     # Look up or auto-provision.
     user = await users_repo.get_by_email(session, email)
     if user is None:
-        user = await users_repo.create(
-            session, email=email, password_hash=None, display_name=display_name
-        )
-        await session.commit()
+        try:
+            user = await users_repo.create(
+                session, email=email, password_hash=None, display_name=display_name
+            )
+        except AlreadyExists:
+            # A concurrent first login provisioned the account; use that row.
+            await session.rollback()
+            user = await users_repo.get_by_email(session, email)
+            if user is None:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT, "account provisioning conflict"
+                ) from None
+            if not user.is_active:
+                raise AuthError("account is deactivated") from None
+        else:
+            await session.commit()
     elif not user.is_active:
         raise AuthError("account is deactivated")
 

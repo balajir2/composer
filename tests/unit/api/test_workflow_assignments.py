@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 from src.db.repos import users as users_repo
 from src.main import create_app
 from src.security.jwt import create_access_token
-from tests.unit.db_fakes import make_user, override_session
+from tests.unit.db_fakes import FakeSessionmaker, make_user, override_session
 
 
 def _wf_row(**overrides: Any) -> SimpleNamespace:
@@ -61,6 +61,9 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MagicMock]:
     db.workflowassignment = MagicMock()
     app.state.db = db
     override_session(app)
+    app.state.db_sessionmaker = (
+        FakeSessionmaker()
+    )  # production fails closed without a live user check
     monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=make_user(id="assignee1")))
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus

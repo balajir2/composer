@@ -11,7 +11,7 @@ from src.api.users import router as users_router
 from src.db.repos import users as users_repo
 from src.security.jwt import create_access_token
 from src.security.rate_limit import RateLimiter
-from tests.unit.db_fakes import make_user, override_session
+from tests.unit.db_fakes import FakeSessionmaker, make_user, override_session
 
 
 def _client(monkeypatch: pytest.MonkeyPatch, rows: list[users_repo.UserRecord]) -> TestClient:
@@ -23,6 +23,10 @@ def _client(monkeypatch: pytest.MonkeyPatch, rows: list[users_repo.UserRecord]) 
     app = FastAPI()
     app.include_router(users_router)
     override_session(app)
+    app.state.db_sessionmaker = (
+        FakeSessionmaker()
+    )  # production fails closed without a live user check
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=make_user(id="u1")))
     monkeypatch.setattr(users_repo, "search_active", AsyncMock(return_value=rows))
     app.state.rate_limiter = RateLimiter()
     return TestClient(app)

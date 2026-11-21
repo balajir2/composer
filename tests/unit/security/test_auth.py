@@ -490,3 +490,45 @@ async def test_get_current_role_is_member_without_a_database() -> None:
     settings = _mock_settings(deployment_mode="standalone", jwt_secret=secret)
     req = _mock_request(f"Bearer {_make_jose_token(sub='u1', secret=secret)}")
     assert await get_current_role(req, settings) == ("u1", "member")
+
+
+# --- production fails closed when the live user check cannot run ---------------------------
+
+
+def _production_request(monkeypatch: pytest.MonkeyPatch, secret: str, *, env: str) -> Any:
+    monkeypatch.setenv("ENVIRONMENT", env)
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    return _mock_request(f"Bearer {_make_jose_token(sub='u1', secret=secret)}")
+
+
+async def test_production_without_sessionmaker_fails_closed_for_every_dependency(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.security.jwt import create_access_token
+
+    secret = "test-secret-at-least-32-chars-long-for-hs256"
+    settings = _mock_settings(deployment_mode="standalone", jwt_secret=secret)
+    req = _production_request(monkeypatch, secret, env="production")
+    with pytest.raises(AuthError, match="authentication unavailable"):
+        await get_current_user_id(req, settings)
+    with pytest.raises(AuthError, match="authentication unavailable"):
+        await get_current_role(req, settings)
+    req2 = _mock_request(f"Bearer {create_access_token('u1')}")
+    with pytest.raises(AuthError, match="authentication unavailable"):
+        await get_user_id_allow_password_change(req2)
+
+
+async def test_development_without_sessionmaker_skips_the_live_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.security.jwt import create_access_token
+
+    secret = "test-secret-at-least-32-chars-long-for-hs256"
+    settings = _mock_settings(deployment_mode="standalone", jwt_secret=secret)
+    req = _production_request(monkeypatch, secret, env="development")
+    assert await get_current_user_id(req, settings) == "u1"
+    assert await get_current_role(req, settings) == ("u1", "member")
+    req2 = _mock_request(f"Bearer {create_access_token('u1')}")
+    assert await get_user_id_allow_password_change(req2) == "u1"

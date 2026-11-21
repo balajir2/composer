@@ -284,3 +284,23 @@ async def test_ws_keepalive_send_failure_closes_loop(monkeypatch: pytest.MonkeyP
             ws.receive_text()
 
     fake_conn.close.assert_awaited()
+
+
+def test_ws_closes_4401_in_production_without_a_live_user_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No sessionmaker (e.g. during shutdown) must not let a valid JWT through."""
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    execution = _execution_row(status="running", userId="u1")
+    client, app = _build_app(execution)
+    app.state.db_sessionmaker = None
+    token = _token_for("u1")
+    with (
+        pytest.raises(WebSocketDisconnect) as info,
+        client.websocket_connect("/executions/exec-1/ws", subprotocols=["bearer", token]),
+    ):
+        pass
+    assert info.value.code == 4401

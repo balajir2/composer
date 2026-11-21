@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.errors import AlreadyExists
 from src.db.repos import users as users_repo
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
@@ -102,3 +103,32 @@ def test_sso_exchange_inactive_user_returns_401(monkeypatch: pytest.MonkeyPatch)
     assert resp.status_code == 401
     assert resp.json()["detail"] == "account is deactivated"
     users_repo.create.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+def test_sso_exchange_provisioning_race_reads_the_winning_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, session = _client_sso_enabled(monkeypatch, user_row=None)
+    winner = make_user(id="u-winner", password_hash=None)
+    monkeypatch.setattr(users_repo, "get_by_email", AsyncMock(side_effect=[None, winner]))
+    monkeypatch.setattr(
+        users_repo, "create", AsyncMock(side_effect=AlreadyExists("users_email_key"))
+    )
+    resp = client.post("/auth/sso-exchange", json={"azureToken": "valid"})
+    assert resp.status_code == 200, resp.text
+    session.rollback.assert_awaited_once()
+    session.commit.assert_not_awaited()
+
+
+def test_sso_exchange_provisioning_race_still_rejects_deactivated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = _client_sso_enabled(monkeypatch, user_row=None)
+    loser = make_user(id="u-winner", password_hash=None, is_active=False)
+    monkeypatch.setattr(users_repo, "get_by_email", AsyncMock(side_effect=[None, loser]))
+    monkeypatch.setattr(
+        users_repo, "create", AsyncMock(side_effect=AlreadyExists("users_email_key"))
+    )
+    resp = client.post("/auth/sso-exchange", json={"azureToken": "valid"})
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "account is deactivated"

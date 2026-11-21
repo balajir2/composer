@@ -736,11 +736,13 @@ async def assign_workflow_owner(
         if not payload.email:
             raise HTTPException(422, "must provide user_id or email")
         target_user = await users_repo.get_by_email(session, payload.email.lower())
+        await session.rollback()  # release the pooled connection; the rest uses Prisma
         if target_user is None:
             raise HTTPException(404, f"user with email {payload.email!r} not found")
         target_user_id = target_user.id
     else:
         target_user = await users_repo.get_by_id(session, target_user_id)
+        await session.rollback()  # release the pooled connection; the rest uses Prisma
         if target_user is None:
             raise HTTPException(404, f"user {target_user_id!r} not found")
 
@@ -791,6 +793,7 @@ async def grant_workflow_assignment(
     if role != "admin" and existing.userId != user_id:
         raise HTTPException(403, "Forbidden: not workflow owner.")
     target_user = await users_repo.get_by_id(session, target_user_id)
+    await session.rollback()  # release the pooled connection; the rest uses Prisma
     if target_user is None:
         raise HTTPException(404, f"user {target_user_id!r} not found")
     try:

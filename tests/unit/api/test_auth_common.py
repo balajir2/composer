@@ -11,7 +11,7 @@ from jose import jwt as jose_jwt  # pyright: ignore[reportMissingImports, report
 
 from src.db.models import UserRole
 from src.db.repos import users as users_repo
-from tests.unit.db_fakes import make_user, override_session
+from tests.unit.db_fakes import FakeSessionmaker, make_user, override_session
 
 
 def _app_with_router(
@@ -34,6 +34,9 @@ def _app_with_router(
     app.include_router(auth_router)
 
     override_session(app)
+    app.state.db_sessionmaker = (
+        FakeSessionmaker()
+    )  # production fails closed without a live user check
     monkeypatch.setattr(
         users_repo, "get_by_id", AsyncMock(return_value=make_user(role=UserRole.ADMIN))
     )
@@ -58,7 +61,8 @@ def test_me_standalone_user_not_found_404(monkeypatch: pytest.MonkeyPatch) -> No
     from src.security.jwt import create_access_token
 
     client, _ = _app_with_router(monkeypatch, mode="standalone")
-    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=None))
+    # 1st lookup: the auth dependency's live check (user exists); 2nd: the handler's own.
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(side_effect=[make_user(), None]))
     token = create_access_token("ghost")
     resp = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 404

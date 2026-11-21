@@ -94,6 +94,10 @@ async def events_ws(  # pyright: ignore[reportUnusedFunction]
     if sessionmaker is not None:
         async with sessionmaker() as session:
             user = await users_repo.get_by_id(session, user_id)
+    if sessionmaker is None and settings.environment == "production":
+        # Fail closed: no live user check available (e.g. during shutdown).
+        await ws.close(code=4401, reason="unauthenticated")
+        return
     if settings.deployment_mode == "standalone" and (user is None or not user.is_active):
         await ws.close(code=4401, reason="unauthenticated")
         return

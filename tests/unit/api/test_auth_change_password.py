@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from src.db.repos import users as users_repo
 from src.security.rate_limit import RateLimiter
-from tests.unit.db_fakes import FakeSession, make_user, override_session
+from tests.unit.db_fakes import FakeSession, FakeSessionmaker, make_user, override_session
 
 
 def _pw_user(**overrides: object) -> object:
@@ -29,6 +29,9 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, FakeSession]:
     app = FastAPI()
     app.include_router(auth_router)
     session = override_session(app)
+    app.state.db_sessionmaker = (
+        FakeSessionmaker()
+    )  # production fails closed without a live user check
     app.state.rate_limiter = RateLimiter()
     user = _pw_user()
     monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=user))

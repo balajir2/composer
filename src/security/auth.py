@@ -97,6 +97,11 @@ async def _live_user(
     """
     sessionmaker = request_sessionmaker(request)
     if sessionmaker is None:
+        if get_settings().environment == "production":
+            # Fail closed: without the live check a deactivated or must-change user's
+            # still-valid JWT would be accepted (e.g. during shutdown, after the
+            # lifespan has detached the sessionmaker).
+            raise AuthError("authentication unavailable")
         return False, None
     async with sessionmaker() as session:
         return True, await users_repo.get_by_id(session, user_id)

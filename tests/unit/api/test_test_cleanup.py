@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 from src.api.test_cleanup import router as cleanup_router
 from src.db.repos import users as users_repo
 from src.security.jwt import create_access_token
-from tests.unit.db_fakes import FakeSession, make_user, override_session
+from tests.unit.db_fakes import FakeSession, FakeSessionmaker, make_user, override_session
 
 
 def _user_row(**overrides: str) -> users_repo.UserRecord:
@@ -50,6 +50,7 @@ def _client(
     db.cloudstorageconnection.delete_many = AsyncMock(return_value=0)
     app.state.db = db
     session = override_session(app)
+    app.state.db_sessionmaker = FakeSessionmaker()  # production fails closed without it
     monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=_user_row()))
     monkeypatch.setattr(users_repo, "delete", AsyncMock(return_value=True))
 
@@ -94,7 +95,8 @@ def test_rejects_non_test_email_403(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_404_when_user_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _, _ = _client(monkeypatch)
-    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=None))
+    # 1st lookup: the auth dependency's live check (user exists); 2nd: the handler's own.
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(side_effect=[make_user(), None]))
     resp = client.delete("/internal/test-users/me", headers=_auth_header())
     assert resp.status_code == 404
 
@@ -106,7 +108,10 @@ def test_disabled_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _, _ = _client(monkeypatch, environment="production")
     resp = client.delete("/internal/test-users/me", headers=_auth_header())
     assert resp.status_code == 404
-    users_repo.get_by_id.assert_not_awaited()  # type: ignore[attr-defined]
+    # Only the auth dependency's live check looked the user up; the handler itself
+    # refused before touching the users repository.
+    assert users_repo.get_by_id.await_count == 1  # type: ignore[attr-defined]
+    users_repo.delete.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 def test_requires_auth(monkeypatch: pytest.MonkeyPatch) -> None:
