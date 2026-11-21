@@ -637,6 +637,7 @@ class Phase2Adapter:
         self._client = client
         self._monkeypatch = monkeypatch
         self._db: Any = app.state.db
+        self.bound_tool_names: list[str] = []  # tool names the scripted model was bound to
 
     # ---- resolver -------------------------------------------------------------------------
 
@@ -723,6 +724,14 @@ class Phase2Adapter:
     # ---- executors ----------------------------------------------------------------------------
 
     @staticmethod
+    def reset_context() -> Callable[[], None]:
+        """Clear the per-execution db context; the returned callable restores it."""
+        from src.engine.context import _current_db  # pyright: ignore[reportPrivateUsage]
+
+        token = _current_db.set(None)
+        return lambda: _current_db.reset(token)
+
+    @staticmethod
     def _set_context_db(db: Any) -> None:
         from src.engine.context import set_current_db
 
@@ -783,11 +792,14 @@ class Phase2Adapter:
         from src.engine.workflow import McpNode
         from src.executors.mcp import McpExecutor
 
+        self_bound = self.bound_tool_names
+
         class _Scripted:
             def __init__(self) -> None:
                 self.turn = 0
 
             def bind_tools(self, tools: Any) -> "_Scripted":
+                self_bound.extend(t.name for t in tools)
                 return self
 
             async def ainvoke(self, messages: Any) -> AIMessage:
@@ -869,11 +881,10 @@ class Phase2Adapter:
 def adapter(
     app: FastAPI, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[Phase2Adapter]:
-    from src.engine.context import _current_db  # pyright: ignore[reportPrivateUsage]
-
-    token = _current_db.set(None)
-    yield Phase2Adapter(app, client, monkeypatch)
-    _current_db.reset(token)
+    a = Phase2Adapter(app, client, monkeypatch)
+    reset = a.reset_context()
+    yield a
+    reset()
 
 
 # --------------------------------------------------------------------------- API helpers

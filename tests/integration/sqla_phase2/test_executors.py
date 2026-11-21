@@ -27,6 +27,7 @@ from tests.integration.sqla_phase2.conftest import (
     Phase2Adapter,
     ServerApi,
     near,
+    unique,
 )
 
 pytestmark = [pytest.mark.integration, HTTPX_MARK]
@@ -158,6 +159,7 @@ async def test_mcp_node_agent_mode_runs_a_scripted_model_over_the_servers_tools(
     assert result["input"] == "do the thing"
     assert fake.methods() == ["tools/list", "tools/call"]
     assert fake.calls[-1].params["name"] == "alpha"
+    assert adapter.bound_tool_names == ["alpha"]  # only the selected tool is offered to the model
 
     with pytest.raises(McpPermissionError):
         await adapter.run_mcp_node_agent(
@@ -245,7 +247,7 @@ async def test_download_pdf_errors_for_missing_connection_and_missing_db(
 # --------------------------------------------------------------------------- poller
 
 
-def _trigger_node(connection_id: str) -> dict[str, object]:
+def _trigger_node(connection_id: str, folder_id: str) -> dict[str, object]:
     return {
         "id": "ft",
         "type": "file-trigger",
@@ -254,7 +256,7 @@ def _trigger_node(connection_id: str) -> dict[str, object]:
             "label": "trigger",
             "provider": "google-drive",
             "connectionId": connection_id,
-            "driveFolderId": "folder-poll",
+            "driveFolderId": folder_id,
             "targetInputVariable": "doc",
         },
     }
@@ -268,30 +270,47 @@ async def test_poll_file_triggers_reads_connections_refreshes_and_skips_foreign_
     httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
     fake_endpoint: FakeEndpointFactory,
 ) -> None:
-    seen = drive_recorder(httpx_mock)
+    all_seen = drive_recorder(httpx_mock)
     token_ep = fake_endpoint(GOOGLE_TOKEN_URL)
+    folder = unique("folder-poll")
+    old_refresh, new_access = unique("poll-rt"), unique("poll-new")
     mine = await db.seed_connection(
-        member.id, access="poll-old", refresh="rt", expires_in=timedelta(seconds=-5), scope="a b"
+        member.id,
+        access=unique("poll-old"),
+        refresh=old_refresh,
+        expires_in=timedelta(seconds=-5),
+        scope="a b",
     )
     await db.set_connection(mine, updated_at=LONG_AGO)
     theirs = await db.seed_connection(
-        second_member.id, access="theirs-old", refresh="rt", expires_in=timedelta(seconds=-5)
+        second_member.id,
+        access="theirs-old",
+        refresh=unique("theirs-rt"),
+        expires_in=timedelta(seconds=-5),
     )
     theirs_before = Db.snapshot(await db.connection(theirs))  # pyright: ignore[reportArgumentType]
     await db.seed_production_workflow(
-        member.id, [_trigger_node(mine), _trigger_node(theirs), _trigger_node("no-such-conn")]
+        member.id,
+        [
+            _trigger_node(mine, folder),
+            _trigger_node(theirs, folder),
+            _trigger_node("no-such-conn", folder),
+        ],
     )
-    token_ep.push({"access_token": "poll-new", "expires_in": 3600})
+    token_ep.push({"access_token": new_access, "expires_in": 3600})
 
     result = await adapter.poll_file_triggers()
 
-    assert result == {"triggered": 0, "failed": 0}
+    assert result["triggered"] == 0  # tolerant of other production workflows in a shared DB
     # only the caller's own connection is used: refreshed once, then one Drive list call
-    assert len(token_ep.requests) == 1
+    refreshes = [f for f in token_ep.forms() if f["refresh_token"] == old_refresh]
+    assert len(refreshes) == 1
+    seen = [r for r in all_seen if folder in r.url.params.get("q", "")]
     assert [r.method for r in seen] == ["GET"]
-    assert seen[0].headers["authorization"] == "Bearer poll-new"
+    assert seen[0].headers["authorization"] == f"Bearer {new_access}"
+    assert not [r for r in all_seen if r.headers["authorization"] == "Bearer theirs-old"]
     row = await db.connection(mine)
-    assert row is not None and decrypt(row.encrypted_access_token) == "poll-new"
+    assert row is not None and decrypt(row.encrypted_access_token) == new_access
     assert row.scope == "a b" and near(row.updated_at, datetime.now(UTC))
     # a connection owned by someone else is never touched (confused-deputy guard)
     assert Db.snapshot(await db.connection(theirs)) == theirs_before  # pyright: ignore[reportArgumentType]

@@ -563,7 +563,7 @@ async def test_test_connection_tools_list_failing_after_health_ok(
     assert row.last_tested is not None and row.tools is None
 
 
-async def test_test_connection_unknown_server_404_and_no_ownership_check(
+async def test_test_connection_hides_private_servers_of_others_as_404(
     client: AsyncClient,
     member: Member,
     second_member: Member,
@@ -574,16 +574,39 @@ async def test_test_connection_unknown_server_404_and_no_ownership_check(
     r = await client.post("/mcp-servers/nope/test-connection", headers=member.headers)
     assert r.status_code == 404 and r.json() == {"detail": "MCP server 'nope' not found."}
 
-    # Today ANY authenticated user can test ANY server, including another member's private one,
-    # and the server's own bearer token is what gets sent (no visibility check).
+    # Visibility is owner-or-shared. A non-owner of a PRIVATE server gets the same 404 as an
+    # unknown id, before any MCP call and without touching the row.
     fake = fake_mcp()
     private = await servers.create(
         member, url=fake.url, authType="bearer", accessToken="owner-private-token", isShared=False
     )
-    r = await client.post(
+    before = Db.snapshot(await db.server(private["id"]))
+    hidden = await client.post(
         f"/mcp-servers/{private['id']}/test-connection", headers=second_member.headers
     )
+    unknown = await client.post("/mcp-servers/nope/test-connection", headers=second_member.headers)
+    assert hidden.status_code == 404
+    assert hidden.json() == {"detail": f"MCP server {private['id']!r} not found."}
+    assert hidden.content.replace(private["id"].encode(), b"X") == unknown.content.replace(
+        b"nope", b"X"
+    )
+    assert fake.calls == []  # nothing sent to the owner's server
+    assert Db.snapshot(await db.server(private["id"])) == before
+
+    # the owner may test it
+    r = await client.post(f"/mcp-servers/{private['id']}/test-connection", headers=member.headers)
     assert r.status_code == 200 and jbody(r)["ok"] is True
     assert fake.authorizations() == {"Bearer owner-private-token"}
     row = await db.server(private["id"])
     assert row is not None and row.connection_status == "connected"
+
+    # another member's SHARED server is allowed (and uses the owner's static credential)
+    shared_fake = fake_mcp()
+    shared = await servers.create(
+        member, url=shared_fake.url, authType="bearer", accessToken="shared-token", isShared=True
+    )
+    r = await client.post(
+        f"/mcp-servers/{shared['id']}/test-connection", headers=second_member.headers
+    )
+    assert r.status_code == 200 and jbody(r)["ok"] is True
+    assert shared_fake.authorizations() == {"Bearer shared-token"}

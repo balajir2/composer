@@ -149,7 +149,7 @@ async def test_authorize_without_scopes_stores_null_scope(
     assert row is not None and row.scope is None
 
 
-async def test_authorize_errors_and_no_visibility_check(
+async def test_authorize_errors(
     client: AsyncClient, member: Member, second_member: Member, servers: ServerApi, db: Db
 ) -> None:
     plain = await servers.create(member)
@@ -169,12 +169,34 @@ async def test_authorize_errors_and_no_visibility_check(
     )
     assert r.status_code == 422  # redirectUri required
 
-    # Today there is no ownership/visibility check: another member can start the flow on a
-    # private server, and the state is recorded for THAT member.
+
+async def test_authorize_hides_private_servers_of_others_as_404(
+    client: AsyncClient, member: Member, second_member: Member, servers: ServerApi, db: Db
+) -> None:
     private = await servers.create_oauth(member, isShared=False)
-    state = await authorize(client, second_member, private["id"])
+    sid = private["id"]
+    before = Db.snapshot(await db.server(sid))
+    body = {"redirectUri": REDIRECT}
+    hidden = await client.post(
+        f"/mcp-servers/{sid}/oauth/authorize", json=body, headers=second_member.headers
+    )
+    unknown = await client.post(
+        "/mcp-servers/nope/oauth/authorize", json=body, headers=second_member.headers
+    )
+    assert hidden.status_code == 404
+    assert hidden.json() == {"detail": f"MCP server {sid!r} not found."}
+    assert hidden.content.replace(sid.encode(), b"X") == unknown.content.replace(b"nope", b"X")
+    assert await db.states_for(sid, second_member.id) == []  # no state written
+    assert Db.snapshot(await db.server(sid)) == before
+
+    # the owner may authorize; so may anyone on a SHARED server, with the state recorded for them
+    owner_state = await authorize(client, member, sid)
+    row = await db.state(owner_state)
+    assert row is not None and row.user_id == member.id
+    shared = await servers.create_oauth(member, isShared=True)
+    state = await authorize(client, second_member, shared["id"])
     row = await db.state(state)
-    assert row is not None and row.user_id == second_member.id
+    assert row is not None and row.user_id == second_member.id and row.mcp_server_id == shared["id"]
 
 
 async def test_authorize_reaps_expired_states_of_any_server_or_user(
