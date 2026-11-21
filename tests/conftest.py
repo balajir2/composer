@@ -26,16 +26,18 @@ from src.main import create_app
 load_dotenv()
 
 
-@pytest.fixture(scope="session")
-def event_loop_policy() -> asyncio.AbstractEventLoopPolicy:
-    """psycopg's async mode cannot use Windows' default Proactor loop; use the selector loop.
+if sys.platform == "win32":
+    # Defined only on Windows: elsewhere pytest-asyncio's default policy is right,
+    # and asyncio.get_event_loop_policy() is deprecated on newer Pythons.
 
-    Without this, every SQLAlchemy integration test fails locally on Windows
-    ("Psycopg cannot use the 'ProactorEventLoop'"). Linux CI is unaffected.
-    """
-    if sys.platform == "win32":
+    @pytest.fixture(scope="session")
+    def event_loop_policy() -> asyncio.AbstractEventLoopPolicy:  # pyright: ignore[reportUnusedFunction]
+        """psycopg's async mode cannot use Windows' default Proactor loop; use the selector loop.
+
+        Without this, every SQLAlchemy integration test fails locally on Windows
+        ("Psycopg cannot use the 'ProactorEventLoop'"). Linux CI is unaffected.
+        """
         return asyncio.WindowsSelectorEventLoopPolicy()
-    return asyncio.get_event_loop_policy()
 
 
 def pytest_collection_modifyitems(
