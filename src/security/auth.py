@@ -88,7 +88,7 @@ async def _verify_standalone_jwt(token: str, settings: Any) -> str:
 
 
 async def _live_user(
-    request: HTTPConnection, user_id: str
+    request: HTTPConnection, user_id: str, settings: Settings
 ) -> tuple[bool, users_repo.UserRecord | None]:
     """(checked, user). checked=False when the app has no database attached.
 
@@ -97,10 +97,11 @@ async def _live_user(
     """
     sessionmaker = request_sessionmaker(request)
     if sessionmaker is None:
-        if get_settings().environment == "production":
-            # Fail closed: without the live check a deactivated or must-change user's
-            # still-valid JWT would be accepted (e.g. during shutdown, after the
-            # lifespan has detached the sessionmaker).
+        if settings.environment != "development":
+            # Fail closed in every environment but development: without the live
+            # check a deactivated or must-change user's still-valid JWT would be
+            # accepted (e.g. during shutdown, after the lifespan detached the
+            # sessionmaker).
             raise AuthError("authentication unavailable")
         return False, None
     async with sessionmaker() as session:
@@ -187,13 +188,16 @@ async def get_current_user_id(
     # an existing session could keep refreshing (and calling every other
     # route) for up to 30 days without ever hitting the forced-change gate.
     # A pending mustChangePassword must cut off existing sessions immediately.
-    checked, user = await _live_user(request, user_id)
+    checked, user = await _live_user(request, user_id, settings)
     if checked and _ensure_active(user).must_change_password:
         raise AuthError("password change required")
     return user_id
 
 
-async def get_user_id_allow_password_change(request: Request) -> str:
+async def get_user_id_allow_password_change(
+    request: Request,
+    settings: Settings = Depends(get_settings),  # pyright: ignore[reportCallIssue]
+) -> str:
     """Standalone-mode only. Accepts EITHER a normal access token (self-service
     change while already logged in) OR a password_change token (completing an
     admin-forced reset). Raises AuthError (401) for anything else — including
@@ -217,7 +221,7 @@ async def get_user_id_allow_password_change(request: Request) -> str:
         except TokenVerificationError as exc:
             raise AuthError(f"invalid token: {exc}") from exc
 
-    checked, user = await _live_user(request, user_id)
+    checked, user = await _live_user(request, user_id, settings)
     if checked:
         _ensure_active(user)
     return user_id
@@ -237,7 +241,7 @@ async def get_current_role(
     user_id = await get_current_user_id(request, settings)
 
     # Fetch role from DB — cheap single-row lookup keyed on primary id.
-    checked, user = await _live_user(request, user_id)
+    checked, user = await _live_user(request, user_id, settings)
     if not checked:
         return user_id, "member"
     return user_id, user.role.value if user is not None else "member"

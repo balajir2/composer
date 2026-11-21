@@ -286,11 +286,12 @@ async def test_ws_keepalive_send_failure_closes_loop(monkeypatch: pytest.MonkeyP
     fake_conn.close.assert_awaited()
 
 
-def test_ws_closes_4401_in_production_without_a_live_user_check(
-    monkeypatch: pytest.MonkeyPatch,
+@pytest.mark.parametrize("environment", ["production", "staging", "Production"])
+def test_ws_closes_4401_outside_development_without_a_live_user_check(
+    monkeypatch: pytest.MonkeyPatch, environment: str
 ) -> None:
     """No sessionmaker (e.g. during shutdown) must not let a valid JWT through."""
-    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("ENVIRONMENT", environment)
     from src.config import get_settings
 
     get_settings.cache_clear()

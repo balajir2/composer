@@ -60,7 +60,7 @@ def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     db.mcpserver.delete = AsyncMock()
     # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
     app.state.db = db
-    override_session(app)
+    app.state.session = override_session(app)
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
     return TestClient(app), db
@@ -411,3 +411,35 @@ def test_member_patch_shared_403() -> None:
     # No admin override → dev-mode 'dev' user → member → ensure_admin raises 403
     resp = client.patch("/mcp-servers/srv1/shared", json={"isShared": True})
     assert resp.status_code == 403
+
+
+def test_patch_mcp_server_owner_releases_connection_after_user_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.security.auth import ensure_admin
+
+    client, db = _client_with_mock_db()
+    order: list[str] = []
+
+    async def _lookup(*_a: object, **_k: object) -> object:
+        order.append("lookup")
+        return make_user(id="new-owner")
+
+    async def _rollback() -> None:
+        order.append("rollback")
+
+    async def _find(**_k: object) -> object:
+        order.append("prisma")
+        return _server_row()
+
+    monkeypatch.setattr(users_repo, "get_by_id", _lookup)
+    client.app.state.session.rollback.side_effect = _rollback  # type: ignore[attr-defined]
+    db.mcpserver.find_unique = _find
+    db.mcpserver.update = AsyncMock(return_value=_server_row(userId="new-owner"))
+    client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
+    try:
+        resp = client.patch("/mcp-servers/srv1/owner", json={"userId": "new-owner"})
+    finally:
+        client.app.dependency_overrides.pop(ensure_admin, None)  # type: ignore[attr-defined]
+    assert resp.status_code == 200, resp.text
+    assert order == ["lookup", "rollback", "prisma"]
