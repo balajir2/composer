@@ -328,6 +328,12 @@ async def test_telemetry_wraps_both_database_lifecycles_even_on_failure(
     monkeypatch.setattr(main, "validate_production_config", lambda settings: None)
     app = main.create_app()
     app.state.telemetry_runtime = Runtime()
+
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    app.state.db_sessionmaker = session
     async with main.lifespan(app):
         events.append("serving")
     assert events == [
@@ -405,3 +411,145 @@ async def test_concurrent_http_requests_keep_distinct_context() -> None:
     assert two.json()["before"] == two.json()["after"] == two.headers["x-request-id"]
     assert one.headers["x-request-id"] != two.headers["x-request-id"]
     assert current_correlation().request_id is None
+
+
+def test_span_uses_route_template_method_and_repeated_tracestate() -> None:
+    from fastapi.testclient import TestClient
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from src.main import create_app
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider(shutdown_on_exit=False)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    app = create_app()
+    app.state.telemetry_runtime.tracer_provider = provider
+
+    @app.get("/items/{item_id}")
+    async def item(item_id: str) -> dict[str, str]:
+        return {"id": item_id}
+
+    client = TestClient(app)
+    response = client.get(
+        "/items/private123?secret=token",
+        headers=[
+            ("traceparent", "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"),
+            ("tracestate", "a=one"),
+            ("tracestate", "b=two"),
+        ],
+    )
+    assert response.status_code == 200
+    span = exporter.get_finished_spans()[-1]
+    assert span.name == "GET /items/{item_id}"
+    assert span.attributes["http.request.method"] == "GET"
+    assert span.attributes["http.route"] == "/items/{item_id}"
+    assert span.context.trace_state.get("a") == "one"
+    assert span.context.trace_state.get("b") == "two"
+    assert "private123" not in str(span.attributes) + span.name
+    assert "secret" not in str(span.attributes) + span.name
+    provider.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_does_not_invent_http_status() -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from src.telemetry.context import CorrelationMiddleware
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider(shutdown_on_exit=False)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    async def app(scope, receive, send):
+        raise asyncio.CancelledError()
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        pass
+
+    middleware = CorrelationMiddleware(app, runtime=SimpleNamespace(tracer_provider=provider))
+    with pytest.raises(asyncio.CancelledError):
+        await middleware(
+            {"type": "http", "path": "/cancel", "method": "GET", "headers": []}, receive, send
+        )
+    span = exporter.get_finished_spans()[-1]
+    assert "http.response.status_code" not in span.attributes
+    provider.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancellation_after_response_preserves_sent_status() -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from src.telemetry.context import CorrelationMiddleware
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider(shutdown_on_exit=False)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 202, "headers": []})
+        raise asyncio.CancelledError()
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        pass
+
+    middleware = CorrelationMiddleware(app, runtime=SimpleNamespace(tracer_provider=provider))
+    with pytest.raises(asyncio.CancelledError):
+        await middleware(
+            {"type": "http", "path": "/cancel", "method": "GET", "headers": []}, receive, send
+        )
+    span = exporter.get_finished_spans()[-1]
+    assert span.attributes["http.response.status_code"] == 202
+    assert span.attributes["error.type"] == "cancelled"
+    provider.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_failed_response_send_does_not_record_unsent_status() -> None:
+    import asyncio
+    from types import SimpleNamespace
+
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+    from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+    from src.telemetry.context import CorrelationMiddleware
+
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider(shutdown_on_exit=False)
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+    async def app(scope, receive, send):
+        await send({"type": "http.response.start", "status": 201, "headers": []})
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        raise asyncio.CancelledError()
+
+    middleware = CorrelationMiddleware(app, runtime=SimpleNamespace(tracer_provider=provider))
+    with pytest.raises(asyncio.CancelledError):
+        await middleware(
+            {"type": "http", "path": "/cancel", "method": "GET", "headers": []}, receive, send
+        )
+    assert "http.response.status_code" not in exporter.get_finished_spans()[-1].attributes
+    provider.shutdown()

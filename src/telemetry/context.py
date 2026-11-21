@@ -55,6 +55,7 @@ class CorrelationMiddleware:
         self.runtime = runtime
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        import asyncio
         from contextlib import ExitStack, suppress
         from uuid import uuid4
 
@@ -67,22 +68,44 @@ class CorrelationMiddleware:
         request_id = uuid4().hex
         scope.setdefault("state", {})["telemetry_request_id"] = request_id
         span = None
+        method = scope.get("method", "")
+        if method not in {
+            "GET",
+            "HEAD",
+            "POST",
+            "PUT",
+            "DELETE",
+            "CONNECT",
+            "OPTIONS",
+            "TRACE",
+            "PATCH",
+        }:
+            method = "_OTHER"
         stack = ExitStack()
         with bind_context(request_id=request_id):
             if scope.get("path") != "/health":
                 with suppress(Exception):
                     provider = self.runtime.tracer_provider
                     if provider is not None:
-                        headers = {
-                            k.decode("latin1").lower(): v.decode("latin1")
-                            for k, v in scope["headers"]
-                            if k.lower() in (b"traceparent", b"tracestate")
-                        }
+                        headers: dict[str, str] = {}
+                        for key, value in scope["headers"]:
+                            name = key.decode("latin1").lower()
+                            if name == "tracestate":
+                                previous = headers.get(name)
+                                headers[name] = (
+                                    f"{previous},{value.decode('latin1')}"
+                                    if previous
+                                    else value.decode("latin1")
+                                )
+                            elif name == "traceparent":
+                                headers[name] = (
+                                    value.decode("latin1") if name not in headers else ""
+                                )
                         parent = TraceContextTextMapPropagator().extract(headers)
                         tracer = provider.get_tracer("composer.http")
                         span = stack.enter_context(
                             tracer.start_as_current_span(
-                                scope.get("method", "HTTP"),
+                                method,
                                 context=parent,
                                 kind=SpanKind.SERVER,
                                 record_exception=False,
@@ -90,6 +113,7 @@ class CorrelationMiddleware:
                             )
                         )
                         span.set_attribute("request_id", request_id)
+                        span.set_attribute("http.request.method", method)
 
             async def send_response(message: Message) -> None:
                 if message["type"] == "http.response.start":
@@ -98,22 +122,36 @@ class CorrelationMiddleware:
                         for k, v in message.get("headers", [])
                         if k.lower() != b"x-request-id"
                     ] + [(b"x-request-id", request_id.encode("ascii"))]
+                    await send(message)
                     if span is not None:
                         with suppress(Exception):
                             status = message["status"]
                             span.set_attribute("http.response.status_code", status)
                             if status >= 500:
                                 span.set_status(Status(StatusCode.ERROR))
-                await send(message)
+                else:
+                    await send(message)
 
             try:
                 await self.app(scope, receive, send_response)
-            except BaseException:
+            except BaseException as exc:
                 if span is not None:
                     with suppress(Exception):
-                        span.set_attribute("http.response.status_code", 500)
+                        kind = (
+                            "cancelled"
+                            if isinstance(exc, asyncio.CancelledError)
+                            else "internal_error"
+                        )
+                        span.set_attribute("error.type", kind)
                         span.set_status(Status(StatusCode.ERROR))
                 raise
             finally:
+                if span is not None:
+                    with suppress(Exception):
+                        route = scope.get("route")
+                        path = getattr(route, "path_format", None)
+                        if isinstance(path, str) and len(path) <= 1024:
+                            span.set_attribute("http.route", path)
+                            span.update_name(f"{method} {path}")
                 with suppress(Exception):
                     stack.close()

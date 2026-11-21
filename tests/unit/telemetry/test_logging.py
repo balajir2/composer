@@ -45,3 +45,136 @@ def test_existing_root_handler_is_structured_and_redacted() -> None:
         assert json.loads(stream.getvalue())["level"] == "INFO"
     finally:
         root.removeHandler(handler)
+
+
+def test_approved_events_preserve_classification_and_bounded_counts() -> None:
+    from src.telemetry.logging import log_event
+
+    class Capture(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.records: list[logging.LogRecord] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.records.append(record)
+
+    logger = logging.getLogger("test.safe.events")
+    handler = Capture()
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    try:
+        log_event(logger, "startup", count=3, payload="private body", url="https://x/?token=secret")
+        log_event(logger, "sweeper.scan", count=7, error_count=2)
+        startup, sweep = (json.loads(JSONFormatter().format(r)) for r in handler.records)
+        assert startup["event"] == "startup"
+        assert sweep["event"] == "sweeper.scan"
+        assert sweep["count"] == 7 and sweep["error_count"] == 2
+        assert "private body" not in json.dumps(startup)
+        assert "secret" not in json.dumps(startup)
+    finally:
+        logger.removeHandler(handler)
+
+
+def test_existing_sweeper_and_configuration_templates_are_classified() -> None:
+    formatter = JSONFormatter()
+    startup = logging.LogRecord(
+        "src.main",
+        logging.INFO,
+        "",
+        0,
+        "Starting Composer v%s in %s mode",
+        ("secret", "production"),
+        None,
+    )
+    sweep = logging.LogRecord(
+        "src.maintenance.execution_sweeper",
+        logging.INFO,
+        "",
+        0,
+        "execution_sweeper: scanned %d orphaned attempts, %d failed, %d errored",
+        (10, 3, 1),
+        None,
+    )
+    config = logging.LogRecord(
+        "src.main",
+        logging.WARNING,
+        "",
+        0,
+        "cors: COMPOSER_FRONTEND_ORIGINS is empty in standalone+production \u2014 every cross-origin request from a browser will be rejected. Set the env var to a comma-separated list of frontend origins.",
+        (),
+        None,
+    )
+    assert json.loads(formatter.format(startup))["event"] == "startup"
+    assert json.loads(formatter.format(sweep))["event"] == "sweeper.orphaned"
+    assert json.loads(formatter.format(sweep))["count"] == 10
+    assert json.loads(formatter.format(config))["event"] == "config.cors_empty"
+    assert "secret" not in formatter.format(startup)
+
+
+def test_default_uvicorn_handlers_are_structured_without_payloads() -> None:
+    import os
+    import subprocess
+    import sys
+
+    program = """\nimport logging, logging.config\nfrom uvicorn.config import LOGGING_CONFIG\nfrom src.telemetry.context import bind_context\nfrom src.telemetry.logging import configure_logging\nlogging.config.dictConfig(LOGGING_CONFIG)\nconfigure_logging("INFO")\nwith bind_context(request_id="opaque"):\n    logging.getLogger("uvicorn.access").info("%s - \\\"%s %s HTTP/%s\\\" %d", "client", "GET", "/?token=secret", "1.1", 500)\n    try:\n        raise ValueError("private body secret")\n    except ValueError:\n        logging.getLogger("uvicorn.error").exception("token=secret")\n"""
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    output = result.stdout + result.stderr
+    assert "secret" not in output and "private body" not in output
+    rows = [json.loads(line) for line in output.splitlines() if line.strip()]
+    assert len(rows) == 2
+    assert all(row["request_id"] == "opaque" for row in rows)
+    access = next(row for row in rows if row["logger"] == "uvicorn.access")
+    assert access["event"] == "http.access"
+    assert access["status_code"] == 500 and access["method"] == "GET"
+
+
+def test_log_event_fields_are_bounded_and_unknown_events_rejected() -> None:
+    import pytest
+
+    from src.telemetry.logging import log_event
+
+    logger = logging.getLogger("test.bounds")
+    handler = logging.Handler()
+    records = []
+    handler.emit = records.append
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    try:
+        log_event(
+            logger,
+            "sweeper.scan",
+            count=10**12,
+            failed_count=-1,
+            error_count=True,
+            url="https://x/?token=secret",
+        )
+        data = json.loads(JSONFormatter().format(records[0]))
+        assert data["event"] == "sweeper.scan"
+        assert not {"count", "failed_count", "error_count", "url"} & data.keys()
+        with pytest.raises(ValueError):
+            log_event(logger, "attacker-controlled-event", payload="secret")
+    finally:
+        logger.removeHandler(handler)
+
+
+def test_malformed_log_arguments_never_trigger_raw_logging_diagnostics() -> None:
+    import os
+    import subprocess
+    import sys
+
+    program = """\nimport logging\nfrom src.telemetry.logging import configure_logging\nconfigure_logging("INFO")\nlogging.getLogger("test").info("status=%d", "secret-token")\n"""
+    result = subprocess.run(
+        [sys.executable, "-c", program],
+        env=os.environ.copy(),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert "secret-token" not in result.stdout + result.stderr
+    assert "Logging error" not in result.stderr
