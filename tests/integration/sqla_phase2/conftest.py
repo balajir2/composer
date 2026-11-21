@@ -6,6 +6,10 @@ while the four tables move to SQLAlchemy. The only code later tasks may edit is 
 change from ``db`` to ``sessionmaker``). Everything else here talks to the app over HTTP or to
 the database through SQLAlchemy setup/inspection helpers.
 
+Coverage boundary: src/migration/writer.py, runner.py and reconcile.py (the OAB -> Composer
+migration CLI) are NOT covered by this oracle, because exercising them needs Convex export data.
+They are guarded only by the new repository tests and the existing unit tests.
+
 Network is never real:
 * ``httpx_mock`` (pytest-httpx) answers OAuth token endpoints, Google, and the MCP server itself.
   The MCP seam is therefore the HTTP transport (``httpx`` POSTs made by ``MCPClient._rpc``):
@@ -33,7 +37,7 @@ import pytest_asyncio
 from fastapi import FastAPI
 from httpx import AsyncClient
 from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
-from sqlalchemy import delete, func, select, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import get_settings
@@ -44,19 +48,35 @@ from src.db.models import (
     McpServer,
     User,
     UserRole,
+    Workflow,
 )
-from src.engine.state import initial_state
-from src.engine.workflow import AgentNode
-from src.integrations.google_drive.oauth import get_valid_drive_access_token
+
+# ADAPTER AREA imports: exception classes that tests assert on are re-exported from here, so a
+# rename in src only touches this block and the Phase2Adapter bodies. Tests import them from
+# this module, never from src.
+from src.executors.download_pdf import (
+    MissingDriveConfigError as MissingDriveConfigError,
+)
+from src.integrations.google_drive.oauth import (
+    DriveConnectionMissingError as DriveConnectionMissingError,
+)
 from src.main import create_app
-from src.mcp.oauth import get_valid_access_token
+from src.mcp.oauth import (
+    McpTokenExpiredError as McpTokenExpiredError,
+)
+from src.mcp.oauth import (
+    McpTokenMissingError as McpTokenMissingError,
+)
+from src.mcp.oauth import (
+    TokenRefreshError as TokenRefreshError,
+)
 from src.mcp.resolver import (
-    resolve_mcp_tools_by_names,
-    resolve_mcp_tools_for_node,
-    resolve_single_mcp_tool,
+    McpPermissionError as McpPermissionError,
+)
+from src.mcp.resolver import (
+    McpServerNotFound as McpServerNotFound,
 )
 from src.security.encryption import encrypt
-from src.tools.base import BuildContext
 
 ISO = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,6})?(Z|\+00:00)$")
 LONG_AGO = datetime(2020, 1, 1, tzinfo=UTC)
@@ -109,6 +129,11 @@ def aware(value: datetime | None) -> datetime:
     assert value is not None
     assert value.tzinfo is not None
     return value
+
+
+def iso_dt(value: str) -> datetime:
+    """Parse an API timestamp (`...Z` or `+00:00`) into an aware datetime."""
+    return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
 def near(value: datetime | None, expected: datetime, tolerance_s: float = 30.0) -> bool:
@@ -216,6 +241,7 @@ async def make_user(
             )
         )
         await s.execute(delete(McpServer).where(McpServer.user_id.in_(made)))
+        await s.execute(delete(Workflow).where(Workflow.user_id.in_(made)))
         await s.execute(
             delete(CloudStorageConnection).where(CloudStorageConnection.user_id.in_(made))
         )
@@ -255,6 +281,38 @@ class Db:
     async def server(self, server_id: str) -> McpServer | None:
         async with self.sm() as s:
             return await s.scalar(select(McpServer).where(McpServer.id == server_id))
+
+    @staticmethod
+    def snapshot(row: Any) -> dict[str, Any]:
+        """Every column of an ORM row, for byte-identical before/after comparisons."""
+        return {c.key: getattr(row, c.key) for c in row.__mapper__.column_attrs}
+
+    async def raw_null_flags(self, server_id: str) -> tuple[bool, bool, bool]:
+        """(headers, oauth_config, tools) IS NULL: SQL NULL, as opposed to a JSON null value."""
+        async with self.sm() as s:
+            res = await s.execute(
+                text(
+                    "SELECT headers IS NULL, oauth_config IS NULL, tools IS NULL "
+                    "FROM mcp_servers WHERE id = :id"
+                ),
+                {"id": server_id},
+            )
+            row = res.one()
+            return (bool(row[0]), bool(row[1]), bool(row[2]))
+
+    async def seed_production_workflow(self, user_id: str, nodes: list[dict[str, Any]]) -> str:
+        async with self.sm() as s:
+            wf = Workflow(
+                user_id=user_id,
+                name=unique("wf"),
+                nodes=nodes,
+                edges=[],
+                is_production=True,
+                external_slug=unique("slug"),
+            )
+            s.add(wf)
+            await s.commit()
+            return wf.id
 
     async def oauth_config(self, server_id: str) -> dict[str, Any]:
         row = await self.server(server_id)
@@ -334,6 +392,7 @@ class Db:
         refresh: str | None = "refresh-token",
         expires_in: timedelta | None = timedelta(hours=1),
         scope: str | None = None,
+        token_type: str = "Bearer",
     ) -> str:
         async with self.sm() as s:
             row = McpOAuthToken(
@@ -343,6 +402,7 @@ class Db:
                 encrypted_refresh_token=encrypt(refresh) if refresh is not None else None,
                 expires_at=(datetime.now(UTC) + expires_in) if expires_in is not None else None,
                 scope=scope,
+                token_type=token_type,
             )
             s.add(row)
             await s.commit()
@@ -384,12 +444,14 @@ class Db:
         access: str = "drive-access",
         refresh: str | None = "drive-refresh",
         expires_in: timedelta | None = timedelta(hours=1),
+        scope: str | None = None,
     ) -> str:
         async with self.sm() as s:
             row = CloudStorageConnection(
                 user_id=user_id,
                 provider=provider,
                 account_email=email or f"{unique('acct')}@gmail.test",
+                scope=scope,
                 encrypted_access_token=encrypt(access),
                 encrypted_refresh_token=encrypt(refresh) if refresh is not None else None,
                 expires_at=(datetime.now(UTC) + expires_in) if expires_in is not None else None,
@@ -439,6 +501,7 @@ async def db(sessionmaker_: async_sessionmaker[AsyncSession]) -> Db:
 class RpcCall:
     method: str
     headers: dict[str, str]
+    params: dict[str, Any]
 
 
 @dataclass
@@ -448,7 +511,11 @@ class FakeMcp:
     url: str
     tools: list[dict[str, Any]] = field(
         default_factory=lambda: [
-            {"name": "alpha", "description": "first tool", "inputSchema": {"type": "object"}},
+            {
+                "name": "alpha",
+                "description": "first tool",
+                "inputSchema": {"type": "object", "properties": {"q": {"type": "string"}}},
+            },
             {"name": "beta", "description": "second tool", "inputSchema": {"type": "object"}},
         ]
     )
@@ -471,7 +538,9 @@ class FakeMcp:
     def handle(self, request: httpx.Request) -> httpx.Response:
         body = cast("dict[str, Any]", json.loads(request.content))
         method = cast("str", body["method"])
-        self.calls.append(RpcCall(method, dict(request.headers)))
+        self.calls.append(
+            RpcCall(method, dict(request.headers), cast("dict[str, Any]", body.get("params") or {}))
+        )
         if self.connect_error:
             raise httpx.ConnectError("connection refused (scripted)")
         if self.http_status is not None:
@@ -553,30 +622,44 @@ def origin_of(url: str) -> str:
 
 
 class Phase2Adapter:
-    """THE ONLY CODE LATER TASKS MAY EDIT in this package: the bodies of these methods.
+    """THE ONLY CODE LATER TASKS MAY EDIT in this package: the bodies of these methods (and the
+    ADAPTER AREA imports at the top of this file).
 
-    Resolver and OAuth helpers are not HTTP endpoints and their signatures change in phase 2
-    (``db: Prisma`` -> ``sessionmaker``). Tests assert only through this adapter. Today it calls
-    the functions with the app's Prisma client.
+    Resolver, OAuth, executor and poller entry points are not plain HTTP endpoints and their
+    signatures change in phase 2 (``db: Prisma`` -> ``sessionmaker``). Tests assert only through
+    this adapter. Today it calls the functions with the app's Prisma client; per-execution
+    context (``set_current_db``) is set up inside the bodies. All src imports are local so a
+    rename touches only this class.
     """
 
-    def __init__(self, app: FastAPI) -> None:
+    def __init__(self, app: FastAPI, client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._app = app
+        self._client = client
+        self._monkeypatch = monkeypatch
         self._db: Any = app.state.db
+
+    # ---- resolver -------------------------------------------------------------------------
 
     async def resolve_tools(self, server_id: str, user_id: str | None) -> list[str]:
         """Names of every tool the resolver returns for one server (empty selection = all)."""
+        from src.mcp.resolver import resolve_mcp_tools_by_names
+
         tools = await resolve_mcp_tools_by_names(server_id, [], user_id, self._db)
         return [t.name for t in tools]
 
     async def resolve_named_tools(
         self, server_id: str, user_id: str | None, names: list[str]
     ) -> list[str]:
+        from src.mcp.resolver import resolve_mcp_tools_by_names
+
         tools = await resolve_mcp_tools_by_names(server_id, names, user_id, self._db)
         return [t.name for t in tools]
 
-    async def resolve_node_tools(self, server_ids: list[str], user_id: str | None) -> list[str]:
-        """Agent-node resolution (`mcpServerIds` on an agent node)."""
-        node = AgentNode.model_validate(
+    @staticmethod
+    def _agent_node(server_ids: list[str]) -> Any:
+        from src.engine.workflow import AgentNode
+
+        return AgentNode.model_validate(
             {
                 "id": "a",
                 "type": "agent",
@@ -584,29 +667,213 @@ class Phase2Adapter:
                 "data": {"label": "Agent", "mcpServerIds": server_ids},
             }
         )
+
+    async def resolve_node_tools(self, server_ids: list[str], user_id: str | None) -> list[str]:
+        """Agent-node resolution straight through src.mcp.resolver."""
+        from src.engine.state import initial_state
+        from src.mcp.resolver import resolve_mcp_tools_for_node
+        from src.tools.base import BuildContext
+
+        node = self._agent_node(server_ids)
         ctx = BuildContext(node=node, state=initial_state(), user_id=user_id)
         return [t.name for t in await resolve_mcp_tools_for_node(node, ctx, self._db)]
 
+    async def registry_tools(
+        self, server_ids: list[str], user_id: str | None, *, with_db: bool = True
+    ) -> list[str]:
+        """Agent-node tool resolution through src.tools.registry (BuildContext.db is how the
+        agent executor hands the database to MCP resolution)."""
+        from src.engine.state import initial_state
+        from src.tools.base import BuildContext
+        from src.tools.registry import resolve_tools_for_node
+
+        node = self._agent_node(server_ids)
+        ctx = BuildContext(
+            node=node,
+            state=initial_state(),
+            user_id=user_id,
+            db=self._db if with_db else None,
+        )
+        return [t.name for t in await resolve_tools_for_node(node, ctx)]
+
     async def resolve_single_tool(self, server_id: str, tool_name: str, user_id: str | None) -> str:
         """`mcp` node deterministic mode: the single bound tool's name."""
+        from src.mcp.resolver import resolve_single_mcp_tool
+
         _provider, tool = await resolve_single_mcp_tool(server_id, tool_name, user_id, self._db)
         return tool.name
+
+    # ---- OAuth / Drive token helpers --------------------------------------------------------
 
     async def valid_access_token(self, server_id: str, user_id: str | None) -> str:
         """Plaintext OAuth access token for (server, user): fallback to the owner's token on
         shared servers, refresh when near expiry."""
+        from src.mcp.oauth import get_valid_access_token
+
         server = await self._db.mcpserver.find_unique(where={"id": server_id})
         assert server is not None, f"server {server_id} missing"
         return await get_valid_access_token(server, user_id, self._db)
 
     async def valid_drive_token(self, connection_id: str) -> str:
         """Plaintext Google Drive access token for a connection, refreshed when near expiry."""
+        from src.integrations.google_drive.oauth import get_valid_drive_access_token
+
         return await get_valid_drive_access_token(connection_id, self._db)
+
+    # ---- executors ----------------------------------------------------------------------------
+
+    @staticmethod
+    def _set_context_db(db: Any) -> None:
+        from src.engine.context import set_current_db
+
+        set_current_db(db)
+
+    @staticmethod
+    def _state(user_id: str | None) -> Any:
+        from src.engine.state import initial_state
+
+        state: dict[str, Any] = dict(initial_state())
+        state["user_id"] = user_id
+        return state
+
+    async def run_mcp_node_deterministic(
+        self,
+        server_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        user_id: str | None,
+        *,
+        with_db: bool = True,
+    ) -> dict[str, Any]:
+        """McpExecutor, legacy single-tool mode. Returns the state delta."""
+        from src.engine.workflow import McpNode
+        from src.executors.mcp import McpExecutor
+
+        self._set_context_db(self._db if with_db else None)
+        node = McpNode.model_validate(
+            {
+                "id": "m",
+                "type": "mcp",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "label": "MCP",
+                    "mcpServerId": server_id,
+                    "toolName": tool_name,
+                    "arguments": arguments,
+                },
+            }
+        )
+        return await McpExecutor(node).arun(self._state(user_id))
+
+    async def run_mcp_node_agent(
+        self,
+        server_id: str,
+        user_id: str | None,
+        *,
+        selected_tool_names: list[str],
+        tool_to_call: str,
+        final_text: str,
+        with_db: bool = True,
+    ) -> dict[str, Any]:
+        """McpExecutor agent mode with a scripted chat model: it calls `tool_to_call` once, then
+        answers `final_text`. The LLM is the only thing replaced."""
+        from langchain_core.messages import AIMessage
+
+        import src.llm.providers as providers
+        from src.engine.workflow import McpNode
+        from src.executors.mcp import McpExecutor
+
+        class _Scripted:
+            def __init__(self) -> None:
+                self.turn = 0
+
+            def bind_tools(self, tools: Any) -> "_Scripted":
+                return self
+
+            async def ainvoke(self, messages: Any) -> AIMessage:
+                self.turn += 1
+                if self.turn == 1:
+                    return AIMessage(
+                        content="",
+                        tool_calls=[{"name": tool_to_call, "args": {}, "id": "call-1"}],
+                    )
+                return AIMessage(content=final_text)
+
+        def _build(*args: Any, **kwargs: Any) -> _Scripted:
+            return _Scripted()
+
+        self._monkeypatch.setattr(providers, "build_chat_model", _build)
+        self._set_context_db(self._db if with_db else None)
+        node = McpNode.model_validate(
+            {
+                "id": "m",
+                "type": "mcp",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "label": "MCP",
+                    "mcpServerId": server_id,
+                    "selectedToolNames": selected_tool_names,
+                    "instructions": "do the thing",
+                },
+            }
+        )
+        return await McpExecutor(node).arun(self._state(user_id))
+
+    async def run_download_pdf_to_drive(
+        self, connection_id: str, folder_id: str, *, with_db: bool = True
+    ) -> dict[str, Any]:
+        """DownloadPdfExecutor, google-drive provider (Drive HTTP is mocked by the test)."""
+        from src.engine.state import initial_state
+        from src.engine.workflow import DownloadPdfNode
+        from src.executors.download_pdf import DownloadPdfExecutor
+
+        self._set_context_db(self._db if with_db else None)
+        node = DownloadPdfNode.model_validate(
+            {
+                "id": "dp",
+                "type": "download-pdf",
+                "position": {"x": 0, "y": 0},
+                "data": {
+                    "label": "PDF",
+                    "inputFormat": "markdown",
+                    "content": "# hello",
+                    "filename": "report",
+                    "provider": "google-drive",
+                    "connectionId": connection_id,
+                    "driveFolderId": folder_id,
+                },
+            }
+        )
+        return await DownloadPdfExecutor(node).arun(initial_state())
+
+    # ---- internal poller ------------------------------------------------------------------------
+
+    async def poll_file_triggers(self) -> dict[str, int]:
+        """POST /internal/poll-file-triggers with the OIDC dependency overridden (the route is
+        called whole; its cloud-storage connection read and token fetch are what is pinned)."""
+        from src.api.internal import _verify_internal_oidc  # pyright: ignore[reportPrivateUsage]
+
+        def _allow() -> None:
+            return None
+
+        self._app.dependency_overrides[_verify_internal_oidc] = _allow
+        try:
+            resp = await self._client.post("/internal/poll-file-triggers")
+        finally:
+            self._app.dependency_overrides.pop(_verify_internal_oidc, None)
+        assert resp.status_code == 200, resp.text
+        return cast("dict[str, int]", resp.json())
 
 
 @pytest.fixture
-def adapter(app: FastAPI) -> Phase2Adapter:
-    return Phase2Adapter(app)
+def adapter(
+    app: FastAPI, client: AsyncClient, monkeypatch: pytest.MonkeyPatch
+) -> Iterator[Phase2Adapter]:
+    from src.engine.context import _current_db  # pyright: ignore[reportPrivateUsage]
+
+    token = _current_db.set(None)
+    yield Phase2Adapter(app, client, monkeypatch)
+    _current_db.reset(token)
 
 
 # --------------------------------------------------------------------------- API helpers

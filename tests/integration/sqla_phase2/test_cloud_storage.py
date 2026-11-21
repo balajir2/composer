@@ -12,12 +12,12 @@ from typing import Any
 import pytest
 from httpx import AsyncClient, Response
 
-from src.integrations.google_drive.oauth import DriveConnectionMissingError
 from src.security.encryption import decrypt, encrypt
 from tests.integration.sqla_phase2.conftest import (
     HTTPX_MARK,
     LONG_AGO,
     Db,
+    DriveConnectionMissingError,
     FakeEndpoint,
     FakeEndpointFactory,
     MakeUser,
@@ -276,13 +276,29 @@ async def test_picker_token_returns_stored_token_while_valid(
 
 
 async def test_picker_token_refreshes_expired_token_and_updates_row(
-    client: AsyncClient, member: Member, db: Db, fake_endpoint: FakeEndpointFactory
+    client: AsyncClient,
+    member: Member,
+    second_member: Member,
+    db: Db,
+    fake_endpoint: FakeEndpointFactory,
 ) -> None:
     token_ep, _ = google(fake_endpoint)
     cid = await db.seed_connection(
-        member.id, access="old", refresh="old-refresh", expires_in=timedelta(seconds=-30)
+        member.id,
+        access="old",
+        refresh="old-refresh",
+        expires_in=timedelta(seconds=-30),
+        scope="s1 s2",
     )
     await db.set_connection(cid, updated_at=LONG_AGO)
+    original = await db.connection(cid)
+    assert original is not None
+    mine_too = await db.seed_connection(member.id, expires_in=timedelta(seconds=-30))
+    theirs = await db.seed_connection(second_member.id, expires_in=timedelta(seconds=-30))
+    bystanders = {
+        i: Db.snapshot(await db.connection(i))  # pyright: ignore[reportArgumentType]
+        for i in (mine_too, theirs)
+    }
     token_ep.push({"access_token": "refreshed", "expires_in": 3000})  # refresh token not rotated
 
     r = await client.post(f"/cloud-storage/connections/{cid}/picker-token", headers=member.headers)
@@ -300,6 +316,12 @@ async def test_picker_token_refreshes_expired_token_and_updates_row(
     assert decrypt(row.encrypted_access_token) == "refreshed"
     assert row.encrypted_refresh_token is not None
     assert decrypt(row.encrypted_refresh_token) == "old-refresh"  # kept when Google omits one
+    # columns a refresh must not touch
+    assert row.scope == "s1 s2" and row.created_at == original.created_at
+    assert row.user_id == member.id and row.provider == "google-drive"
+    assert row.account_email == original.account_email
+    for i, snap in bystanders.items():
+        assert Db.snapshot(await db.connection(i)) == snap  # pyright: ignore[reportArgumentType]
     assert near(row.expires_at, datetime.now(UTC) + timedelta(seconds=3000))
     assert row.updated_at > LONG_AGO and near(row.updated_at, datetime.now(UTC))
 

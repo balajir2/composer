@@ -12,8 +12,6 @@ from typing import Any
 import pytest
 from httpx import AsyncClient, Response
 
-from src.mcp.oauth import McpTokenExpiredError, McpTokenMissingError, TokenRefreshError
-from src.mcp.resolver import McpPermissionError, McpServerNotFound
 from src.security.encryption import decrypt, decrypt_marked
 from tests.integration.sqla_phase2.conftest import (
     HTTPX_MARK,
@@ -22,9 +20,14 @@ from tests.integration.sqla_phase2.conftest import (
     FakeEndpoint,
     FakeEndpointFactory,
     FakeMcpFactory,
+    McpPermissionError,
+    McpServerNotFound,
+    McpTokenExpiredError,
+    McpTokenMissingError,
     Member,
     Phase2Adapter,
     ServerApi,
+    TokenRefreshError,
     jbody,
     near,
     origin_of,
@@ -328,6 +331,7 @@ async def test_callback_expired_state_redirects_with_error_and_calls_no_idp(
         "detail": [f"OAuth state '{state}' has expired."],
     }
     assert token_ep.requests == [] and await db.token(sid, member.id) is None
+    assert await db.state(state) is not None  # an expired state is NOT deleted by the callback
 
 
 async def test_callback_token_endpoint_error_consumes_state_and_stores_nothing(
@@ -481,6 +485,7 @@ async def test_shared_server_mcp_requests_carry_the_callers_own_token_else_the_o
 
 async def test_expired_token_is_refreshed_with_resource_and_row_updated(
     member: Member,
+    second_member: Member,
     servers: ServerApi,
     db: Db,
     adapter: Phase2Adapter,
@@ -491,11 +496,29 @@ async def test_expired_token_is_refreshed_with_resource_and_row_updated(
     cfg = await db.oauth_config(sid)
     token_ep = await idp(db, fake_endpoint, sid)
     token_id = await db.seed_token(
-        sid, member.id, access="old-access", refresh="old-refresh", expires_in=timedelta(minutes=-5)
+        sid,
+        member.id,
+        access="old-access",
+        refresh="old-refresh",
+        expires_in=timedelta(minutes=-5),
+        scope="read write",
+        token_type="DPoP",
     )
     await db.set_token(token_id, updated_at=LONG_AGO)
     before = await db.token(sid, member.id)
     assert before is not None
+    # bystanders: the same user's token on another server, another user's token on this one
+    other_server = await servers.create_oauth(member)
+    await db.seed_token(
+        other_server["id"], member.id, access="other-server", expires_in=timedelta(minutes=-5)
+    )
+    await db.seed_token(
+        sid, second_member.id, access="other-user", expires_in=timedelta(minutes=-5)
+    )
+    bystanders = [
+        Db.snapshot(await db.token(other_server["id"], member.id)),
+        Db.snapshot(await db.token(sid, second_member.id)),
+    ]
     token_ep.push(
         {"access_token": "new-access", "refresh_token": "new-refresh", "expires_in": 7200}
     )
@@ -519,6 +542,14 @@ async def test_expired_token_is_refreshed_with_resource_and_row_updated(
     assert decrypt(after.encrypted_refresh_token) == "new-refresh"  # rotated
     assert near(after.expires_at, datetime.now(UTC) + timedelta(seconds=7200))
     assert after.updated_at > LONG_AGO and near(after.updated_at, datetime.now(UTC))
+    # columns a refresh must not touch
+    assert after.scope == "read write" and after.token_type == "DPoP"
+    assert after.created_at == before.created_at
+    assert after.mcp_server_id == sid and after.user_id == member.id
+    assert [
+        Db.snapshot(await db.token(other_server["id"], member.id)),
+        Db.snapshot(await db.token(sid, second_member.id)),
+    ] == bystanders
 
     # the refreshed token is now valid: no further IdP call
     assert await adapter.valid_access_token(sid, member.id) == "new-access"
@@ -562,7 +593,12 @@ async def test_unexpired_token_is_returned_without_contacting_the_idp(
     never_expires = await servers.create_oauth(member)
     await db.seed_token(never_expires["id"], member.id, access="forever", expires_in=None)
     assert await adapter.valid_access_token(never_expires["id"], member.id) == "forever"
-    assert token_ep.requests == []
+    # just outside the 60s refresh buffer: still returned as is
+    soon = await servers.create_oauth(member)
+    soon_ep = await idp(db, fake_endpoint, soon["id"])
+    await db.seed_token(soon["id"], member.id, access="ninety", expires_in=timedelta(seconds=90))
+    assert await adapter.valid_access_token(soon["id"], member.id) == "ninety"
+    assert token_ep.requests == [] and soon_ep.requests == []
 
 
 async def test_refresh_failures_leave_the_row_unchanged(
@@ -689,3 +725,108 @@ async def test_resolver_oauth_server_sends_the_callers_bearer_token(
     await db.seed_token(created["id"], member.id, access=token)
     assert await adapter.resolve_tools(created["id"], member.id) == ["alpha", "beta"]
     assert fake.authorizations() == {f"Bearer {token}"}
+
+
+# --------------------------------------------------------------------------- refresh on behalf
+
+
+async def test_shared_server_refreshes_the_owners_expired_token_on_the_callers_behalf(
+    member: Member,
+    second_member: Member,
+    servers: ServerApi,
+    db: Db,
+    adapter: Phase2Adapter,
+    fake_endpoint: FakeEndpointFactory,
+) -> None:
+    created = await servers.create_oauth(member, isShared=True)
+    sid = created["id"]
+    cfg = await db.oauth_config(sid)
+    token_ep = await idp(db, fake_endpoint, sid)
+    owner_token_id = await db.seed_token(
+        sid,
+        member.id,
+        access="owner-old",
+        refresh="owner-refresh",
+        expires_in=timedelta(minutes=-5),
+        scope="read write",
+        token_type="DPoP",
+    )
+    await db.set_token(owner_token_id, updated_at=LONG_AGO)
+    before = await db.token(sid, member.id)
+    assert before is not None
+    token_ep.push({"access_token": "owner-new", "expires_in": 3600})
+
+    assert await adapter.valid_access_token(sid, second_member.id) == "owner-new"
+
+    assert token_ep.forms() == [
+        {
+            "grant_type": "refresh_token",
+            "refresh_token": "owner-refresh",
+            "client_id": cfg["clientId"],
+            "client_secret": decrypt_marked(cfg["clientSecret"]),
+            "resource": origin_of(created["url"]),
+        }
+    ]
+    after = await db.token(sid, member.id)
+    assert after is not None and after.id == owner_token_id
+    assert decrypt(after.encrypted_access_token) == "owner-new"
+    assert after.updated_at > LONG_AGO
+    assert after.scope == "read write" and after.token_type == "DPoP"
+    assert after.created_at == before.created_at and after.user_id == member.id
+    assert await db.token(sid, second_member.id) is None  # nothing is written for the caller
+
+
+# --------------------------------------------------------------------------- OAuth via provider
+
+
+async def test_test_connection_on_oauth_server_sends_the_callers_bearer(
+    client: AsyncClient,
+    member: Member,
+    servers: ServerApi,
+    db: Db,
+    fake_mcp: FakeMcpFactory,
+) -> None:
+    fake = fake_mcp()
+    created = await servers.create_oauth(member, url=fake.url)
+    await db.seed_token(created["id"], member.id, access="caller-oauth-at")
+    r = await client.post(f"/mcp-servers/{created['id']}/test-connection", headers=member.headers)
+    assert r.status_code == 200
+    assert r.json() == {"ok": True, "message": "connected; 2 tool(s) available"}
+    assert fake.authorizations() == {"Bearer caller-oauth-at"}
+    row = await db.server(created["id"])
+    assert row is not None and row.connection_status == "connected"
+
+    # without a token the failure is recorded rather than raised
+    bare = await servers.create_oauth(member, url=fake.url)
+    r = await client.post(f"/mcp-servers/{bare['id']}/test-connection", headers=member.headers)
+    assert r.status_code == 200 and jbody(r)["ok"] is False
+    assert jbody(r)["message"].startswith("McpTokenMissingError: No OAuth token found for user ")
+    row = await db.server(bare["id"])
+    assert row is not None and row.connection_status == "error"
+
+
+async def test_resolver_refreshes_an_expired_oauth_token_once_then_uses_the_new_bearer(
+    member: Member,
+    servers: ServerApi,
+    db: Db,
+    adapter: Phase2Adapter,
+    fake_mcp: FakeMcpFactory,
+    fake_endpoint: FakeEndpointFactory,
+) -> None:
+    fake = fake_mcp()
+    created = await servers.create_oauth(member, url=fake.url)
+    sid = created["id"]
+    token_ep = await idp(db, fake_endpoint, sid)
+    token_id = await db.seed_token(
+        sid, member.id, access="expired-at", refresh="rt", expires_in=timedelta(minutes=-1)
+    )
+    await db.set_token(token_id, updated_at=LONG_AGO)
+    token_ep.push({"access_token": "refreshed-at", "expires_in": 3600})
+
+    assert await adapter.resolve_tools(sid, member.id) == ["alpha", "beta"]
+
+    assert len(token_ep.requests) == 1  # exactly one refresh POST
+    assert fake.authorizations() == {"Bearer refreshed-at"}
+    row = await db.token(sid, member.id)
+    assert row is not None and decrypt(row.encrypted_access_token) == "refreshed-at"
+    assert row.updated_at > LONG_AGO

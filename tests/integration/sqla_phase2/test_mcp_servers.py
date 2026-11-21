@@ -13,10 +13,12 @@ from src.security.encryption import REDACTED_MARKER, SECRET_ENC_PREFIX, decrypt,
 from tests.integration.sqla_phase2.conftest import (
     HTTPX_MARK,
     ISO,
+    LONG_AGO,
     Db,
     FakeMcpFactory,
     Member,
     ServerApi,
+    iso_dt,
     jbody,
     jlist,
     near,
@@ -121,6 +123,8 @@ async def test_create_minimal_none_auth_has_no_secrets(
     assert row is not None
     assert row.encrypted_access_token is None  # token only stored for api-key / bearer
     assert row.headers is None and row.oauth_config is None
+    # SQL NULL (not a JSON null value) in all three optional JSON columns
+    assert await db.raw_null_flags(body["id"]) == (True, True, True)
 
 
 async def test_create_oauth_auth_type_drops_access_token(
@@ -245,10 +249,18 @@ async def test_delete_server_leaves_its_oauth_tokens_behind(
 
 
 async def test_share_toggle_is_admin_only_and_changes_second_members_listing(
-    client: AsyncClient, admin: Member, member: Member, second_member: Member, servers: ServerApi
+    client: AsyncClient,
+    admin: Member,
+    member: Member,
+    second_member: Member,
+    servers: ServerApi,
+    db: Db,
 ) -> None:
     created = await servers.create(member, isShared=False)
     sid = created["id"]
+    bystander = await servers.create(member, isShared=False)
+    bystander_before = Db.snapshot(await db.server(bystander["id"]))
+    await db.set_server(sid, updated_at=LONG_AGO)
 
     r = await client.patch(
         f"/mcp-servers/{sid}/shared", json={"isShared": True}, headers=member.headers
@@ -260,6 +272,10 @@ async def test_share_toggle_is_admin_only_and_changes_second_members_listing(
     )
     assert r.status_code == 200
     assert jbody(r)["isShared"] is True and jbody(r)["userId"] == member.id  # owner unchanged
+    assert iso_dt(jbody(r)["updatedAt"]) > LONG_AGO
+    row = await db.server(sid)
+    assert row is not None and near(row.updated_at, datetime.now(UTC))
+    assert Db.snapshot(await db.server(bystander["id"])) == bystander_before  # WHERE id only
     ids = {x["id"] for x in jlist(await client.get("/mcp-servers", headers=second_member.headers))}
     assert sid in ids
 
@@ -288,6 +304,9 @@ async def test_admin_assigns_owner_by_id_and_by_email(
     created = await servers.create(member, isShared=False)
     sid = created["id"]
     url = f"/mcp-servers/{sid}/owner"
+    bystander = await servers.create(member, isShared=True)
+    bystander_before = Db.snapshot(await db.server(bystander["id"]))
+    await db.set_server(sid, updated_at=LONG_AGO)
 
     denied = await client.patch(url, json={"userId": second_member.id}, headers=member.headers)
     assert denied.status_code == 403 and denied.json() == {"detail": "admin role required"}
@@ -295,8 +314,11 @@ async def test_admin_assigns_owner_by_id_and_by_email(
     by_id = await client.patch(url, json={"userId": second_member.id}, headers=admin.headers)
     assert by_id.status_code == 200, by_id.text
     assert jbody(by_id)["userId"] == second_member.id
+    assert iso_dt(jbody(by_id)["updatedAt"]) > LONG_AGO
     row = await db.server(sid)
     assert row is not None and row.user_id == second_member.id
+    assert near(row.updated_at, datetime.now(UTC))
+    assert Db.snapshot(await db.server(bystander["id"])) == bystander_before
     # the private server moved with its owner
     assert sid not in {
         x["id"] for x in jlist(await client.get("/mcp-servers", headers=member.headers))
@@ -365,6 +387,9 @@ async def test_oauth_config_patch_replaces_whole_config_and_does_not_preserve_se
         "tokenUrl": "https://new.example.test/token",
         "clientId": "new-client",
     }
+    bystander = await servers.create_oauth(member)
+    bystander_before = Db.snapshot(await db.server(bystander["id"]))
+    await db.set_server(sid, updated_at=LONG_AGO)
 
     # 1) omitted secret -> cleared (null), scopes default to [], old extra keys are gone
     r = await client.patch(
@@ -372,8 +397,10 @@ async def test_oauth_config_patch_replaces_whole_config_and_does_not_preserve_se
     )
     assert r.status_code == 200, r.text
     assert jbody(r)["hasOauthConfig"] is True and original_secret not in r.text
+    assert iso_dt(jbody(r)["updatedAt"]) > LONG_AGO
     row = await db.server(sid)
-    assert row is not None
+    assert row is not None and near(row.updated_at, datetime.now(UTC))
+    assert Db.snapshot(await db.server(bystander["id"])) == bystander_before
     assert row.oauth_config == {**new_cfg, "clientSecret": None, "scopes": []}
 
     # 2) a new secret is stored marked-encrypted and never returned
@@ -453,7 +480,11 @@ async def test_test_connection_success_updates_status_tools_and_clears_error(
         member, url=fake.url, authType="bearer", accessToken="mcp-bearer-secret"
     )
     sid = created["id"]
-    await db.set_server(sid, last_error="stale error", connection_status="error")
+    bystander = await servers.create(member, url=fake.url)
+    bystander_before = Db.snapshot(await db.server(bystander["id"]))
+    await db.set_server(
+        sid, last_error="stale error", connection_status="error", updated_at=LONG_AGO
+    )
 
     r = await client.post(f"/mcp-servers/{sid}/test-connection", headers=member.headers)
     assert r.status_code == 200, r.text
@@ -471,6 +502,8 @@ async def test_test_connection_success_updates_status_tools_and_clears_error(
         {"name": "beta", "description": "second tool"},
     ]
     assert row.last_tested is not None and near(row.last_tested, datetime.now(UTC))
+    assert near(row.updated_at, datetime.now(UTC))  # advanced past the backdate
+    assert Db.snapshot(await db.server(bystander["id"])) == bystander_before
     listed = next(
         s for s in jlist(await client.get("/mcp-servers", headers=member.headers)) if s["id"] == sid
     )
@@ -485,6 +518,8 @@ async def test_test_connection_failures_record_error(
     # transport failure: HTTP 200 with ok=false, error recorded, cached tools untouched
     down = fake_mcp(connect_error=True)
     srv = await servers.create(member, url=down.url)
+    bystander = await servers.create(member, url=down.url)
+    bystander_before = Db.snapshot(await db.server(bystander["id"]))
     await db.set_server(srv["id"], tools=[{"name": "kept", "description": ""}])
     r = await client.post(f"/mcp-servers/{srv['id']}/test-connection", headers=member.headers)
     assert r.status_code == 200
@@ -495,6 +530,7 @@ async def test_test_connection_failures_record_error(
     assert row is not None and row.connection_status == "error"
     assert row.last_error == body["message"] and row.last_tested is not None
     assert row.tools == [{"name": "kept", "description": ""}]
+    assert Db.snapshot(await db.server(bystander["id"])) == bystander_before
 
     # non-2xx from the server
     broken = fake_mcp(http_status=500)
