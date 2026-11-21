@@ -1,6 +1,7 @@
 """Unit tests for POST /api/run/{slug} (Phase 10a)."""
 
 import time
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -8,9 +9,14 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.models import UserRole
+from src.db.repos import api_keys as keys_repo
+from src.db.repos import users as users_repo
+from src.db.repos.api_keys import ApiKeyRecord
 from src.engine.events import ExecutionEventBus
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
+from tests.unit.db_fakes import FakeSessionmaker, make_user
 
 
 def _wf(**overrides: Any) -> SimpleNamespace:
@@ -30,19 +36,20 @@ def _wf(**overrides: Any) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
-def _key(**overrides: Any) -> SimpleNamespace:
+def _key(**overrides: Any) -> ApiKeyRecord:
     base: dict[str, Any] = {
         "id": "k1",
-        "userId": "owner-u",
+        "user_id": "owner-u",
         "label": "caller-key",
-        "keyHash": "$2b$12$placeholder",
-        "keyPrefix": "ck_abc12345",
-        "revokedAt": None,
-        "expiresAt": None,
-        "lastUsedAt": None,
+        "key_hash": "$2b$12$placeholder",
+        "key_prefix": "ck_abc12345",
+        "created_at": datetime(2026, 4, 1, tzinfo=UTC),
+        "revoked_at": None,
+        "expires_at": None,
+        "last_used_at": None,
     }
     base.update(overrides)
-    return SimpleNamespace(**base)
+    return ApiKeyRecord(**base)
 
 
 def _exec(**overrides: Any) -> SimpleNamespace:
@@ -88,18 +95,25 @@ def _build_client(
     monkeypatch.setattr(_aka, "verify_api_key", _fake_verify_api_key)
 
     app = create_app()
-    db = MagicMock()
-    db.apikey = MagicMock()
-    db.apikey.find_first = AsyncMock(return_value=key_row if key_row is not None else _key())
-    db.apikey.update = AsyncMock()
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            id="owner-u",
-            role=SimpleNamespace(value=key_owner_role),
-            isActive=key_owner_active,
-        )
+    monkeypatch.setattr(
+        keys_repo,
+        "first_by_prefix",
+        AsyncMock(return_value=key_row if key_row is not None else _key()),
     )
+    monkeypatch.setattr(keys_repo, "touch_last_used", AsyncMock())
+    monkeypatch.setattr(
+        users_repo,
+        "get_by_id",
+        AsyncMock(
+            return_value=make_user(
+                id="owner-u",
+                role=UserRole(key_owner_role),
+                is_active=key_owner_active,
+            )
+        ),
+    )
+    app.state.db_sessionmaker = FakeSessionmaker()
+    db = MagicMock()
     db.workflow = MagicMock()
     db.workflow.find_unique = AsyncMock(return_value=wf)
     db.workflowexecution = MagicMock()
@@ -269,7 +283,7 @@ def test_non_production_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_private_non_owner_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
     wf = _wf(isPublic=False, userId="owner-u")
     # Key belongs to a different user:
-    key = _key(userId="someone-else")
+    key = _key(user_id="someone-else")
     client = _build_client(monkeypatch, wf, key_row=key)
     resp = client.post(
         "/api/run/my-wf",
@@ -281,7 +295,7 @@ def test_private_non_owner_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_private_admin_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
     wf = _wf(isPublic=False, userId="owner-u")
-    key = _key(userId="admin-u")
+    key = _key(user_id="admin-u")
     client = _build_client(monkeypatch, wf, key_row=key, key_owner_role="admin")
     resp = client.post(
         "/api/run/my-wf",
@@ -292,10 +306,8 @@ def test_private_admin_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_revoked_key_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:
-    from datetime import datetime
-
     wf = _wf(isPublic=True)
-    key = _key(revokedAt=datetime(2026, 4, 1, 0, 0, 0))
+    key = _key(revoked_at=datetime(2026, 4, 1, 0, 0, 0, tzinfo=UTC))
     client = _build_client(monkeypatch, wf, key_row=key)
     resp = client.post(
         "/api/run/my-wf",
