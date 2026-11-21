@@ -139,7 +139,7 @@ async def test_resolve_tools_for_node_mcp_ids_delegate_to_mcp_resolver(
 
     import src.mcp.resolver as resolver_mod
 
-    async def _fake_resolve(node: Any, context: Any, sessionmaker: Any, *, db: Any) -> list[Any]:
+    async def _fake_resolve(node: Any, context: Any, sessionmaker: Any) -> list[Any]:
         return [fake_tool]
 
     monkeypatch.setattr(resolver_mod, "resolve_mcp_tools_for_node", _fake_resolve)
@@ -160,7 +160,7 @@ async def test_resolve_tools_for_node_mcp_ids_delegate_to_mcp_resolver(
     )
     out = await resolve_tools_for_node(
         node,
-        BuildContext(node=node, state=initial_state(), user_id="dev", db=MagicMock()),
+        BuildContext(node=node, state=initial_state(), user_id="dev"),
     )
     try:
         assert out == [fake_tool]
@@ -169,7 +169,6 @@ async def test_resolve_tools_for_node_mcp_ids_delegate_to_mcp_resolver(
 
 
 async def test_resolve_tools_for_node_mcp_without_sessionmaker_raises() -> None:
-    from unittest.mock import MagicMock
 
     node = AgentNode.model_validate(
         {
@@ -182,25 +181,7 @@ async def test_resolve_tools_for_node_mcp_without_sessionmaker_raises() -> None:
     with pytest.raises(RuntimeError, match=r"BuildContext\.db is required"):
         await resolve_tools_for_node(
             node,
-            BuildContext(node=node, state=initial_state(), user_id="dev", db=MagicMock()),
-        )
-
-
-async def test_resolve_tools_for_node_mcp_without_db_raises() -> None:
-    """Calling resolve_tools_for_node with mcp_server_ids but no db in context
-    is a programmer error — the Agent executor forgot to populate context.db."""
-    node = AgentNode.model_validate(
-        {
-            "id": "a",
-            "type": "agent",
-            "position": {"x": 0, "y": 0},
-            "data": {"label": "A", "mcpServerIds": ["s1"]},
-        }
-    )
-    with pytest.raises(RuntimeError, match=r"BuildContext\.db is required"):
-        await resolve_tools_for_node(
-            node,
-            BuildContext(node=node, state=initial_state(), user_id="dev", db=None),
+            BuildContext(node=node, state=initial_state(), user_id="dev"),
         )
 
 

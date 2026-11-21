@@ -2,12 +2,13 @@
 
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
 from src.mcp.oauth import build_authorize_url
+from tests.unit.db_fakes import RecordingSessionmaker, assert_no_network_inside_session
+from tests.unit.mcp._oauth_fakes import RepoCalls, script_repo
 from tests.unit.mcp._server_fakes import make_server
 
 
@@ -29,19 +30,17 @@ def _server(**overrides: Any) -> Any:
     return make_server(**base)
 
 
-def _mock_db() -> MagicMock:
-    db = MagicMock()
-    db.mcpoauthstate = MagicMock()
-    db.mcpoauthstate.create = AsyncMock()
-    db.mcpoauthstate.delete_many = AsyncMock()
-    return db
+def _setup(monkeypatch: pytest.MonkeyPatch) -> tuple[RepoCalls, Any]:
+    calls = RepoCalls()
+    script_repo(monkeypatch, calls, reap_expired_states=0, create_state=None)
+    return calls, RecordingSessionmaker(calls.events)
 
 
-async def test_authorize_url_has_all_required_params() -> None:
-    db = _mock_db()
+async def test_authorize_url_has_all_required_params(monkeypatch: pytest.MonkeyPatch) -> None:
+    _, sm = _setup(monkeypatch)
     server = _server()
     url = await build_authorize_url(
-        server, user_id="user1", redirect_uri="http://localhost:3000/cb", db=db
+        server, user_id="user1", redirect_uri="http://localhost:3000/cb", sessionmaker=sm
     )
     parts = urlsplit(url)
     assert parts.scheme == "https"
@@ -60,38 +59,56 @@ async def test_authorize_url_has_all_required_params() -> None:
     assert params["resource"] == ["https://api.highspot.com"]
 
 
-async def test_authorize_url_inserts_state_row() -> None:
-    db = _mock_db()
+async def test_authorize_url_inserts_state_row(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, sm = _setup(monkeypatch)
     server = _server()
     _ = await build_authorize_url(
-        server, user_id="user1", redirect_uri="http://localhost:3000/cb", db=db
+        server, user_id="user1", redirect_uri="http://localhost:3000/cb", sessionmaker=sm
     )
-    db.mcpoauthstate.create.assert_awaited_once()
-    create_args = db.mcpoauthstate.create.await_args
-    data = create_args.kwargs["data"]
-    assert data["mcpServerId"] == "srv1"
-    assert data["userId"] == "user1"
-    assert data["redirectUri"] == "http://localhost:3000/cb"
-    assert data["codeVerifier"]  # PKCE verifier stored
-    assert data["state"]
+    ((values,),) = calls.of("create_state")
+    assert values["mcp_server_id"] == "srv1"
+    assert values["user_id"] == "user1"
+    assert values["redirect_uri"] == "http://localhost:3000/cb"
+    assert values["code_verifier"]  # PKCE verifier stored
+    assert values["state"]
+    assert values["scope"] == "read write"
     # expires_at is 5 minutes in the future
-    delta = data["expiresAt"] - datetime.now(UTC)
+    delta = values["expires_at"] - datetime.now(UTC)
     assert 270 <= delta.total_seconds() <= 310
 
 
-async def test_authorize_url_requires_oauth_config() -> None:
-    db = _mock_db()
+async def test_authorize_url_requires_oauth_config(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls, sm = _setup(monkeypatch)
     server = _server(oauth_config=None)
     with pytest.raises(ValueError, match="oauthConfig"):
-        await build_authorize_url(server, user_id="u", redirect_uri="http://localhost/cb", db=db)
+        await build_authorize_url(
+            server, user_id="u", redirect_uri="http://localhost/cb", sessionmaker=sm
+        )
+    assert calls.calls == []  # nothing touched the database
 
 
-async def test_authorize_url_runs_state_reaper() -> None:
+async def test_authorize_url_runs_state_reaper(monkeypatch: pytest.MonkeyPatch) -> None:
     """Expired state rows should be cleaned up on any authorize call."""
-    db = _mock_db()
+    calls, sm = _setup(monkeypatch)
     server = _server()
-    _ = await build_authorize_url(server, user_id="u", redirect_uri="http://localhost/cb", db=db)
-    db.mcpoauthstate.delete_many.assert_awaited_once()
-    call = db.mcpoauthstate.delete_many.await_args
-    # Filter is expiresAt lt now
-    assert "where" in call.kwargs
+    _ = await build_authorize_url(
+        server, user_id="u", redirect_uri="http://localhost/cb", sessionmaker=sm
+    )
+    ((now,),) = calls.of("reap_expired_states")
+    assert abs((now - datetime.now(UTC)).total_seconds()) < 5
+
+
+async def test_authorize_reaps_and_creates_in_one_short_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls, sm = _setup(monkeypatch)
+    await build_authorize_url(
+        _server(), user_id="u", redirect_uri="http://localhost/cb", sessionmaker=sm
+    )
+    assert calls.events == [
+        "session:enter",
+        "db:reap_expired_states",
+        "db:create_state",
+        "session:exit",
+    ]
+    assert_no_network_inside_session(calls.events)

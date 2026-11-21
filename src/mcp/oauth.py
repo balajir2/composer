@@ -18,7 +18,10 @@ from typing import Any
 from urllib.parse import urlencode, urlsplit
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.db.repos import mcp_oauth as mcp_oauth_repo
+from src.db.repos.mcp_oauth import McpOAuthStateRecord, McpOAuthTokenRecord
 from src.db.repos.mcp_servers import McpServerRecord
 from src.security.encryption import decrypt, decrypt_marked, encrypt
 
@@ -76,17 +79,17 @@ def derive_resource(server_url: str) -> str:
 
 _STATE_TTL = timedelta(minutes=5)
 
+# Short-session rule: every database step below opens its own session and closes it before
+# the next network call, so a pooled connection is never held across an IdP request.
 
-async def _reap_expired_state(db: Any) -> None:
-    """Delete expired McpOAuthState rows. Called lazily on each authorize."""
-    await db.mcpoauthstate.delete_many(where={"expiresAt": {"lt": datetime.now(UTC)}})
+Sessionmaker = async_sessionmaker[AsyncSession]
 
 
 async def build_authorize_url(
     server: McpServerRecord,
     user_id: str,
     redirect_uri: str,
-    db: Any,
+    sessionmaker: Sessionmaker,
 ) -> str:
     """Return the OAuth authorize URL; insert McpOAuthState for the callback.
 
@@ -103,24 +106,26 @@ async def build_authorize_url(
     if not authorize_url or not client_id:
         raise ValueError(f"MCP server {server.id!r} oauthConfig missing authorizeUrl or clientId.")
 
-    await _reap_expired_state(db)
-
     state = generate_state()
     verifier, challenge = generate_pkce_pair()
     now = datetime.now(UTC)
-    expires_at = now + _STATE_TTL
 
-    await db.mcpoauthstate.create(
-        data={
-            "mcpServerId": server.id,
-            "userId": user_id,
-            "state": state,
-            "codeVerifier": verifier,
-            "redirectUri": redirect_uri,
-            "scope": " ".join(scopes) if scopes else None,
-            "expiresAt": expires_at,
-        }
-    )
+    # Reap expired states of any server or user, then record this one: one short session.
+    async with sessionmaker() as session:
+        await mcp_oauth_repo.reap_expired_states(session, now)
+        await mcp_oauth_repo.create_state(
+            session,
+            mcp_oauth_repo.StateValues(
+                mcp_server_id=server.id,
+                user_id=user_id,
+                state=state,
+                code_verifier=verifier,
+                redirect_uri=redirect_uri,
+                scope=" ".join(scopes) if scopes else None,
+                expires_at=now + _STATE_TTL,
+            ),
+        )
+        await session.commit()
 
     params = {
         "client_id": client_id,
@@ -135,15 +140,22 @@ async def build_authorize_url(
     return f"{authorize_url}?{urlencode(params)}"
 
 
-async def _validate_and_consume_state(state: str, db: Any) -> Any:
-    """Find state row, check expiry, delete it (one-shot), return the row."""
-    row = await db.mcpoauthstate.find_unique(where={"state": state})
-    if row is None:
-        raise InvalidStateError(f"OAuth state {state!r} not found (CSRF or replay).")
-    if row.expiresAt < datetime.now(UTC):
+async def _consume_state(state: str, sessionmaker: Sessionmaker) -> McpOAuthStateRecord:
+    """Atomically take the one-shot state row; its own short session, closed on return.
+
+    The delete is the single point of consumption, so of two callbacks carrying the same
+    state exactly one gets the row. The other (and an expired state, which is left in
+    place) learns why from a follow-up read.
+    """
+    async with sessionmaker() as session:
+        row = await mcp_oauth_repo.consume_state(session, state, datetime.now(UTC))
+        await session.commit()
+        if row is not None:
+            return row
+        still_there = await mcp_oauth_repo.get_state(session, state)
+    if still_there is not None:
         raise InvalidStateError(f"OAuth state {state!r} has expired.")
-    await db.mcpoauthstate.delete(where={"state": state})
-    return row
+    raise InvalidStateError(f"OAuth state {state!r} not found (CSRF or replay).")
 
 
 def _expires_at_from_in(expires_in: int | None) -> datetime | None:
@@ -156,13 +168,14 @@ async def exchange_code_for_tokens(
     server: McpServerRecord,
     code: str,
     state: str,
-    db: Any,
-) -> Any:
+    sessionmaker: Sessionmaker,
+) -> McpOAuthTokenRecord:
     """Exchange authorization code for tokens; store encrypted in McpOAuthToken.
 
-    Token-exchange POST includes RFC 8707 `resource` (fix #1).
+    Token-exchange POST includes RFC 8707 `resource` (fix #1). Order: consume the state
+    (short session) -> token POST (no session) -> store the token (short session).
     """
-    state_row = await _validate_and_consume_state(state, db)
+    state_row = await _consume_state(state, sessionmaker)
 
     config: dict[str, Any] = server.oauth_config or {}
     token_url = config["tokenUrl"]
@@ -176,8 +189,8 @@ async def exchange_code_for_tokens(
     form: dict[str, Any] = {
         "grant_type": "authorization_code",
         "code": code,
-        "redirect_uri": state_row.redirectUri,
-        "code_verifier": state_row.codeVerifier,
+        "redirect_uri": state_row.redirect_uri,
+        "code_verifier": state_row.code_verifier,
         "client_id": client_id,
         "client_secret": client_secret,
         "resource": derive_resource(server.url),  # fix #1
@@ -199,46 +212,31 @@ async def exchange_code_for_tokens(
     refresh_token: str | None = payload.get("refresh_token")
     expires_at = _expires_at_from_in(payload.get("expires_in"))
 
-    encrypted_access = encrypt(access_token)
-    encrypted_refresh = encrypt(refresh_token) if refresh_token else None
-
-    token_data = {
-        "encryptedAccessToken": encrypted_access,
-        "encryptedRefreshToken": encrypted_refresh,
-        "expiresAt": expires_at,
-        "scope": payload.get("scope") or state_row.scope,
-        "tokenType": payload.get("token_type", "Bearer"),
-    }
-
-    return await db.mcpoauthtoken.upsert(
-        where={
-            "mcpServerId_userId": {
-                "mcpServerId": server.id,
-                "userId": state_row.userId,
-            }
-        },
-        data={
-            "create": {
-                "mcpServerId": server.id,
-                "userId": state_row.userId,
-                **token_data,
-            },
-            "update": token_data,
-        },
+    values = mcp_oauth_repo.TokenValues(
+        encrypted_access_token=encrypt(access_token),
+        encrypted_refresh_token=encrypt(refresh_token) if refresh_token else None,
+        expires_at=expires_at,
+        scope=payload.get("scope") or state_row.scope,
+        token_type=payload.get("token_type", "Bearer"),
     )
+    async with sessionmaker() as session:
+        stored = await mcp_oauth_repo.upsert_token(session, server.id, state_row.user_id, values)
+        await session.commit()
+    return stored
 
 
 async def refresh_token(
     server: McpServerRecord,
-    token_row: Any,
-    db: Any,
-) -> Any:
+    token_row: McpOAuthTokenRecord,
+    sessionmaker: Sessionmaker,
+) -> McpOAuthTokenRecord:
     """Refresh an expired access token. POST includes RFC 8707 resource (fix #1).
 
-    Updates token_row in place (via DB). Keeps the old refresh_token if the
-    IdP doesn't return a new one.
+    Updates the stored row by id (so a shared server's owner row is refreshed in place and
+    no row is ever created for the caller). Keeps the old refresh_token if the IdP doesn't
+    return a new one. The POST runs with no session open.
     """
-    if not token_row.encryptedRefreshToken:
+    if not token_row.encrypted_refresh_token:
         raise McpTokenExpiredError(
             f"Token for server {server.id!r} has no refresh token; user must re-authorize."
         )
@@ -246,12 +244,9 @@ async def refresh_token(
     config: dict[str, Any] = server.oauth_config or {}
     token_url = config["tokenUrl"]
     client_id = config["clientId"]
-    # P0-5: clientSecret is encrypted at rest by the mcp-servers API;
-    # decrypt_marked passes through unmarked (pre-existing plaintext)
-    # values unchanged, so this is safe for servers saved before
-    # encryption existed too.
+    # P0-5: see exchange_code_for_tokens.
     client_secret = decrypt_marked(config.get("clientSecret", ""))
-    refresh_plaintext = decrypt(token_row.encryptedRefreshToken)
+    refresh_plaintext = decrypt(token_row.encrypted_refresh_token)
 
     form: dict[str, Any] = {
         "grant_type": "refresh_token",
@@ -275,42 +270,32 @@ async def refresh_token(
     payload = resp.json()
     access_token = payload.get("access_token", "")
     new_refresh: str | None = payload.get("refresh_token")
-    expires_at = _expires_at_from_in(payload.get("expires_in"))
 
-    update_data: dict[str, Any] = {
-        "encryptedAccessToken": encrypt(access_token),
-        "expiresAt": expires_at,
-    }
-    if new_refresh:
-        update_data["encryptedRefreshToken"] = encrypt(new_refresh)
-    else:
-        # Keep the old encrypted refresh token (no rotation)
-        update_data["encryptedRefreshToken"] = token_row.encryptedRefreshToken
-
-    return await db.mcpoauthtoken.update(
-        where={"id": token_row.id},
-        data=update_data,
+    changes = mcp_oauth_repo.TokenChanges(
+        encrypted_access_token=encrypt(access_token),
+        expires_at=_expires_at_from_in(payload.get("expires_in")),
     )
+    if new_refresh:
+        changes["encrypted_refresh_token"] = encrypt(new_refresh)
+    # else: no rotation, the stored refresh token is left as it is.
+
+    async with sessionmaker() as session:
+        updated = await mcp_oauth_repo.update_token(session, token_row.id, changes)
+        await session.commit()
+    if updated is None:  # disconnected while the IdP call was in flight
+        raise McpTokenMissingError(
+            f"Token for server {server.id!r} was removed while it was being refreshed."
+        )
+    return updated
 
 
 _EXPIRY_BUFFER_SECONDS = 60
 
 
-async def _find_token_for(mcp_server_id: str, user_id: str, db: Any) -> Any | None:
-    return await db.mcpoauthtoken.find_unique(
-        where={
-            "mcpServerId_userId": {
-                "mcpServerId": mcp_server_id,
-                "userId": user_id,
-            }
-        }
-    )
-
-
 async def get_valid_access_token(
     server: McpServerRecord,
     user_id: str | None,
-    db: Any,
+    sessionmaker: Sessionmaker,
     *,
     expiry_buffer_seconds: int = _EXPIRY_BUFFER_SECONDS,
 ) -> str:
@@ -319,43 +304,47 @@ async def get_valid_access_token(
     For shared servers, falls back to the owner's token when the user has no
     personal one (fix #5). Never leaks a token to a caller that can't access
     the server (resolver handles that check before we get here).
+
+    Reads happen in one short session that is closed before any refresh request; the
+    refreshed value is written to whichever row it came from (the owner's, on fallback).
     """
     effective_user = user_id or ""
-    token = await _find_token_for(server.id, effective_user, db)
+    async with sessionmaker() as session:
+        token = await mcp_oauth_repo.get_token(session, server.id, effective_user)
 
-    # Service-account fallback for shared servers (fix #5)
-    if (
-        token is None
-        and server.is_shared
-        and server.user_id is not None
-        and effective_user != server.user_id
-    ):
-        token = await _find_token_for(server.id, server.user_id, db)
-        if token is None:
+        # Service-account fallback for shared servers (fix #5)
+        if (
+            token is None
+            and server.is_shared
+            and server.user_id is not None
+            and effective_user != server.user_id
+        ):
+            token = await mcp_oauth_repo.get_token(session, server.id, server.user_id)
+            if token is None:
+                raise McpTokenMissingError(
+                    f"No token for user {user_id!r} on MCP server {server.id!r}, "
+                    f"and server owner {server.user_id!r} has no token either "
+                    f"(service-account fallback failed). "
+                    f"The server owner must complete the OAuth flow to act as a service account."
+                )
+        elif token is None:
             raise McpTokenMissingError(
-                f"No token for user {user_id!r} on MCP server {server.id!r}, "
-                f"and server owner {server.user_id!r} has no token either "
-                f"(service-account fallback failed). "
-                f"The server owner must complete the OAuth flow to act as a service account."
+                f"No OAuth token found for user {user_id!r} on MCP server {server.id!r}. "
+                f"User must complete the OAuth flow first."
             )
-    elif token is None:
-        raise McpTokenMissingError(
-            f"No OAuth token found for user {user_id!r} on MCP server {server.id!r}. "
-            f"User must complete the OAuth flow first."
-        )
 
     # Refresh-on-use with expiry buffer
-    if token.expiresAt is not None:
+    if token.expires_at is not None:
         now = datetime.now(UTC)
-        if now >= token.expiresAt - timedelta(seconds=expiry_buffer_seconds):
-            if not token.encryptedRefreshToken:
+        if now >= token.expires_at - timedelta(seconds=expiry_buffer_seconds):
+            if not token.encrypted_refresh_token:
                 raise McpTokenExpiredError(
                     f"Token for server {server.id!r} expired and has no refresh token; "
                     f"user must re-authorize."
                 )
-            token = await refresh_token(server, token, db)
+            token = await refresh_token(server, token, sessionmaker)
 
-    return decrypt(token.encryptedAccessToken)  # type: ignore[no-any-return]
+    return decrypt(token.encrypted_access_token)
 
 
 __all__ = [

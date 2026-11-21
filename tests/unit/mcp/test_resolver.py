@@ -45,7 +45,7 @@ async def test_resolve_empty_ids_returns_empty() -> None:
     node = _agent_node([])
     db = _mock_db(None)
     result = await resolve_mcp_tools_for_node(
-        node, BuildContext(node=node, state=initial_state(), user_id="dev"), db, db=object()
+        node, BuildContext(node=node, state=initial_state(), user_id="dev"), db
     )
     assert result == []
 
@@ -58,7 +58,6 @@ async def test_resolve_not_found_raises() -> None:
             node,
             BuildContext(node=node, state=initial_state(), user_id="dev"),
             db,
-            db=object(),
         )
 
 
@@ -70,7 +69,9 @@ async def test_resolve_owner_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.mcp import resolver
 
     class _FakeProvider:
-        def __init__(self, server: Any, *, db: Any = None, user_id: str | None = None) -> None:
+        def __init__(
+            self, server: Any, *, sessionmaker: Any = None, user_id: str | None = None
+        ) -> None:
             self.server = server
 
         async def tools(self) -> list[Any]:
@@ -94,7 +95,6 @@ async def test_resolve_owner_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
         node,
         BuildContext(node=node, state=initial_state(), user_id="dev"),
         db,
-        db=object(),
     )
     assert len(result) == 1
 
@@ -108,7 +108,9 @@ async def test_resolve_shared_allowed_for_other_user(monkeypatch: pytest.MonkeyP
         x: str = ""
 
     class _FakeProvider:
-        def __init__(self, server: Any, *, db: Any = None, user_id: str | None = None) -> None:
+        def __init__(
+            self, server: Any, *, sessionmaker: Any = None, user_id: str | None = None
+        ) -> None:
             pass
 
         async def tools(self) -> list[Any]:
@@ -124,7 +126,7 @@ async def test_resolve_shared_allowed_for_other_user(monkeypatch: pytest.MonkeyP
     node = _agent_node(["srv1"])
     db = _mock_db(_server(user_id="other-user", is_shared=True))
     result = await resolve_mcp_tools_for_node(
-        node, BuildContext(node=node, state=initial_state(), user_id="dev"), db, db=object()
+        node, BuildContext(node=node, state=initial_state(), user_id="dev"), db
     )
     assert len(result) == 1
 
@@ -137,7 +139,6 @@ async def test_resolve_private_server_for_other_user_denied() -> None:
             node,
             BuildContext(node=node, state=initial_state(), user_id="dev"),
             db,
-            db=object(),
         )
 
 
@@ -147,7 +148,9 @@ async def test_resolve_single_mcp_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_tool = MagicMock()
 
     class _FakeProvider:
-        def __init__(self, server: Any, *, db: Any = None, user_id: str | None = None) -> None:
+        def __init__(
+            self, server: Any, *, sessionmaker: Any = None, user_id: str | None = None
+        ) -> None:
             self.server = server
 
         async def build_tool(self, name: str, ctx: Any) -> Any:
@@ -156,7 +159,7 @@ async def test_resolve_single_mcp_tool(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(resolver, "McpToolProvider", _FakeProvider)
 
     db = _mock_db(_server())
-    _provider, tool = await resolve_single_mcp_tool("srv1", "echo", "dev", db, db=object())
+    _provider, tool = await resolve_single_mcp_tool("srv1", "echo", "dev", db)
     assert tool is fake_tool
 
 
@@ -184,7 +187,9 @@ async def test_resolver_closes_server_session_before_mcp_network_calls(
         x: str = ""
 
     class _NetworkProvider:
-        def __init__(self, server: Any, *, db: Any = None, user_id: str | None = None) -> None:
+        def __init__(
+            self, server: Any, *, sessionmaker: Any = None, user_id: str | None = None
+        ) -> None:
             pass
 
         async def tools(self) -> list[Any]:
@@ -204,9 +209,9 @@ async def test_resolver_closes_server_session_before_mcp_network_calls(
 
     node = _agent_node(["srv1", "srv1"])
     ctx = BuildContext(node=node, state=initial_state(), user_id="dev")
-    await resolve_mcp_tools_for_node(node, ctx, sm, db=object())
-    await resolve_mcp_tools_by_names("srv1", [], "dev", sm, db=object())
-    await resolve_single_mcp_tool("srv1", "t", "dev", sm, db=object())
+    await resolve_mcp_tools_for_node(node, ctx, sm)
+    await resolve_mcp_tools_by_names("srv1", [], "dev", sm)
+    await resolve_single_mcp_tool("srv1", "t", "dev", sm)
 
     assert events == [
         # node, two servers: each read finishes before its provider.tools() call

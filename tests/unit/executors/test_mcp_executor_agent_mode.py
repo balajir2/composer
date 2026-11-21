@@ -177,10 +177,10 @@ async def test_agent_mode_resolves_selected_tools_and_returns_result(
         return text
 
     async def _fake_resolve(
-        server_id: str, names: list[str] | None, *, user_id: str, sessionmaker: Any, db: Any
+        server_id: str, names: list[str] | None, *, user_id: str, sessionmaker: Any
     ) -> list[BaseTool]:
         captured.update(
-            server_id=server_id, names=names, user_id=user_id, db=db, sessionmaker=sessionmaker
+            server_id=server_id, names=names, user_id=user_id, sessionmaker=sessionmaker
         )
         return [_tool("echo", _echo)]
 
@@ -195,8 +195,6 @@ async def test_agent_mode_resolves_selected_tools_and_returns_result(
 
     monkeypatch.setattr(mcp_mod, "resolve_mcp_tools_by_names", _fake_resolve)
     monkeypatch.setattr(mcp_mod._providers, "build_chat_model", _fake_build)  # pyright: ignore[reportPrivateUsage]
-    sentinel_db = object()
-    set_current_db(sentinel_db)
 
     state = initial_state()
     state["user_id"] = "user-7"
@@ -208,7 +206,6 @@ async def test_agent_mode_resolves_selected_tools_and_returns_result(
         "server_id": "srv1",
         "names": ["echo"],
         "user_id": "user-7",
-        "db": sentinel_db,
         "sessionmaker": _registered_sessionmaker,
     }
     assert built["model_id"] == mcp_mod.DEFAULT_MODEL
@@ -224,12 +221,6 @@ async def test_agent_mode_without_sessionmaker_raises_runtime_error(
     set_current_db(object())
     with pytest.raises(RuntimeError, match="set_current_db"):
         await McpExecutor(_node(instructions="do it")).arun(initial_state())
-
-
-async def test_agent_mode_without_db_context_raises_runtime_error() -> None:
-    node = _node(instructions="do it")
-    with pytest.raises(RuntimeError, match="set_current_db"):
-        await McpExecutor(node).arun(initial_state())
 
 
 async def test_agent_mode_clamps_max_iterations_to_absolute_ceiling(
@@ -263,7 +254,7 @@ async def test_deterministic_mode_propagates_tool_failure(
         raise ConnectionError("mcp server unreachable")
 
     async def _fake_resolve(
-        server_id: str, tool_name: str, *, user_id: str, sessionmaker: Any, db: Any
+        server_id: str, tool_name: str, *, user_id: str, sessionmaker: Any
     ) -> tuple[Any, BaseTool]:
         return object(), _tool("t", _boom)
 

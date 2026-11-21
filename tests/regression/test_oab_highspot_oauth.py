@@ -12,15 +12,16 @@ asserts the POST body.
 import base64
 import os
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
 
 from src.mcp.oauth import exchange_code_for_tokens, refresh_token
 from src.security.encryption import encrypt
+from tests.unit.db_fakes import RecordingSessionmaker
+from tests.unit.mcp._oauth_fakes import RepoCalls, make_state, make_token, script_repo
+from tests.unit.mcp._server_fakes import make_server
 
 pytestmark = pytest.mark.integration
 
@@ -33,11 +34,12 @@ def _set_enc_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _highspot_server() -> Any:
-    return SimpleNamespace(
+    return make_server(
         id="srv-hs",
-        userId="dev",
+        user_id="dev",
         url="https://mcp.highspot.com/mcp",
-        oauthConfig={
+        auth_type="oauth",
+        oauth_config={
             "authorizeUrl": "https://mcp.highspot.com/oauth/authorize",
             "tokenUrl": "https://mcp.highspot.com/oauth/token",
             "clientId": "hs-client",
@@ -62,24 +64,16 @@ async def test_oab_regression_token_exchange_includes_resource(
         json={"access_token": "at", "refresh_token": "rt", "expires_in": 3600},
     )
 
-    state_row = SimpleNamespace(
-        id="st1",
-        mcpServerId="srv-hs",
-        userId="dev",
-        state="s1",
-        codeVerifier="cv",
-        redirectUri="http://localhost/cb",
-        scope="read",
-        expiresAt=datetime.now(UTC) + timedelta(minutes=4),
+    calls = RepoCalls()
+    script_repo(
+        monkeypatch,
+        calls,
+        consume_state=make_state(mcp_server_id="srv-hs", state="s1", code_verifier="cv"),
+        upsert_token=make_token(),
     )
-    db = MagicMock()
-    db.mcpoauthstate = MagicMock()
-    db.mcpoauthstate.find_unique = AsyncMock(return_value=state_row)
-    db.mcpoauthstate.delete = AsyncMock()
-    db.mcpoauthtoken = MagicMock()
-    db.mcpoauthtoken.upsert = AsyncMock(return_value=SimpleNamespace(id="tok1"))
+    sm: Any = RecordingSessionmaker(calls.events)
 
-    await exchange_code_for_tokens(_highspot_server(), code="c", state="s1", db=db)
+    await exchange_code_for_tokens(_highspot_server(), code="c", state="s1", sessionmaker=sm)
 
     req = httpx_mock.get_request()  # pyright: ignore[reportUnknownMemberType]
     assert req is not None
@@ -101,21 +95,19 @@ async def test_oab_regression_refresh_includes_resource(
         json={"access_token": "new-at", "expires_in": 3600},
     )
 
-    token_row = SimpleNamespace(
-        id="tok1",
-        mcpServerId="srv-hs",
-        userId="dev",
-        encryptedAccessToken=encrypt("old-at"),
-        encryptedRefreshToken=encrypt("rt-1"),
-        expiresAt=datetime.now(UTC) - timedelta(minutes=1),
+    token_row = make_token(
+        mcp_server_id="srv-hs",
+        user_id="dev",
+        encrypted_access_token=encrypt("old-at"),
+        encrypted_refresh_token=encrypt("rt-1"),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
         scope="read",
-        tokenType="Bearer",
     )
-    db = MagicMock()
-    db.mcpoauthtoken = MagicMock()
-    db.mcpoauthtoken.update = AsyncMock()
+    calls = RepoCalls()
+    script_repo(monkeypatch, calls, update_token=make_token())
+    sm: Any = RecordingSessionmaker(calls.events)
 
-    await refresh_token(_highspot_server(), token_row, db)
+    await refresh_token(_highspot_server(), token_row, sm)
 
     req = httpx_mock.get_request()  # pyright: ignore[reportUnknownMemberType]
     assert req is not None

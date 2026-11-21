@@ -13,8 +13,8 @@ from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.db.repos import mcp_oauth as mcp_oauth_repo
 from src.db.repos import mcp_servers as mcp_servers_repo
 from src.db.repos import users as users_repo
 from src.db.repos.mcp_servers import McpServerChanges, McpServerRecord
@@ -45,7 +45,6 @@ from src.security.rate_limit import (
     get_rate_limiter,
     per_minute_config,
 )
-from src.storage.db import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -256,7 +255,6 @@ async def list_mcp_servers(
 async def test_mcp_connection(
     server_id: str,
     request: Request,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]  # TODO(phase 2 task 3): OAuth token reads
     user_id: str = Depends(get_current_user_id),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> TestConnectionResponse:
@@ -280,10 +278,10 @@ async def test_mcp_connection(
             detail=f"MCP server {server_id!r} not found.",
         )
 
-    # OAuth servers require db+user_id so the provider can fetch the caller's
-    # access token from McpOAuthToken on each outbound request.  Static-auth
-    # servers accept the extras harmlessly.
-    provider = McpToolProvider(server, db=db, user_id=user_id)
+    # OAuth servers require sessionmaker+user_id so the provider can fetch the caller's
+    # access token from McpOAuthToken (short sessions) on each outbound request.
+    # Static-auth servers accept the extras harmlessly.
+    provider = McpToolProvider(server, sessionmaker=sessionmaker, user_id=user_id)
     health = await provider.health_check()
 
     changes = McpServerChanges(
@@ -419,12 +417,12 @@ async def update_oauth_config(
 async def oauth_authorize(
     server_id: str,
     payload: OAuthAuthorizeRequest,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]  # TODO(phase 2 task 3): state rows
-    session: AsyncSession = Depends(get_session),
+    request: Request,
     user_id: str = Depends(get_current_user_id),
 ) -> OAuthAuthorizeResponse:
-    server = await mcp_servers_repo.get(session, server_id)
-    await session.rollback()  # release the pooled connection; the rest uses Prisma
+    sessionmaker = _require_sessionmaker(request)
+    async with sessionmaker() as session:
+        server = await mcp_servers_repo.get(session, server_id)
     # Same visibility rule as the resolver: owner or shared.  A private server
     # of another user answers exactly like an unknown id (no existence leak).
     if server is None or not user_can_use_server(user_id, server):
@@ -438,7 +436,7 @@ async def oauth_authorize(
             detail=f"MCP server authType must be 'oauth' (got {server.auth_type!r}).",
         )
     url = await build_authorize_url(
-        server, user_id=user_id, redirect_uri=payload.redirect_uri, db=db
+        server, user_id=user_id, redirect_uri=payload.redirect_uri, sessionmaker=sessionmaker
     )
     return OAuthAuthorizeResponse.model_validate({"authorizeUrl": url})
 
@@ -449,21 +447,15 @@ async def oauth_authorize(
 )
 async def oauth_disconnect(
     server_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     user_id: str = Depends(get_current_user_id),
 ) -> None:
-    token = await db.mcpoauthtoken.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where={
-            "mcpServerId_userId": {
-                "mcpServerId": server_id,
-                "userId": user_id,
-            }
-        }
-    )
+    token = await mcp_oauth_repo.get_token(session, server_id, user_id)
     if token is None:
         # Idempotent: no token means nothing to disconnect.
         return
-    await db.mcpoauthtoken.delete(where={"id": token.id})  # pyright: ignore[reportAttributeAccessIssue]
+    await mcp_oauth_repo.delete_token(session, token.id)
+    await session.commit()
 
 
 oauth_router = APIRouter(tags=["oauth"])
@@ -493,29 +485,35 @@ async def oauth_callback(
     code: str,
     state: str,
     request: Request,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]  # TODO(phase 2 task 3): state read and token exchange use Prisma
 ) -> RedirectResponse:
     """Exchange the authorization code for tokens, then redirect the browser
     back to the admin MCP servers page with a status query param so the UI
     can surface a toast instead of leaving the user on a raw-JSON page."""
-    state_row = await db.mcpoauthstate.find_unique(where={"state": state})  # pyright: ignore[reportAttributeAccessIssue]
+    sessionmaker = _require_sessionmaker(request)
+    # One short read session for the pre-checks, closed before the token-endpoint call.
+    # Nothing is consumed here: a deleted server leaves the state untouched, and an
+    # expired state is reported by exchange_code_for_tokens (which leaves it in place).
+    async with sessionmaker() as session:
+        state_row = await mcp_oauth_repo.get_state(session, state)
+        server = (
+            await mcp_servers_repo.get(session, state_row.mcp_server_id)
+            if state_row is not None
+            else None
+        )
     if state_row is None:
         return RedirectResponse(
             url=_admin_mcp_url("", "error", "OAuth state not found (CSRF or replay)."),
             status_code=status.HTTP_303_SEE_OTHER,
         )
-    # Short session: closed before the token-endpoint call in exchange_code_for_tokens.
-    async with _require_sessionmaker(request)() as session:
-        server = await mcp_servers_repo.get(session, state_row.mcpServerId)
     if server is None:
         return RedirectResponse(
             url=_admin_mcp_url(
-                state_row.mcpServerId, "error", "Server not found for this OAuth state."
+                state_row.mcp_server_id, "error", "Server not found for this OAuth state."
             ),
             status_code=status.HTTP_303_SEE_OTHER,
         )
     try:
-        await exchange_code_for_tokens(server, code=code, state=state, db=db)
+        await exchange_code_for_tokens(server, code=code, state=state, sessionmaker=sessionmaker)
     except (InvalidStateError, OAuthError) as exc:
         return RedirectResponse(
             url=_admin_mcp_url(server.id, "error", str(exc)),

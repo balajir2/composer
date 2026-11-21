@@ -84,7 +84,6 @@ def _client_with_mock_db(
     # Dev-mode user_id='dev' has no user row by default -> role defaults to 'member'
     monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=None))
     session = override_session(app)
-    app.state.db = MagicMock()  # Prisma: only OAuth token reads still use it
     app.state.db_sessionmaker = FakeSessionmaker(session)
     app.state.session = session
     app.state.checkpointer = MagicMock()
@@ -267,13 +266,13 @@ def test_post_test_connection_success(
             self,
             server: Any,
             *,
-            db: Any | None = None,
+            sessionmaker: Any | None = None,
             user_id: str | None = None,
         ) -> None:
-            # Accept the db+user_id kwargs the endpoint now passes so
+            # Accept the sessionmaker+user_id kwargs the endpoint now passes so
             # OAuth servers can resolve their token.  Static-auth tests
             # ignore both.
-            del server, db, user_id
+            del server, sessionmaker, user_id
 
         async def health_check(self) -> Any:
             from src.tools.base import HealthStatus
@@ -483,8 +482,10 @@ def _patch_provider_spy(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
     spy = MagicMock()
 
     class _SpyProvider:
-        def __init__(self, server: Any, *, db: Any | None = None, user_id: str | None = None):
-            del db, user_id
+        def __init__(
+            self, server: Any, *, sessionmaker: Any | None = None, user_id: str | None = None
+        ):
+            del sessionmaker, user_id
             spy(server)
 
         async def health_check(self) -> Any:
@@ -579,8 +580,10 @@ def test_test_connection_holds_no_session_across_network_calls(
     import src.api.mcp_servers as mcp_servers_api
 
     class _NetworkProvider:
-        def __init__(self, server: Any, *, db: Any | None = None, user_id: str | None = None):
-            del server, db, user_id
+        def __init__(
+            self, server: Any, *, sessionmaker: Any | None = None, user_id: str | None = None
+        ):
+            del server, sessionmaker, user_id
 
         async def health_check(self) -> Any:
             from src.tools.base import HealthStatus

@@ -11,6 +11,7 @@ from typing import Any, cast
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, create_model
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.db.repos.mcp_servers import McpServerRecord
 from src.mcp.client import MCPClient
@@ -39,22 +40,22 @@ class McpToolProvider(ToolProvider):
         self,
         server: McpServerRecord,
         *,
-        db: Any | None = None,  # TODO(phase 2 task 3): Prisma db for OAuth token reads
+        sessionmaker: async_sessionmaker[AsyncSession] | None = None,
         user_id: str | None = None,
     ) -> None:
         """`server` is an McpServerRecord.
 
-        db + user_id are required for authType='oauth' — McpToolProvider looks
-        tokens up from Prisma on each outbound request. Static-auth callers
+        sessionmaker + user_id are required for authType='oauth' — McpToolProvider
+        looks tokens up (short sessions) on each outbound request. Static-auth callers
         may omit both.
         """
-        if server.auth_type == "oauth" and (db is None or user_id is None):
+        if server.auth_type == "oauth" and (sessionmaker is None or user_id is None):
             raise ValueError(
-                f"McpToolProvider for oauth server {server.id!r} requires db and user_id "
+                f"McpToolProvider for oauth server {server.id!r} requires sessionmaker and user_id "
                 f"to look up the caller's token; the resolver must pass both."
             )
         self._server = server
-        self._db = db
+        self._sessionmaker = sessionmaker
         self._user_id = user_id
         resolved_url = substitute_url_placeholders(server.url)
 
@@ -185,12 +186,12 @@ class McpToolProvider(ToolProvider):
 
     async def _build_oauth_auth_header(self) -> dict[str, str]:
         """Async factory: fetches a valid OAuth token per request (refreshes if needed)."""
-        if self._db is None:
+        if self._sessionmaker is None:
             raise RuntimeError(
-                f"McpToolProvider for oauth server {self._server.id!r} requires db+user_id; "
+                f"McpToolProvider for oauth server {self._server.id!r} requires sessionmaker+user_id; "
                 f"resolver must pass them."
             )
-        token = await get_valid_access_token(self._server, self._user_id, self._db)
+        token = await get_valid_access_token(self._server, self._user_id, self._sessionmaker)
         return {"Authorization": f"Bearer {token}"}
 
 

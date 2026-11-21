@@ -59,7 +59,7 @@ async def test_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx_mod.set_current_db(fake_db)
 
     async def _fake_resolve(
-        mcp_server_id: str, tool_name: str, user_id: Any, sessionmaker: Any, db: Any
+        mcp_server_id: str, tool_name: str, user_id: Any, sessionmaker: Any
     ) -> tuple[Any, Any]:
         return MagicMock(), fake_tool
 
@@ -111,7 +111,7 @@ async def test_variable_substitution_in_arguments(
     ctx_mod.set_current_db(MagicMock())
 
     async def _fake_resolve(
-        mcp_server_id: str, tool_name: str, user_id: Any, sessionmaker: Any, db: Any
+        mcp_server_id: str, tool_name: str, user_id: Any, sessionmaker: Any
     ) -> tuple[Any, Any]:
         return MagicMock(), fake_tool
 

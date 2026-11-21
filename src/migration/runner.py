@@ -157,18 +157,21 @@ async def run_migration(*, export_dir: str, dry_run: bool) -> int:
 
         # MCP OAuth tokens (requires re-encrypt)
         if reencrypt is not None:
-            for row in tables["mcpOAuthTokens"]:
-                try:
-                    data = transformers.mcp_oauth_token_row(row, reencrypt)
-                    inserted = await writer.upsert_mcp_oauth_token(db, data)
-                    if inserted:
-                        report.bump_inserted("mcpOAuthTokens")
-                    else:
-                        report.bump_skipped("mcpOAuthTokens")
-                except Exception as exc:
-                    msg = f"mcpOAuthTokens row {row.get('_id')!r}: {exc}"
-                    report.errors.append(msg)
-                    logger.warning("%s", msg)
+            async with one_shot_session(get_settings()) as session:
+                for row in tables["mcpOAuthTokens"]:
+                    try:
+                        data = transformers.mcp_oauth_token_row(row, reencrypt)
+                        inserted = await writer.upsert_mcp_oauth_token(session, data)
+                        await session.commit()
+                        if inserted:
+                            report.bump_inserted("mcpOAuthTokens")
+                        else:
+                            report.bump_skipped("mcpOAuthTokens")
+                    except Exception as exc:
+                        await session.rollback()
+                        msg = f"mcpOAuthTokens row {row.get('_id')!r}: {exc}"
+                        report.errors.append(msg)
+                        logger.warning("%s", msg)
     finally:
         await db.disconnect()
 

@@ -646,7 +646,7 @@ class Phase2Adapter:
         """Names of every tool the resolver returns for one server (empty selection = all)."""
         from src.mcp.resolver import resolve_mcp_tools_by_names
 
-        tools = await resolve_mcp_tools_by_names(server_id, [], user_id, self._sm, db=self._db)
+        tools = await resolve_mcp_tools_by_names(server_id, [], user_id, self._sm)
         return [t.name for t in tools]
 
     async def resolve_named_tools(
@@ -654,7 +654,7 @@ class Phase2Adapter:
     ) -> list[str]:
         from src.mcp.resolver import resolve_mcp_tools_by_names
 
-        tools = await resolve_mcp_tools_by_names(server_id, names, user_id, self._sm, db=self._db)
+        tools = await resolve_mcp_tools_by_names(server_id, names, user_id, self._sm)
         return [t.name for t in tools]
 
     @staticmethod
@@ -678,33 +678,27 @@ class Phase2Adapter:
 
         node = self._agent_node(server_ids)
         ctx = BuildContext(node=node, state=initial_state(), user_id=user_id)
-        return [t.name for t in await resolve_mcp_tools_for_node(node, ctx, self._sm, db=self._db)]
+        return [t.name for t in await resolve_mcp_tools_for_node(node, ctx, self._sm)]
 
     async def registry_tools(
         self, server_ids: list[str], user_id: str | None, *, with_db: bool = True
     ) -> list[str]:
-        """Agent-node tool resolution through src.tools.registry (BuildContext.db is how the
-        agent executor hands the database to MCP resolution)."""
+        """Agent-node tool resolution through src.tools.registry (which reads the registered
+        sessionmaker)."""
         from src.engine.state import initial_state
         from src.tools.base import BuildContext
         from src.tools.registry import resolve_tools_for_node
 
+        self._set_sessionmaker(with_db)
         node = self._agent_node(server_ids)
-        ctx = BuildContext(
-            node=node,
-            state=initial_state(),
-            user_id=user_id,
-            db=self._db if with_db else None,
-        )
+        ctx = BuildContext(node=node, state=initial_state(), user_id=user_id)
         return [t.name for t in await resolve_tools_for_node(node, ctx)]
 
     async def resolve_single_tool(self, server_id: str, tool_name: str, user_id: str | None) -> str:
         """`mcp` node deterministic mode: the single bound tool's name."""
         from src.mcp.resolver import resolve_single_mcp_tool
 
-        _provider, tool = await resolve_single_mcp_tool(
-            server_id, tool_name, user_id, self._sm, db=self._db
-        )
+        _provider, tool = await resolve_single_mcp_tool(server_id, tool_name, user_id, self._sm)
         return tool.name
 
     # ---- OAuth / Drive token helpers --------------------------------------------------------
@@ -718,7 +712,7 @@ class Phase2Adapter:
         async with self._sm() as session:
             server = await mcp_servers_repo.get(session, server_id)
         assert server is not None, f"server {server_id} missing"
-        return await get_valid_access_token(server, user_id, self._db)
+        return await get_valid_access_token(server, user_id, self._sm)
 
     async def valid_drive_token(self, connection_id: str) -> str:
         """Plaintext Google Drive access token for a connection, refreshed when near expiry."""
@@ -735,6 +729,13 @@ class Phase2Adapter:
 
         token = _current_db.set(None)
         return lambda: _current_db.reset(token)
+
+    def _set_sessionmaker(self, with_db: bool) -> None:
+        """MCP resolution reads the registered sessionmaker; ``with_db=False`` clears it for the
+        test (monkeypatch restores it) so the pinned "no database" errors stay reachable."""
+        import src.db.runtime as runtime
+
+        self._monkeypatch.setattr(runtime, "_sessionmaker", self._sm if with_db else None)
 
     @staticmethod
     def _set_context_db(db: Any) -> None:
@@ -764,6 +765,7 @@ class Phase2Adapter:
         from src.executors.mcp import McpExecutor
 
         self._set_context_db(self._db if with_db else None)
+        self._set_sessionmaker(with_db)
         node = McpNode.model_validate(
             {
                 "id": "m",
@@ -821,6 +823,7 @@ class Phase2Adapter:
 
         self._monkeypatch.setattr(providers, "build_chat_model", _build)
         self._set_context_db(self._db if with_db else None)
+        self._set_sessionmaker(with_db)
         node = McpNode.model_validate(
             {
                 "id": "m",
@@ -845,6 +848,7 @@ class Phase2Adapter:
         from src.executors.download_pdf import DownloadPdfExecutor
 
         self._set_context_db(self._db if with_db else None)
+        self._set_sessionmaker(with_db)
         node = DownloadPdfNode.model_validate(
             {
                 "id": "dp",

@@ -70,7 +70,7 @@ class BuildContext:
     node: "AgentNode"
     state: "WorkflowStateDict"
     user_id: str | None = None
-    db: Any | None = None  # Prisma client — populated when MCP resolution is needed
+    db: Any | None = None  # unused since MCP resolution takes the registered sessionmaker
     langsmith_config: "LangSmithConfig | None" = None
 
 

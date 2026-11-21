@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
 from prisma import Json  # pyright: ignore[reportAttributeAccessIssue]
+from src.db.repos import mcp_oauth as mcp_oauth_repo
 from src.db.repos import mcp_servers as mcp_servers_repo
 
 if TYPE_CHECKING:
@@ -112,12 +113,19 @@ async def upsert_mcp_server(session: AsyncSession, data: dict[str, Any]) -> bool
     return await mcp_servers_repo.insert_if_absent(session, cast("McpServerCreate", values))
 
 
-async def upsert_mcp_oauth_token(db: Prisma, data: dict[str, Any]) -> bool:  # pyright: ignore[reportUnknownParameterType]
-    existing = await db.mcpoauthtoken.find_unique(where={"id": data["id"]})  # pyright: ignore[reportAttributeAccessIssue]
-    if existing is not None:
-        return False
-    await db.mcpoauthtoken.create(data=data)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
-    return True
+async def upsert_mcp_oauth_token(session: AsyncSession, data: dict[str, Any]) -> bool:
+    """Insert unless a row with this id exists. The caller commits."""
+    values = mcp_oauth_repo.TokenInsert(
+        id=data["id"],
+        mcp_server_id=data["mcpServerId"],
+        user_id=data["userId"],
+        encrypted_access_token=data["encryptedAccessToken"],
+        encrypted_refresh_token=data.get("encryptedRefreshToken"),
+        expires_at=_as_datetime(data.get("expiresAt")),
+        scope=data.get("scope"),
+        token_type=data.get("tokenType") or "Bearer",
+    )
+    return await mcp_oauth_repo.insert_token_if_absent(session, values)
 
 
 __all__ = [

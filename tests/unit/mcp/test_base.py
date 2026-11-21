@@ -228,7 +228,7 @@ async def test_oauth_auth_returns_oauthauth_descriptor(monkeypatch: pytest.Monke
     )
     from src.tools.base import OAuthAuth
 
-    provider = McpToolProvider(srv, db=MagicMock(), user_id="user1")
+    provider = McpToolProvider(srv, sessionmaker=MagicMock(), user_id="user1")
     assert isinstance(provider.auth, OAuthAuth)
     assert provider.auth.include_rfc8707_resource is True
 
@@ -255,7 +255,7 @@ async def test_oauth_auth_header_factory_calls_get_valid_access_token(
 
     captured: dict[str, Any] = {}
 
-    async def _fake_get_valid(server: Any, user_id: str, db: Any) -> str:
+    async def _fake_get_valid(server: Any, user_id: str, sessionmaker: Any) -> str:
         captured["server_id"] = server.id
         captured["user_id"] = user_id
         return "bearer-xyz"
@@ -270,7 +270,7 @@ async def test_oauth_auth_header_factory_calls_get_valid_access_token(
         json={"jsonrpc": "2.0", "id": 1, "result": {"tools": []}},
     )
 
-    provider = McpToolProvider(srv, db=MagicMock(), user_id="user1")
+    provider = McpToolProvider(srv, sessionmaker=MagicMock(), user_id="user1")
     await provider.tools()
     req = httpx_mock.get_request()
     assert req is not None
@@ -278,13 +278,17 @@ async def test_oauth_auth_header_factory_calls_get_valid_access_token(
     assert captured == {"server_id": "srv1", "user_id": "user1"}
 
 
-@pytest.mark.parametrize(("db", "user_id"), [(None, None), (None, "user1"), (MagicMock(), None)])
-def test_oauth_provider_without_db_or_user_id_fails_fast(db: Any, user_id: str | None) -> None:
-    """OAuth McpToolProvider requires db+user_id at construction, so a caller that wires it
+@pytest.mark.parametrize(
+    ("sessionmaker", "user_id"), [(None, None), (None, "user1"), (MagicMock(), None)]
+)
+def test_oauth_provider_without_sessionmaker_or_user_id_fails_fast(
+    sessionmaker: Any, user_id: str | None
+) -> None:
+    """OAuth McpToolProvider requires sessionmaker+user_id at construction, so a caller that wires it
     up incorrectly fails immediately instead of on the first outbound request."""
     srv = _server_row(auth_type="oauth", oauth_config={"tokenUrl": "x", "clientId": "c"})
-    with pytest.raises(ValueError, match="requires db and user_id"):
-        McpToolProvider(srv, db=db, user_id=user_id)
+    with pytest.raises(ValueError, match="requires sessionmaker and user_id"):
+        McpToolProvider(srv, sessionmaker=sessionmaker, user_id=user_id)
 
 
 def test_static_auth_provider_does_not_need_db_or_user_id() -> None:

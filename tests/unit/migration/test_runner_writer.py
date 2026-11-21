@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from src.db.repos import mcp_oauth as mcp_oauth_repo
 from src.db.repos import mcp_servers as mcp_servers_repo
 from src.migration import convex_loader, runner, transformers, writer
 from src.security.encryption import decrypt
@@ -50,7 +51,7 @@ def _fake_db(existing_ids: dict[str, set[str]] | None = None) -> MagicMock:
     """Fake Prisma client: find_unique answers from `existing_ids` per table."""
     existing_ids = existing_ids or {}
     db = MagicMock()
-    for table in ("workflow", "workflowexecution", "mcpoauthtoken"):
+    for table in ("workflow", "workflowexecution"):
         ids = existing_ids.get(table, set())
 
         async def _find(*, where: dict[str, str], _ids: set[str] = ids) -> object | None:
@@ -82,6 +83,14 @@ def _mcp_server_session(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # pyrigh
     insert = AsyncMock(return_value=True)
     monkeypatch.setattr(runner, "one_shot_session", _scope)
     monkeypatch.setattr(mcp_servers_repo, "insert_if_absent", insert)
+    return insert
+
+
+@pytest.fixture(autouse=True)
+def _token_insert_stub(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # pyright: ignore[reportUnusedFunction]
+    """MCP OAuth tokens go through SQLAlchemy too: stub the repo insert."""
+    insert = AsyncMock(return_value=True)
+    monkeypatch.setattr(mcp_oauth_repo, "insert_token_if_absent", insert)
     return insert
 
 
@@ -246,12 +255,28 @@ async def test_upsert_mcp_server_skips_existing(monkeypatch: pytest.MonkeyPatch)
     )
 
 
-async def test_upsert_mcp_oauth_token_inserts_then_skips_on_rerun() -> None:
-    db = _fake_db()
-    assert await writer.upsert_mcp_oauth_token(db, {"id": "t1"}) is True
-    db2 = _fake_db({"mcpoauthtoken": {"t1"}})
-    assert await writer.upsert_mcp_oauth_token(db2, {"id": "t1"}) is False
-    db2.mcpoauthtoken.create.assert_not_called()
+async def test_upsert_mcp_oauth_token_maps_columns_and_reports_the_repo_answer(
+    _token_insert_stub: AsyncMock,
+) -> None:
+    _token_insert_stub.side_effect = [True, False]
+    data = {
+        "id": "t1",
+        "mcpServerId": "s1",
+        "userId": "u1",
+        "encryptedAccessToken": "enc-a",
+        "encryptedRefreshToken": None,
+        "expiresAt": 1_700_000_000_000,
+        "scope": None,
+        "tokenType": "Bearer",
+    }
+    session = cast("AsyncSession", FakeSession())
+    assert await writer.upsert_mcp_oauth_token(session, data) is True
+    assert await writer.upsert_mcp_oauth_token(session, data) is False
+    values = _token_insert_stub.await_args_list[0].args[1]
+    assert values["id"] == "t1" and values["mcp_server_id"] == "s1"
+    assert values["user_id"] == "u1" and values["encrypted_access_token"] == "enc-a"
+    assert values["expires_at"] == datetime(2023, 11, 14, 22, 13, 20, tzinfo=UTC)
+    assert values["token_type"] == "Bearer" and values["encrypted_refresh_token"] is None
 
 
 # ─── runner: token re-encryption ────────────────────────────────────────────
@@ -375,7 +400,7 @@ async def test_run_migration_database_write_failure_is_recorded_and_run_continue
 
 
 async def test_run_migration_reencrypts_oauth_tokens_before_storing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _token_insert_stub: AsyncMock
 ) -> None:
     from src.config import get_settings
 
@@ -398,9 +423,10 @@ async def test_run_migration_reencrypts_oauth_tokens_before_storing(
     db = _fake_db()
     _install_db(monkeypatch, db)
     assert await runner.run_migration(export_dir=str(tmp_path), dry_run=False) == 0
-    stored = db.mcpoauthtoken.create.await_args.kwargs["data"]
-    assert decrypt(stored["encryptedAccessToken"]) == "access-1"
-    assert decrypt(stored["encryptedRefreshToken"]) == "refresh-1"
+    assert _token_insert_stub.await_args is not None
+    stored = _token_insert_stub.await_args.args[1]
+    assert decrypt(stored["encrypted_access_token"]) == "access-1"
+    assert decrypt(stored["encrypted_refresh_token"]) == "refresh-1"
 
 
 async def test_run_migration_without_oab_key_fails_fast_before_any_write(

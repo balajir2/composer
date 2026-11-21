@@ -7,8 +7,6 @@ McpToolProvider, and returns the list of LangChain BaseTool instances.
 See Phase 3a spec §10.
 """
 
-from typing import Any
-
 from langchain_core.tools import BaseTool
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
@@ -51,8 +49,6 @@ async def resolve_mcp_tools_for_node(
     node: AgentNode,
     context: BuildContext,
     sessionmaker: async_sessionmaker[AsyncSession],
-    *,
-    db: Any,  # TODO(phase 2 task 3): Prisma db for OAuth token reads; becomes the sessionmaker
 ) -> list[BaseTool]:
     """Return BaseTool instances for every tool on every MCP server referenced by node."""
     server_ids = list(node.data.mcp_server_ids)
@@ -70,7 +66,7 @@ async def resolve_mcp_tools_for_node(
                 f"(owner={server.user_id!r}, isShared={server.is_shared})"
             )
 
-        provider = McpToolProvider(server, db=db, user_id=context.user_id)
+        provider = McpToolProvider(server, sessionmaker=sessionmaker, user_id=context.user_id)
         # Build from cached defs so each tool is bound with its real
         # inputSchema — the LLM needs this to pass required args like
         # firecrawl_agent's `prompt`.
@@ -84,8 +80,6 @@ async def resolve_mcp_tools_by_names(
     tool_names: list[str],
     user_id: str | None,
     sessionmaker: async_sessionmaker[AsyncSession],
-    *,
-    db: Any,  # TODO(phase 2 task 3): Prisma db for OAuth token reads; becomes the sessionmaker
 ) -> list[BaseTool]:
     """Return BaseTool instances for the named tools on a single MCP server.
 
@@ -103,7 +97,7 @@ async def resolve_mcp_tools_by_names(
     if not user_can_use_server(user_id, server):
         raise McpPermissionError(f"User {user_id!r} cannot use MCP server {mcp_server_id!r}")
 
-    provider = McpToolProvider(server, db=db, user_id=user_id)
+    provider = McpToolProvider(server, sessionmaker=sessionmaker, user_id=user_id)
     all_defs = await provider.tools()
 
     if not tool_names:
@@ -127,8 +121,6 @@ async def resolve_single_mcp_tool(
     tool_name: str,
     user_id: str | None,
     sessionmaker: async_sessionmaker[AsyncSession],
-    *,
-    db: Any,  # TODO(phase 2 task 3): Prisma db for OAuth token reads; becomes the sessionmaker
 ) -> tuple[McpToolProvider, BaseTool]:
     """For the `mcp` node deterministic-mode executor: fetch server, build
     ONE tool by name with its real schema."""
@@ -138,7 +130,7 @@ async def resolve_single_mcp_tool(
     if not user_can_use_server(user_id, server):
         raise McpPermissionError(f"User {user_id!r} cannot use MCP server {mcp_server_id!r}")
 
-    provider = McpToolProvider(server, db=db, user_id=user_id)
+    provider = McpToolProvider(server, sessionmaker=sessionmaker, user_id=user_id)
     tool = await provider.build_tool(
         tool_name,
         BuildContext(

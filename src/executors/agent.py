@@ -19,7 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from src.db.repos import llm_models as models_repo
 from src.db.runtime import get_registered_sessionmaker
-from src.engine.context import get_current_db, get_current_langsmith
+from src.engine.context import get_current_langsmith
 from src.engine.state import WorkflowStateDict
 from src.engine.workflow import AgentNode
 from src.executors.base import register_executor
@@ -152,7 +152,6 @@ class AgentExecutor:
                 node=self.node,
                 state=state,
                 user_id=user_id,
-                db=get_current_db(),
             ),
         )
 
