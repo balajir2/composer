@@ -14,7 +14,13 @@ from src.db.repos import users as users_repo
 from src.db.repos.mcp_servers import McpServerRecord
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
-from tests.unit.db_fakes import FakeSession, FakeSessionmaker, make_user, override_session
+from tests.unit.db_fakes import (
+    FakeSessionmaker,
+    RecordingSessionmaker,
+    assert_no_network_inside_session,
+    make_user,
+    override_session,
+)
 
 
 def _set_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -551,37 +557,13 @@ def test_test_connection_owner_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
 # --- short-session rule: no session open across the MCP network calls ----------------------
 
 
-class _RecordingSessionmaker(FakeSessionmaker):
-    """FakeSessionmaker that logs session enter/exit into a shared event list."""
-
-    def __init__(self, events: list[str]) -> None:
-        super().__init__(FakeSession())
-        self._events = events
-
-    def __call__(self) -> "_RecordingSessionmaker._Rec":  # type: ignore[override]
-        return _RecordingSessionmaker._Rec(self.session, self._events)
-
-    class _Rec:
-        def __init__(self, session: FakeSession, events: list[str]) -> None:
-            self._session = session
-            self._events = events
-
-        async def __aenter__(self) -> FakeSession:
-            self._events.append("session:enter")
-            return self._session
-
-        async def __aexit__(self, *exc: object) -> bool:
-            self._events.append("session:exit")
-            return False
-
-
 def test_test_connection_holds_no_session_across_network_calls(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_encryption_key(monkeypatch)
     client, repo = _client_with_mock_db(monkeypatch)
     events: list[str] = []
-    client.app.state.db_sessionmaker = _RecordingSessionmaker(events)  # type: ignore[attr-defined]
+    client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
 
     async def _get(*_a: object, **_k: object) -> McpServerRecord:
         events.append("db:get")
@@ -624,14 +606,7 @@ def test_test_connection_holds_no_session_across_network_calls(
         "db:update",
         "session:exit",
     ]
-    open_sessions = 0
-    for event in events:
-        if event == "session:enter":
-            open_sessions += 1
-        elif event == "session:exit":
-            open_sessions -= 1
-        elif event.startswith("net:"):
-            assert open_sessions == 0, f"{event} ran inside an open session"
+    assert_no_network_inside_session(events)
 
 
 def test_test_connection_without_sessionmaker_is_503(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -640,3 +615,34 @@ def test_test_connection_without_sessionmaker_is_503(monkeypatch: pytest.MonkeyP
     resp = client.post("/mcp-servers/srv1/test-connection")
     assert resp.status_code == 503
     assert resp.json() == {"detail": "database unavailable"}
+
+
+def test_test_connection_save_failure_still_returns_result_and_logs_class_only(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    _set_encryption_key(monkeypatch)
+    client, repo = _client_with_mock_db(monkeypatch)
+    _patch_provider_spy(monkeypatch)
+    repo.update = AsyncMock(side_effect=ConnectionError("password=hunter2 host=db.internal"))
+    with caplog.at_level("WARNING", logger="src.api.mcp_servers"):
+        resp = client.post("/mcp-servers/srv1/test-connection")
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["ok"] is True
+    assert body["message"] == "healthy (result not saved)"
+    warnings = [r for r in caplog.records if r.name == "src.api.mcp_servers"]
+    assert len(warnings) == 1
+    assert "ConnectionError" in warnings[0].getMessage()
+    assert "hunter2" not in caplog.text and "db.internal" not in caplog.text
+
+
+def test_test_connection_server_deleted_during_call_is_ignored(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_encryption_key(monkeypatch)
+    client, repo = _client_with_mock_db(monkeypatch)
+    _patch_provider_spy(monkeypatch)
+    repo.update = AsyncMock(return_value=None)
+    resp = client.post("/mcp-servers/srv1/test-connection")
+    assert resp.status_code == 200
+    assert resp.json() == {"ok": True, "message": "healthy"}

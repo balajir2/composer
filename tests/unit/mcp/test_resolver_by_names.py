@@ -72,54 +72,66 @@ def _fake_provider(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[
 
 
 async def test_by_names_returns_only_requested_tools_in_requested_order() -> None:
-    tools = await resolve_mcp_tools_by_names("srv1", ["beta", "alpha"], "owner", _db(_server()))
+    tools = await resolve_mcp_tools_by_names(
+        "srv1", ["beta", "alpha"], "owner", _db(_server()), db=object()
+    )
     assert [t.name for t in tools] == ["beta", "alpha"]
 
 
 async def test_by_names_skips_tools_the_server_no_longer_advertises() -> None:
-    tools = await resolve_mcp_tools_by_names("srv1", ["alpha", "retired"], "owner", _db(_server()))
+    tools = await resolve_mcp_tools_by_names(
+        "srv1", ["alpha", "retired"], "owner", _db(_server()), db=object()
+    )
     assert [t.name for t in tools] == ["alpha"]
 
 
 async def test_by_names_empty_selection_returns_every_server_tool() -> None:
-    tools = await resolve_mcp_tools_by_names("srv1", [], "owner", _db(_server()))
+    tools = await resolve_mcp_tools_by_names("srv1", [], "owner", _db(_server()), db=object())
     assert [t.name for t in tools] == ["alpha", "beta"]
 
 
 async def test_by_names_missing_server_raises_not_found() -> None:
     with pytest.raises(McpServerNotFound, match="srv1"):
-        await resolve_mcp_tools_by_names("srv1", [], "owner", _db(None))
+        await resolve_mcp_tools_by_names("srv1", [], "owner", _db(None), db=object())
     assert _FakeProvider.instances == []
 
 
 async def test_by_names_private_server_of_another_user_is_denied_before_any_upstream_call() -> None:
     with pytest.raises(McpPermissionError):
-        await resolve_mcp_tools_by_names("srv1", [], "intruder", _db(_server("owner", False)))
+        await resolve_mcp_tools_by_names(
+            "srv1", [], "intruder", _db(_server("owner", False)), db=object()
+        )
     assert _FakeProvider.instances == []
 
 
 async def test_by_names_shared_server_is_usable_by_other_users() -> None:
-    tools = await resolve_mcp_tools_by_names("srv1", [], "someone", _db(_server("owner", True)))
+    tools = await resolve_mcp_tools_by_names(
+        "srv1", [], "someone", _db(_server("owner", True)), db=object()
+    )
     assert len(tools) == 2
     assert _FakeProvider.instances[0].user_id == "someone"
 
 
 async def test_by_names_anonymous_user_cannot_use_private_server() -> None:
     with pytest.raises(McpPermissionError):
-        await resolve_mcp_tools_by_names("srv1", [], None, _db(_server("owner", False)))
+        await resolve_mcp_tools_by_names(
+            "srv1", [], None, _db(_server("owner", False)), db=object()
+        )
 
 
 async def test_by_names_upstream_tools_list_failure_propagates() -> None:
     _FakeProvider.tools_error = ConnectionError("tools/list timed out")
     with pytest.raises(ConnectionError, match="timed out"):
-        await resolve_mcp_tools_by_names("srv1", ["alpha"], "owner", _db(_server()))
+        await resolve_mcp_tools_by_names("srv1", ["alpha"], "owner", _db(_server()), db=object())
 
 
 async def test_single_tool_missing_server_raises_not_found() -> None:
     with pytest.raises(McpServerNotFound):
-        await resolve_single_mcp_tool("srv1", "alpha", "owner", _db(None))
+        await resolve_single_mcp_tool("srv1", "alpha", "owner", _db(None), db=object())
 
 
 async def test_single_tool_private_server_of_another_user_is_denied() -> None:
     with pytest.raises(McpPermissionError):
-        await resolve_single_mcp_tool("srv1", "alpha", "intruder", _db(_server("owner", False)))
+        await resolve_single_mcp_tool(
+            "srv1", "alpha", "intruder", _db(_server("owner", False)), db=object()
+        )

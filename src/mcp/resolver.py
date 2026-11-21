@@ -52,7 +52,7 @@ async def resolve_mcp_tools_for_node(
     context: BuildContext,
     sessionmaker: async_sessionmaker[AsyncSession],
     *,
-    db: Any = None,  # TODO(phase 2 task 3): Prisma db, only for OAuth token reads
+    db: Any,  # TODO(phase 2 task 3): Prisma db for OAuth token reads; becomes the sessionmaker
 ) -> list[BaseTool]:
     """Return BaseTool instances for every tool on every MCP server referenced by node."""
     server_ids = list(node.data.mcp_server_ids)
@@ -85,7 +85,7 @@ async def resolve_mcp_tools_by_names(
     user_id: str | None,
     sessionmaker: async_sessionmaker[AsyncSession],
     *,
-    db: Any = None,  # TODO(phase 2 task 3): Prisma db, only for OAuth token reads
+    db: Any,  # TODO(phase 2 task 3): Prisma db for OAuth token reads; becomes the sessionmaker
 ) -> list[BaseTool]:
     """Return BaseTool instances for the named tools on a single MCP server.
 
@@ -128,7 +128,7 @@ async def resolve_single_mcp_tool(
     user_id: str | None,
     sessionmaker: async_sessionmaker[AsyncSession],
     *,
-    db: Any = None,  # TODO(phase 2 task 3): Prisma db, only for OAuth token reads
+    db: Any,  # TODO(phase 2 task 3): Prisma db for OAuth token reads; becomes the sessionmaker
 ) -> tuple[McpToolProvider, BaseTool]:
     """For the `mcp` node deterministic-mode executor: fetch server, build
     ONE tool by name with its real schema."""

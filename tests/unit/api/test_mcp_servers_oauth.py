@@ -15,7 +15,12 @@ from src.db.repos import users as users_repo
 from src.db.repos.mcp_servers import McpServerRecord
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
-from tests.unit.db_fakes import FakeSessionmaker, override_session
+from tests.unit.db_fakes import (
+    FakeSessionmaker,
+    RecordingSessionmaker,
+    assert_no_network_inside_session,
+    override_session,
+)
 
 
 def _set_enc_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -65,8 +70,8 @@ class _ServerRepo:
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
         object.__setattr__(self, "_mp", monkeypatch)
-        self.get = AsyncMock(return_value=_server_row())
-        self.update = AsyncMock(return_value=_server_row())
+        self.get: Any = AsyncMock(return_value=_server_row())
+        self.update: Any = AsyncMock(return_value=_server_row())
 
     def __setattr__(self, name: str, value: Any) -> None:
         object.__setattr__(self, name, value)
@@ -278,3 +283,35 @@ def test_authorize_shared_server_of_other_user_allowed(
     resp = client.post("/mcp-servers/srv1/oauth/authorize", json=_AUTHZ_BODY)
     assert resp.status_code == 200, resp.text
     db.mcpoauthstate.create.assert_awaited_once()
+
+
+def test_callback_holds_no_session_across_the_token_exchange(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_enc_key(monkeypatch)
+    client, db, repo = _client_with_mock_db(monkeypatch)
+    events: list[str] = []
+    client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
+
+    db.mcpoauthstate.find_unique = AsyncMock(
+        return_value=SimpleNamespace(id="st1", mcpServerId="srv1", userId="dev", state="abc")
+    )
+
+    async def _get(*_a: object, **_k: object) -> McpServerRecord:
+        events.append("db:get")
+        return _server_row()
+
+    repo.get = _get
+
+    import src.api.mcp_servers as api_mod
+
+    async def _fake_exchange(server: Any, code: str, state: str, db: Any) -> Any:
+        events.append("net:exchange")
+
+    monkeypatch.setattr(api_mod, "exchange_code_for_tokens", _fake_exchange)
+
+    resp = client.get("/oauth/callback?code=c1&state=abc", follow_redirects=False)
+    assert resp.status_code == 303
+    assert "oauth=success" in resp.headers["location"]
+    assert events == ["session:enter", "db:get", "session:exit", "net:exchange"]
+    assert_no_network_inside_session(events)

@@ -87,14 +87,19 @@ _MCP_SERVER_COLUMNS = {
 
 
 def _as_datetime(value: Any) -> datetime | None:
-    """A Convex export timestamp (epoch milliseconds or ISO string) as aware UTC."""
+    """A Convex export timestamp (epoch milliseconds, ISO string or datetime) as aware UTC.
+
+    Naive values are taken to be UTC.
+    """
     if value is None:
         return None
     if isinstance(value, datetime):
-        return value if value.tzinfo else value.replace(tzinfo=UTC)
-    if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(value / 1000, tz=UTC)
-    return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        parsed = value
+    elif isinstance(value, (int, float)):
+        parsed = datetime.fromtimestamp(value / 1000, tz=UTC)
+    else:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 
 async def upsert_mcp_server(session: AsyncSession, data: dict[str, Any]) -> bool:

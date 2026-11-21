@@ -149,8 +149,8 @@ class McpExecutor:
 
 
 def _require_db() -> tuple[Any, async_sessionmaker[AsyncSession]]:
-    """The Prisma client (still needed for OAuth token reads: TODO(phase 2 task 3)) and the
-    registered SQLAlchemy sessionmaker the resolver reads servers with."""
+    """The Prisma client and the registered SQLAlchemy sessionmaker the resolver reads with."""
+    # TODO(phase 2 task 3): the Prisma client is only needed for OAuth token reads.
     db = get_current_db()
     sessionmaker = get_registered_sessionmaker()
     if db is None or sessionmaker is None:

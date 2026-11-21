@@ -39,7 +39,7 @@ class McpToolProvider(ToolProvider):
         self,
         server: McpServerRecord,
         *,
-        db: Any | None = None,  # TODO(phase 2 task 3): Prisma db for tokens -> sessionmaker
+        db: Any | None = None,  # TODO(phase 2 task 3): Prisma db for OAuth token reads
         user_id: str | None = None,
     ) -> None:
         """`server` is an McpServerRecord.
@@ -48,6 +48,11 @@ class McpToolProvider(ToolProvider):
         tokens up from Prisma on each outbound request. Static-auth callers
         may omit both.
         """
+        if server.auth_type == "oauth" and (db is None or user_id is None):
+            raise ValueError(
+                f"McpToolProvider for oauth server {server.id!r} requires db and user_id "
+                f"to look up the caller's token; the resolver must pass both."
+            )
         self._server = server
         self._db = db
         self._user_id = user_id

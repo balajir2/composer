@@ -4,6 +4,7 @@ POST /mcp-servers/{id}/test-connection — ping via McpToolProvider.health_check
 DELETE /mcp-servers/{id} — owner only.
 """
 
+import logging
 from datetime import UTC, datetime
 from typing import Any
 
@@ -45,6 +46,8 @@ from src.security.rate_limit import (
     per_minute_config,
 )
 from src.storage.db import get_db
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["mcp-servers"])
 
@@ -297,11 +300,19 @@ async def test_mcp_connection(
             changes["connection_status"] = "error"
             changes["last_error"] = f"tools/list failed after initialize ok: {exc}"
 
-    async with sessionmaker() as session:
-        await mcp_servers_repo.update(session, server_id, changes)
-        await session.commit()
+    message = health.message
+    try:
+        async with sessionmaker() as session:
+            # A None result means the server was deleted during the network call: nothing to record.
+            await mcp_servers_repo.update(session, server_id, changes)
+            await session.commit()
+    except Exception as exc:
+        # The connection result is still valid; only recording it failed. Log the class
+        # name only (exception text can carry connection details).
+        logger.warning("mcp test-connection: could not save result (%s)", type(exc).__name__)
+        message = f"{message} (result not saved)"
 
-    return TestConnectionResponse(ok=health.ok, message=health.message)
+    return TestConnectionResponse(ok=health.ok, message=message)
 
 
 class McpOwnerAssignRequest(BaseModel):
@@ -482,7 +493,7 @@ async def oauth_callback(
     code: str,
     state: str,
     request: Request,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]  # TODO(phase 2 task 3)
+    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]  # TODO(phase 2 task 3): state read and token exchange use Prisma
 ) -> RedirectResponse:
     """Exchange the authorization code for tokens, then redirect the browser
     back to the admin MCP servers page with a status query param so the UI

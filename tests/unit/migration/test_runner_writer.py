@@ -16,7 +16,7 @@ import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from src.db.repos import mcp_servers as mcp_servers_repo
-from src.migration import convex_loader, runner, writer
+from src.migration import convex_loader, runner, transformers, writer
 from src.security.encryption import decrypt
 from tests.unit.db_fakes import FakeSession
 
@@ -200,6 +200,43 @@ async def test_upsert_mcp_server_maps_columns_and_passes_plain_json(
     assert values["tools"] is None and values["headers"] is None
     assert values["last_tested"] == datetime(2023, 11, 14, 22, 13, 20, tzinfo=UTC)
     assert "oauthConfig" not in values
+
+
+_AWARE = datetime(2023, 11, 14, 22, 13, 20, tzinfo=UTC)
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (1_700_000_000_000, _AWARE),
+        (1_700_000_000_000.0, _AWARE),
+        ("2023-11-14T22:13:20Z", _AWARE),
+        ("2023-11-14T22:13:20+00:00", _AWARE),
+        ("2023-11-14T22:13:20", _AWARE),  # naive ISO: taken as UTC
+        ("2023-11-14T23:13:20+01:00", _AWARE),
+        (datetime(2023, 11, 14, 22, 13, 20), _AWARE),  # naive datetime
+        (_AWARE, _AWARE),
+        (None, None),
+    ],
+)
+def test_as_datetime_always_returns_aware_utc(value: object, expected: datetime | None) -> None:
+    got = writer._as_datetime(value)  # pyright: ignore[reportPrivateUsage]
+    assert got == expected
+    if got is not None:
+        assert got.utcoffset() is not None  # aware; the column type normalises the offset
+
+
+def test_transformer_keys_are_all_known_to_the_writer_column_map() -> None:
+    """A renamed transformer key must fail here, not silently drop a column on insert."""
+    row = {
+        "_id": "s1",
+        "userId": "clerk_a",
+        "name": "S",
+        "url": "https://m.example.com",
+        "authType": "none",
+    }
+    out = transformers.mcp_server_row(row, _users())
+    assert set(out) <= set(writer._MCP_SERVER_COLUMNS)  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_upsert_mcp_server_skips_existing(monkeypatch: pytest.MonkeyPatch) -> None:

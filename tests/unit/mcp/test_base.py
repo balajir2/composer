@@ -3,6 +3,7 @@
 import base64
 import os
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
@@ -277,10 +278,14 @@ async def test_oauth_auth_header_factory_calls_get_valid_access_token(
     assert captured == {"server_id": "srv1", "user_id": "user1"}
 
 
-async def test_oauth_provider_without_db_raises() -> None:
-    """OAuth McpToolProvider requires db+user_id at construction; guards
-    against callers that wire it up incorrectly."""
+@pytest.mark.parametrize(("db", "user_id"), [(None, None), (None, "user1"), (MagicMock(), None)])
+def test_oauth_provider_without_db_or_user_id_fails_fast(db: Any, user_id: str | None) -> None:
+    """OAuth McpToolProvider requires db+user_id at construction, so a caller that wires it
+    up incorrectly fails immediately instead of on the first outbound request."""
     srv = _server_row(auth_type="oauth", oauth_config={"tokenUrl": "x", "clientId": "c"})
-    provider = McpToolProvider(srv)  # no db, no user_id
-    with pytest.raises(RuntimeError, match="db"):
-        await provider.tools()
+    with pytest.raises(ValueError, match="requires db and user_id"):
+        McpToolProvider(srv, db=db, user_id=user_id)
+
+
+def test_static_auth_provider_does_not_need_db_or_user_id() -> None:
+    McpToolProvider(_server_row(auth_type="none"))
