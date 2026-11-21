@@ -11,6 +11,7 @@ import pytest
 from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
 
 from src.mcp.oauth import InvalidStateError, TokenExchangeError, exchange_code_for_tokens
+from tests.unit.mcp._server_fakes import make_server
 
 
 def _set_enc_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -23,9 +24,10 @@ def _set_enc_key(monkeypatch: pytest.MonkeyPatch) -> None:
 def _server(**overrides: Any) -> Any:
     base: dict[str, Any] = {
         "id": "srv1",
-        "userId": "owner",
+        "user_id": "owner",
         "url": "https://api.highspot.com/mcp",
-        "oauthConfig": {
+        "auth_type": "oauth",
+        "oauth_config": {
             "authorizeUrl": "https://api.highspot.com/oauth/authorize",
             "tokenUrl": "https://api.highspot.com/oauth/token",
             "clientId": "client-abc",
@@ -34,7 +36,7 @@ def _server(**overrides: Any) -> Any:
         },
     }
     base.update(overrides)
-    return SimpleNamespace(**base)
+    return make_server(**base)
 
 
 def _state_row(**overrides: Any) -> Any:
@@ -139,7 +141,7 @@ async def test_exchange_decrypts_encrypted_client_secret(
         json={"access_token": "at", "expires_in": 3600},
     )
     server = _server(
-        oauthConfig={
+        oauth_config={
             "authorizeUrl": "https://api.highspot.com/oauth/authorize",
             "tokenUrl": "https://api.highspot.com/oauth/token",
             "clientId": "client-abc",

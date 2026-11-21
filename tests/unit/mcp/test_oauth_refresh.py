@@ -12,6 +12,7 @@ from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
 
 from src.mcp.oauth import TokenRefreshError, refresh_token
 from src.security.encryption import encrypt
+from tests.unit.mcp._server_fakes import make_server
 
 
 def _set_enc_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -22,11 +23,12 @@ def _set_enc_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _server() -> Any:
-    return SimpleNamespace(
+    return make_server(
         id="srv1",
-        userId="owner",
+        user_id="owner",
         url="https://api.highspot.com/mcp",
-        oauthConfig={
+        auth_type="oauth",
+        oauth_config={
             "tokenUrl": "https://api.highspot.com/oauth/token",
             "clientId": "client-abc",
             "clientSecret": "plain-secret",

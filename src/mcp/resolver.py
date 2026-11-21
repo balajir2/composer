@@ -1,7 +1,7 @@
 """MCP server resolution — per ADR-0010, runs server-side at invocation time.
 
 Given an Agent node's mcp_server_ids (or a single server_id + tool_name for
-the `mcp` node executor), fetches McpServer rows from Prisma, instantiates
+the `mcp` node executor), fetches McpServer rows (short session per read), instantiates
 McpToolProvider, and returns the list of LangChain BaseTool instances.
 
 See Phase 3a spec §10.
@@ -10,7 +10,10 @@ See Phase 3a spec §10.
 from typing import Any
 
 from langchain_core.tools import BaseTool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.db.repos import mcp_servers as mcp_servers_repo
+from src.db.repos.mcp_servers import McpServerRecord
 from src.engine.state import initial_state
 from src.engine.workflow import AgentNode
 from src.mcp.base import McpToolProvider
@@ -25,21 +28,31 @@ class McpPermissionError(PermissionError):
     """Raised when a user tries to use an MCP server they don't own and isn't shared."""
 
 
-def user_can_use_server(user_id: str | None, server: Any) -> bool:
+def user_can_use_server(user_id: str | None, server: McpServerRecord) -> bool:
     """Owner always allowed; shared servers allowed for any user_id.
 
     Phase 3a: no OAuth, so the service-account token fallback isn't needed.
     Phase 3b expands this with real OAuth token lookup.
     """
-    if server.userId == user_id:
+    if server.user_id == user_id:
         return True
-    return bool(server.isShared)
+    return bool(server.is_shared)
+
+
+async def _load_server(
+    sessionmaker: async_sessionmaker[AsyncSession], server_id: str
+) -> McpServerRecord | None:
+    """One short read; the session is closed before any MCP network call."""
+    async with sessionmaker() as session:
+        return await mcp_servers_repo.get(session, server_id)
 
 
 async def resolve_mcp_tools_for_node(
     node: AgentNode,
     context: BuildContext,
-    db: Any,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    db: Any = None,  # TODO(phase 2 task 3): Prisma db, only for OAuth token reads
 ) -> list[BaseTool]:
     """Return BaseTool instances for every tool on every MCP server referenced by node."""
     server_ids = list(node.data.mcp_server_ids)
@@ -48,13 +61,13 @@ async def resolve_mcp_tools_for_node(
 
     out: list[BaseTool] = []
     for server_id in server_ids:
-        server = await db.mcpserver.find_unique(where={"id": server_id})
+        server = await _load_server(sessionmaker, server_id)
         if server is None:
             raise McpServerNotFound(f"MCP server {server_id!r} not found")
         if not user_can_use_server(context.user_id, server):
             raise McpPermissionError(
                 f"User {context.user_id!r} cannot use MCP server {server_id!r} "
-                f"(owner={server.userId!r}, isShared={server.isShared})"
+                f"(owner={server.user_id!r}, isShared={server.is_shared})"
             )
 
         provider = McpToolProvider(server, db=db, user_id=context.user_id)
@@ -70,7 +83,9 @@ async def resolve_mcp_tools_by_names(
     mcp_server_id: str,
     tool_names: list[str],
     user_id: str | None,
-    db: Any,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    db: Any = None,  # TODO(phase 2 task 3): Prisma db, only for OAuth token reads
 ) -> list[BaseTool]:
     """Return BaseTool instances for the named tools on a single MCP server.
 
@@ -82,7 +97,7 @@ async def resolve_mcp_tools_by_names(
     One tools/list round-trip fetches every definition; each tool is then
     bound with its real inputSchema so the LLM knows what args to pass.
     """
-    server = await db.mcpserver.find_unique(where={"id": mcp_server_id})
+    server = await _load_server(sessionmaker, mcp_server_id)
     if server is None:
         raise McpServerNotFound(f"MCP server {mcp_server_id!r} not found")
     if not user_can_use_server(user_id, server):
@@ -111,11 +126,13 @@ async def resolve_single_mcp_tool(
     mcp_server_id: str,
     tool_name: str,
     user_id: str | None,
-    db: Any,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    db: Any = None,  # TODO(phase 2 task 3): Prisma db, only for OAuth token reads
 ) -> tuple[McpToolProvider, BaseTool]:
     """For the `mcp` node deterministic-mode executor: fetch server, build
     ONE tool by name with its real schema."""
-    server = await db.mcpserver.find_unique(where={"id": mcp_server_id})
+    server = await _load_server(sessionmaker, mcp_server_id)
     if server is None:
         raise McpServerNotFound(f"MCP server {mcp_server_id!r} not found")
     if not user_can_use_server(user_id, server):

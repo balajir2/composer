@@ -23,7 +23,9 @@ from typing import Any, cast
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from langchain_core.tools import BaseTool
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.db.runtime import get_registered_sessionmaker
 from src.engine.context import get_current_db, get_current_langsmith
 from src.engine.state import WorkflowStateDict
 from src.engine.workflow import McpNode
@@ -63,7 +65,7 @@ class McpExecutor:
 
     async def _run_agent_mode(self, state: WorkflowStateDict) -> dict[str, Any]:
         instructions = substitute(self.node.data.instructions or "", state)
-        db = _require_db()
+        db, sessionmaker = _require_db()
         user_id = state.get("user_id") or "dev"
 
         # Scope the tool set to what the user selected (falls back to all tools
@@ -74,6 +76,7 @@ class McpExecutor:
             self.node.data.mcp_server_id,
             self.node.data.selected_tool_names,
             user_id=user_id,
+            sessionmaker=sessionmaker,
             db=db,
         )
 
@@ -116,13 +119,14 @@ class McpExecutor:
         for k, v in raw_args.items():
             resolved_args[k] = substitute(v, state) if isinstance(v, str) else v
 
-        db = _require_db()
+        db, sessionmaker = _require_db()
         user_id = state.get("user_id") or "dev"
         assert self.node.data.mcp_server_id is not None
         _, tool = await resolve_single_mcp_tool(
             self.node.data.mcp_server_id,
             self.node.data.tool_name,
             user_id=user_id,
+            sessionmaker=sessionmaker,
             db=db,
         )
         result = await tool.ainvoke(resolved_args)  # pyright: ignore[reportUnknownMemberType]
@@ -144,14 +148,17 @@ class McpExecutor:
 # ─── helpers (module-level so they're trivially unit-testable) ─────────
 
 
-def _require_db() -> Any:
+def _require_db() -> tuple[Any, async_sessionmaker[AsyncSession]]:
+    """The Prisma client (still needed for OAuth token reads: TODO(phase 2 task 3)) and the
+    registered SQLAlchemy sessionmaker the resolver reads servers with."""
     db = get_current_db()
-    if db is None:
+    sessionmaker = get_registered_sessionmaker()
+    if db is None or sessionmaker is None:
         raise RuntimeError(
             "McpExecutor requires src.engine.context.set_current_db to be "
             "called before the compiled graph runs. LangGraphExecutor.run does this."
         )
-    return db
+    return db, sessionmaker
 
 
 async def _agentic_loop(

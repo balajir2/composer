@@ -2,17 +2,19 @@
 
 import base64
 import os
-from types import SimpleNamespace
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.repos import mcp_servers as mcp_servers_repo
 from src.db.repos import users as users_repo
+from src.db.repos.mcp_servers import McpServerRecord
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
-from tests.unit.db_fakes import make_user, override_session
+from tests.unit.db_fakes import FakeSession, FakeSessionmaker, make_user, override_session
 
 
 def _set_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -22,53 +24,71 @@ def _set_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()
 
 
-def _server_row(**overrides: Any) -> SimpleNamespace:
+def _server_row(**overrides: Any) -> McpServerRecord:
+    when = datetime(2026, 4, 20, tzinfo=UTC)
     base: dict[str, Any] = {
         "id": "srv1",
-        "userId": "dev",
+        "user_id": "dev",
         "name": "Test",
         "url": "https://mcp.example.com/rpc",
         "description": None,
         "category": None,
-        "authType": "none",
-        "encryptedAccessToken": None,
-        "headerName": None,
-        "oauthConfig": None,
+        "auth_type": "none",
+        "encrypted_access_token": None,
+        "header_name": None,
+        "oauth_config": None,
         "tools": None,
-        "connectionStatus": "untested",
-        "lastTested": None,
-        "lastError": None,
+        "connection_status": "untested",
+        "last_tested": None,
+        "last_error": None,
         "enabled": True,
-        "isOfficial": False,
-        "isShared": False,
+        "is_official": False,
+        "is_shared": False,
         "headers": None,
-        "createdAt": "2026-04-20T00:00:00Z",
-        "updatedAt": "2026-04-20T00:00:00Z",
+        "created_at": when,
+        "updated_at": when,
+        "original_owner_email": None,
     }
     base.update(overrides)
-    return SimpleNamespace(**base)
+    return McpServerRecord(**base)
 
 
-def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
+class _RepoMocks:
+    """The server repo's functions as AsyncMocks. Assigning an attribute replaces that repo
+    function for the rest of the test, so tests can re-script a call mid-way."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        object.__setattr__(self, "_mp", monkeypatch)
+        self.create: Any = AsyncMock(return_value=_server_row())
+        self.list_visible: Any = AsyncMock(return_value=[_server_row()])
+        self.get: Any = AsyncMock(return_value=_server_row())
+        self.update: Any = AsyncMock(return_value=_server_row())
+        self.delete: Any = AsyncMock(return_value=True)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        object.__getattribute__(self, "_mp").setattr(mcp_servers_repo, name, value)
+
+
+def _client_with_mock_db(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[TestClient, _RepoMocks]:
     app = create_app()
-    db = MagicMock()
-    db.mcpserver = MagicMock()
-    db.mcpserver.create = AsyncMock(return_value=_server_row())
-    db.mcpserver.find_many = AsyncMock(return_value=[_server_row()])
-    db.mcpserver.find_unique = AsyncMock(return_value=_server_row())
-    db.mcpserver.update = AsyncMock(return_value=_server_row())
-    db.mcpserver.delete = AsyncMock()
-    # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
-    app.state.db = db
-    app.state.session = override_session(app)
+    repo = _RepoMocks(monkeypatch)
+    # Dev-mode user_id='dev' has no user row by default -> role defaults to 'member'
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=None))
+    session = override_session(app)
+    app.state.db = MagicMock()  # Prisma: only OAuth token reads still use it
+    app.state.db_sessionmaker = FakeSessionmaker(session)
+    app.state.session = session
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
-    return TestClient(app), db
+    return TestClient(app), repo
 
 
 def test_post_mcp_server_no_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_encryption_key(monkeypatch)
-    client, db = _client_with_mock_db()
+    client, repo = _client_with_mock_db(monkeypatch)
     payload = {
         "name": "DeepWiki",
         "url": "https://mcp.deepwiki.com/sse",
@@ -78,14 +98,14 @@ def test_post_mcp_server_no_auth(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resp.status_code == 201, resp.text
     body = resp.json()
     assert body["name"] == "Test"  # return value of mock
-    db.mcpserver.create.assert_awaited_once()
+    repo.create.assert_awaited_once()
 
 
 def test_post_mcp_server_api_key_encrypts(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_encryption_key(monkeypatch)
-    client, db = _client_with_mock_db()
+    client, repo = _client_with_mock_db(monkeypatch)
     payload = {
         "name": "Firecrawl",
         "url": "https://mcp.firecrawl.dev/test/v2/sse",
@@ -96,20 +116,20 @@ def test_post_mcp_server_api_key_encrypts(
     resp = client.post("/mcp-servers", json=payload)
     assert resp.status_code == 201
     # Verify the CREATE payload's encryptedAccessToken is NOT the plaintext
-    call_args = db.mcpserver.create.await_args
+    call_args = repo.create.await_args
     assert call_args is not None
-    created_data = call_args.kwargs["data"]
-    assert created_data["encryptedAccessToken"] != "fc-plain-secret"
+    created_data = call_args.args[1]
+    assert created_data["encrypted_access_token"] != "fc-plain-secret"
     # And it's a non-empty base64-ish string
-    assert created_data["encryptedAccessToken"]
-    assert created_data["authType"] == "api-key"
+    assert created_data["encrypted_access_token"]
+    assert created_data["auth_type"] == "api-key"
 
 
 def test_post_mcp_server_unresolvable_url_template_rejected(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_encryption_key(monkeypatch)
-    client, _ = _client_with_mock_db()
+    client, _ = _client_with_mock_db(monkeypatch)
     payload = {
         "name": "Bad",
         "url": "https://mcp.example.com/{NONEXISTENT_KEY}/rpc",
@@ -124,11 +144,11 @@ def test_get_mcp_servers_lists_own_and_shared(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_encryption_key(monkeypatch)
-    client, db = _client_with_mock_db()
-    db.mcpserver.find_many = AsyncMock(
+    client, repo = _client_with_mock_db(monkeypatch)
+    repo.list_visible = AsyncMock(
         return_value=[
-            _server_row(id="own", userId="dev", isShared=False),
-            _server_row(id="shared", userId="other", isShared=True),
+            _server_row(id="own", user_id="dev", is_shared=False),
+            _server_row(id="shared", user_id="other", is_shared=True),
         ]
     )
     resp = client.get("/mcp-servers")
@@ -148,7 +168,7 @@ def test_post_mcp_server_encrypts_sensitive_headers(
     any secret-looking header value (Authorization, X-Api-Key, ...) must
     be encrypted at rest, same treatment as the workflow node fields."""
     _set_encryption_key(monkeypatch)
-    client, db = _client_with_mock_db()
+    client, repo = _client_with_mock_db(monkeypatch)
     payload = {
         "name": "Custom",
         "url": "https://mcp.example.com/rpc",
@@ -158,9 +178,9 @@ def test_post_mcp_server_encrypts_sensitive_headers(
     resp = client.post("/mcp-servers", json=payload)
     assert resp.status_code == 201, resp.text
 
-    call_args = db.mcpserver.create.await_args
-    created_data = call_args.kwargs["data"]  # type: ignore[union-attr]
-    stored_headers = created_data["headers"].data  # prisma.Json wraps the raw value
+    call_args = repo.create.await_args
+    created_data = call_args.args[1]  # type: ignore[union-attr]
+    stored_headers = created_data["headers"]
     assert stored_headers["Authorization"] != "Bearer plain-secret"
     assert stored_headers["X-Tenant-Id"] == "acme"
 
@@ -175,8 +195,8 @@ def test_get_mcp_servers_redacts_sensitive_headers(
     _set_encryption_key(monkeypatch)
     from src.security.encryption import encrypt_marked
 
-    client, db = _client_with_mock_db()
-    db.mcpserver.find_many = AsyncMock(
+    client, repo = _client_with_mock_db(monkeypatch)
+    repo.list_visible = AsyncMock(
         return_value=[
             _server_row(
                 headers={
@@ -203,7 +223,7 @@ def test_post_mcp_server_encrypts_oauth_client_secret(
     though McpOAuthToken access/refresh tokens are encrypted — close that
     gap the same way access tokens already are."""
     _set_encryption_key(monkeypatch)
-    client, db = _client_with_mock_db()
+    client, repo = _client_with_mock_db(monkeypatch)
     payload = {
         "name": "Highspot",
         "url": "https://api.highspot.com/mcp",
@@ -218,9 +238,9 @@ def test_post_mcp_server_encrypts_oauth_client_secret(
     resp = client.post("/mcp-servers", json=payload)
     assert resp.status_code == 201, resp.text
 
-    call_args = db.mcpserver.create.await_args
-    created_data = call_args.kwargs["data"]  # type: ignore[union-attr]
-    stored_config = created_data["oauthConfig"].data
+    call_args = repo.create.await_args
+    created_data = call_args.args[1]  # type: ignore[union-attr]
+    stored_config = created_data["oauth_config"]
     assert stored_config["clientSecret"] != "plain-client-secret"
 
     from src.security.encryption import decrypt_marked
@@ -232,7 +252,7 @@ def test_post_test_connection_success(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_encryption_key(monkeypatch)
-    client, db = _client_with_mock_db()
+    client, repo = _client_with_mock_db(monkeypatch)
 
     import src.api.mcp_servers as mcp_servers_api
 
@@ -262,30 +282,29 @@ def test_post_test_connection_success(
     resp = client.post("/mcp-servers/srv1/test-connection")
     assert resp.status_code == 200
     assert resp.json()["ok"] is True
-    db.mcpserver.update.assert_awaited_once()
-    updated = db.mcpserver.update.await_args.kwargs["data"]
-    assert updated["connectionStatus"] == "connected"
+    repo.update.assert_awaited_once()
+    assert repo.update.await_args is not None
+    updated = repo.update.await_args.args[2]
+    assert updated["connection_status"] == "connected"
 
 
-def test_post_test_connection_not_found() -> None:
-    client, db = _client_with_mock_db()
-    db.mcpserver.find_unique = AsyncMock(return_value=None)
+def test_post_test_connection_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, repo = _client_with_mock_db(monkeypatch)
+    repo.get = AsyncMock(return_value=None)
     resp = client.post("/mcp-servers/ghost/test-connection")
     assert resp.status_code == 404
 
 
-def test_delete_owner_allowed() -> None:
-    client, db = _client_with_mock_db()
+def test_delete_owner_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, repo = _client_with_mock_db(monkeypatch)
     resp = client.delete("/mcp-servers/srv1")
     assert resp.status_code == 204
-    db.mcpserver.delete.assert_awaited_once()
+    repo.delete.assert_awaited_once()
 
 
-def test_delete_shared_by_non_owner_denied() -> None:
-    client, db = _client_with_mock_db()
-    db.mcpserver.find_unique = AsyncMock(
-        return_value=_server_row(userId="someone-else", isShared=True)
-    )
+def test_delete_shared_by_non_owner_denied(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, repo = _client_with_mock_db(monkeypatch)
+    repo.get = AsyncMock(return_value=_server_row(user_id="someone-else", is_shared=True))
     resp = client.delete("/mcp-servers/srv1")
     assert resp.status_code == 403
 
@@ -299,32 +318,32 @@ def test_patch_mcp_server_owner_by_user_id(monkeypatch: pytest.MonkeyPatch) -> N
     """Admin reassigns MCP server ownership by userId."""
     from src.security.auth import ensure_admin
 
-    client, db = _client_with_mock_db()
+    client, repo = _client_with_mock_db(monkeypatch)
     target = make_user(id="new-owner", email="target@x.com")
     monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=target))
-    updated = _server_row(userId="new-owner")
-    db.mcpserver.update = AsyncMock(return_value=updated)
+    updated = _server_row(user_id="new-owner")
+    repo.update.return_value = updated
     client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
     try:
         resp = client.patch("/mcp-servers/srv1/owner", json={"userId": "new-owner"})
     finally:
         client.app.dependency_overrides.pop(ensure_admin, None)  # type: ignore[attr-defined]
     assert resp.status_code == 200
-    db.mcpserver.update.assert_awaited_once()
-    call_data = db.mcpserver.update.await_args.kwargs["data"]  # type: ignore[union-attr]
-    assert call_data["userId"] == "new-owner"
+    repo.update.assert_awaited_once()
+    call_data = repo.update.await_args.args[2]  # type: ignore[union-attr]
+    assert call_data["user_id"] == "new-owner"
 
 
 def test_patch_mcp_server_owner_by_email(monkeypatch: pytest.MonkeyPatch) -> None:
     """Admin reassigns MCP server ownership by email lookup."""
     from src.security.auth import ensure_admin
 
-    client, db = _client_with_mock_db()
+    client, repo = _client_with_mock_db(monkeypatch)
     target = make_user(id="uid-email", email="target@x.com")
     get_by_email = AsyncMock(return_value=target)
     monkeypatch.setattr(users_repo, "get_by_email", get_by_email)
-    updated = _server_row(userId="uid-email")
-    db.mcpserver.update = AsyncMock(return_value=updated)
+    updated = _server_row(user_id="uid-email")
+    repo.update.return_value = updated
     client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
     try:
         resp = client.patch("/mcp-servers/srv1/owner", json={"email": "target@x.com"})
@@ -333,16 +352,16 @@ def test_patch_mcp_server_owner_by_email(monkeypatch: pytest.MonkeyPatch) -> Non
     assert resp.status_code == 200
     assert get_by_email.await_args is not None
     assert get_by_email.await_args.args[1] == "target@x.com"
-    db.mcpserver.update.assert_awaited_once()
-    call_data = db.mcpserver.update.await_args.kwargs["data"]  # type: ignore[union-attr]
-    assert call_data["userId"] == "uid-email"
+    repo.update.assert_awaited_once()
+    call_data = repo.update.await_args.args[2]  # type: ignore[union-attr]
+    assert call_data["user_id"] == "uid-email"
 
 
 def test_patch_mcp_server_owner_unknown_email_404(monkeypatch: pytest.MonkeyPatch) -> None:
     """PATCH with unknown email → 404."""
     from src.security.auth import ensure_admin
 
-    client, _ = _client_with_mock_db()
+    client, _ = _client_with_mock_db(monkeypatch)
     monkeypatch.setattr(users_repo, "get_by_email", AsyncMock(return_value=None))
     client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
     try:
@@ -356,10 +375,10 @@ def test_patch_mcp_server_owner_unknown_server_404(monkeypatch: pytest.MonkeyPat
     """PATCH with unknown server → 404."""
     from src.security.auth import ensure_admin
 
-    client, db = _client_with_mock_db()
+    client, repo = _client_with_mock_db(monkeypatch)
     target = make_user(id="new-owner", email="t@x.com")
     monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=target))
-    db.mcpserver.find_unique = AsyncMock(return_value=None)
+    repo.get = AsyncMock(return_value=None)
     client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
     try:
         resp = client.patch("/mcp-servers/ghost/owner", json={"userId": "new-owner"})
@@ -368,13 +387,13 @@ def test_patch_mcp_server_owner_unknown_server_404(monkeypatch: pytest.MonkeyPat
     assert resp.status_code == 404
 
 
-def test_patch_mcp_server_owner_member_403() -> None:
+def test_patch_mcp_server_owner_member_403(monkeypatch: pytest.MonkeyPatch) -> None:
     """Non-admin calling PATCH /owner → 403.
 
     In test mode the db is a MagicMock (not Prisma), so get_current_role
     returns ('dev', 'member') and ensure_admin raises 403.
     """
-    client, _ = _client_with_mock_db()
+    client, _ = _client_with_mock_db(monkeypatch)
     # No admin override → dev-mode 'dev' user → member → ensure_admin raises 403
     resp = client.patch("/mcp-servers/srv1/owner", json={"userId": "new-owner"})
     assert resp.status_code == 403
@@ -385,13 +404,13 @@ def test_patch_mcp_server_owner_member_403() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_admin_patch_shared_flips_isshared() -> None:
+def test_admin_patch_shared_flips_isshared(monkeypatch: pytest.MonkeyPatch) -> None:
     """Admin flips isShared via PATCH /mcp-servers/{id}/shared."""
     from src.security.auth import ensure_admin
 
-    client, db = _client_with_mock_db()
-    updated = _server_row(isShared=True)
-    db.mcpserver.update = AsyncMock(return_value=updated)
+    client, repo = _client_with_mock_db(monkeypatch)
+    updated = _server_row(is_shared=True)
+    repo.update.return_value = updated
     client.app.dependency_overrides[ensure_admin] = lambda: "admin-caller"  # type: ignore[attr-defined]
     try:
         resp = client.patch("/mcp-servers/srv1/shared", json={"isShared": True})
@@ -400,49 +419,53 @@ def test_admin_patch_shared_flips_isshared() -> None:
     assert resp.status_code == 200
     body = resp.json()
     assert body["isShared"] is True
-    db.mcpserver.find_unique.assert_awaited()
-    call_data = db.mcpserver.update.await_args.kwargs["data"]  # type: ignore[union-attr]
-    assert call_data == {"isShared": True}
+    repo.get.assert_awaited()
+    call_data = repo.update.await_args.args[2]  # type: ignore[union-attr]
+    assert call_data == {"is_shared": True}
 
 
-def test_member_patch_shared_403() -> None:
+def test_member_patch_shared_403(monkeypatch: pytest.MonkeyPatch) -> None:
     """Non-admin calling PATCH /mcp-servers/{id}/shared → 403."""
-    client, _ = _client_with_mock_db()
+    client, _ = _client_with_mock_db(monkeypatch)
     # No admin override → dev-mode 'dev' user → member → ensure_admin raises 403
     resp = client.patch("/mcp-servers/srv1/shared", json={"isShared": True})
     assert resp.status_code == 403
 
 
-def test_patch_mcp_server_owner_releases_connection_after_user_lookup(
+def test_patch_mcp_server_owner_reads_then_updates_then_commits_on_one_session(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from src.security.auth import ensure_admin
 
-    client, db = _client_with_mock_db()
+    client, repo = _client_with_mock_db(monkeypatch)
     order: list[str] = []
 
     async def _lookup(*_a: object, **_k: object) -> object:
         order.append("lookup")
         return make_user(id="new-owner")
 
-    async def _rollback() -> None:
-        order.append("rollback")
-
-    async def _find(**_k: object) -> object:
-        order.append("prisma")
+    async def _get(*_a: object, **_k: object) -> object:
+        order.append("get")
         return _server_row()
 
+    async def _update(*_a: object, **_k: object) -> object:
+        order.append("update")
+        return _server_row(user_id="new-owner")
+
+    async def _commit() -> None:
+        order.append("commit")
+
     monkeypatch.setattr(users_repo, "get_by_id", _lookup)
-    client.app.state.session.rollback.side_effect = _rollback  # type: ignore[attr-defined]
-    db.mcpserver.find_unique = _find
-    db.mcpserver.update = AsyncMock(return_value=_server_row(userId="new-owner"))
+    client.app.state.session.commit.side_effect = _commit  # type: ignore[attr-defined]
+    repo.get = _get
+    repo.update = _update
     client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
     try:
         resp = client.patch("/mcp-servers/srv1/owner", json={"userId": "new-owner"})
     finally:
         client.app.dependency_overrides.pop(ensure_admin, None)  # type: ignore[attr-defined]
     assert resp.status_code == 200, resp.text
-    assert order == ["lookup", "rollback", "prisma"]
+    assert order == ["lookup", "get", "update", "commit"]
 
 
 # --- visibility on test-connection -------------------------------------------
@@ -474,28 +497,28 @@ def test_test_connection_private_server_of_other_user_is_404(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_encryption_key(monkeypatch)
-    client, db = _client_with_mock_db()
+    client, repo = _client_with_mock_db(monkeypatch)
     spy = _patch_provider_spy(monkeypatch)
-    db.mcpserver.find_unique = AsyncMock(
-        return_value=_server_row(id="other", userId="someone-else", isShared=False)
+    repo.get = AsyncMock(
+        return_value=_server_row(id="other", user_id="someone-else", is_shared=False)
     )
     resp = client.post("/mcp-servers/other/test-connection")
     assert resp.status_code == 404
     assert resp.json() == {"detail": "MCP server 'other' not found."}
     spy.assert_not_called()
-    db.mcpserver.update.assert_not_awaited()
+    repo.update.assert_not_awaited()
 
 
 def test_test_connection_private_404_identical_to_unknown_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_encryption_key(monkeypatch)
-    client, db = _client_with_mock_db()
-    db.mcpserver.find_unique = AsyncMock(
-        return_value=_server_row(id="same", userId="someone-else", isShared=False)
+    client, repo = _client_with_mock_db(monkeypatch)
+    repo.get = AsyncMock(
+        return_value=_server_row(id="same", user_id="someone-else", is_shared=False)
     )
     private = client.post("/mcp-servers/same/test-connection")
-    db.mcpserver.find_unique = AsyncMock(return_value=None)
+    repo.get = AsyncMock(return_value=None)
     unknown = client.post("/mcp-servers/same/test-connection")
     assert private.status_code == unknown.status_code == 404
     assert private.content == unknown.content
@@ -505,23 +528,115 @@ def test_test_connection_shared_server_of_other_user_allowed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_encryption_key(monkeypatch)
-    client, db = _client_with_mock_db()
+    client, repo = _client_with_mock_db(monkeypatch)
     spy = _patch_provider_spy(monkeypatch)
-    db.mcpserver.find_unique = AsyncMock(
-        return_value=_server_row(userId="someone-else", isShared=True)
-    )
+    repo.get = AsyncMock(return_value=_server_row(user_id="someone-else", is_shared=True))
     resp = client.post("/mcp-servers/srv1/test-connection")
     assert resp.status_code == 200
     spy.assert_called_once()
-    db.mcpserver.update.assert_awaited_once()
+    repo.update.assert_awaited_once()
 
 
 def test_test_connection_owner_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_encryption_key(monkeypatch)
-    client, db = _client_with_mock_db()
+    client, repo = _client_with_mock_db(monkeypatch)
     spy = _patch_provider_spy(monkeypatch)
-    db.mcpserver.find_unique = AsyncMock(return_value=_server_row(userId="dev", isShared=False))
+    repo.get = AsyncMock(return_value=_server_row(user_id="dev", is_shared=False))
     resp = client.post("/mcp-servers/srv1/test-connection")
     assert resp.status_code == 200
     spy.assert_called_once()
-    db.mcpserver.update.assert_awaited_once()
+    repo.update.assert_awaited_once()
+
+
+# --- short-session rule: no session open across the MCP network calls ----------------------
+
+
+class _RecordingSessionmaker(FakeSessionmaker):
+    """FakeSessionmaker that logs session enter/exit into a shared event list."""
+
+    def __init__(self, events: list[str]) -> None:
+        super().__init__(FakeSession())
+        self._events = events
+
+    def __call__(self) -> "_RecordingSessionmaker._Rec":  # type: ignore[override]
+        return _RecordingSessionmaker._Rec(self.session, self._events)
+
+    class _Rec:
+        def __init__(self, session: FakeSession, events: list[str]) -> None:
+            self._session = session
+            self._events = events
+
+        async def __aenter__(self) -> FakeSession:
+            self._events.append("session:enter")
+            return self._session
+
+        async def __aexit__(self, *exc: object) -> bool:
+            self._events.append("session:exit")
+            return False
+
+
+def test_test_connection_holds_no_session_across_network_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_encryption_key(monkeypatch)
+    client, repo = _client_with_mock_db(monkeypatch)
+    events: list[str] = []
+    client.app.state.db_sessionmaker = _RecordingSessionmaker(events)  # type: ignore[attr-defined]
+
+    async def _get(*_a: object, **_k: object) -> McpServerRecord:
+        events.append("db:get")
+        return _server_row()
+
+    async def _update(*_a: object, **_k: object) -> McpServerRecord:
+        events.append("db:update")
+        return _server_row()
+
+    repo.get = _get
+    repo.update = _update
+
+    import src.api.mcp_servers as mcp_servers_api
+
+    class _NetworkProvider:
+        def __init__(self, server: Any, *, db: Any | None = None, user_id: str | None = None):
+            del server, db, user_id
+
+        async def health_check(self) -> Any:
+            from src.tools.base import HealthStatus
+
+            events.append("net:health_check")
+            return HealthStatus(ok=True, message="healthy")
+
+        async def tools(self) -> list[Any]:
+            events.append("net:tools")
+            return []
+
+    monkeypatch.setattr(mcp_servers_api, "McpToolProvider", _NetworkProvider)
+    resp = client.post("/mcp-servers/srv1/test-connection")
+    assert resp.status_code == 200, resp.text
+
+    assert events == [
+        "session:enter",
+        "db:get",
+        "session:exit",
+        "net:health_check",
+        "net:tools",
+        "session:enter",
+        "db:update",
+        "session:exit",
+    ]
+    open_sessions = 0
+    for event in events:
+        if event == "session:enter":
+            open_sessions += 1
+        elif event == "session:exit":
+            open_sessions -= 1
+        elif event.startswith("net:"):
+            assert open_sessions == 0, f"{event} ran inside an open session"
+
+
+def test_test_connection_without_sessionmaker_is_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _ = _client_with_mock_db(monkeypatch)
+    client.app.state.db_sessionmaker = None  # type: ignore[attr-defined]
+    resp = client.post("/mcp-servers/srv1/test-connection")
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "database unavailable"}

@@ -1,8 +1,7 @@
 """Tests for src/mcp/resolver.py."""
 
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -15,20 +14,16 @@ from src.mcp.resolver import (
     resolve_single_mcp_tool,
 )
 from src.tools.base import BuildContext
+from tests.unit.mcp._server_fakes import install_server_get, make_server, sessionmaker_with
 
 
 def _server(id_: str = "srv1", user_id: str = "dev", is_shared: bool = False) -> Any:
-    return SimpleNamespace(
-        id=id_,
-        userId=user_id,
-        name="T",
-        url="https://m.example.com/rpc",
-        description=None,
-        authType="none",
-        encryptedAccessToken=None,
-        headerName=None,
-        isShared=is_shared,
-    )
+    return make_server(id=id_, user_id=user_id, is_shared=is_shared)
+
+
+@pytest.fixture(autouse=True)
+def _server_get(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
+    install_server_get(monkeypatch)
 
 
 def _agent_node(mcp_server_ids: list[str]) -> AgentNode:
@@ -42,11 +37,8 @@ def _agent_node(mcp_server_ids: list[str]) -> AgentNode:
     )
 
 
-def _mock_db(server: Any | None) -> MagicMock:
-    db = MagicMock()
-    db.mcpserver = MagicMock()
-    db.mcpserver.find_unique = AsyncMock(return_value=server)
-    return db
+def _mock_db(server: Any | None) -> Any:
+    return sessionmaker_with(server)
 
 
 async def test_resolve_empty_ids_returns_empty() -> None:

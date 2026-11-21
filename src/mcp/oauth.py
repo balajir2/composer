@@ -19,6 +19,7 @@ from urllib.parse import urlencode, urlsplit
 
 import httpx
 
+from src.db.repos.mcp_servers import McpServerRecord
 from src.security.encryption import decrypt, decrypt_marked, encrypt
 
 
@@ -82,7 +83,7 @@ async def _reap_expired_state(db: Any) -> None:
 
 
 async def build_authorize_url(
-    server: Any,
+    server: McpServerRecord,
     user_id: str,
     redirect_uri: str,
     db: Any,
@@ -91,7 +92,7 @@ async def build_authorize_url(
 
     The returned URL includes the RFC 8707 `resource` parameter (fix #1).
     """
-    config = server.oauthConfig
+    config = server.oauth_config
     if not config:
         raise ValueError(
             f"MCP server {server.id!r} has no oauthConfig; cannot build authorize URL."
@@ -152,7 +153,7 @@ def _expires_at_from_in(expires_in: int | None) -> datetime | None:
 
 
 async def exchange_code_for_tokens(
-    server: Any,
+    server: McpServerRecord,
     code: str,
     state: str,
     db: Any,
@@ -163,7 +164,7 @@ async def exchange_code_for_tokens(
     """
     state_row = await _validate_and_consume_state(state, db)
 
-    config: dict[str, Any] = server.oauthConfig or {}
+    config: dict[str, Any] = server.oauth_config or {}
     token_url = config["tokenUrl"]
     client_id = config["clientId"]
     # P0-5: clientSecret is encrypted at rest by the mcp-servers API;
@@ -228,7 +229,7 @@ async def exchange_code_for_tokens(
 
 
 async def refresh_token(
-    server: Any,
+    server: McpServerRecord,
     token_row: Any,
     db: Any,
 ) -> Any:
@@ -242,7 +243,7 @@ async def refresh_token(
             f"Token for server {server.id!r} has no refresh token; user must re-authorize."
         )
 
-    config: dict[str, Any] = server.oauthConfig or {}
+    config: dict[str, Any] = server.oauth_config or {}
     token_url = config["tokenUrl"]
     client_id = config["clientId"]
     # P0-5: clientSecret is encrypted at rest by the mcp-servers API;
@@ -307,7 +308,7 @@ async def _find_token_for(mcp_server_id: str, user_id: str, db: Any) -> Any | No
 
 
 async def get_valid_access_token(
-    server: Any,
+    server: McpServerRecord,
     user_id: str | None,
     db: Any,
     *,
@@ -323,12 +324,17 @@ async def get_valid_access_token(
     token = await _find_token_for(server.id, effective_user, db)
 
     # Service-account fallback for shared servers (fix #5)
-    if token is None and server.isShared and effective_user != server.userId:
-        token = await _find_token_for(server.id, server.userId, db)
+    if (
+        token is None
+        and server.is_shared
+        and server.user_id is not None
+        and effective_user != server.user_id
+    ):
+        token = await _find_token_for(server.id, server.user_id, db)
         if token is None:
             raise McpTokenMissingError(
                 f"No token for user {user_id!r} on MCP server {server.id!r}, "
-                f"and server owner {server.userId!r} has no token either "
+                f"and server owner {server.user_id!r} has no token either "
                 f"(service-account fallback failed). "
                 f"The server owner must complete the OAuth flow to act as a service account."
             )

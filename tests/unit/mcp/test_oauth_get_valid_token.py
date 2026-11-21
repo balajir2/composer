@@ -15,6 +15,7 @@ from src.mcp.oauth import (
     get_valid_access_token,
 )
 from src.security.encryption import encrypt
+from tests.unit.mcp._server_fakes import make_server
 
 
 def _set_enc_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -25,12 +26,13 @@ def _set_enc_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _server(is_shared: bool = False, owner: str = "owner") -> Any:
-    return SimpleNamespace(
+    return make_server(
         id="srv1",
-        userId=owner,
+        user_id=owner,
         url="https://api.highspot.com/mcp",
-        isShared=is_shared,
-        oauthConfig={
+        auth_type="oauth",
+        is_shared=is_shared,
+        oauth_config={
             "tokenUrl": "https://api.highspot.com/oauth/token",
             "clientId": "c",
             "clientSecret": "s",

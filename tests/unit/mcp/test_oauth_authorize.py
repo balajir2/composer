@@ -1,7 +1,6 @@
 """Tests for build_authorize_url."""
 
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 from urllib.parse import parse_qs, urlsplit
@@ -9,15 +8,17 @@ from urllib.parse import parse_qs, urlsplit
 import pytest
 
 from src.mcp.oauth import build_authorize_url
+from tests.unit.mcp._server_fakes import make_server
 
 
 def _server(**overrides: Any) -> Any:
     base: dict[str, Any] = {
         "id": "srv1",
-        "userId": "owner",
+        "user_id": "owner",
         "name": "Highspot",
         "url": "https://api.highspot.com/mcp",
-        "oauthConfig": {
+        "auth_type": "oauth",
+        "oauth_config": {
             "authorizeUrl": "https://api.highspot.com/oauth/authorize",
             "tokenUrl": "https://api.highspot.com/oauth/token",
             "clientId": "client-abc",
@@ -25,7 +26,7 @@ def _server(**overrides: Any) -> Any:
         },
     }
     base.update(overrides)
-    return SimpleNamespace(**base)
+    return make_server(**base)
 
 
 def _mock_db() -> MagicMock:
@@ -80,7 +81,7 @@ async def test_authorize_url_inserts_state_row() -> None:
 
 async def test_authorize_url_requires_oauth_config() -> None:
     db = _mock_db()
-    server = _server(oauthConfig=None)
+    server = _server(oauth_config=None)
     with pytest.raises(ValueError, match="oauthConfig"):
         await build_authorize_url(server, user_id="u", redirect_uri="http://localhost/cb", db=db)
 

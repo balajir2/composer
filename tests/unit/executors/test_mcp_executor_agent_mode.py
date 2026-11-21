@@ -10,10 +10,12 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMe
 from langchain_core.tools import BaseTool, StructuredTool
 
 import src.executors.mcp as mcp_mod
+from src.db.runtime import register_sessionmaker, unregister_sessionmaker
 from src.engine.context import _current_db, set_current_db  # pyright: ignore[reportPrivateUsage]
 from src.engine.state import initial_state
 from src.engine.workflow import McpNode
 from src.executors.mcp import McpExecutor, McpMaxIterationsError
+from tests.unit.db_fakes import FakeSessionmaker
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -26,6 +28,14 @@ def _reset_db_ctx() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
     token = _current_db.set(None)
     yield
     _current_db.reset(token)
+
+
+@pytest.fixture(autouse=True)
+def _registered_sessionmaker() -> Iterator[FakeSessionmaker]:  # pyright: ignore[reportUnusedFunction]
+    sm = FakeSessionmaker()
+    register_sessionmaker(sm)  # pyright: ignore[reportArgumentType]
+    yield sm
+    unregister_sessionmaker(sm)  # pyright: ignore[reportArgumentType]
 
 
 class _ScriptedChatModel:
@@ -159,6 +169,7 @@ async def test_tool_exception_is_reported_back_to_model_with_type_and_message() 
 
 async def test_agent_mode_resolves_selected_tools_and_returns_result(
     monkeypatch: pytest.MonkeyPatch,
+    _registered_sessionmaker: FakeSessionmaker,
 ) -> None:
     captured: dict[str, Any] = {}
 
@@ -166,9 +177,11 @@ async def test_agent_mode_resolves_selected_tools_and_returns_result(
         return text
 
     async def _fake_resolve(
-        server_id: str, names: list[str] | None, *, user_id: str, db: Any
+        server_id: str, names: list[str] | None, *, user_id: str, sessionmaker: Any, db: Any
     ) -> list[BaseTool]:
-        captured.update(server_id=server_id, names=names, user_id=user_id, db=db)
+        captured.update(
+            server_id=server_id, names=names, user_id=user_id, db=db, sessionmaker=sessionmaker
+        )
         return [_tool("echo", _echo)]
 
     model = _ScriptedChatModel(
@@ -196,11 +209,21 @@ async def test_agent_mode_resolves_selected_tools_and_returns_result(
         "names": ["echo"],
         "user_id": "user-7",
         "db": sentinel_db,
+        "sessionmaker": _registered_sessionmaker,
     }
     assert built["model_id"] == mcp_mod.DEFAULT_MODEL
     assert delta["variables"]["lastOutput"] == "fin"
     assert delta["node_results"]["m"]["input"] == "Research cats"
     assert delta["node_results"]["m"]["status"] == "completed"
+
+
+async def test_agent_mode_without_sessionmaker_raises_runtime_error(
+    _registered_sessionmaker: FakeSessionmaker,
+) -> None:
+    unregister_sessionmaker(_registered_sessionmaker)  # pyright: ignore[reportArgumentType]
+    set_current_db(object())
+    with pytest.raises(RuntimeError, match="set_current_db"):
+        await McpExecutor(_node(instructions="do it")).arun(initial_state())
 
 
 async def test_agent_mode_without_db_context_raises_runtime_error() -> None:
@@ -240,7 +263,7 @@ async def test_deterministic_mode_propagates_tool_failure(
         raise ConnectionError("mcp server unreachable")
 
     async def _fake_resolve(
-        server_id: str, tool_name: str, *, user_id: str, db: Any
+        server_id: str, tool_name: str, *, user_id: str, sessionmaker: Any, db: Any
     ) -> tuple[Any, BaseTool]:
         return object(), _tool("t", _boom)
 

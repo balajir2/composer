@@ -139,10 +139,16 @@ async def test_resolve_tools_for_node_mcp_ids_delegate_to_mcp_resolver(
 
     import src.mcp.resolver as resolver_mod
 
-    async def _fake_resolve(node: Any, context: Any, db: Any) -> list[Any]:
+    async def _fake_resolve(node: Any, context: Any, sessionmaker: Any, *, db: Any) -> list[Any]:
         return [fake_tool]
 
     monkeypatch.setattr(resolver_mod, "resolve_mcp_tools_for_node", _fake_resolve)
+
+    from src.db.runtime import register_sessionmaker, unregister_sessionmaker
+    from tests.unit.db_fakes import FakeSessionmaker
+
+    sm = FakeSessionmaker()
+    register_sessionmaker(sm)  # pyright: ignore[reportArgumentType]
 
     node = AgentNode.model_validate(
         {
@@ -156,7 +162,28 @@ async def test_resolve_tools_for_node_mcp_ids_delegate_to_mcp_resolver(
         node,
         BuildContext(node=node, state=initial_state(), user_id="dev", db=MagicMock()),
     )
-    assert out == [fake_tool]
+    try:
+        assert out == [fake_tool]
+    finally:
+        unregister_sessionmaker(sm)  # pyright: ignore[reportArgumentType]
+
+
+async def test_resolve_tools_for_node_mcp_without_sessionmaker_raises() -> None:
+    from unittest.mock import MagicMock
+
+    node = AgentNode.model_validate(
+        {
+            "id": "a",
+            "type": "agent",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "A", "mcpServerIds": ["s1"]},
+        }
+    )
+    with pytest.raises(RuntimeError, match=r"BuildContext\.db is required"):
+        await resolve_tools_for_node(
+            node,
+            BuildContext(node=node, state=initial_state(), user_id="dev", db=MagicMock()),
+        )
 
 
 async def test_resolve_tools_for_node_mcp_without_db_raises() -> None:

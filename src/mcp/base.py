@@ -12,6 +12,7 @@ from typing import Any, cast
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, ConfigDict, create_model
 
+from src.db.repos.mcp_servers import McpServerRecord
 from src.mcp.client import MCPClient
 from src.mcp.oauth import get_valid_access_token
 from src.mcp.sanitize import strip_binary_blobs
@@ -36,12 +37,12 @@ class McpToolProvider(ToolProvider):
 
     def __init__(
         self,
-        server: Any,
+        server: McpServerRecord,
         *,
-        db: Any | None = None,
+        db: Any | None = None,  # TODO(phase 2 task 3): Prisma db for tokens -> sessionmaker
         user_id: str | None = None,
     ) -> None:
-        """`server` is a Prisma McpServer row (duck-typed — attribute access).
+        """`server` is an McpServerRecord.
 
         db + user_id are required for authType='oauth' — McpToolProvider looks
         tokens up from Prisma on each outbound request. Static-auth callers
@@ -52,7 +53,7 @@ class McpToolProvider(ToolProvider):
         self._user_id = user_id
         resolved_url = substitute_url_placeholders(server.url)
 
-        if server.authType == "oauth":
+        if server.auth_type == "oauth":
             # OAuth: use factory so token refreshes apply per outbound call.
             self._client = MCPClient(
                 resolved_url,
@@ -75,7 +76,7 @@ class McpToolProvider(ToolProvider):
 
     @property
     def auth(self) -> AuthRequirement:  # pyright: ignore[reportIncompatibleVariableOverride]
-        auth_type = self._server.authType
+        auth_type = self._server.auth_type
         if auth_type == "none":
             return NoAuth()
         if auth_type in {"api-key", "bearer"}:
@@ -84,7 +85,7 @@ class McpToolProvider(ToolProvider):
                 settings_field=f"mcp_server_{self._server.id}_token",
             )
         if auth_type == "oauth":
-            config: dict[str, Any] = self._server.oauthConfig or {}
+            config: dict[str, Any] = self._server.oauth_config or {}
             scopes: list[Any] = config.get("scopes", []) or []
             return OAuthAuth(
                 authorize_url=config.get("authorizeUrl", ""),
@@ -158,19 +159,19 @@ class McpToolProvider(ToolProvider):
 
     def _build_auth_header(self) -> dict[str, str] | None:
         """Static-auth header (api-key / bearer / none). Not used for oauth."""
-        auth_type = self._server.authType
+        auth_type = self._server.auth_type
         if auth_type == "none":
             return None
         if auth_type in {"api-key", "bearer"}:
-            if not self._server.encryptedAccessToken:
+            if not self._server.encrypted_access_token:
                 raise ValueError(
                     f"MCP server {self._server.id!r} is authType={auth_type} "
                     f"but has no encryptedAccessToken"
                 )
-            token = decrypt(self._server.encryptedAccessToken)
+            token = decrypt(self._server.encrypted_access_token)
             if auth_type == "bearer":
                 return {"Authorization": f"Bearer {token}"}
-            header_name = self._server.headerName or "Authorization"
+            header_name = self._server.header_name or "Authorization"
             return {header_name: token}
         if auth_type == "oauth":
             # Should never happen — __init__ routes oauth through the async factory.

@@ -10,8 +10,12 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.repos import mcp_servers as mcp_servers_repo
+from src.db.repos import users as users_repo
+from src.db.repos.mcp_servers import McpServerRecord
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
+from tests.unit.db_fakes import FakeSessionmaker, override_session
 
 
 def _set_enc_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -21,18 +25,19 @@ def _set_enc_key(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()
 
 
-def _server_row(**overrides: Any) -> SimpleNamespace:
+def _server_row(**overrides: Any) -> McpServerRecord:
+    when = datetime(2026, 4, 20, tzinfo=UTC)
     base: dict[str, Any] = {
         "id": "srv1",
-        "userId": "dev",
+        "user_id": "dev",
         "name": "Highspot",
         "url": "https://api.highspot.com/mcp",
         "description": None,
         "category": None,
-        "authType": "oauth",
-        "encryptedAccessToken": None,
-        "headerName": None,
-        "oauthConfig": {
+        "auth_type": "oauth",
+        "encrypted_access_token": None,
+        "header_name": None,
+        "oauth_config": {
             "authorizeUrl": "https://api.highspot.com/oauth/authorize",
             "tokenUrl": "https://api.highspot.com/oauth/token",
             "clientId": "c",
@@ -40,40 +45,60 @@ def _server_row(**overrides: Any) -> SimpleNamespace:
             "scopes": ["read"],
         },
         "tools": None,
-        "connectionStatus": "untested",
-        "lastTested": None,
-        "lastError": None,
+        "connection_status": "untested",
+        "last_tested": None,
+        "last_error": None,
         "enabled": True,
-        "isOfficial": False,
-        "isShared": False,
+        "is_official": False,
+        "is_shared": False,
         "headers": None,
-        "createdAt": "2026-04-20T00:00:00Z",
-        "updatedAt": "2026-04-20T00:00:00Z",
+        "created_at": when,
+        "updated_at": when,
+        "original_owner_email": None,
     }
     base.update(overrides)
-    return SimpleNamespace(**base)
+    return McpServerRecord(**base)
 
 
-def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
+class _ServerRepo:
+    """The server repo's functions as AsyncMocks; assigning one re-scripts it for the test."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        object.__setattr__(self, "_mp", monkeypatch)
+        self.get = AsyncMock(return_value=_server_row())
+        self.update = AsyncMock(return_value=_server_row())
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        object.__setattr__(self, name, value)
+        object.__getattribute__(self, "_mp").setattr(mcp_servers_repo, name, value)
+
+
+def _client_with_mock_db(
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[TestClient, MagicMock, _ServerRepo]:
     app = create_app()
+    server_repo = _ServerRepo(monkeypatch)
+    for name in ("get", "update"):
+        monkeypatch.setattr(mcp_servers_repo, name, getattr(server_repo, name))
     db = MagicMock()
-    db.mcpserver = MagicMock()
-    db.mcpserver.find_unique = AsyncMock(return_value=_server_row())
     db.mcpoauthtoken = MagicMock()
     db.mcpoauthtoken.find_unique = AsyncMock(return_value=None)
     db.mcpoauthtoken.delete = AsyncMock()
     db.mcpoauthstate = MagicMock()
     db.mcpoauthstate.create = AsyncMock()
     db.mcpoauthstate.delete_many = AsyncMock()
+    session = override_session(app)
     app.state.db = db
+    app.state.db_sessionmaker = FakeSessionmaker(session)
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=None))
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
-    return TestClient(app), db
+    return TestClient(app), db, server_repo
 
 
 def test_authorize_returns_url(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_enc_key(monkeypatch)
-    client, db = _client_with_mock_db()
+    client, db, _ = _client_with_mock_db(monkeypatch)
     resp = client.post(
         "/mcp-servers/srv1/oauth/authorize",
         json={"redirectUri": "http://localhost:3000/oauth/callback"},
@@ -87,8 +112,8 @@ def test_authorize_returns_url(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_authorize_on_non_oauth_server_422(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_enc_key(monkeypatch)
-    client, db = _client_with_mock_db()
-    db.mcpserver.find_unique = AsyncMock(return_value=_server_row(authType="none"))
+    client, _, repo = _client_with_mock_db(monkeypatch)
+    repo.get = AsyncMock(return_value=_server_row(auth_type="none"))
     resp = client.post(
         "/mcp-servers/srv1/oauth/authorize",
         json={"redirectUri": "http://localhost/cb"},
@@ -101,8 +126,8 @@ def test_update_oauth_config_encrypts_client_secret(monkeypatch: pytest.MonkeyPa
     """P0-5: same encryption treatment as create — the PATCH path must not
     persist a fresh plaintext clientSecret either."""
     _set_enc_key(monkeypatch)
-    client, db = _client_with_mock_db()
-    db.mcpserver.update = AsyncMock(return_value=_server_row())
+    client, _, repo = _client_with_mock_db(monkeypatch)
+    repo.update = AsyncMock(return_value=_server_row())
 
     resp = client.patch(
         "/mcp-servers/srv1/oauth-config",
@@ -117,9 +142,8 @@ def test_update_oauth_config_encrypts_client_secret(monkeypatch: pytest.MonkeyPa
     )
     assert resp.status_code == 200, resp.text
 
-    call_args = db.mcpserver.update.await_args
-    updated_data = call_args.kwargs["data"]  # type: ignore[union-attr]
-    stored_config = updated_data["oauthConfig"].data
+    call_args = repo.update.await_args
+    stored_config = call_args.args[2]["oauth_config"]  # type: ignore[union-attr]
     assert stored_config["clientSecret"] != "brand-new-plain-secret"
 
     from src.security.encryption import decrypt_marked
@@ -127,9 +151,9 @@ def test_update_oauth_config_encrypts_client_secret(monkeypatch: pytest.MonkeyPa
     assert decrypt_marked(stored_config["clientSecret"]) == "brand-new-plain-secret"
 
 
-def test_authorize_server_not_found_404() -> None:
-    client, db = _client_with_mock_db()
-    db.mcpserver.find_unique = AsyncMock(return_value=None)
+def test_authorize_server_not_found_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, repo = _client_with_mock_db(monkeypatch)
+    repo.get = AsyncMock(return_value=None)
     resp = client.post(
         "/mcp-servers/ghost/oauth/authorize",
         json={"redirectUri": "http://localhost/cb"},
@@ -139,7 +163,7 @@ def test_authorize_server_not_found_404() -> None:
 
 def test_callback_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_enc_key(monkeypatch)
-    client, db = _client_with_mock_db()
+    client, db, _ = _client_with_mock_db(monkeypatch)
 
     state_row = SimpleNamespace(
         id="st1",
@@ -174,7 +198,7 @@ def test_callback_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_callback_unknown_state_redirects_error(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_enc_key(monkeypatch)
-    client, db = _client_with_mock_db()
+    client, db, _ = _client_with_mock_db(monkeypatch)
     db.mcpoauthstate.find_unique = AsyncMock(return_value=None)
 
     import src.api.mcp_servers as api_mod
@@ -193,8 +217,8 @@ def test_callback_unknown_state_redirects_error(monkeypatch: pytest.MonkeyPatch)
     assert "detail=" in location
 
 
-def test_disconnect_owner_allowed() -> None:
-    client, db = _client_with_mock_db()
+def test_disconnect_owner_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, db, _ = _client_with_mock_db(monkeypatch)
     db.mcpoauthtoken.find_unique = AsyncMock(
         return_value=SimpleNamespace(id="tok1", mcpServerId="srv1", userId="dev")
     )
@@ -203,8 +227,8 @@ def test_disconnect_owner_allowed() -> None:
     db.mcpoauthtoken.delete.assert_awaited_once()
 
 
-def test_disconnect_idempotent_when_no_token() -> None:
-    client, db = _client_with_mock_db()
+def test_disconnect_idempotent_when_no_token(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, db, _ = _client_with_mock_db(monkeypatch)
     db.mcpoauthtoken.find_unique = AsyncMock(return_value=None)
     resp = client.post("/mcp-servers/srv1/oauth/disconnect")
     assert resp.status_code == 204
@@ -220,9 +244,9 @@ def test_authorize_private_server_of_other_user_is_404(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_enc_key(monkeypatch)
-    client, db = _client_with_mock_db()
-    db.mcpserver.find_unique = AsyncMock(
-        return_value=_server_row(id="other", userId="someone-else", isShared=False)
+    client, db, repo = _client_with_mock_db(monkeypatch)
+    repo.get = AsyncMock(
+        return_value=_server_row(id="other", user_id="someone-else", is_shared=False)
     )
     resp = client.post("/mcp-servers/other/oauth/authorize", json=_AUTHZ_BODY)
     assert resp.status_code == 404
@@ -234,12 +258,12 @@ def test_authorize_private_404_identical_to_unknown_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_enc_key(monkeypatch)
-    client, db = _client_with_mock_db()
-    db.mcpserver.find_unique = AsyncMock(
-        return_value=_server_row(id="same", userId="someone-else", isShared=False)
+    client, _, repo = _client_with_mock_db(monkeypatch)
+    repo.get = AsyncMock(
+        return_value=_server_row(id="same", user_id="someone-else", is_shared=False)
     )
     private = client.post("/mcp-servers/same/oauth/authorize", json=_AUTHZ_BODY)
-    db.mcpserver.find_unique = AsyncMock(return_value=None)
+    repo.get = AsyncMock(return_value=None)
     unknown = client.post("/mcp-servers/same/oauth/authorize", json=_AUTHZ_BODY)
     assert private.status_code == unknown.status_code == 404
     assert private.content == unknown.content
@@ -249,10 +273,8 @@ def test_authorize_shared_server_of_other_user_allowed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_enc_key(monkeypatch)
-    client, db = _client_with_mock_db()
-    db.mcpserver.find_unique = AsyncMock(
-        return_value=_server_row(userId="someone-else", isShared=True)
-    )
+    client, db, repo = _client_with_mock_db(monkeypatch)
+    repo.get = AsyncMock(return_value=_server_row(user_id="someone-else", is_shared=True))
     resp = client.post("/mcp-servers/srv1/oauth/authorize", json=_AUTHZ_BODY)
     assert resp.status_code == 200, resp.text
     db.mcpoauthstate.create.assert_awaited_once()

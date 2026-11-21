@@ -637,6 +637,7 @@ class Phase2Adapter:
         self._client = client
         self._monkeypatch = monkeypatch
         self._db: Any = app.state.db
+        self._sm = cast("async_sessionmaker[AsyncSession]", app.state.db_sessionmaker)
         self.bound_tool_names: list[str] = []  # tool names the scripted model was bound to
 
     # ---- resolver -------------------------------------------------------------------------
@@ -645,7 +646,7 @@ class Phase2Adapter:
         """Names of every tool the resolver returns for one server (empty selection = all)."""
         from src.mcp.resolver import resolve_mcp_tools_by_names
 
-        tools = await resolve_mcp_tools_by_names(server_id, [], user_id, self._db)
+        tools = await resolve_mcp_tools_by_names(server_id, [], user_id, self._sm, db=self._db)
         return [t.name for t in tools]
 
     async def resolve_named_tools(
@@ -653,7 +654,7 @@ class Phase2Adapter:
     ) -> list[str]:
         from src.mcp.resolver import resolve_mcp_tools_by_names
 
-        tools = await resolve_mcp_tools_by_names(server_id, names, user_id, self._db)
+        tools = await resolve_mcp_tools_by_names(server_id, names, user_id, self._sm, db=self._db)
         return [t.name for t in tools]
 
     @staticmethod
@@ -677,7 +678,7 @@ class Phase2Adapter:
 
         node = self._agent_node(server_ids)
         ctx = BuildContext(node=node, state=initial_state(), user_id=user_id)
-        return [t.name for t in await resolve_mcp_tools_for_node(node, ctx, self._db)]
+        return [t.name for t in await resolve_mcp_tools_for_node(node, ctx, self._sm, db=self._db)]
 
     async def registry_tools(
         self, server_ids: list[str], user_id: str | None, *, with_db: bool = True
@@ -701,7 +702,9 @@ class Phase2Adapter:
         """`mcp` node deterministic mode: the single bound tool's name."""
         from src.mcp.resolver import resolve_single_mcp_tool
 
-        _provider, tool = await resolve_single_mcp_tool(server_id, tool_name, user_id, self._db)
+        _provider, tool = await resolve_single_mcp_tool(
+            server_id, tool_name, user_id, self._sm, db=self._db
+        )
         return tool.name
 
     # ---- OAuth / Drive token helpers --------------------------------------------------------
@@ -709,9 +712,11 @@ class Phase2Adapter:
     async def valid_access_token(self, server_id: str, user_id: str | None) -> str:
         """Plaintext OAuth access token for (server, user): fallback to the owner's token on
         shared servers, refresh when near expiry."""
+        from src.db.repos import mcp_servers as mcp_servers_repo
         from src.mcp.oauth import get_valid_access_token
 
-        server = await self._db.mcpserver.find_unique(where={"id": server_id})
+        async with self._sm() as session:
+            server = await mcp_servers_repo.get(session, server_id)
         assert server is not None, f"server {server_id} missing"
         return await get_valid_access_token(server, user_id, self._db)
 

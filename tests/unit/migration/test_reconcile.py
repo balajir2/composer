@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.db.repos import mcp_servers as mcp_servers_repo
 from src.db.repos import users as users_repo
 from src.migration.reconcile import reconcile_by_email
 from tests.unit.db_fakes import FakeSession, make_user
@@ -19,14 +20,18 @@ async def test_reconcile_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(users_repo, "get_by_email", get_by_email)
     db.workflow.update_many = AsyncMock(return_value=3)
     db.workflowexecution.update_many = AsyncMock(return_value=5)
-    db.mcpserver.update_many = AsyncMock(return_value=1)
+    claim = AsyncMock(return_value=1)
+    monkeypatch.setattr(mcp_servers_repo, "claim_orphans_by_email", claim)
+    session = FakeSession()
 
     result = await reconcile_by_email(
-        db, cast("AsyncSession", FakeSession()), "Alice@X.com"
+        db, cast("AsyncSession", session), "Alice@X.com"
     )  # mixed case lowercased
     assert result == {"workflows": 3, "executions": 5, "mcpServers": 1}
     assert get_by_email.await_args is not None
     assert get_by_email.await_args.args[1] == "alice@x.com"
+
+    claim.assert_awaited_once_with(session, "alice@x.com", "u1")
 
     # Confirm update_many filters include user_id=None (idempotence)
     db.workflow.update_many.assert_awaited()
