@@ -2,10 +2,11 @@
 
 import logging
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
 
 from src import __version__
 from src.api.admin_builder import router as admin_builder_router
@@ -40,15 +41,18 @@ from src.maintenance.execution_sweeper import start_sweeper, stop_sweeper
 from src.security.key_sync import sync_llm_keys_from_db
 from src.security.proxy_headers import TrustedProxyHeadersMiddleware
 from src.storage.db import prisma_lifespan
+from src.telemetry.context import CorrelationMiddleware
+from src.telemetry.logging import configure_logging
+from src.telemetry.runtime import TelemetryRuntime
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def _service_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application startup and shutdown hooks."""
     settings = get_settings()
-    logging.basicConfig(level=settings.log_level)
+    configure_logging(settings.log_level)
     logger.info("Starting Composer v%s in %s mode", __version__, settings.environment)
     # Fail fast rather than silently serving broken behavior (P0-4) — see
     # src/config_validation.py for what this catches and why.
@@ -75,6 +79,20 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             await stop_sweeper(sweeper_task)
 
     logger.info("Shutting down Composer")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    settings = get_settings()
+    runtime = app.state.telemetry_runtime
+    try:
+        with suppress(Exception):
+            runtime.start("composer", __version__, settings.environment)
+        async with _service_lifespan(app):
+            yield
+    finally:
+        with suppress(Exception):
+            runtime.shutdown()
 
 
 def create_app() -> FastAPI:
@@ -109,6 +127,15 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    @app.exception_handler(Exception)
+    async def correlation_error_response(request: Request, exc: Exception) -> PlainTextResponse:
+        request_id = getattr(request.state, "telemetry_request_id", None)
+        headers = {"x-request-id": request_id} if request_id else None
+        return PlainTextResponse("Internal Server Error", status_code=500, headers=headers)
+
+    runtime = TelemetryRuntime(settings)
+    app.state.telemetry_runtime = runtime
+
     # Mode-aware CORS (Phase 7a)
     if settings.deployment_mode == "embedded":
         allow_origins = [settings.iep_ui_origin] if settings.iep_ui_origin else []
@@ -136,6 +163,8 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    app.add_middleware(CorrelationMiddleware, runtime=runtime)
 
     # Added last so it is the OUTERMOST middleware: the client address must be
     # corrected before CORS, rate limiting, or any route sees the request.
