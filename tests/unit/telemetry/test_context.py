@@ -1,8 +1,12 @@
 import asyncio
+from typing import TYPE_CHECKING
 
 import pytest
 
 from src.telemetry.context import bind_context, current_correlation
+
+if TYPE_CHECKING:
+    from src.telemetry.runtime import TelemetryRuntime
 
 
 def test_context_nested_reset_and_rejects_unknown_fields() -> None:
@@ -150,3 +154,48 @@ async def test_same_task_new_request_invalidates_old_exception_snapshot() -> Non
         await CorrelationMiddleware(failing, runtime=runtime)(scope, receive, send)
     await CorrelationMiddleware(later, runtime=runtime)(scope, receive, send)
     assert observed == [None]
+
+
+@pytest.mark.asyncio
+async def test_nested_same_task_request_restores_outer_error_generation() -> None:
+    from types import SimpleNamespace
+    from typing import cast
+
+    from starlette.types import Message, Receive, Scope, Send
+
+    from src.telemetry.context import CorrelationMiddleware, exception_correlation
+
+    error = RuntimeError("outer failure")
+    inner_request_ids: list[str] = []
+
+    async def inner_app(scope: Scope, receive: Receive, send: Send) -> None:
+        inner_request_ids.append(scope["state"]["telemetry_request_id"])
+
+    async def outer_app(scope: Scope, receive: Receive, send: Send) -> None:
+        await CorrelationMiddleware(inner_app, runtime=runtime)(
+            {"type": "http", "path": "/inner", "method": "GET", "headers": []},
+            receive,
+            send,
+        )
+        raise error
+
+    async def receive() -> Message:
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: Message) -> None:
+        pass
+
+    runtime = cast("TelemetryRuntime", SimpleNamespace(tracer_provider=None))
+    outer_scope: Scope = {
+        "type": "http",
+        "path": "/outer",
+        "method": "GET",
+        "headers": [],
+    }
+    with pytest.raises(RuntimeError) as caught:
+        await CorrelationMiddleware(outer_app, runtime=runtime)(outer_scope, receive, send)
+
+    snapshot = exception_correlation(caught.value)
+    assert snapshot is not None
+    assert snapshot.request_id == outer_scope["state"]["telemetry_request_id"]
+    assert snapshot.request_id != inner_request_ids[0]

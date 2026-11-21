@@ -29,6 +29,7 @@ _exception_marker = object()
 _request_generation: ContextVar[object | None] = ContextVar(
     "telemetry_request_generation", default=None
 )
+_request_depth: ContextVar[int] = ContextVar("telemetry_request_depth", default=0)
 
 
 def exception_correlation(exc: BaseException) -> CorrelationContext | None:
@@ -96,8 +97,10 @@ class CorrelationMiddleware:
             await self.app(scope, receive, send)
             return
         # Invalidate earlier exception snapshots even if a server reuses this task.
+        enclosing_depth = _request_depth.get()
+        depth_token = _request_depth.set(enclosing_depth + 1)
         generation = object()
-        _request_generation.set(generation)
+        generation_token = _request_generation.set(generation)
         request_id = uuid4().hex
         scope.setdefault("state", {})["telemetry_request_id"] = request_id
         span = None
@@ -193,12 +196,17 @@ class CorrelationMiddleware:
                         span.set_status(Status(StatusCode.ERROR))
                 raise
             finally:
-                if span is not None:
+                try:
+                    if span is not None:
+                        with suppress(Exception):
+                            route = scope.get("route")
+                            path = getattr(route, "path_format", None)
+                            if isinstance(path, str) and len(path) <= 1024:
+                                span.set_attribute("http.route", path)
+                                span.update_name(f"{method} {path}")
                     with suppress(Exception):
-                        route = scope.get("route")
-                        path = getattr(route, "path_format", None)
-                        if isinstance(path, str) and len(path) <= 1024:
-                            span.set_attribute("http.route", path)
-                            span.update_name(f"{method} {path}")
-                with suppress(Exception):
-                    stack.close()
+                        stack.close()
+                finally:
+                    if enclosing_depth > 0:
+                        _request_generation.reset(generation_token)
+                    _request_depth.reset(depth_token)
