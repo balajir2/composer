@@ -23,7 +23,20 @@ VOCABULARIES = {
         }
     ),
     "result": frozenset(
-        {"other", "failure", "errored", "scanned", "deleted", "success", "marked_failed"}
+        {
+            "other",
+            "failure",
+            "errored",
+            "scanned",
+            "deleted",
+            "success",
+            "marked_failed",
+            "timeout",
+            "rate_limited",
+            "authentication_error",
+            "provider_error",
+            "cancellation",
+        }
     ),
     "node_type": frozenset(
         {
@@ -98,6 +111,10 @@ SIGNALS = {
     "composer.execution.recovery": ("result", "eligibility_reason"),
     "composer.provider.request.duration": ("provider", "operation", "result"),
     "composer.provider.request": ("provider", "operation", "result"),
+    "composer.websocket.connection.duration": (),
+    "composer.websocket.reconnect": (),
+    "composer.websocket.replay.count": (),
+    "composer.websocket.send.failure": (),
     "composer.llm.tokens": ("provider", "model_family", "token_type"),
     "composer.llm.cost": ("provider", "model_family", "cost_source"),
     "composer.maintenance.sweep": ("component", "result"),

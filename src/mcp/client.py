@@ -21,6 +21,8 @@ from typing import Any, cast
 
 import httpx
 
+from src.telemetry.providers import provider_call
+
 
 class MCPError(RuntimeError):
     """Base class for all MCP-layer errors."""
@@ -103,17 +105,26 @@ class MCPClient:
         }
         if self._session_id:
             headers["Mcp-Session-Id"] = self._session_id
-        try:
-            async with httpx.AsyncClient(
-                timeout=httpx.Timeout(self._timeout, connect=5.0)
-            ) as client:
-                resp = await client.post(self._url, json=body, headers=headers)
-        except httpx.TimeoutException as exc:
-            raise MCPTimeoutError(f"MCP {method} request timed out after {self._timeout}s") from exc
-        except httpx.HTTPError as exc:
-            raise MCPHTTPError(
-                f"MCP {method} transport failed: {type(exc).__name__}: {exc}"
-            ) from exc
+        # This is the shared actual network boundary. Retried RPCs recurse only
+        # after this context has closed, so each HTTP request is measured once.
+        operation = "tool" if method == "tools/call" else "invoke"
+        resp: httpx.Response | None = None
+        with provider_call("other", operation) as call:
+            try:
+                async with httpx.AsyncClient(
+                    timeout=httpx.Timeout(self._timeout, connect=5.0)
+                ) as client:
+                    resp = await client.post(self._url, json=body, headers=headers)
+                call.record_status_code(resp.status_code)
+            except httpx.TimeoutException as exc:
+                raise MCPTimeoutError(
+                    f"MCP {method} request timed out after {self._timeout}s"
+                ) from exc
+            except httpx.HTTPError as exc:
+                raise MCPHTTPError(
+                    f"MCP {method} transport failed: {type(exc).__name__}: {exc}"
+                ) from exc
+        assert resp is not None
 
         if resp.status_code >= 400:
             if (

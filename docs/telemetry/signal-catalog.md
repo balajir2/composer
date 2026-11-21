@@ -42,6 +42,11 @@ This is the binding **roadmap target**, not an inventory of emitted instruments.
       "marked_failed",
       "errored",
       "deleted",
+      "timeout",
+      "rate_limited",
+      "authentication_error",
+      "provider_error",
+      "cancellation",
       "other"
     ],
     "node_type": [
@@ -265,6 +270,42 @@ This is the binding **roadmap target**, not an inventory of emitted instruments.
       "redaction": "bounded-metadata"
     },
     {
+      "name": "composer.websocket.connection.duration",
+      "owner": "execution-operations",
+      "type": "Histogram",
+      "unit": "s",
+      "attributes": [],
+      "retention": "operational",
+      "redaction": "bounded-metadata"
+    },
+    {
+      "name": "composer.websocket.reconnect",
+      "owner": "execution-operations",
+      "type": "Counter",
+      "unit": "{connection}",
+      "attributes": [],
+      "retention": "operational",
+      "redaction": "bounded-metadata"
+    },
+    {
+      "name": "composer.websocket.replay.count",
+      "owner": "execution-operations",
+      "type": "Histogram",
+      "unit": "{event}",
+      "attributes": [],
+      "retention": "operational",
+      "redaction": "bounded-metadata"
+    },
+    {
+      "name": "composer.websocket.send.failure",
+      "owner": "execution-operations",
+      "type": "Counter",
+      "unit": "{failure}",
+      "attributes": [],
+      "retention": "operational",
+      "redaction": "bounded-metadata"
+    },
+    {
       "name": "composer.llm.tokens",
       "owner": "execution-operations",
       "type": "Counter",
@@ -313,7 +354,7 @@ This is the binding **roadmap target**, not an inventory of emitted instruments.
 - There is no persisted trigger-kind enum. Worker delivery kinds are `run` and `resume` (`src/api/internal.py`); `trigger_kind` uses these bounded values as a delivery classification, not an invented execution status or initiator identity.
 - Node types are the `NODE_CLASSES` keys in `src/builder/builder_tools.py`. The provider list includes the six LLM dispatch providers in `src/llm/providers.py` and the additional managed key providers in `src/api/admin_llm_keys.py`; `other` covers any other tool provider.
 - Maintenance components correspond to `/internal/sweep` response fields. Sweep results include `scanned`, `marked_failed`, `errored`, and event `deleted`; races can be scanned without being marked failed. A null component denotes failure, not zero. `success` and `failure` are aggregation outcomes, not stored states.
-- `operation`, `result`, `decision`, `expired`, `eligibility_reason`, `token_type`, `cost_source`, and `environment` are finite telemetry vocabularies. Recovery is a future capability; `eligible` is a telemetry classification, not an existing recovery state. New categories require contract review.
+- `operation`, `result`, `decision`, `expired`, `eligibility_reason`, `token_type`, `cost_source`, and `environment` are finite telemetry vocabularies. Provider outcomes include bounded timeout, rate-limit, authentication, provider-error and cancellation categories. Recovery is a future capability; `eligible` is a telemetry classification, not an existing recovery state. New categories require contract review.
 
 ## Span names and correlation
 

@@ -1,8 +1,11 @@
 """Tests for MCPClient."""
 
 import json
+from typing import Any, cast
 
 import pytest
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
 
 from src.mcp.client import (
@@ -11,6 +14,7 @@ from src.mcp.client import (
     MCPRpcError,
     MCPTimeoutError,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
+from src.telemetry.providers import configure_provider_metrics
 
 
 async def test_initialize_plain_json(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
@@ -274,3 +278,58 @@ async def test_tools_list_initializes_and_retries_when_session_required(
     assert reqs[0].headers.get("mcp-session-id") is None
     assert reqs[1].headers.get("mcp-session-id") is None
     assert reqs[2].headers.get("mcp-session-id") == "sess-456"
+
+
+async def test_mcp_retry_records_each_outbound_request_once(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    configure_provider_metrics(provider)
+    try:
+        httpx_mock.add_response(
+            url="https://mcp.example.com/rpc",
+            method="POST",
+            status_code=400,
+            json={
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32600,
+                    "message": "Request must be an initialize request if no session ID is provided.",
+                },
+            },
+        )
+        httpx_mock.add_response(
+            url="https://mcp.example.com/rpc",
+            method="POST",
+            json={"jsonrpc": "2.0", "id": 2, "result": {}},
+            headers={"mcp-session-id": "session"},
+        )
+        httpx_mock.add_response(
+            url="https://mcp.example.com/rpc",
+            method="POST",
+            json={"jsonrpc": "2.0", "id": 3, "result": {"tools": []}},
+        )
+        await MCPClient("https://mcp.example.com/rpc").tools_list()
+
+        data = reader.get_metrics_data()
+        assert data is not None
+        metrics = [
+            metric
+            for resource_metrics in data.resource_metrics
+            for scope in resource_metrics.scope_metrics
+            for metric in scope.metrics
+        ]
+        requests = next(metric for metric in metrics if metric.name == "composer.provider.request")
+        points = list(requests.data.data_points)
+        assert sum(cast("Any", point).value for point in points) == 3
+        assert all(point.attributes is not None for point in points)
+        assert {
+            tuple(sorted(cast("dict[str, str]", point.attributes).items())) for point in points
+        } == {
+            (("operation", "invoke"), ("provider", "other"), ("result", "other")),
+            (("operation", "invoke"), ("provider", "other"), ("result", "success")),
+        }
+    finally:
+        configure_provider_metrics(None)
+        provider.shutdown()

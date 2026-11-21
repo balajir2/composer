@@ -167,6 +167,9 @@ class TelemetryRuntime:
                 views=[View(instrument_name="*", aggregation_cardinality_limit=2000)],
                 shutdown_on_exit=False,
             )
+            from src.telemetry.providers import configure_provider_metrics
+
+            configure_provider_metrics(self.meter_provider)
             orphan_reader = None
         except Exception:
             # Run orphan cleanup under the same overall deadline as provider cleanup.
@@ -184,6 +187,9 @@ class TelemetryRuntime:
         tracer, meter = self.tracer_provider, self.meter_provider
         self.tracer_provider = None
         self.meter_provider = None
+        from src.telemetry.providers import configure_provider_metrics
+
+        configure_provider_metrics(None)
         self._started = False
         timeout = self.settings.telemetry_export_timeout_seconds
 

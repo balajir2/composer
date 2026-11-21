@@ -21,6 +21,11 @@ from src.db.runtime import request_sessionmaker
 from src.engine.events import ExecutionEvent
 from src.engine.events_notify import NOTIFY_CHANNEL
 from src.security.auth import AuthError, verify_user_token
+from src.telemetry.providers import (
+    websocket_connection,
+    websocket_replay,
+    websocket_send_failed,
+)
 
 if TYPE_CHECKING:
     from src.engine.events_pg import PostgresEventStore
@@ -37,6 +42,22 @@ _TERMINAL_STATUSES = {"completed", "failed", "canceled"}
 def _is_terminal_event(event: ExecutionEvent) -> bool:
     """True if `event` is the terminal workflow_completed marker."""
     return event.type == "workflow_completed" and event.payload.get("status") in _TERMINAL_STATUSES
+
+
+async def _send_text(ws: WebSocket, text: str) -> None:
+    try:
+        await ws.send_text(text)
+    except BaseException:
+        websocket_send_failed()
+        raise
+
+
+async def _send_json(ws: WebSocket, value: object) -> None:
+    try:
+        await ws.send_json(value)
+    except BaseException:
+        websocket_send_failed()
+        raise
 
 
 async def _authenticate_ws(ws: WebSocket, settings: Settings) -> str | None:
@@ -109,102 +130,104 @@ async def events_ws(  # pyright: ignore[reportUnusedFunction]
     # 3) accept with subprotocol echo
     await ws.accept(subprotocol="bearer")
 
-    # 4) snapshot
-    if execution.status == "waiting_approval":
-        snapshot_type: Any = "approval_required"
-    elif execution.status in _TERMINAL_STATUSES:
-        snapshot_type = "workflow_completed"
-    else:
-        snapshot_type = "workflow_started"
-    snapshot = ExecutionEvent(
-        type=snapshot_type, execution_id=execution_id, payload={"status": execution.status}
-    )
-    await ws.send_text(json.dumps(snapshot.as_json()))
-    if execution.status in _TERMINAL_STATUSES:
-        await ws.close(code=status.WS_1000_NORMAL_CLOSURE, reason="terminal")
-        return
-
-    # 5) replay: catch the client up on anything persisted since its cursor
-    # (reconnect after a dropped connection, or a client that missed a
-    # terminal event while briefly disconnected — P1-4).
-    last_seq = after
-    missed = await event_store.list_since(execution_id, after_seq=after)
-    for event in missed:
-        await ws.send_text(json.dumps(event.as_json()))
-        if event.seq is not None:
-            last_seq = event.seq
-        if _is_terminal_event(event):
+    with websocket_connection(reconnected=after > 0):
+        # 4) snapshot
+        if execution.status == "waiting_approval":
+            snapshot_type: Any = "approval_required"
+        elif execution.status in _TERMINAL_STATUSES:
+            snapshot_type = "workflow_completed"
+        else:
+            snapshot_type = "workflow_started"
+        snapshot = ExecutionEvent(
+            type=snapshot_type, execution_id=execution_id, payload={"status": execution.status}
+        )
+        await _send_text(ws, json.dumps(snapshot.as_json()))
+        if execution.status in _TERMINAL_STATUSES:
             await ws.close(code=status.WS_1000_NORMAL_CLOSURE, reason="terminal")
             return
 
-    # 6) live delivery via Postgres LISTEN/NOTIFY: a dedicated connection
-    # per client wakes on any execution's event and re-polls the durable
-    # store for this execution_id (the channel is shared/global; a wake-up
-    # for another execution just costs a harmless empty list_since query).
-    #
-    # connect()/add_listener() live inside the try so a failure between
-    # them (e.g. add_listener raising after connect() already succeeded)
-    # still hits the finally block below instead of leaking the connection
-    # and the WebSocket (P1-4 code review, Important #1). `_on_notify` is
-    # defined up front (it only closes over `notified`, not `conn`) so it's
-    # always bound by the time `finally` runs, even if `connect()` itself
-    # raises before `conn` is ever assigned.
-    notified = asyncio.Event()
+        # 5) replay: catch the client up on anything persisted since its cursor
+        # (reconnect after a dropped connection, or a client that missed a
+        # terminal event while briefly disconnected — P1-4).
+        last_seq = after
+        missed = await event_store.list_since(execution_id, after_seq=after)
+        websocket_replay(len(missed))
+        for event in missed:
+            await _send_text(ws, json.dumps(event.as_json()))
+            if event.seq is not None:
+                last_seq = event.seq
+            if _is_terminal_event(event):
+                await ws.close(code=status.WS_1000_NORMAL_CLOSURE, reason="terminal")
+                return
 
-    def _on_notify(*_args: object) -> None:
-        notified.set()
+        # 6) live delivery via Postgres LISTEN/NOTIFY: a dedicated connection
+        # per client wakes on any execution's event and re-polls the durable
+        # store for this execution_id (the channel is shared/global; a wake-up
+        # for another execution just costs a harmless empty list_since query).
+        #
+        # connect()/add_listener() live inside the try so a failure between
+        # them (e.g. add_listener raising after connect() already succeeded)
+        # still hits the finally block below instead of leaking the connection
+        # and the WebSocket (P1-4 code review, Important #1). `_on_notify` is
+        # defined up front (it only closes over `notified`, not `conn`) so it's
+        # always bound by the time `finally` runs, even if `connect()` itself
+        # raises before `conn` is ever assigned.
+        notified = asyncio.Event()
 
-    conn: asyncpg.Connection | None = None
-    try:
-        conn = await asyncpg.connect(get_settings().database_url)
-        await conn.add_listener(NOTIFY_CHANNEL, _on_notify)
+        def _on_notify(*_args: object) -> None:
+            notified.set()
 
-        while True:
-            got_notification = True
-            try:
-                await asyncio.wait_for(notified.wait(), timeout=15.0)
-                notified.clear()
-            except TimeoutError:
-                got_notification = False
+        conn: asyncpg.Connection | None = None
+        try:
+            conn = await asyncpg.connect(get_settings().database_url)
+            await conn.add_listener(NOTIFY_CHANNEL, _on_notify)
 
-            # The 15s timeout doubles as a poll trigger, not just a keepalive
-            # tick: events_notify.py's module docstring promises a missed
-            # NOTIFY is caught up "on the next notification or keepalive
-            # poll" — so query list_since on every iteration, timeout or not
-            # (P1-4 code review, Critical).
-            new_events = await event_store.list_since(execution_id, after_seq=last_seq)
-            for event in new_events:
-                await ws.send_text(json.dumps(event.as_json()))
-                if event.seq is not None:
-                    last_seq = event.seq
-                if _is_terminal_event(event):
-                    return
-
-            if not got_notification:
-                # This send is the loop's only opportunity to detect a
-                # disconnected client (it never calls ws.receive()). A
-                # failure here means the client is gone — break instead of
-                # swallowing the error and looping forever holding this
-                # dedicated Postgres LISTEN connection open (P1-4 code
-                # review, Important #3).
+            while True:
+                got_notification = True
                 try:
-                    await ws.send_json({"type": "__keepalive__"})
-                except Exception:
-                    logger.warning(
-                        "events_ws: keepalive send failed for execution %s, closing",
-                        execution_id,
-                    )
-                    return
-    except WebSocketDisconnect:
-        return
-    finally:
-        if conn is not None:
+                    await asyncio.wait_for(notified.wait(), timeout=15.0)
+                    notified.clear()
+                except TimeoutError:
+                    got_notification = False
+
+                # The 15s timeout doubles as a poll trigger, not just a keepalive
+                # tick: events_notify.py's module docstring promises a missed
+                # NOTIFY is caught up "on the next notification or keepalive
+                # poll" — so query list_since on every iteration, timeout or not
+                # (P1-4 code review, Critical).
+                new_events = await event_store.list_since(execution_id, after_seq=last_seq)
+                for event in new_events:
+                    await _send_text(ws, json.dumps(event.as_json()))
+                    if event.seq is not None:
+                        last_seq = event.seq
+                    if _is_terminal_event(event):
+                        return
+
+                if not got_notification:
+                    # This send is the loop's only opportunity to detect a
+                    # disconnected client (it never calls ws.receive()). A
+                    # failure here means the client is gone — break instead of
+                    # swallowing the error and looping forever holding this
+                    # dedicated Postgres LISTEN connection open (P1-4 code
+                    # review, Important #3).
+                    try:
+                        await _send_json(ws, {"type": "__keepalive__"})
+                    except Exception:
+                        logger.warning(
+                            "events_ws: keepalive send failed for execution %s, closing",
+                            execution_id,
+                        )
+                        return
+        except WebSocketDisconnect:
+            return
+        finally:
+            if conn is not None:
+                with contextlib.suppress(Exception):
+                    await conn.remove_listener(NOTIFY_CHANNEL, _on_notify)
+                with contextlib.suppress(Exception):
+                    await conn.close()
             with contextlib.suppress(Exception):
-                await conn.remove_listener(NOTIFY_CHANNEL, _on_notify)
-            with contextlib.suppress(Exception):
-                await conn.close()
-        with contextlib.suppress(Exception):
-            await ws.close(code=status.WS_1000_NORMAL_CLOSURE)
+                await ws.close(code=status.WS_1000_NORMAL_CLOSURE)
 
 
 __all__ = ["router"]

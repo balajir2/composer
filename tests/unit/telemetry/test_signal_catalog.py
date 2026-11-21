@@ -53,6 +53,57 @@ def test_catalog_is_valid() -> None:
     validate(json.loads(text.split("```json\n", 1)[1].split("\n```", 1)[0]))
 
 
+def test_catalog_declares_provider_outcomes_and_websocket_instruments() -> None:
+    text = CATALOG.read_text(encoding="utf-8")
+    contract = json.loads(text.split("```json\n", 1)[1].split("\n```", 1)[0])
+    assert {
+        "success",
+        "timeout",
+        "rate_limited",
+        "authentication_error",
+        "provider_error",
+        "cancellation",
+        "other",
+    } <= set(contract["vocabularies"]["result"])
+    metrics = {metric["name"]: metric for metric in contract["metrics"]}
+    assert metrics["composer.websocket.connection.duration"] == {
+        "name": "composer.websocket.connection.duration",
+        "owner": "execution-operations",
+        "type": "Histogram",
+        "unit": "s",
+        "attributes": [],
+        "retention": "operational",
+        "redaction": "bounded-metadata",
+    }
+    assert metrics["composer.websocket.reconnect"] == {
+        "name": "composer.websocket.reconnect",
+        "owner": "execution-operations",
+        "type": "Counter",
+        "unit": "{connection}",
+        "attributes": [],
+        "retention": "operational",
+        "redaction": "bounded-metadata",
+    }
+    assert metrics["composer.websocket.replay.count"] == {
+        "name": "composer.websocket.replay.count",
+        "owner": "execution-operations",
+        "type": "Histogram",
+        "unit": "{event}",
+        "attributes": [],
+        "retention": "operational",
+        "redaction": "bounded-metadata",
+    }
+    assert metrics["composer.websocket.send.failure"] == {
+        "name": "composer.websocket.send.failure",
+        "owner": "execution-operations",
+        "type": "Counter",
+        "unit": "{failure}",
+        "attributes": [],
+        "retention": "operational",
+        "redaction": "bounded-metadata",
+    }
+
+
 @pytest.mark.parametrize(
     "mutation, message",
     [
