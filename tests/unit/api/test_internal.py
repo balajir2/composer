@@ -1,16 +1,24 @@
 """Tests for POST /internal/claim-and-run (P1-2)."""
 
+from __future__ import annotations
+
 import asyncio
+import contextlib
 import re
 from datetime import UTC, datetime
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
+from opentelemetry import trace
+from starlette.requests import Request
 
 from src.main import create_app
+
+if TYPE_CHECKING:
+    from opentelemetry.trace import SpanContext
 
 
 class _FakeTx:
@@ -52,6 +60,59 @@ def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
 
     app.state.event_bus = PostgresEventStore(db)
     return TestClient(app), db
+
+
+@pytest.mark.parametrize("outcome", ["success", "error", "cancel"])
+def test_claim_and_run_attaches_remote_context_only_during_execution(
+    monkeypatch: pytest.MonkeyPatch, outcome: str
+) -> None:
+    from src.api import internal
+    from src.api.internal import ClaimAndRunRequest
+
+    observed: list[SpanContext] = []
+
+    async def _observe_execution(*_args: object, **_kwargs: object) -> dict[str, str]:
+        observed.append(trace.get_current_span().get_span_context())
+        if outcome == "error":
+            raise RuntimeError("worker failure")
+        if outcome == "cancel":
+            raise asyncio.CancelledError
+        return {"status": "completed"}
+
+    monkeypatch.setattr(internal, "claim_and_run_execution", _observe_execution)
+
+    def _fake_dependency(_request: Request) -> object:
+        return object()
+
+    monkeypatch.setattr(internal, "get_checkpointer", _fake_dependency)
+    monkeypatch.setattr(internal, "get_event_bus", _fake_dependency)
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/internal/claim-and-run",
+            "headers": [
+                (b"traceparent", b"00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")
+            ],
+            "client": ("127.0.0.1", 1234),
+        }
+    )
+
+    async def _invoke_and_check_cleanup() -> None:
+        with contextlib.suppress(RuntimeError, asyncio.CancelledError):
+            await internal.claim_and_run(
+                payload=ClaimAndRunRequest(executionId="exec-1", kind="run"),
+                request=request,
+                db=MagicMock(),
+                _oidc=None,
+            )
+        assert not trace.get_current_span().get_span_context().is_valid
+
+    asyncio.run(_invoke_and_check_cleanup())
+
+    assert len(observed) == 1
+    assert observed[0].is_remote
+    assert observed[0].trace_id == 0x0123456789ABCDEF0123456789ABCDEF
 
 
 async def test_claim_and_run_execution_runs_directly_without_a_request(

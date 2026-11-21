@@ -36,6 +36,7 @@ from __future__ import annotations
 import asyncio
 import json as _json
 import logging
+from contextlib import suppress
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, Literal, cast
 
@@ -43,6 +44,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from google.auth.exceptions import GoogleAuthError
 from google.auth.transport.requests import Request as GoogleAuthRequest
 from google.oauth2 import id_token
+from opentelemetry import context as otel_context
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.config import get_settings
@@ -61,6 +63,7 @@ from src.maintenance.execution_sweeper import (
 from src.storage.db import get_checkpointer, get_db, get_event_bus
 from src.storage_providers.google_drive import GoogleDriveProvider
 from src.storage_providers.text_extraction import extract_text
+from src.telemetry.propagation import extract_task_context
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -435,14 +438,22 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
     _oidc: None = Depends(_verify_internal_oidc),
 ) -> dict[str, str]:
     worker_id = f"{request.client.host if request.client else 'unknown'}:{id(request)}"
-    return await claim_and_run_execution(
-        payload.execution_id,
-        payload.kind,
-        db,
-        get_checkpointer(request),
-        get_event_bus(request),
-        worker_id=worker_id,
-    )
+    token = None
+    with suppress(Exception):
+        token = otel_context.attach(extract_task_context(request.headers))
+    try:
+        return await claim_and_run_execution(
+            payload.execution_id,
+            payload.kind,
+            db,
+            get_checkpointer(request),
+            get_event_bus(request),
+            worker_id=worker_id,
+        )
+    finally:
+        if token is not None:
+            with suppress(Exception):
+                otel_context.detach(token)
 
 
 @router.post("/internal/sweep", status_code=status.HTTP_200_OK)
