@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security — MCP test-connection and OAuth authorize check server visibility (2026-11-21)
+
+- **Before:** any authenticated member who knew another member's private MCP server id could call `POST /mcp-servers/{id}/test-connection` (server called with the owner's stored credential, reachability/tool count/error text returned, owner's connection status and tools overwritten) and `POST /mcp-servers/{id}/oauth/authorize` (authorize URL, client id, scopes and resource returned, state rows created).
+- **Now:** both routes apply the resolver's rule (owner or shared) right after loading the server, before any MCP call or state write; otherwise they return 404 `MCP server '<id>' not found.`, identical to an unknown id. No admin bypass.
+- The rule is exposed as `user_can_use_server` in `src/mcp/resolver.py` (renamed from the private `_user_can_use`, behaviour unchanged).
+
 ### Changed — SQLAlchemy migration phase 1: settings and admin (2026-11-21)
 
 - **Repositories:** `deployment_settings`, `llm_models`, `llm_api_keys`, `users` and `api_keys` now go through repository modules in `src/db/repos/`. `src/db/runtime.py` gives sessions to code outside requests. Behaviour is unchanged except for the items below, proven by 21 API behaviour tests (`tests/integration/sqla_phase1/`) that ran against the Prisma code first and pass unchanged after the move.

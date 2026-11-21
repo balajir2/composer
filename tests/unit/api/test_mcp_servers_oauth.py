@@ -209,3 +209,50 @@ def test_disconnect_idempotent_when_no_token() -> None:
     resp = client.post("/mcp-servers/srv1/oauth/disconnect")
     assert resp.status_code == 204
     db.mcpoauthtoken.delete.assert_not_awaited()
+
+
+# --- visibility on authorize -------------------------------------------------
+
+_AUTHZ_BODY = {"redirectUri": "http://localhost/cb"}
+
+
+def test_authorize_private_server_of_other_user_is_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_enc_key(monkeypatch)
+    client, db = _client_with_mock_db()
+    db.mcpserver.find_unique = AsyncMock(
+        return_value=_server_row(id="other", userId="someone-else", isShared=False)
+    )
+    resp = client.post("/mcp-servers/other/oauth/authorize", json=_AUTHZ_BODY)
+    assert resp.status_code == 404
+    assert resp.json() == {"detail": "MCP server 'other' not found."}
+    db.mcpoauthstate.create.assert_not_awaited()
+
+
+def test_authorize_private_404_identical_to_unknown_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_enc_key(monkeypatch)
+    client, db = _client_with_mock_db()
+    db.mcpserver.find_unique = AsyncMock(
+        return_value=_server_row(id="same", userId="someone-else", isShared=False)
+    )
+    private = client.post("/mcp-servers/same/oauth/authorize", json=_AUTHZ_BODY)
+    db.mcpserver.find_unique = AsyncMock(return_value=None)
+    unknown = client.post("/mcp-servers/same/oauth/authorize", json=_AUTHZ_BODY)
+    assert private.status_code == unknown.status_code == 404
+    assert private.content == unknown.content
+
+
+def test_authorize_shared_server_of_other_user_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_enc_key(monkeypatch)
+    client, db = _client_with_mock_db()
+    db.mcpserver.find_unique = AsyncMock(
+        return_value=_server_row(userId="someone-else", isShared=True)
+    )
+    resp = client.post("/mcp-servers/srv1/oauth/authorize", json=_AUTHZ_BODY)
+    assert resp.status_code == 200, resp.text
+    db.mcpoauthstate.create.assert_awaited_once()

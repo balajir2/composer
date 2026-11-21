@@ -443,3 +443,85 @@ def test_patch_mcp_server_owner_releases_connection_after_user_lookup(
         client.app.dependency_overrides.pop(ensure_admin, None)  # type: ignore[attr-defined]
     assert resp.status_code == 200, resp.text
     assert order == ["lookup", "rollback", "prisma"]
+
+
+# --- visibility on test-connection -------------------------------------------
+
+
+def _patch_provider_spy(monkeypatch: pytest.MonkeyPatch) -> MagicMock:
+    import src.api.mcp_servers as mcp_servers_api
+
+    spy = MagicMock()
+
+    class _SpyProvider:
+        def __init__(self, server: Any, *, db: Any | None = None, user_id: str | None = None):
+            del db, user_id
+            spy(server)
+
+        async def health_check(self) -> Any:
+            from src.tools.base import HealthStatus
+
+            return HealthStatus(ok=True, message="healthy")
+
+        async def tools(self) -> list[Any]:
+            return []
+
+    monkeypatch.setattr(mcp_servers_api, "McpToolProvider", _SpyProvider)
+    return spy
+
+
+def test_test_connection_private_server_of_other_user_is_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_encryption_key(monkeypatch)
+    client, db = _client_with_mock_db()
+    spy = _patch_provider_spy(monkeypatch)
+    db.mcpserver.find_unique = AsyncMock(
+        return_value=_server_row(id="other", userId="someone-else", isShared=False)
+    )
+    resp = client.post("/mcp-servers/other/test-connection")
+    assert resp.status_code == 404
+    assert resp.json() == {"detail": "MCP server 'other' not found."}
+    spy.assert_not_called()
+    db.mcpserver.update.assert_not_awaited()
+
+
+def test_test_connection_private_404_identical_to_unknown_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_encryption_key(monkeypatch)
+    client, db = _client_with_mock_db()
+    db.mcpserver.find_unique = AsyncMock(
+        return_value=_server_row(id="same", userId="someone-else", isShared=False)
+    )
+    private = client.post("/mcp-servers/same/test-connection")
+    db.mcpserver.find_unique = AsyncMock(return_value=None)
+    unknown = client.post("/mcp-servers/same/test-connection")
+    assert private.status_code == unknown.status_code == 404
+    assert private.content == unknown.content
+
+
+def test_test_connection_shared_server_of_other_user_allowed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_encryption_key(monkeypatch)
+    client, db = _client_with_mock_db()
+    spy = _patch_provider_spy(monkeypatch)
+    db.mcpserver.find_unique = AsyncMock(
+        return_value=_server_row(userId="someone-else", isShared=True)
+    )
+    resp = client.post("/mcp-servers/srv1/test-connection")
+    assert resp.status_code == 200
+    spy.assert_called_once()
+    db.mcpserver.update.assert_awaited_once()
+
+
+def test_test_connection_owner_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
+    _set_encryption_key(monkeypatch)
+    client, db = _client_with_mock_db()
+    spy = _patch_provider_spy(monkeypatch)
+    db.mcpserver.find_unique = AsyncMock(return_value=_server_row(userId="dev", isShared=False))
+    resp = client.post("/mcp-servers/srv1/test-connection")
+    assert resp.status_code == 200
+    spy.assert_called_once()
+    db.mcpserver.update.assert_awaited_once()
