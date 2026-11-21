@@ -24,10 +24,11 @@ import logging
 from typing import TYPE_CHECKING
 
 from src.config import get_settings
+from src.db.repos import llm_api_keys as keys_repo
 from src.security.encryption import EncryptionError, decrypt
 
 if TYPE_CHECKING:
-    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
@@ -56,7 +57,7 @@ PROVIDER_TO_SETTINGS_FIELD: dict[str, str] = {
 }
 
 
-async def sync_llm_keys_from_db(db: Prisma) -> dict[str, str]:  # pyright: ignore[reportUnknownParameterType]
+async def sync_llm_keys_from_db(session: AsyncSession) -> dict[str, str]:
     """Populate Settings from llm_api_keys.  Returns {provider: settings_field}
     for the rows that actually populated a previously-empty field.
 
@@ -68,7 +69,7 @@ async def sync_llm_keys_from_db(db: Prisma) -> dict[str, str]:  # pyright: ignor
     settings = get_settings()
     populated: dict[str, str] = {}
     try:
-        rows = await db.llmapikey.find_many()  # pyright: ignore[reportAttributeAccessIssue]
+        rows = await keys_repo.list_keys(session)
     except Exception as exc:  # any DB error must be non-fatal at startup
         logger.warning("llm-key sync: failed to query llm_api_keys: %s", exc)
         return populated
@@ -90,12 +91,12 @@ async def sync_llm_keys_from_db(db: Prisma) -> dict[str, str]:  # pyright: ignor
             )
             continue
         try:
-            plaintext = decrypt(row.encryptedKey)
+            plaintext = decrypt(row.encrypted_key)
         except EncryptionError as exc:
             logger.warning(
                 "llm-key sync: failed to decrypt %s key (prefix=%s): %s",
                 row.provider,
-                row.keyPrefix,
+                row.key_prefix,
                 exc,
             )
             continue

@@ -4,17 +4,18 @@ test-connection endpoint (timeouts, provider exceptions, DB/runtime key drift)."
 from __future__ import annotations
 
 import asyncio
-from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock
 
 from fastapi.testclient import TestClient
 
 from src.api import admin_tools as mod
+from src.db.repos import llm_api_keys as keys_repo
 from src.main import create_app
 from src.security.auth import ensure_admin
 from src.tools.base import ApiKeyAuth, HealthStatus, NoAuth
 from src.tools.registry import UnknownProviderError
+from tests.unit.db_fakes import FakeSession, override_session
 
 if TYPE_CHECKING:
     import pytest
@@ -47,7 +48,7 @@ class _FakeProvider:
 
 def _build(
     monkeypatch: pytest.MonkeyPatch, *, admin: bool, environment: str = "development"
-) -> tuple[TestClient, MagicMock]:
+) -> tuple[TestClient, FakeSession]:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", environment)
     from src.config import get_settings
@@ -56,12 +57,14 @@ def _build(
     app = create_app()
     db = MagicMock()
     db.user.find_unique = AsyncMock(return_value=None)
-    db.llmapikey.find_unique = AsyncMock(return_value=None)
     app.state.db = db
     app.state.checkpointer = MagicMock()
+    # Routes resolve their session before the admin gate runs, even for 401/403.
+    session = override_session(app)
+    monkeypatch.setattr(keys_repo, "exists", AsyncMock(return_value=False))
     if admin:
         app.dependency_overrides[ensure_admin] = lambda: "admin-1"
-    return TestClient(app), db
+    return TestClient(app), session
 
 
 def _install(monkeypatch: pytest.MonkeyPatch, provider: _FakeProvider) -> None:
@@ -160,8 +163,8 @@ def test_test_connection_db_lookup_timeout_degrades_to_no_db_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _install(monkeypatch, _FakeProvider())
-    client, db = _build(monkeypatch, admin=True)
-    db.llmapikey.find_unique = AsyncMock(side_effect=TimeoutError())
+    client, _ = _build(monkeypatch, admin=True)
+    monkeypatch.setattr(keys_repo, "exists", AsyncMock(side_effect=TimeoutError()))
     resp = client.post("/admin/tools/fake/test-connection")
     assert resp.status_code == 200
     assert resp.json()["has_db_key"] is False
@@ -173,8 +176,8 @@ def test_test_connection_flags_db_key_not_loaded_into_runtime_when_unhealthy(
     auth = ApiKeyAuth(env_var="FAKE_KEY", settings_field="definitely_not_a_setting")
     provider = _FakeProvider(auth=auth, health=HealthStatus(ok=False, message="FAKE_KEY missing"))
     _install(monkeypatch, provider)
-    client, db = _build(monkeypatch, admin=True)
-    db.llmapikey.find_unique = AsyncMock(return_value=SimpleNamespace(encryptedKey="ciphertext"))
+    client, _ = _build(monkeypatch, admin=True)
+    monkeypatch.setattr(keys_repo, "exists", AsyncMock(return_value=True))
     body = client.post("/admin/tools/fake/test-connection").json()
     assert body["ok"] is False
     assert body["has_db_key"] is True
@@ -193,3 +196,30 @@ def test_test_connection_has_runtime_key_reflects_settings(
     body = client.post("/admin/tools/fake/test-connection").json()
     assert body["has_runtime_key"] is True
     assert "tvly-runtime" not in str(body)
+
+
+def test_test_connection_releases_the_connection_before_the_health_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    provider = _FakeProvider()
+    rollbacks_at_lookup: list[int] = []
+    rollbacks_at_probe: list[int] = []
+    original = provider.health_check
+
+    async def lookup(_session: object, _provider: str) -> bool:
+        rollbacks_at_lookup.append(session.rollback.await_count)
+        return False
+
+    async def probe() -> HealthStatus:
+        rollbacks_at_probe.append(session.rollback.await_count)
+        return await original()
+
+    provider.health_check = probe  # type: ignore[method-assign]
+    _install(monkeypatch, provider)
+    client, session = _build(monkeypatch, admin=True)
+    monkeypatch.setattr(keys_repo, "exists", lookup)
+    assert client.post("/admin/tools/fake/test-connection").status_code == 200
+    # Rollback must come AFTER the lookup (else the lookup re-opens a transaction).
+    assert rollbacks_at_lookup == [0]
+    assert rollbacks_at_probe == [1]
+    session.commit.assert_not_called()

@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — SQLAlchemy migration phase 1: settings and admin (2026-11-21)
+
+- **Repositories:** `deployment_settings`, `llm_models`, `llm_api_keys`, `users` and `api_keys` now go through repository modules in `src/db/repos/`. `src/db/runtime.py` gives sessions to code outside requests. Behaviour is unchanged except for the items below, proven by 21 API behaviour tests (`tests/integration/sqla_phase1/`) that ran against the Prisma code first and pass unchanged after the move.
+- **Deliberate behaviour changes:**
+  - Creating an LLM model gives 409 only for a real duplicate; other errors are 500 and no longer disguised as 409.
+  - Concurrent registration with the same email gives 409 instead of 500.
+  - A concurrent first SSO login re-reads the user instead of returning 500.
+  - User deactivation (revoke keys and mark inactive) is one transaction.
+  - The live user checks behind JWT routes and the `ck_` API-key auth fail closed when the database is not attached, except in `ENVIRONMENT=development`.
+  - The agent's model-availability pre-flight fails open on a database error.
+  - A failed API-key `last_used_at` update is logged (exception class name only).
+- **Connection handling:** routes release their pooled connection before slow work (the builder LLM turn, provider probes, the password-reset email). API-key auth for `POST /api/run/{slug}` uses a short session that is closed before the workflow runs.
+- **Kept as-is on purpose:** user search does not escape `_` and `%`, matching Prisma's behaviour.
+- **New:** `check_database()` and `alembic_head_revision()` in `src/db/health.py` for the readiness probe. They read `src/db/migrations`, not `alembic.ini`, so they work inside the Docker image.
+- **Testing:** tests run on the selector event loop on Windows so the SQLAlchemy integration tests work locally. The Prisma import boundary test now covers the migrated API, security, builder and CLI files.
+
 ### Fixed — Build with AI repair rounds can see what they are fixing (2026-11-20)
 
 Follow-ups to the completeness work below.

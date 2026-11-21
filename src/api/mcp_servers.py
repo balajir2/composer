@@ -10,9 +10,12 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.db.repos import users as users_repo
+from src.db.session import get_session
 from src.mcp.base import McpToolProvider
 from src.mcp.oauth import (
     InvalidStateError,
@@ -297,18 +300,21 @@ async def assign_mcp_server_owner(
     server_id: str,
     payload: McpOwnerAssignRequest,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> McpServerRead:  # pyright: ignore[reportUnusedFunction]
     target_user_id = payload.user_id
     if target_user_id is None:
         if not payload.email:
             raise HTTPException(422, "must provide user_id or email")
-        target = await db.user.find_unique(where={"email": payload.email.lower()})  # pyright: ignore[reportAttributeAccessIssue]
+        target = await users_repo.get_by_email(session, payload.email.lower())
+        await session.rollback()  # release the pooled connection; the rest uses Prisma
         if target is None:
             raise HTTPException(404, f"user with email {payload.email!r} not found")
         target_user_id = target.id
     else:
-        target = await db.user.find_unique(where={"id": target_user_id})  # pyright: ignore[reportAttributeAccessIssue]
+        target = await users_repo.get_by_id(session, target_user_id)
+        await session.rollback()  # release the pooled connection; the rest uses Prisma
         if target is None:
             raise HTTPException(404, f"user {target_user_id!r} not found")
     existing = await db.mcpserver.find_unique(where={"id": server_id})  # pyright: ignore[reportAttributeAccessIssue]

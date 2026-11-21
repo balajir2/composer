@@ -3,20 +3,27 @@
 from __future__ import annotations
 
 import logging
+from typing import TYPE_CHECKING
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from src.config import get_settings
+from src.db.repos import users as users_repo
+from src.db.runtime import one_shot_session
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
 
 
-async def reconcile_by_email(db: Prisma, email: str) -> dict[str, int]:  # pyright: ignore[reportUnknownParameterType]
+async def reconcile_by_email(db: Prisma, session: AsyncSession, email: str) -> dict[str, int]:  # pyright: ignore[reportUnknownParameterType]
     """Attach all rows with original_owner_email=<email> to the User with that email.
 
     Returns a per-table count of updated rows.  Idempotent — re-runs UPDATE
     only the rows that still have user_id=NULL.
     """
     email_lc = email.lower()
-    user = await db.user.find_unique(where={"email": email_lc})  # pyright: ignore[reportAttributeAccessIssue]
+    user = await users_repo.get_by_email(session, email_lc)
     if user is None:
         raise ValueError(f"no Composer user found with email {email_lc!r}")
 
@@ -49,7 +56,8 @@ async def run_reconcile(*, email: str) -> int:
     await db.connect()
     try:
         try:
-            result = await reconcile_by_email(db, email)
+            async with one_shot_session(get_settings()) as session:
+                result = await reconcile_by_email(db, session, email)
         except ValueError as exc:
             logger.error("%s", exc)
             return 1

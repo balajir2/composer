@@ -9,16 +9,14 @@
 from __future__ import annotations
 
 from datetime import datetime  # noqa: TC003 — Pydantic needs this at runtime
-from typing import TYPE_CHECKING
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002 — FastAPI resolves this at runtime
 
+from src.db.repos import llm_models as models_repo
+from src.db.session import get_session
 from src.security.auth import get_current_user_id
-from src.storage.db import get_db
-
-if TYPE_CHECKING:
-    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 
 router = APIRouter(tags=["llm-models"])
 
@@ -45,16 +43,10 @@ class LlmModelSummary(BaseModel):
 @router.get("/llm-models", response_model=list[LlmModelSummary])
 async def list_enabled_models(
     provider: str | None = Query(default=None),
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _user_id: str = Depends(get_current_user_id),
 ) -> list[LlmModelSummary]:  # pyright: ignore[reportUnusedFunction]
-    where: dict[str, object] = {"enabled": True}
-    if provider is not None:
-        where["provider"] = provider
-    rows = await db.llmmodel.find_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where=where,  # pyright: ignore[reportArgumentType]
-        order=[{"provider": "asc"}, {"modelId": "asc"}],
-    )
+    rows = await models_repo.list_models(session, provider=provider, enabled_only=True)
     return [LlmModelSummary.model_validate(r) for r in rows]
 
 

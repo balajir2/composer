@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 from src.api import builder as builder_mod
 from src.api.builder import _persist, router  # pyright: ignore[reportPrivateUsage]
 from src.engine.workflow import Workflow
+from tests.unit.db_fakes import override_session
 
 
 class _Limiter:
@@ -53,6 +54,7 @@ def _make_client(db: Any = None, role: tuple[str, str] = ("dev", "member")) -> T
 
     app.state.builder_sessions = {}
     app.dependency_overrides[builder_mod.get_db] = fake_db
+    override_session(app)  # the route resolves its SQLAlchemy session up front
     app.dependency_overrides[builder_mod.get_current_role] = fake_role
     app.dependency_overrides[builder_mod.get_rate_limiter] = lambda: _Limiter()
     return TestClient(app)

@@ -16,18 +16,17 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any, cast
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession  # noqa: TC002 — FastAPI resolves this at runtime
 
 from src.config import get_settings
+from src.db.repos import llm_models as models_repo
+from src.db.session import get_session
 from src.security.auth import get_current_user_id
-from src.storage.db import get_db
-
-if TYPE_CHECKING:
-    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 
 logger = logging.getLogger(__name__)
 
@@ -307,19 +306,9 @@ async def _fetch_live(provider: str) -> list[LiveModel]:
     return models
 
 
-async def _db_fallback(db: Prisma, provider: str) -> list[LiveModel]:  # pyright: ignore[reportUnknownParameterType]
-    rows = await db.llmmodel.find_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"provider": provider, "enabled": True},
-        order=[{"modelId": "asc"}],
-    )
-    return [
-        LiveModel(
-            modelId=r.modelId,
-            label=r.label,
-            source="db",
-        )
-        for r in rows
-    ]
+async def _db_fallback(session: AsyncSession, provider: str) -> list[LiveModel]:
+    rows = await models_repo.list_models(session, provider=provider, enabled_only=True)
+    return [LiveModel(modelId=r.model_id, label=r.label, source="db") for r in rows]
 
 
 @router.get("/llm-models/available", response_model=AvailableModelsResponse)
@@ -332,7 +321,7 @@ async def list_available_models(
         default=False,
         description="Bypass the 5-minute in-process cache and re-hit the provider.",
     ),
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _user_id: str = Depends(get_current_user_id),
 ) -> AvailableModelsResponse:  # pyright: ignore[reportUnusedFunction]
     if provider not in _PROVIDERS and provider not in _DB_ONLY_PROVIDERS:
@@ -358,7 +347,7 @@ async def list_available_models(
             # No live /models endpoint exists for this provider at all —
             # go straight to the DB-curated fallback instead of trying
             # (and failing) a live fetch first.
-            fallback = await _db_fallback(db, provider)
+            fallback = await _db_fallback(session, provider)
             return AvailableModelsResponse(provider=provider, models=fallback)
         try:
             models = await _fetch_live(provider)
@@ -370,7 +359,7 @@ async def list_available_models(
                 provider,
                 exc,
             )
-            fallback = await _db_fallback(db, provider)
+            fallback = await _db_fallback(session, provider)
             # Don't cache failures; try live again on next request.
             return AvailableModelsResponse(provider=provider, models=fallback)
 

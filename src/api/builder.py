@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.api.workflows import (  # reuse existing secret helpers (additive import)
@@ -20,6 +21,7 @@ from src.api.workflows import (  # reuse existing secret helpers (additive impor
 from src.builder.builder_agent import BuildSession, run_builder_turn
 from src.builder.model_policy import ModelNotAllowedError, enabled_model_catalog, load_policy
 from src.config import get_settings
+from src.db.session import get_session
 from src.engine.graph_builder import collect_workflow_violations
 from src.engine.workflow import Workflow
 from src.llm.providers import build_chat_model
@@ -124,11 +126,11 @@ async def _persist(db: Prisma, workflow_id: str, workflow: Workflow, existing: A
 
 @router.get("/builder/models", response_model=BuilderModelsResponse)
 async def builder_models(  # pyright: ignore[reportUnusedFunction]
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    sa_session: AsyncSession = Depends(get_session),
     _user_id: str = Depends(get_current_user_id),
 ) -> BuilderModelsResponse:
     """Models the signed-in user may pick in the Build-with-AI panel."""
-    policy = await load_policy(db)
+    policy = await load_policy(sa_session)
     return BuilderModelsResponse(
         default=policy.default,
         models=[BuilderModelOption(id=o.id, label=o.label) for o in policy.options],
@@ -141,6 +143,8 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
     payload: BuilderMessageRequest,
     request: Request,
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    # TODO(prisma removal): merge db and sa_session
+    sa_session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> BuilderMessageResponse:
@@ -181,7 +185,7 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
     else:
         sid = payload.session_id or ""
 
-    policy = await load_policy(db)
+    policy = await load_policy(sa_session)
     try:
         model_string = policy.resolve(payload.model)
     except ModelNotAllowedError as exc:
@@ -189,7 +193,10 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
     model = build_chat_model(model_string)
 
     workflow = _to_engine_workflow(existing)
-    model_catalog = await enabled_model_catalog(db)
+    model_catalog = await enabled_model_catalog(sa_session)
+    # Release the pooled connection before the slow LLM loop: reads autobegin a
+    # transaction that would otherwise pin it until the request ends.
+    await sa_session.rollback()
     events, reply, updated = await run_builder_turn(
         model=model,
         workflow_id=workflow_id,

@@ -1,16 +1,19 @@
 """Admin-only endpoints for user management (Phase 10d)."""
 
 import secrets
-from datetime import UTC, datetime
-from typing import Any, Literal
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from src.db.models import UserRole
+from src.db.repos import api_keys as keys_repo
+from src.db.repos import users as users_repo
+from src.db.session import get_session
+from src.db.types import utcnow
 from src.security.auth import ensure_admin
 from src.security.passwords import hash_password
-from src.storage.db import get_db
 
 router = APIRouter(prefix="/admin", tags=["admin-users"])
 
@@ -35,53 +38,42 @@ class UserSummary(BaseModel):
     model_config = ConfigDict(populate_by_name=True, from_attributes=True)
 
 
-def _summary_from_row(row: Any) -> "UserSummary":
-    """Build a UserSummary from a Prisma User row, coercing the role enum."""
-    role_attr = row.role
-    role_val = (
-        role_attr.value  # pyright: ignore[reportOptionalMemberAccess]
-        if hasattr(role_attr, "value")
-        else str(role_attr)
-    )
+def _summary_from_row(row: users_repo.UserRecord) -> UserSummary:
     return UserSummary(
         id=row.id,
         email=row.email,
-        role=role_val,
-        displayName=row.displayName,
-        isActive=getattr(row, "isActive", True),
+        role=row.role.value,
+        displayName=row.display_name,
+        isActive=row.is_active,
     )
 
 
 @router.get("/users", response_model=list[UserSummary])
 async def list_users(
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> list[UserSummary]:  # pyright: ignore[reportUnusedFunction]
-    rows = await db.user.find_many(order={"email": "asc"})  # pyright: ignore[reportAttributeAccessIssue]
-    return [_summary_from_row(r) for r in rows]
+    return [_summary_from_row(r) for r in await users_repo.list_all(session)]
 
 
 @router.post("/users/{user_id}/role", response_model=UserSummary)
 async def update_user_role(
     user_id: str,
     payload: RoleUpdateRequest,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> UserSummary:  # pyright: ignore[reportUnusedFunction]
-    user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
-    if user is None:
+    updated = await users_repo.set_role(session, user_id, UserRole(payload.role))
+    if updated is None:
         raise HTTPException(404, f"user {user_id!r} not found")
-    updated = await db.user.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": user_id},
-        data={"role": payload.role},  # pyright: ignore[reportArgumentType]
-    )
+    await session.commit()
     return _summary_from_row(updated)
 
 
 @router.delete("/users/{user_id}", response_model=UserSummary)
 async def deactivate_user(
     user_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> UserSummary:  # pyright: ignore[reportUnusedFunction]
     """Soft-delete: mark inactive + revoke all API keys.
@@ -89,33 +81,28 @@ async def deactivate_user(
     Preserves audit trail (workflows, executions, approvals keep their
     userId).  Use POST /users/{id}/reactivate to restore access.
     """
-    user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
-    if user is None:
+    if await users_repo.get_by_id(session, user_id) is None:
         raise HTTPException(404, f"user {user_id!r} not found")
-    # Revoke all non-revoked API keys.
-    now = datetime.now(UTC)
-    await db.apikey.update_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"userId": user_id, "revokedAt": None},
-        data={"revokedAt": now},
-    )
-    updated = await db.user.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": user_id}, data={"isActive": False}
-    )
+    # One transaction: revoking keys and deactivating commit together.
+    await keys_repo.revoke_all_active_for_user(session, user_id, utcnow())
+    updated = await users_repo.set_active(session, user_id, False)
+    if updated is None:  # deleted concurrently
+        await session.rollback()
+        raise HTTPException(404, f"user {user_id!r} not found")
+    await session.commit()
     return _summary_from_row(updated)
 
 
 @router.post("/users/{user_id}/reactivate", response_model=UserSummary)
 async def reactivate_user(
     user_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> UserSummary:  # pyright: ignore[reportUnusedFunction]
-    user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
-    if user is None:
+    updated = await users_repo.set_active(session, user_id, True)
+    if updated is None:
         raise HTTPException(404, f"user {user_id!r} not found")
-    updated = await db.user.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": user_id}, data={"isActive": True}
-    )
+    await session.commit()
     return _summary_from_row(updated)
 
 
@@ -123,40 +110,34 @@ async def reactivate_user(
 async def admin_revoke_api_key(
     user_id: str,
     key_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> None:  # pyright: ignore[reportUnusedFunction]
-    row = await db.apikey.find_unique(where={"id": key_id})  # pyright: ignore[reportAttributeAccessIssue]
-    if row is None or row.userId != user_id:
+    row = await keys_repo.get(session, key_id)
+    if row is None or row.user_id != user_id:
         raise HTTPException(404, f"API key {key_id!r} not found for user {user_id!r}")
-    if row.revokedAt is not None:
-        return
-    await db.apikey.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": key_id}, data={"revokedAt": datetime.now(UTC)}
-    )
+    # Already revoked: no-op (revoked_at is never re-stamped).
+    if await keys_repo.revoke_if_active(session, key_id, utcnow()):
+        await session.commit()
 
 
 @router.post("/users/{user_id}/reset-password", response_model=ResetPasswordResponse)
 async def admin_reset_password(
     user_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> ResetPasswordResponse:  # pyright: ignore[reportUnusedFunction]
     """Admin-forced reset: generate a temp password, force a change on next
     login. The plaintext temp password is returned exactly once — it is
     never stored or logged in plaintext.
     """
-    user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
-    if user is None:
-        raise HTTPException(404, f"user {user_id!r} not found")
     temp_password = secrets.token_urlsafe(12)
-    await db.user.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": user_id},
-        data={
-            "passwordHash": hash_password(temp_password),
-            "mustChangePassword": True,
-        },
+    changed = await users_repo.set_password(
+        session, user_id, hash_password(temp_password), must_change=True
     )
+    if not changed:
+        raise HTTPException(404, f"user {user_id!r} not found")
+    await session.commit()
     return ResetPasswordResponse(temporaryPassword=temp_password)
 
 

@@ -1,14 +1,16 @@
 """Unit tests for POST /auth/sso-exchange (Phase 10a)."""
 
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.errors import AlreadyExists
+from src.db.repos import users as users_repo
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
+from tests.unit.db_fakes import FakeSession, make_user, override_session
 
 
 def _client_sso_disabled(monkeypatch: pytest.MonkeyPatch) -> TestClient:
@@ -19,10 +21,7 @@ def _client_sso_disabled(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
     get_settings.cache_clear()
     app = create_app()
-    db = MagicMock()
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=None)
-    app.state.db = db
+    override_session(app)
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
     return TestClient(app)
@@ -30,7 +29,7 @@ def _client_sso_disabled(monkeypatch: pytest.MonkeyPatch) -> TestClient:
 
 def _client_sso_enabled(
     monkeypatch: pytest.MonkeyPatch, *, user_row: Any | None = None
-) -> tuple[TestClient, Any]:
+) -> tuple[TestClient, FakeSession]:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", "development")
     monkeypatch.setenv("SSO_ENABLED", "true")
@@ -52,21 +51,14 @@ def _client_sso_enabled(
     monkeypatch.setattr("src.security.sso_azure.verify_azure_jwt", _fake_verify)
 
     app = create_app()
-    db = MagicMock()
-    db.user = MagicMock()
-    created_row = SimpleNamespace(
-        id="u-new",
-        email="alice@example.com",
-        displayName="Alice",
-        passwordHash=None,
-        role=SimpleNamespace(value="member"),
+    session = override_session(app)
+    monkeypatch.setattr(users_repo, "get_by_email", AsyncMock(return_value=user_row))
+    monkeypatch.setattr(
+        users_repo, "create", AsyncMock(return_value=make_user(id="u-new", password_hash=None))
     )
-    db.user.find_unique = AsyncMock(return_value=user_row)
-    db.user.create = AsyncMock(return_value=created_row)
-    app.state.db = db
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
-    return TestClient(app), db
+    return TestClient(app), session
 
 
 def test_sso_exchange_disabled_returns_400(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -76,30 +68,26 @@ def test_sso_exchange_disabled_returns_400(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 def test_sso_exchange_autoprovisions_new_user(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _client_sso_enabled(monkeypatch, user_row=None)
+    client, session = _client_sso_enabled(monkeypatch, user_row=None)
     resp = client.post("/auth/sso-exchange", json={"azureToken": "valid"})
     assert resp.status_code == 200
     body = resp.json()
     assert "accessToken" in body
     assert "refreshToken" in body
-    db.user.create.assert_awaited_once()
-    create_kwargs = db.user.create.await_args.kwargs["data"]
+    users_repo.create.assert_awaited_once()  # type: ignore[attr-defined]
+    create_kwargs = users_repo.create.await_args.kwargs  # type: ignore[attr-defined]
     assert create_kwargs["email"] == "alice@example.com"
-    assert create_kwargs["passwordHash"] is None
+    assert create_kwargs["password_hash"] is None
+    assert create_kwargs["display_name"] == "Alice"
+    session.commit.assert_awaited_once()
 
 
 def test_sso_exchange_existing_user_not_recreated(monkeypatch: pytest.MonkeyPatch) -> None:
-    existing = SimpleNamespace(
-        id="u-existing",
-        email="alice@example.com",
-        displayName="Alice",
-        passwordHash=None,
-        role=SimpleNamespace(value="member"),
-    )
-    client, db = _client_sso_enabled(monkeypatch, user_row=existing)
+    existing = make_user(id="u-existing", password_hash=None)
+    client, _ = _client_sso_enabled(monkeypatch, user_row=existing)
     resp = client.post("/auth/sso-exchange", json={"azureToken": "valid"})
     assert resp.status_code == 200
-    db.user.create.assert_not_awaited()
+    users_repo.create.assert_not_awaited()  # type: ignore[attr-defined]
 
 
 def test_sso_exchange_invalid_token_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -109,16 +97,38 @@ def test_sso_exchange_invalid_token_returns_401(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_sso_exchange_inactive_user_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:
-    inactive = SimpleNamespace(
-        id="u-inactive",
-        email="alice@example.com",
-        displayName="Alice",
-        passwordHash=None,
-        role=SimpleNamespace(value="member"),
-        isActive=False,
-    )
-    client, db = _client_sso_enabled(monkeypatch, user_row=inactive)
+    inactive = make_user(id="u-inactive", password_hash=None, is_active=False)
+    client, _ = _client_sso_enabled(monkeypatch, user_row=inactive)
     resp = client.post("/auth/sso-exchange", json={"azureToken": "valid"})
     assert resp.status_code == 401
     assert resp.json()["detail"] == "account is deactivated"
-    db.user.create.assert_not_awaited()
+    users_repo.create.assert_not_awaited()  # type: ignore[attr-defined]
+
+
+def test_sso_exchange_provisioning_race_reads_the_winning_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, session = _client_sso_enabled(monkeypatch, user_row=None)
+    winner = make_user(id="u-winner", password_hash=None)
+    monkeypatch.setattr(users_repo, "get_by_email", AsyncMock(side_effect=[None, winner]))
+    monkeypatch.setattr(
+        users_repo, "create", AsyncMock(side_effect=AlreadyExists("users_email_key"))
+    )
+    resp = client.post("/auth/sso-exchange", json={"azureToken": "valid"})
+    assert resp.status_code == 200, resp.text
+    session.rollback.assert_awaited_once()
+    session.commit.assert_not_awaited()
+
+
+def test_sso_exchange_provisioning_race_still_rejects_deactivated(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, _ = _client_sso_enabled(monkeypatch, user_row=None)
+    loser = make_user(id="u-winner", password_hash=None, is_active=False)
+    monkeypatch.setattr(users_repo, "get_by_email", AsyncMock(side_effect=[None, loser]))
+    monkeypatch.setattr(
+        users_repo, "create", AsyncMock(side_effect=AlreadyExists("users_email_key"))
+    )
+    resp = client.post("/auth/sso-exchange", json={"azureToken": "valid"})
+    assert resp.status_code == 401
+    assert resp.json()["detail"] == "account is deactivated"

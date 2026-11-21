@@ -7,8 +7,10 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.repos import users as users_repo
 from src.main import create_app
 from src.security.jwt import create_access_token
+from tests.unit.db_fakes import FakeSessionmaker, make_user, override_session
 
 
 def _wf_row(**overrides: Any) -> SimpleNamespace:
@@ -57,11 +59,12 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MagicMock]:
     db = MagicMock()
     db.workflow = MagicMock()
     db.workflowassignment = MagicMock()
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(
-        return_value=SimpleNamespace(id="assignee1", role="member", isActive=True)
-    )
     app.state.db = db
+    app.state.session = override_session(app)
+    app.state.db_sessionmaker = (
+        FakeSessionmaker()
+    )  # production fails closed without a live user check
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=make_user(id="assignee1")))
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 
@@ -201,3 +204,34 @@ def test_assignee_can_update_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
     }
     resp = client.put("/workflows/w1", json=body, headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200, resp.text
+
+
+def test_grant_assignment_releases_connection_after_user_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, db = _client(monkeypatch)
+    order: list[str] = []
+
+    async def _lookup(*_a: object, **_k: object) -> object:
+        order.append("lookup")
+        return make_user(id="assignee1")
+
+    async def _rollback() -> None:
+        order.append("rollback")
+
+    async def _create(**_k: object) -> object:
+        order.append("prisma")
+        return _assignment_row()
+
+    monkeypatch.setattr(users_repo, "get_by_id", _lookup)
+    client.app.state.session.rollback.side_effect = _rollback  # type: ignore[attr-defined]
+    db.workflow.find_unique = AsyncMock(return_value=_wf_row())
+    db.workflowassignment.create = _create
+    token = create_access_token("owner1")
+    resp = client.post(
+        "/workflows/w1/assignments/assignee1",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+    assert resp.status_code == 201, resp.text
+    # (the auth dependency's own live lookup comes first, on a separate short session)
+    assert order[-3:] == ["lookup", "rollback", "prisma"]

@@ -9,7 +9,9 @@ Integration-marked tests are skipped at collection time when TEST_DATABASE_URL
 is unset, so unit tests remain unaffected.
 """
 
+import asyncio
 import os
+import sys
 from collections.abc import AsyncIterator
 
 import pytest
@@ -22,6 +24,20 @@ from src.config import get_settings
 from src.main import create_app
 
 load_dotenv()
+
+
+if sys.platform == "win32":
+    # Defined only on Windows: elsewhere pytest-asyncio's default policy is right,
+    # and asyncio.get_event_loop_policy() is deprecated on newer Pythons.
+
+    @pytest.fixture(scope="session")
+    def event_loop_policy() -> asyncio.AbstractEventLoopPolicy:  # pyright: ignore[reportUnusedFunction]
+        """psycopg's async mode cannot use Windows' default Proactor loop; use the selector loop.
+
+        Without this, every SQLAlchemy integration test fails locally on Windows
+        ("Psycopg cannot use the 'ProactorEventLoop'"). Linux CI is unaffected.
+        """
+        return asyncio.WindowsSelectorEventLoopPolicy()
 
 
 def pytest_collection_modifyitems(

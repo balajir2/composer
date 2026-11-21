@@ -11,13 +11,16 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from jose import jwt as jose_jwt  # pyright: ignore[reportMissingImports, reportMissingTypeStubs]
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.api.auth_standalone import TokenPairResponse
 from src.config import Settings, get_settings
+from src.db.errors import AlreadyExists
+from src.db.repos import users as users_repo
+from src.db.runtime import request_sessionmaker
+from src.db.session import get_session
 from src.security.auth import AuthError, get_current_user_id
 from src.security.jwt import create_access_token, create_refresh_token
-from src.storage.db import get_db
 
 router = APIRouter(tags=["auth"])
 
@@ -40,18 +43,25 @@ class EmbeddedMeResponse(BaseModel):
 async def me(
     request: Request,
     user_id: str = Depends(get_current_user_id),
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     settings: Settings = Depends(get_settings),  # pyright: ignore[reportCallIssue]
 ) -> StandaloneMeResponse | EmbeddedMeResponse:  # pyright: ignore[reportUnusedFunction]
     if settings.deployment_mode == "standalone":
-        user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
+        # A short session of our own, opened only here: embedded mode never
+        # touches the database, so it must not depend on one being attached.
+        sessionmaker = request_sessionmaker(request)
+        if sessionmaker is None:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="database unavailable"
+            )
+        async with sessionmaker() as session:
+            user = await users_repo.get_by_id(session, user_id)
         if user is None:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user not found")
         return StandaloneMeResponse(
             id=user.id,
             email=user.email,
-            displayName=getattr(user, "displayName", None),
-            role=str(user.role),
+            displayName=user.display_name,
+            role=user.role.value,
         )
 
     # embedded: return JWT claims directly
@@ -77,7 +87,7 @@ class SsoExchangeRequest(BaseModel):
 @router.post("/auth/sso-exchange", response_model=TokenPairResponse)
 async def sso_exchange(
     payload: SsoExchangeRequest,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
 ) -> TokenPairResponse:  # pyright: ignore[reportUnusedFunction]
     settings = get_settings()
     if not settings.sso_enabled:
@@ -100,16 +110,25 @@ async def sso_exchange(
     display_name = claims.get("name") or email
 
     # Look up or auto-provision.
-    user = await db.user.find_unique(where={"email": email})  # pyright: ignore[reportAttributeAccessIssue]
+    user = await users_repo.get_by_email(session, email)
     if user is None:
-        user = await db.user.create(  # pyright: ignore[reportAttributeAccessIssue]
-            data={
-                "email": email,
-                "passwordHash": None,
-                "displayName": display_name,
-            }
-        )
-    elif getattr(user, "isActive", True) is False:
+        try:
+            user = await users_repo.create(
+                session, email=email, password_hash=None, display_name=display_name
+            )
+        except AlreadyExists:
+            # A concurrent first login provisioned the account; use that row.
+            await session.rollback()
+            user = await users_repo.get_by_email(session, email)
+            if user is None:
+                raise HTTPException(
+                    status.HTTP_409_CONFLICT, "account provisioning conflict"
+                ) from None
+            if not user.is_active:
+                raise AuthError("account is deactivated") from None
+        else:
+            await session.commit()
+    elif not user.is_active:
         raise AuthError("account is deactivated")
 
     access = create_access_token(user.id)

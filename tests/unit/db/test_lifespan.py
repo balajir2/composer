@@ -4,6 +4,7 @@ import pytest
 from fastapi import FastAPI
 from sqlalchemy.exc import OperationalError
 
+from src.db import runtime
 from src.db.lifespan import sqlalchemy_lifespan
 
 
@@ -55,3 +56,26 @@ async def test_lifespan_attaches_state_and_cleans_up(monkeypatch: pytest.MonkeyP
     assert engine.disposed is True
     assert not hasattr(app.state, "db_engine")
     assert not hasattr(app.state, "db_sessionmaker")
+
+
+async def test_lifespan_registers_sessionmaker_for_non_request_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = _FakeEngine()
+    _patch(monkeypatch, engine, fail=False)
+    app = FastAPI()
+    runtime.register_sessionmaker(None)
+    async with sqlalchemy_lifespan(app):
+        assert runtime.get_registered_sessionmaker() is app.state.db_sessionmaker
+    assert runtime.get_registered_sessionmaker() is None
+
+
+async def test_lifespan_unregisters_when_the_body_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    engine = _FakeEngine()
+    _patch(monkeypatch, engine, fail=False)
+    app = FastAPI()
+    runtime.register_sessionmaker(None)
+    with pytest.raises(ValueError):
+        async with sqlalchemy_lifespan(app):
+            raise ValueError("boom")
+    assert runtime.get_registered_sessionmaker() is None

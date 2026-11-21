@@ -1,21 +1,24 @@
 """Tests for /auth/me (both modes)."""
 
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from jose import jwt as jose_jwt  # pyright: ignore[reportMissingImports, reportMissingTypeStubs]
 
+from src.db.models import UserRole
+from src.db.repos import users as users_repo
+from tests.unit.db_fakes import FakeSessionmaker, make_user, override_session
+
 
 def _app_with_router(
     monkeypatch: pytest.MonkeyPatch,
     *,
     mode: str = "standalone",
-) -> tuple[TestClient, MagicMock]:
+) -> tuple[TestClient, None]:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", mode)
     monkeypatch.setenv("ENVIRONMENT", "production")
     if mode == "embedded":
@@ -30,24 +33,20 @@ def _app_with_router(
     app = FastAPI()
     app.include_router(auth_router)
 
-    db = MagicMock()
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            id="u1",
-            email="alice@example.com",
-            displayName="Alice",
-            role="member",
-        )
+    override_session(app)
+    app.state.db_sessionmaker = (
+        FakeSessionmaker()
+    )  # production fails closed without a live user check
+    monkeypatch.setattr(
+        users_repo, "get_by_id", AsyncMock(return_value=make_user(role=UserRole.ADMIN))
     )
-    app.state.db = db
-    return TestClient(app), db
+    return TestClient(app), None
 
 
 def test_me_standalone_returns_user_row(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.security.jwt import create_access_token
 
-    client, _db = _app_with_router(monkeypatch, mode="standalone")
+    client, _ = _app_with_router(monkeypatch, mode="standalone")
     token = create_access_token("u1")
     resp = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200, resp.text
@@ -55,14 +54,15 @@ def test_me_standalone_returns_user_row(monkeypatch: pytest.MonkeyPatch) -> None
     assert body["id"] == "u1"
     assert body["email"] == "alice@example.com"
     assert body["displayName"] == "Alice"
-    assert body["role"] == "member"
+    assert body["role"] == "admin"  # the enum value, not its repr
 
 
 def test_me_standalone_user_not_found_404(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.security.jwt import create_access_token
 
-    client, db = _app_with_router(monkeypatch, mode="standalone")
-    db.user.find_unique = AsyncMock(return_value=None)
+    client, _ = _app_with_router(monkeypatch, mode="standalone")
+    # 1st lookup: the auth dependency's live check (user exists); 2nd: the handler's own.
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(side_effect=[make_user(), None]))
     token = create_access_token("ghost")
     resp = client.get("/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 404
@@ -89,6 +89,55 @@ def test_me_embedded_returns_jwt_claims(monkeypatch: pytest.MonkeyPatch) -> None
     assert body["claims"]["iss"] == "https://iep.test"
 
 
+def test_me_embedded_needs_no_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Embedded /auth/me only echoes JWT claims, so it must work with no database attached.
+
+    Regression: Phase 1 first gave the handler a request-scoped session for every
+    mode, so an app without a sessionmaker crashed on embedded /auth/me.
+    """
+    monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "embedded")
+    monkeypatch.setenv("ENVIRONMENT", "production")
+    monkeypatch.setenv("IEP_SHARED_SECRET", "iep-test-secret-32-chars-min-here-please")
+    monkeypatch.setenv("IEP_JWT_ISSUER", "https://iep.test")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    from src.api.auth_common import router as auth_router
+
+    app = FastAPI()
+    app.include_router(auth_router)  # no session override, no sessionmaker
+    now = datetime.now(UTC)
+    token = jose_jwt.encode(
+        {
+            "sub": "external-user",
+            "iss": "https://iep.test",
+            "iat": int(now.timestamp()),
+            "exp": int((now + timedelta(hours=1)).timestamp()),
+        },
+        "iep-test-secret-32-chars-min-here-please",
+        algorithm="HS256",
+    )
+    resp = TestClient(app).get("/auth/me", headers={"Authorization": f"Bearer {token}"})
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["id"] == "external-user"
+
+
+def test_me_standalone_without_database_is_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Standalone /auth/me needs the user row; with no database it says so instead of crashing."""
+    # Development, so the auth dependency itself doesn't fail closed first.
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    from src.api.auth_common import router as auth_router
+
+    app = FastAPI()
+    app.include_router(auth_router)
+    resp = TestClient(app).get("/auth/me")  # dev fallback user, no sessionmaker
+    assert (resp.status_code, resp.json()["detail"]) == (503, "database unavailable")
+
+
 def test_me_missing_auth_401_in_production(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _ = _app_with_router(monkeypatch, mode="standalone")
     resp = client.get("/auth/me")
@@ -108,15 +157,17 @@ def test_me_dev_mode_fallback_returns_dev_user(monkeypatch: pytest.MonkeyPatch) 
     app = FastAPI()
     app.include_router(auth_router)
 
-    db = MagicMock()
-    db.user = MagicMock()
+    # /auth/me opens its own short session; the dev fallback ("dev", no token)
+    # skips the auth dependency's live check, so only the handler looks up.
+    app.state.db_sessionmaker = FakeSessionmaker()
     # 'dev' fallback user doesn't exist in the User table → 404
-    db.user.find_unique = AsyncMock(return_value=None)
-    app.state.db = db
+    get_by_id = AsyncMock(return_value=None)
+    monkeypatch.setattr(users_repo, "get_by_id", get_by_id)
 
     client = TestClient(app)
     resp = client.get("/auth/me")  # no Authorization header
     # dev fallback → user_id='dev' → /auth/me looks up User where id='dev'
     # → 404 since there's no such row.  Auth middleware fell through cleanly.
     assert resp.status_code == 404
-    db.user.find_unique.assert_awaited_once_with(where={"id": "dev"})
+    assert get_by_id.await_args is not None
+    assert get_by_id.await_args.args[1] == "dev"

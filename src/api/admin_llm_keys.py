@@ -6,14 +6,15 @@ is never returned over HTTP; only `provider` + `keyPrefix` (first 6 chars).
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.api.admin_llm_keys_test import run_key_test
 from src.config import get_settings
+from src.db.repos import llm_api_keys as keys_repo
+from src.db.session import get_session
 from src.security.auth import ensure_admin
 from src.security.encryption import EncryptionError, decrypt, encrypt
 from src.security.key_sync import PROVIDER_TO_SETTINGS_FIELD
-from src.storage.db import get_db
 
 router = APIRouter(prefix="/admin/llm-keys", tags=["admin-llm-keys"])
 
@@ -53,12 +54,12 @@ def _prefix(value: str) -> str:
 
 @router.get("", response_model=list[LlmKeySummary])
 async def list_llm_keys(
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> list[LlmKeySummary]:  # pyright: ignore[reportUnusedFunction]
-    rows = await db.llmapikey.find_many(order={"provider": "asc"})  # pyright: ignore[reportAttributeAccessIssue]
+    rows = await keys_repo.list_keys(session)
     return [
-        LlmKeySummary(provider=r.provider, key_prefix=r.keyPrefix, updated_at=str(r.updatedAt))
+        LlmKeySummary(provider=r.provider, key_prefix=r.key_prefix, updated_at=str(r.updated_at))
         for r in rows
     ]
 
@@ -66,14 +67,14 @@ async def list_llm_keys(
 @router.get("/{provider}", response_model=LlmKeySummary)
 async def get_llm_key(
     provider: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> LlmKeySummary:  # pyright: ignore[reportUnusedFunction]
-    row = await db.llmapikey.find_unique(where={"provider": provider})  # pyright: ignore[reportAttributeAccessIssue]
+    row = await keys_repo.get(session, provider)
     if row is None:
         raise HTTPException(404, f"no key set for provider {provider!r}")
     return LlmKeySummary(
-        provider=row.provider, key_prefix=row.keyPrefix, updated_at=str(row.updatedAt)
+        provider=row.provider, key_prefix=row.key_prefix, updated_at=str(row.updated_at)
     )
 
 
@@ -81,37 +82,27 @@ async def get_llm_key(
 async def upsert_llm_key(
     provider: str,
     payload: LlmKeyUpsert,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> LlmKeySummary:  # pyright: ignore[reportUnusedFunction]
     if provider not in _ALLOWED_PROVIDERS:
         raise HTTPException(422, f"unsupported provider {provider!r}")
     encrypted = encrypt(payload.value)
     prefix = _prefix(payload.value)
-    existing = await db.llmapikey.find_unique(where={"provider": provider})  # pyright: ignore[reportAttributeAccessIssue]
-    if existing is None:
-        row = await db.llmapikey.create(  # pyright: ignore[reportAttributeAccessIssue]
-            data={"provider": provider, "encryptedKey": encrypted, "keyPrefix": prefix}
-        )
-    else:
-        row = await db.llmapikey.update(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"provider": provider},
-            data={"encryptedKey": encrypted, "keyPrefix": prefix},
-        )
-    # Immediately reflect the new value on the in-process Settings so the
-    # next workflow that resolves settings.<provider>_api_key sees the
-    # fresh key without a restart.  Other Cloud Run instances (when scaled
-    # >1) still see the old value until their next boot; src/security/key_sync.py
-    # picks it up via the lifespan sync.
+    result = await keys_repo.upsert(session, provider, encrypted_key=encrypted, key_prefix=prefix)
+    await session.commit()
+    # Reflect the new value on the in-process Settings so the next workflow that
+    # resolves settings.<provider>_api_key sees it without a restart. Other
+    # Cloud Run instances (when scaled >1) keep the old value until their next
+    # boot, when src/security/key_sync.py picks it up via the lifespan sync.
+    # Set only after the commit: a failed commit must not leave the running app
+    # using a key that was never saved.
     field = PROVIDER_TO_SETTINGS_FIELD.get(provider)
     if field is not None:
         setattr(get_settings(), field, payload.value)
-    # update() returns Optional but `existing is None` was just checked,
-    # so the row exists.  Pyright can't carry that across the await.
+    row = result.record
     return LlmKeySummary(
-        provider=row.provider,  # pyright: ignore[reportOptionalMemberAccess]
-        key_prefix=row.keyPrefix,  # pyright: ignore[reportOptionalMemberAccess]
-        updated_at=str(row.updatedAt),  # pyright: ignore[reportOptionalMemberAccess]
+        provider=row.provider, key_prefix=row.key_prefix, updated_at=str(row.updated_at)
     )
 
 
@@ -124,16 +115,18 @@ class LlmKeyTestResponse(BaseModel):
 @router.post("/{provider}/test-connection", response_model=LlmKeyTestResponse)
 async def test_llm_key(
     provider: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> LlmKeyTestResponse:  # pyright: ignore[reportUnusedFunction]
     if provider not in _ALLOWED_PROVIDERS:
         raise HTTPException(422, f"unsupported provider {provider!r}")
-    row = await db.llmapikey.find_unique(where={"provider": provider})  # pyright: ignore[reportAttributeAccessIssue]
+    row = await keys_repo.get(session, provider)
     if row is None:
         raise HTTPException(404, f"no key set for provider {provider!r}")
+    # Release the pooled connection before the provider probe (network call).
+    await session.rollback()
     try:
-        key = decrypt(row.encryptedKey)
+        key = decrypt(row.encrypted_key)
     except EncryptionError as exc:
         raise HTTPException(500, f"failed to decrypt key: {exc}") from exc
     result = await run_key_test(provider, key)
@@ -143,13 +136,12 @@ async def test_llm_key(
 @router.delete("/{provider}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_llm_key(
     provider: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> None:  # pyright: ignore[reportUnusedFunction]
-    existing = await db.llmapikey.find_unique(where={"provider": provider})  # pyright: ignore[reportAttributeAccessIssue]
-    if existing is None:
+    if not await keys_repo.delete(session, provider):
         raise HTTPException(404, f"no key set for provider {provider!r}")
-    await db.llmapikey.delete(where={"provider": provider})  # pyright: ignore[reportAttributeAccessIssue]
+    await session.commit()
     # Clear the in-process Settings value too — the admin clicked Delete,
     # so they want the key gone from the running app, not just from the DB.
     # If the same env var is also set in .env / Cloud Run, this clears it

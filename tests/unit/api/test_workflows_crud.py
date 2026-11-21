@@ -7,7 +7,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.repos import users as users_repo
 from src.main import create_app
+from tests.unit.db_fakes import make_user, override_session
 
 
 def _wf_row_create(**overrides: Any) -> SimpleNamespace:
@@ -662,9 +664,13 @@ def _client_patch_owner(
     db.workflow = MagicMock()
     db.workflow.find_unique = AsyncMock(return_value=wf_row)
     db.workflow.update = AsyncMock(return_value=updated_row)
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=target_user)
     app.state.db = db
+    app.state.session = override_session(app)
+    target = (
+        make_user(id=target_user.id, email=target_user.email) if target_user is not None else None
+    )
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=target))
+    monkeypatch.setattr(users_repo, "get_by_email", AsyncMock(return_value=target))
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 
@@ -884,3 +890,37 @@ def test_put_slug_conflict_returns_409(monkeypatch: pytest.MonkeyPatch) -> None:
     resp = client.put("/workflows/w1", json=_PUBLISH_BODY)
     assert resp.status_code == 409
     assert "external_slug already in use" in resp.json()["detail"]
+
+
+def test_patch_workflow_owner_releases_connection_after_user_lookup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.security.auth import ensure_admin
+
+    order: list[str] = []
+    target = SimpleNamespace(id="new-owner", email="target@x.com")
+    wf = _wf_row(id="wx", userId="old-owner")
+    client, db = _client_patch_owner(monkeypatch, wf, target, _wf_row(id="wx", userId="new-owner"))
+
+    async def _lookup(*_a: object, **_k: object) -> object:
+        order.append("lookup")
+        return make_user(id="new-owner")
+
+    async def _rollback() -> None:
+        order.append("rollback")
+
+    async def _wf_lookup(**_k: object) -> object:
+        order.append("prisma")
+        return wf
+
+    monkeypatch.setattr(users_repo, "get_by_id", _lookup)
+    db.workflow.find_unique = _wf_lookup
+    session = client.app.state.session  # type: ignore[attr-defined]
+    session.rollback.side_effect = _rollback
+    client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
+    try:
+        resp = client.patch("/workflows/wx/owner", json={"userId": "new-owner"})
+    finally:
+        client.app.dependency_overrides.pop(ensure_admin, None)  # type: ignore[attr-defined]
+    assert resp.status_code == 200
+    assert order == ["lookup", "rollback", "prisma"]

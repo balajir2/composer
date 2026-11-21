@@ -10,10 +10,13 @@ from fastapi import WebSocket as FastAPIWebSocket
 from fastapi.testclient import TestClient
 from starlette.websockets import WebSocketDisconnect
 
+from src.db.models import UserRole
+from src.db.repos import users as users_repo
 from src.engine.events_pg import PostgresEventStore
 from src.main import create_app
 from src.security.jwt import create_access_token, create_refresh_token
 from src.security.rate_limit import RateLimiter
+from tests.unit.db_fakes import FakeSessionmaker, make_user
 
 
 def _execution_row(**overrides: Any) -> SimpleNamespace:
@@ -34,19 +37,32 @@ def _execution_row(**overrides: Any) -> SimpleNamespace:
     return SimpleNamespace(**base)
 
 
+_ROLE = {"value": UserRole.MEMBER}
+
+
+@pytest.fixture(autouse=True)
+def _fake_users(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The WS handler looks the caller up through the users repository."""
+    _ROLE["value"] = UserRole.MEMBER
+
+    async def _get_by_id(_session: object, user_id: str) -> users_repo.UserRecord:
+        return make_user(id=user_id, role=_ROLE["value"])
+
+    monkeypatch.setattr(users_repo, "get_by_id", _get_by_id)
+
+
 def _build_app(execution: SimpleNamespace, user_role: str = "member") -> tuple[TestClient, Any]:
     app = create_app()
     db = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(return_value=execution)
-    db.user.find_unique = AsyncMock(
-        return_value=SimpleNamespace(id=execution.userId, role=SimpleNamespace(value=user_role))
-    )
+    _ROLE["value"] = UserRole(user_role)
     # No persisted events by default — matches production wiring
     # (app.state.event_bus is a PostgresEventStore, not the old in-process
     # ExecutionEventBus) so the WS handler's replay-from-store logic has a
     # real (mocked-at-the-db-layer) list_since to call.
     db.executionevent.find_many = AsyncMock(return_value=[])
     app.state.db = db
+    app.state.db_sessionmaker = FakeSessionmaker()
     app.state.checkpointer = MagicMock()
     app.state.event_bus = PostgresEventStore(db)
     app.state.rate_limiter = RateLimiter()
@@ -102,13 +118,9 @@ def test_ws_closes_4403_for_non_owner() -> None:
 
 def test_ws_admin_bypass_on_non_owned_execution() -> None:
     execution = _execution_row(status="running", userId="owner-u")
-    client, app = _build_app(execution, user_role="admin")
+    client, _ = _build_app(execution, user_role="admin")
     # admin is not the owner, but role check bypasses
     token = _token_for("admin-u")
-    # Seed admin user id on the role mock
-    app.state.db.user.find_unique = AsyncMock(
-        return_value=SimpleNamespace(id="admin-u", role=SimpleNamespace(value="admin"))
-    )
     with client.websocket_connect("/executions/exec-1/ws", subprotocols=["bearer", token]) as ws:
         data = json.loads(ws.receive_text())
         assert data["type"] == "workflow_started"
@@ -272,3 +284,24 @@ async def test_ws_keepalive_send_failure_closes_loop(monkeypatch: pytest.MonkeyP
             ws.receive_text()
 
     fake_conn.close.assert_awaited()
+
+
+@pytest.mark.parametrize("environment", ["production", "staging", "Production"])
+def test_ws_closes_4401_outside_development_without_a_live_user_check(
+    monkeypatch: pytest.MonkeyPatch, environment: str
+) -> None:
+    """No sessionmaker (e.g. during shutdown) must not let a valid JWT through."""
+    monkeypatch.setenv("ENVIRONMENT", environment)
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    execution = _execution_row(status="running", userId="u1")
+    client, app = _build_app(execution)
+    app.state.db_sessionmaker = None
+    token = _token_for("u1")
+    with (
+        pytest.raises(WebSocketDisconnect) as info,
+        client.websocket_connect("/executions/exec-1/ws", subprotocols=["bearer", token]),
+    ):
+        pass
+    assert info.value.code == 4401

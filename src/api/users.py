@@ -8,9 +8,11 @@ fields — to avoid turning this into a general user-enumeration endpoint.
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.db.repos import users as users_repo
+from src.db.session import get_session
 from src.security.auth import get_current_user_id
 from src.security.rate_limit import (
     RateLimiterProtocol,
@@ -18,7 +20,6 @@ from src.security.rate_limit import (
     get_rate_limiter,
     per_minute_config,
 )
-from src.storage.db import get_db
 
 router = APIRouter(tags=["users"])
 
@@ -35,7 +36,7 @@ class UserSearchResult(BaseModel):
 async def search_users(
     q: str = Query(..., min_length=2),
     limit: int = Query(default=20, ge=1, le=20),
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     user_id: str = Depends(get_current_user_id),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> list[UserSearchResult]:  # pyright: ignore[reportUnusedFunction]
@@ -45,17 +46,7 @@ async def search_users(
         client_key=user_id,
         config=per_minute_config(get_settings().rate_limit_users_search_per_minute),
     )
-    rows = await db.user.find_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={
-            "isActive": True,
-            "OR": [
-                {"email": {"contains": q, "mode": "insensitive"}},
-                {"displayName": {"contains": q, "mode": "insensitive"}},
-            ],
-        },
-        take=limit,
-        order={"email": "asc"},
-    )
+    rows = await users_repo.search_active(session, q, limit)
     return [UserSearchResult.model_validate(row) for row in rows]
 
 

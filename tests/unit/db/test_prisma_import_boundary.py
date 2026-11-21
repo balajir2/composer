@@ -12,7 +12,25 @@ import ast
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-MIGRATED_PATHS = ["src/db"]
+MIGRATED_PATHS = [
+    "src/db",
+    "src/api/admin_deployment_settings.py",
+    "src/api/admin_llm_keys.py",
+    "src/api/admin_llm_models.py",
+    "src/api/admin_tools.py",
+    "src/api/admin_users.py",
+    "src/api/api_keys.py",
+    "src/api/auth_common.py",
+    "src/api/auth_standalone.py",
+    "src/api/llm_models.py",
+    "src/api/llm_models_live.py",
+    "src/api/users.py",
+    "src/builder/model_policy.py",
+    "src/cli/keys.py",
+    "src/security/api_key_auth.py",
+    "src/security/auth.py",
+    "src/security/key_sync.py",
+]
 FORBIDDEN_ROOTS = ("prisma", "src.storage")
 
 

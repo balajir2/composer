@@ -13,9 +13,15 @@ from fastapi.testclient import TestClient
 
 from src.api import admin_llm_models as mod
 from src.api.admin_llm_models_verify import ModelVerifyResult, VerifyStatus
+from src.db.errors import AlreadyExists
+from src.db.repos import llm_api_keys as keys_repo
+from src.db.repos import llm_models as models_repo
+from src.db.repos.common import UNSET
+from src.db.repos.llm_models import LlmModelRecord
 from src.main import create_app
 from src.security.auth import ensure_admin
 from src.security.encryption import encrypt
+from tests.unit.db_fakes import FakeSession, override_session
 
 _ENC_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 _PLAINTEXT_KEY = "sk-provider-plaintext-secret"
@@ -33,26 +39,26 @@ def _row(
     provider: str = "openai",
     enabled: bool = True,
     **extra: Any,
-) -> SimpleNamespace:
+) -> LlmModelRecord:
     base: dict[str, Any] = {
         "id": model_id,
         "provider": provider,
-        "modelId": "gpt-x",
+        "model_id": "gpt-x",
         "label": "GPT X",
         "enabled": enabled,
-        "verificationStatus": None,
-        "verificationMessage": None,
-        "verifiedAt": None,
-        "createdAt": _NOW,
-        "updatedAt": _NOW,
+        "verification_status": None,
+        "verification_message": None,
+        "verified_at": None,
+        "created_at": _NOW,
+        "updated_at": _NOW,
     }
     base.update(extra)
-    return SimpleNamespace(**base)
+    return LlmModelRecord(**base)
 
 
 def _build(
     monkeypatch: pytest.MonkeyPatch, *, admin: bool, environment: str = "development"
-) -> tuple[TestClient, MagicMock]:
+) -> tuple[TestClient, MagicMock, FakeSession]:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", environment)
     monkeypatch.setenv("ENCRYPTION_KEY", _ENC_KEY)
@@ -64,9 +70,11 @@ def _build(
     db.user.find_unique = AsyncMock(return_value=None)  # dev user -> member
     app.state.db = db
     app.state.checkpointer = MagicMock()
+    # Routes resolve their session before the admin gate runs, even for 401/403.
+    session = override_session(app)
     if admin:
         app.dependency_overrides[ensure_admin] = lambda: "admin-1"
-    return TestClient(app), db
+    return TestClient(app, raise_server_exceptions=False), db, session
 
 
 class _FakeVerify:
@@ -95,18 +103,23 @@ _ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
 def test_admin_model_routes_forbid_non_admin_members(
     monkeypatch: pytest.MonkeyPatch, method: str, path: str, body: dict[str, Any] | None
 ) -> None:
-    client, db = _build(monkeypatch, admin=False)
+    client, _, session = _build(monkeypatch, admin=False)
+    create = AsyncMock()
+    delete = AsyncMock()
+    monkeypatch.setattr(models_repo, "create", create)
+    monkeypatch.setattr(models_repo, "delete", delete)
     resp = client.request(method, path, json=body)
     assert resp.status_code == 403
-    db.llmmodel.create.assert_not_called()
-    db.llmmodel.delete.assert_not_called()
+    create.assert_not_called()
+    delete.assert_not_called()
+    session.commit.assert_not_called()
 
 
 @pytest.mark.parametrize(("method", "path", "body"), _ROUTES)
 def test_admin_model_routes_reject_unauthenticated_requests(
     monkeypatch: pytest.MonkeyPatch, method: str, path: str, body: dict[str, Any] | None
 ) -> None:
-    client, _ = _build(monkeypatch, admin=False, environment="production")
+    client, _, _ = _build(monkeypatch, admin=False, environment="production")
     resp = client.request(method, path, json=body)
     assert resp.status_code == 401
 
@@ -117,76 +130,92 @@ def test_admin_model_routes_reject_unauthenticated_requests(
 def test_list_returns_all_models_ordered_by_provider_then_model_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, db = _build(monkeypatch, admin=True)
-    db.llmmodel.find_many = AsyncMock(return_value=[_row("a"), _row("b", enabled=False)])
+    client, _, session = _build(monkeypatch, admin=True)
+    list_models = AsyncMock(return_value=[_row("a"), _row("b", enabled=False)])
+    monkeypatch.setattr(models_repo, "list_models", list_models)
     resp = client.get("/admin/llm-models")
     assert resp.status_code == 200
     assert [m["id"] for m in resp.json()] == ["a", "b"]
-    assert _kwargs(db.llmmodel.find_many)["order"] == [
-        {"provider": "asc"},
-        {"modelId": "asc"},
-    ]
+    list_models.assert_awaited_once_with(session)  # repo orders by provider, model_id
+    session.commit.assert_not_called()
 
 
 def test_create_model_persists_fields_and_returns_201(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _build(monkeypatch, admin=True)
-    db.llmmodel.create = AsyncMock(return_value=_row())
+    client, _, session = _build(monkeypatch, admin=True)
+    create = AsyncMock(return_value=_row())
+    monkeypatch.setattr(models_repo, "create", create)
     resp = client.post(
         "/admin/llm-models", json={"provider": "openai", "modelId": "gpt-x", "label": "GPT X"}
     )
     assert resp.status_code == 201
-    assert _kwargs(db.llmmodel.create)["data"] == {
+    assert resp.json()["modelId"] == "gpt-x"
+    assert _kwargs(create) == {
         "provider": "openai",
-        "modelId": "gpt-x",
+        "model_id": "gpt-x",
         "label": "GPT X",
         "enabled": True,
     }
+    session.commit.assert_awaited_once()
 
 
 def test_create_duplicate_model_returns_409(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _build(monkeypatch, admin=True)
-    db.llmmodel.create = AsyncMock(side_effect=RuntimeError("Unique constraint failed"))
+    client, _, session = _build(monkeypatch, admin=True)
+    monkeypatch.setattr(
+        models_repo,
+        "create",
+        AsyncMock(side_effect=AlreadyExists("llm_models_provider_model_id_key")),
+    )
     resp = client.post("/admin/llm-models", json={"provider": "openai", "modelId": "gpt-x"})
     assert resp.status_code == 409
+    assert "Model already exists for provider" in resp.json()["detail"]
+    session.commit.assert_not_called()
+
+
+def test_create_non_duplicate_error_is_a_500_not_a_409(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _, session = _build(monkeypatch, admin=True)
+    monkeypatch.setattr(models_repo, "create", AsyncMock(side_effect=RuntimeError("db down")))
+    resp = client.post("/admin/llm-models", json={"provider": "openai", "modelId": "gpt-x"})
+    assert resp.status_code == 500
+    session.commit.assert_not_called()
 
 
 def test_update_only_applies_supplied_fields(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _build(monkeypatch, admin=True)
-    db.llmmodel.find_unique = AsyncMock(return_value=_row())
-    db.llmmodel.update = AsyncMock(return_value=_row(enabled=False))
+    client, _, session = _build(monkeypatch, admin=True)
+    update = AsyncMock(return_value=_row(enabled=False))
+    monkeypatch.setattr(models_repo, "update", update)
     resp = client.patch("/admin/llm-models/m1", json={"enabled": False})
     assert resp.status_code == 200
-    assert _kwargs(db.llmmodel.update)["data"] == {"enabled": False}
+    assert _kwargs(update) == {"label": UNSET, "enabled": False}
+    session.commit.assert_awaited_once()
 
 
-def test_update_missing_model_returns_404_without_writing(
+def test_update_missing_model_returns_404_without_committing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, db = _build(monkeypatch, admin=True)
-    db.llmmodel.find_unique = AsyncMock(return_value=None)
-    db.llmmodel.update = AsyncMock()
+    client, _, session = _build(monkeypatch, admin=True)
+    monkeypatch.setattr(models_repo, "update", AsyncMock(return_value=None))
     resp = client.patch("/admin/llm-models/nope", json={"label": "x"})
     assert resp.status_code == 404
-    db.llmmodel.update.assert_not_called()
+    session.commit.assert_not_called()
 
 
 def test_delete_removes_model_and_returns_204(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _build(monkeypatch, admin=True)
-    db.llmmodel.find_unique = AsyncMock(return_value=_row())
-    db.llmmodel.delete = AsyncMock()
+    client, _, session = _build(monkeypatch, admin=True)
+    delete = AsyncMock(return_value=True)
+    monkeypatch.setattr(models_repo, "delete", delete)
     resp = client.delete("/admin/llm-models/m1")
     assert resp.status_code == 204
-    db.llmmodel.delete.assert_awaited_once_with(where={"id": "m1"})
+    delete.assert_awaited_once_with(session, "m1")
+    session.commit.assert_awaited_once()
 
 
-def test_delete_missing_model_returns_404_without_deleting(
+def test_delete_missing_model_returns_404_without_committing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, db = _build(monkeypatch, admin=True)
-    db.llmmodel.find_unique = AsyncMock(return_value=None)
-    db.llmmodel.delete = AsyncMock()
+    client, _, session = _build(monkeypatch, admin=True)
+    monkeypatch.setattr(models_repo, "delete", AsyncMock(return_value=False))
     assert client.delete("/admin/llm-models/nope").status_code == 404
-    db.llmmodel.delete.assert_not_called()
+    session.commit.assert_not_called()
 
 
 # ─── verify ─────────────────────────────────────────────────────────────────
@@ -196,21 +225,22 @@ def _verify_setup(
     monkeypatch: pytest.MonkeyPatch,
     status: VerifyStatus,
     *,
-    row: SimpleNamespace | None,
+    row: LlmModelRecord | None,
     key_row: SimpleNamespace | None,
-    updated: SimpleNamespace | None = None,
-) -> tuple[TestClient, MagicMock, _FakeVerify]:
-    client, db = _build(monkeypatch, admin=True)
+    updated: LlmModelRecord | None = None,
+) -> tuple[TestClient, AsyncMock, FakeSession, _FakeVerify]:
+    client, _, session = _build(monkeypatch, admin=True)
     fake = _FakeVerify(status)
     monkeypatch.setattr(mod, "run_model_verify", fake)
-    db.llmmodel.find_unique = AsyncMock(return_value=row)
-    db.llmapikey.find_unique = AsyncMock(return_value=key_row)
-    db.llmmodel.update = AsyncMock(return_value=updated or row)
-    return client, db, fake
+    monkeypatch.setattr(models_repo, "get_by_id", AsyncMock(return_value=row))
+    record = AsyncMock(return_value=updated or row)
+    monkeypatch.setattr(models_repo, "record_verification", record)
+    monkeypatch.setattr(keys_repo, "get", AsyncMock(return_value=key_row))
+    return client, record, session, fake
 
 
 def test_verify_missing_model_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, _, fake = _verify_setup(monkeypatch, "ok", row=None, key_row=None)
+    client, _, _, fake = _verify_setup(monkeypatch, "ok", row=None, key_row=None)
     assert client.post("/admin/llm-models/m1/verify").status_code == 404
     assert fake.calls == []
 
@@ -218,7 +248,7 @@ def test_verify_missing_model_returns_404(monkeypatch: pytest.MonkeyPatch) -> No
 def test_verify_without_configured_provider_key_returns_400(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, _, fake = _verify_setup(monkeypatch, "ok", row=_row(), key_row=None)
+    client, _, _, fake = _verify_setup(monkeypatch, "ok", row=_row(), key_row=None)
     resp = client.post("/admin/llm-models/m1/verify")
     assert resp.status_code == 400
     assert "No API key configured" in resp.json()["detail"]
@@ -228,8 +258,8 @@ def test_verify_without_configured_provider_key_returns_400(
 def test_verify_undecryptable_key_returns_500_without_leaking_ciphertext(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    key_row = SimpleNamespace(encryptedKey="not-valid-ciphertext")
-    client, _, fake = _verify_setup(monkeypatch, "ok", row=_row(), key_row=key_row)
+    key_row = SimpleNamespace(encrypted_key="not-valid-ciphertext")
+    client, _, _, fake = _verify_setup(monkeypatch, "ok", row=_row(), key_row=key_row)
     resp = client.post("/admin/llm-models/m1/verify")
     assert resp.status_code == 500
     assert "failed to decrypt openai key" in resp.json()["detail"]
@@ -239,9 +269,9 @@ def test_verify_undecryptable_key_returns_500_without_leaking_ciphertext(
 def test_verify_ok_stamps_row_and_never_returns_the_api_key(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    key_row = SimpleNamespace(encryptedKey=_encrypted(monkeypatch))
-    updated = _row(verificationStatus="ok", verificationMessage="probe-msg", verifiedAt=_NOW)
-    client, db, fake = _verify_setup(
+    key_row = SimpleNamespace(encrypted_key=_encrypted(monkeypatch))
+    updated = _row(verification_status="ok", verification_message="probe-msg", verified_at=_NOW)
+    client, record, session, fake = _verify_setup(
         monkeypatch, "ok", row=_row(), key_row=key_row, updated=updated
     )
     resp = client.post("/admin/llm-models/m1/verify")
@@ -249,49 +279,80 @@ def test_verify_ok_stamps_row_and_never_returns_the_api_key(
     body = resp.json()
     assert body["status"] == "ok"
     assert body["auto_disabled"] is False
+    assert body["model"]["verificationStatus"] == "ok"
     assert fake.calls == [("openai", "gpt-x", _PLAINTEXT_KEY)]
     assert _PLAINTEXT_KEY not in resp.text
-    data = _kwargs(db.llmmodel.update)["data"]
-    assert data["verificationStatus"] == "ok"
-    assert "enabled" not in data
+    kw = _kwargs(record)
+    assert (kw["status"], kw["message"], kw["disable"]) == ("ok", "probe-msg", False)
+    assert kw["verified_at"].tzinfo is not None
+    session.commit.assert_awaited_once()
+
+
+def test_verify_releases_the_connection_before_the_slow_probe_and_commits_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key_row = SimpleNamespace(encrypted_key=_encrypted(monkeypatch))
+    client, _, session, fake = _verify_setup(monkeypatch, "ok", row=_row(), key_row=key_row)
+    rollbacks_at_lookup: list[int] = []
+    rollbacks_at_probe: list[int] = []
+    original = fake.__call__
+
+    async def lookup(_session: object, _provider: str) -> SimpleNamespace:
+        rollbacks_at_lookup.append(session.rollback.await_count)
+        return key_row
+
+    monkeypatch.setattr(keys_repo, "get", lookup)
+
+    async def probe(provider: str, model_id: str, key: str) -> ModelVerifyResult:
+        rollbacks_at_probe.append(session.rollback.await_count)
+        return await original(provider, model_id, key)
+
+    monkeypatch.setattr(mod, "run_model_verify", probe)
+    assert client.post("/admin/llm-models/m1/verify").status_code == 200
+    # Rollback must come AFTER the lookup (else the lookup re-opens a transaction).
+    assert rollbacks_at_lookup == [0]
+    assert rollbacks_at_probe == [1]
+    session.commit.assert_awaited_once()
 
 
 def test_verify_unavailable_auto_disables_enabled_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    key_row = SimpleNamespace(encryptedKey=_encrypted(monkeypatch))
-    client, db, _ = _verify_setup(
+    key_row = SimpleNamespace(encrypted_key=_encrypted(monkeypatch))
+    client, record, session, _ = _verify_setup(
         monkeypatch,
         "unavailable",
         row=_row(enabled=True),
         key_row=key_row,
-        updated=_row(enabled=False, verificationStatus="unavailable"),
+        updated=_row(enabled=False, verification_status="unavailable"),
     )
     body = client.post("/admin/llm-models/m1/verify").json()
     assert body["auto_disabled"] is True
-    assert _kwargs(db.llmmodel.update)["data"]["enabled"] is False
+    assert _kwargs(record)["disable"] is True
+    session.commit.assert_awaited_once()
 
 
 def test_verify_unavailable_on_already_disabled_model_does_not_report_auto_disable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    key_row = SimpleNamespace(encryptedKey=_encrypted(monkeypatch))
-    client, db, _ = _verify_setup(
+    key_row = SimpleNamespace(encrypted_key=_encrypted(monkeypatch))
+    client, record, _, _ = _verify_setup(
         monkeypatch, "unavailable", row=_row(enabled=False), key_row=key_row
     )
     body = client.post("/admin/llm-models/m1/verify").json()
     assert body["auto_disabled"] is False
-    assert "enabled" not in _kwargs(db.llmmodel.update)["data"]
+    assert _kwargs(record)["disable"] is False
 
 
 @pytest.mark.parametrize("status", ["auth_error", "error"])
 def test_verify_key_or_network_problems_do_not_touch_the_row(
     monkeypatch: pytest.MonkeyPatch, status: VerifyStatus
 ) -> None:
-    key_row = SimpleNamespace(encryptedKey=_encrypted(monkeypatch))
-    client, db, _ = _verify_setup(monkeypatch, status, row=_row(), key_row=key_row)
+    key_row = SimpleNamespace(encrypted_key=_encrypted(monkeypatch))
+    client, record, session, _ = _verify_setup(monkeypatch, status, row=_row(), key_row=key_row)
     resp = client.post("/admin/llm-models/m1/verify")
     assert resp.status_code == 200
     assert resp.json()["status"] == status
-    db.llmmodel.update.assert_not_called()
+    record.assert_not_called()
+    session.commit.assert_not_called()
 
 
 def _encrypted(monkeypatch: pytest.MonkeyPatch) -> str:

@@ -6,16 +6,18 @@ Routes:
   DELETE /api-keys/{id}    — revoke (soft-delete via revoked_at).
 """
 
-from datetime import UTC, datetime
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.db.repos import api_keys as keys_repo
+from src.db.session import get_session
+from src.db.types import ensure_utc, utcnow
 from src.security.api_keys import extract_prefix, generate_api_key, hash_api_key
 from src.security.auth import get_current_user_id
-from src.storage.db import get_db
 
 router = APIRouter(tags=["api-keys"])
 
@@ -57,62 +59,55 @@ class ApiKeySummary(BaseModel):
 )
 async def create_api_key(
     payload: ApiKeyCreateRequest,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     user_id: str = Depends(get_current_user_id),
 ) -> ApiKeyCreateResponse:  # pyright: ignore[reportUnusedFunction]
     settings = get_settings()
     plaintext = generate_api_key()
     prefix = extract_prefix(plaintext)
     hashed = hash_api_key(plaintext, rounds=settings.bcrypt_rounds)
-    row = await db.apikey.create(  # pyright: ignore[reportAttributeAccessIssue]
-        data={
-            "userId": user_id,
-            "label": payload.label,
-            "keyHash": hashed,
-            "keyPrefix": prefix,
-            "expiresAt": payload.expires_at,
-        }
+    row = await keys_repo.create(
+        session,
+        user_id=user_id,
+        label=payload.label,
+        key_hash=hashed,
+        key_prefix=prefix,
+        expires_at=ensure_utc(payload.expires_at) if payload.expires_at else None,
     )
-    return ApiKeyCreateResponse.model_validate(  # pyright: ignore[reportUnknownMemberType]
-        {
-            "id": row.id,  # pyright: ignore[reportUnknownMemberType]
-            "label": row.label,  # pyright: ignore[reportUnknownMemberType]
-            "key": plaintext,
-            "keyPrefix": row.keyPrefix,  # pyright: ignore[reportUnknownMemberType]
-            "createdAt": row.createdAt,  # pyright: ignore[reportUnknownMemberType]
-            "expiresAt": row.expiresAt,  # pyright: ignore[reportUnknownMemberType]
-        }
+    await session.commit()
+    return ApiKeyCreateResponse(
+        id=row.id,
+        label=row.label,
+        key=plaintext,
+        keyPrefix=row.key_prefix,
+        createdAt=row.created_at,
+        expiresAt=row.expires_at,
     )
 
 
 @router.get("/api-keys", response_model=list[ApiKeySummary])
 async def list_api_keys(
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     user_id: str = Depends(get_current_user_id),
 ) -> list[ApiKeySummary]:  # pyright: ignore[reportUnusedFunction]
-    rows = await db.apikey.find_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"userId": user_id},
-        order={"createdAt": "desc"},
-    )
+    rows = await keys_repo.list_for_user(session, user_id)
     return [ApiKeySummary.model_validate(r) for r in rows]
 
 
 @router.delete("/api-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def revoke_api_key(
     key_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     user_id: str = Depends(get_current_user_id),
 ) -> None:  # pyright: ignore[reportUnusedFunction]
-    row = await db.apikey.find_unique(where={"id": key_id})  # pyright: ignore[reportAttributeAccessIssue]
-    if row is None or row.userId != user_id:
+    row = await keys_repo.get(session, key_id)
+    if row is None or row.user_id != user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail=f"API key {key_id!r} not found."
         )
-    if row.revokedAt is not None:
-        return  # already revoked; idempotent
-    await db.apikey.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": key_id}, data={"revokedAt": datetime.now(tz=UTC)}
-    )
+    # Already revoked: idempotent no-op (revoked_at is never re-stamped).
+    if await keys_repo.revoke_if_active(session, key_id, utcnow()):
+        await session.commit()
 
 
 __all__ = ["router"]

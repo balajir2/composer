@@ -11,7 +11,9 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.repos import llm_models as models_repo
 from src.main import create_app
+from tests.unit.db_fakes import override_session
 
 
 def _client_with_mock_db(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MagicMock]:
@@ -22,9 +24,9 @@ def _client_with_mock_db(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, M
     get_settings.cache_clear()
     app = create_app()
 
+    monkeypatch.setattr(models_repo, "list_models", AsyncMock(return_value=[]))
+    override_session(app)
     db = MagicMock()
-    db.llmmodel = MagicMock()
-    db.llmmodel.find_many = AsyncMock(return_value=[])
     # Dev-mode user_id='dev' has no user row by default -> role defaults to 'member'
     db.user = MagicMock()
     db.user.find_unique = AsyncMock(return_value=None)

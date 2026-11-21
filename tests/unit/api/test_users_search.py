@@ -1,30 +1,20 @@
 """Tests for GET /users/search (Account + Workflow Sharing plan, Part B)."""
 
-from types import SimpleNamespace
-from typing import Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from typing import cast
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.api.users import router as users_router
+from src.db.repos import users as users_repo
 from src.security.jwt import create_access_token
 from src.security.rate_limit import RateLimiter
+from tests.unit.db_fakes import FakeSessionmaker, make_user, override_session
 
 
-def _user_row(**overrides: Any) -> SimpleNamespace:
-    base: dict[str, Any] = {
-        "id": "u2",
-        "email": "bob@example.com",
-        "displayName": "Bob",
-        "isActive": True,
-    }
-    base.update(overrides)
-    return SimpleNamespace(**base)
-
-
-def _client(monkeypatch: pytest.MonkeyPatch, rows: list[SimpleNamespace]) -> TestClient:
+def _client(monkeypatch: pytest.MonkeyPatch, rows: list[users_repo.UserRecord]) -> TestClient:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", "production")
     from src.config import get_settings
@@ -32,12 +22,18 @@ def _client(monkeypatch: pytest.MonkeyPatch, rows: list[SimpleNamespace]) -> Tes
     get_settings.cache_clear()
     app = FastAPI()
     app.include_router(users_router)
-    db = MagicMock()
-    db.user = MagicMock()
-    db.user.find_many = AsyncMock(return_value=rows)
-    app.state.db = db
+    override_session(app)
+    app.state.db_sessionmaker = (
+        FakeSessionmaker()
+    )  # production fails closed without a live user check
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=make_user(id="u1")))
+    monkeypatch.setattr(users_repo, "search_active", AsyncMock(return_value=rows))
     app.state.rate_limiter = RateLimiter()
     return TestClient(app)
+
+
+def _user_row() -> users_repo.UserRecord:
+    return make_user(id="u2", email="bob@example.com", display_name="Bob")
 
 
 def test_search_users_returns_matches(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -48,6 +44,9 @@ def test_search_users_returns_matches(monkeypatch: pytest.MonkeyPatch) -> None:
     body = resp.json()
     assert len(body) == 1
     assert body[0]["email"] == "bob@example.com"
+    assert body[0]["displayName"] == "Bob"
+    args = users_repo.search_active.await_args  # type: ignore[attr-defined]
+    assert args.args[1:] == ("bob", 20)
     assert "isActive" not in body[0]
 
 

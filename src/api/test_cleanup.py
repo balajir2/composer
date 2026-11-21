@@ -33,9 +33,12 @@ import logging
 import re
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.db.repos import users as users_repo
+from src.db.session import get_session
 from src.security.auth import get_current_user_id
 from src.storage.db import get_db
 
@@ -52,6 +55,7 @@ _TEST_EMAIL_PATTERN = re.compile(r"^pw-[^@]+@example\.com$")
 @router.delete("/internal/test-users/me", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_own_test_account(  # pyright: ignore[reportUnusedFunction]
     db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     user_id: str = Depends(get_current_user_id),
 ) -> None:
     """Hard-delete the calling account and everything it owns.
@@ -70,10 +74,10 @@ async def delete_own_test_account(  # pyright: ignore[reportUnusedFunction]
     if settings.environment == "production":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="not found")
 
-    user = await db.user.find_unique(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
+    user = await users_repo.get_by_id(session, user_id)
     if user is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="user not found")
-    if not _TEST_EMAIL_PATTERN.match(user.email):  # pyright: ignore[reportUnknownMemberType]
+    if not _TEST_EMAIL_PATTERN.match(user.email):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="this endpoint only deletes accounts matching the e2e test-user pattern",
@@ -87,7 +91,8 @@ async def delete_own_test_account(  # pyright: ignore[reportUnusedFunction]
     await db.mcpoauthtoken.delete_many(where={"userId": user_id})  # pyright: ignore[reportAttributeAccessIssue]
     await db.mcpoauthstate.delete_many(where={"userId": user_id})  # pyright: ignore[reportAttributeAccessIssue]
     await db.cloudstorageconnection.delete_many(where={"userId": user_id})  # pyright: ignore[reportAttributeAccessIssue]
-    await db.user.delete(where={"id": user_id})  # pyright: ignore[reportAttributeAccessIssue]
+    await users_repo.delete(session, user_id)
+    await session.commit()
 
     logger.info("test_cleanup: hard-deleted e2e test account %s (%s)", user_id, user.email)
 

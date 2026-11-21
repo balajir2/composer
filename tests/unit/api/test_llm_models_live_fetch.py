@@ -3,6 +3,7 @@ failures, probe filtering, cache semantics, DB fallback and authn."""
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -13,7 +14,10 @@ from fastapi.testclient import TestClient
 
 from src.api import llm_models_live as mod
 from src.api.admin_llm_models_verify import ModelVerifyResult, VerifyStatus
+from src.db.repos import llm_models as models_repo
+from src.db.repos.llm_models import LlmModelRecord
 from src.main import create_app
+from tests.unit.db_fakes import override_session
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -202,9 +206,25 @@ async def test_fetch_live_empty_catalog_skips_probe(
 # ─── endpoint ───────────────────────────────────────────────────────────────
 
 
+def _record(model_id: str, label: str | None) -> LlmModelRecord:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    return LlmModelRecord(
+        id="m1",
+        provider="openai",
+        model_id=model_id,
+        label=label,
+        enabled=True,
+        verification_status=None,
+        verification_message=None,
+        verified_at=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def _client(
     monkeypatch: pytest.MonkeyPatch, environment: str = "development"
-) -> tuple[TestClient, MagicMock]:
+) -> tuple[TestClient, AsyncMock]:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", environment)
     from src.config import get_settings
@@ -212,11 +232,13 @@ def _client(
     get_settings.cache_clear()
     app = create_app()
     db = MagicMock()
-    rows = [SimpleNamespace(modelId="db-model", label="DB Model")]
-    db.llmmodel.find_many = AsyncMock(return_value=rows)
+    rows = [_record(model_id="db-model", label="DB Model")]
+    list_models = AsyncMock(return_value=rows)
+    monkeypatch.setattr(models_repo, "list_models", list_models)
+    override_session(app)
     app.state.db = db
     app.state.checkpointer = MagicMock()
-    return TestClient(app), db
+    return TestClient(app), list_models
 
 
 class _CountingFetch:
@@ -273,7 +295,7 @@ def test_available_models_upstream_failure_falls_back_to_db_and_is_not_cached(
 ) -> None:
     fetch = _CountingFetch(RuntimeError(f"boom {_SECRET}"))
     monkeypatch.setattr(mod, "_fetch_live", fetch)
-    client, db = _client(monkeypatch)
+    client, list_models = _client(monkeypatch)
     resp = client.get("/llm-models/available", params={"provider": "openai"})
     assert resp.status_code == 200
     body = cast("dict[str, Any]", resp.json())
@@ -281,8 +303,8 @@ def test_available_models_upstream_failure_falls_back_to_db_and_is_not_cached(
     assert _SECRET not in resp.text
     client.get("/llm-models/available", params={"provider": "openai"})
     assert fetch.calls == 2  # failure was not cached
-    where = db.llmmodel.find_many.await_args.kwargs["where"]
-    assert where == {"provider": "openai", "enabled": True}
+    assert list_models.await_args is not None
+    assert list_models.await_args.kwargs == {"provider": "openai", "enabled_only": True}
 
 
 def test_available_models_expired_cache_entry_is_refetched(

@@ -6,10 +6,11 @@ Values are stored as strings; callers interpret.
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from src.db.repos import deployment_settings as settings_repo
+from src.db.session import get_session
 from src.security.auth import ensure_admin
-from src.storage.db import get_db
 
 router = APIRouter(prefix="/admin/deployment-settings", tags=["admin-deployment-settings"])
 
@@ -25,20 +26,16 @@ class SettingUpdate(BaseModel):
 
 @router.get("", response_model=list[SettingItem])
 async def list_settings(
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    _admin: str = Depends(ensure_admin),
+    session: AsyncSession = Depends(get_session), _admin: str = Depends(ensure_admin)
 ) -> list[SettingItem]:  # pyright: ignore[reportUnusedFunction]
-    rows = await db.deploymentsetting.find_many(order={"key": "asc"})  # pyright: ignore[reportAttributeAccessIssue]
-    return [SettingItem(key=r.key, value=r.value) for r in rows]
+    return [SettingItem(key=r.key, value=r.value) for r in await settings_repo.list_all(session)]
 
 
 @router.get("/{key}", response_model=SettingItem)
 async def get_setting(
-    key: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    _admin: str = Depends(ensure_admin),
+    key: str, session: AsyncSession = Depends(get_session), _admin: str = Depends(ensure_admin)
 ) -> SettingItem:  # pyright: ignore[reportUnusedFunction]
-    row = await db.deploymentsetting.find_unique(where={"key": key})  # pyright: ignore[reportAttributeAccessIssue]
+    row = await settings_repo.get(session, key)
     if row is None:
         raise HTTPException(404, f"setting {key!r} not set")
     return SettingItem(key=row.key, value=row.value)
@@ -48,21 +45,12 @@ async def get_setting(
 async def upsert_setting(
     key: str,
     payload: SettingUpdate,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> SettingItem:  # pyright: ignore[reportUnusedFunction]
-    existing = await db.deploymentsetting.find_unique(where={"key": key})  # pyright: ignore[reportAttributeAccessIssue]
-    if existing is None:
-        row = await db.deploymentsetting.create(  # pyright: ignore[reportAttributeAccessIssue]
-            data={"key": key, "value": payload.value}
-        )
-    else:
-        row = await db.deploymentsetting.update(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"key": key}, data={"value": payload.value}
-        )
-    # update() returns Optional but `existing` was just confirmed non-None,
-    # so the row exists.  Pyright can't track that across the await.
-    return SettingItem(key=row.key, value=row.value)  # pyright: ignore[reportOptionalMemberAccess]
+    row = await settings_repo.upsert(session, key, payload.value)
+    await session.commit()
+    return SettingItem(key=row.key, value=row.value)
 
 
 __all__ = ["router"]

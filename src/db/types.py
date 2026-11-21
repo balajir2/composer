@@ -51,3 +51,15 @@ class UTCDateTime(TypeDecorator[datetime]):
         if value is None:
             return None
         return value.replace(tzinfo=UTC)
+
+
+def ensure_utc(value: datetime) -> datetime:
+    """Return ``value`` as aware UTC; a naive value is taken to be UTC.
+
+    Prisma stored naive datetimes from request bodies as UTC wall-clock time.
+    Call this at the API boundary for client-supplied datetimes so
+    ``UTCDateTime`` (which rejects naive values) keeps accepting them.
+    """
+    if value.tzinfo is None or value.utcoffset() is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
