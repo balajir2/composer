@@ -90,7 +90,7 @@ Callers converted (by task): `src/api/admin_deployment_settings.py` (Task 3); `s
   - `class Unset(enum.Enum): UNSET`; `UNSET = Unset.UNSET`
   - Test helpers: `class FakeSession` (AsyncMock `commit`, `rollback`, `close`), `def override_session(app: FastAPI) -> FakeSession`, `class FakeSessionmaker`
 
-- [ ] **Step 1: Write the failing unit tests**
+- [x] **Step 1: Write the failing unit tests**
 
 `tests/unit/db/test_ensure_utc.py`:
 ```python
@@ -204,12 +204,12 @@ async def test_lifespan_registers_and_unregisters_the_sessionmaker(...) -> None:
 ```
 Write it with the same fixtures the file's existing tests use; assert exactly the two conditions in the comments.
 
-- [ ] **Step 2: Run them and confirm they fail on missing names**
+- [x] **Step 2: Run them and confirm they fail on missing names**
 
 Run: `.venv/Scripts/python -m pytest --no-cov -q tests/unit/db/test_ensure_utc.py tests/unit/db/test_runtime.py tests/unit/db/test_errors.py tests/unit/db/test_lifespan.py`
 Expected: FAIL / ImportError for `ensure_utc`, `src.db.runtime`, `src.db.errors`; the lifespan test fails on registration.
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 Append to `src/db/types.py`:
 ```python
@@ -477,12 +477,12 @@ async def test_unreachable_database_reports_class_name_only() -> None:
     assert health.error is not None and "secret-pw" not in health.error
 ```
 
-- [ ] **Step 4: Run unit and integration tests; confirm they pass**
+- [x] **Step 4: Run unit and integration tests; confirm they pass**
 
 Run: `.venv/Scripts/python -m pytest --no-cov -q tests/unit/db` then (with the container up) `.venv/Scripts/python -m pytest --no-cov -q -m integration tests/integration/db/test_health.py`
 Expected: all pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/db tests/unit/db tests/unit/db_fakes.py tests/integration/db/test_health.py
@@ -509,7 +509,7 @@ These tests define "unchanged". They use only HTTP calls plus SQLAlchemy for set
 **Interfaces:**
 - Produces fixtures: `admin_headers: dict[str, str]`, `member: Member` (dataclass with `id`, `email`, `password`, `headers`), `sessionmaker_: async_sessionmaker[AsyncSession]`
 
-- [ ] **Step 1: Write the fixtures**
+- [x] **Step 1: Write the fixtures**
 
 `tests/integration/sqla_phase1/conftest.py`:
 ```python
@@ -573,7 +573,7 @@ async def admin_headers(
         await s.commit()
 ```
 
-- [ ] **Step 2: Write the behaviour tests**
+- [x] **Step 2: Write the behaviour tests**
 
 Each test cleans up the rows it creates (unique keys/emails per run; delete in `finally`). Write these tests exactly; they pin today's status codes, JSON shapes and timestamp formats.
 
@@ -787,12 +787,12 @@ async def test_api_key_lifecycle_and_external_auth(client: AsyncClient, member: 
     assert (await client.delete("/api-keys/nope", headers=member.headers)).status_code == 404
 ```
 
-- [ ] **Step 3: Run on the unchanged Prisma code; they must pass**
+- [x] **Step 3: Run on the unchanged Prisma code; they must pass**
 
 Run (container up): `.venv/Scripts/python -m pytest --no-cov -q -m integration tests/integration/sqla_phase1`
 Expected: PASS. If an assertion fails, the test is wrong about today's behaviour: fix the test to match what Prisma does (never the app), and note the finding in the commit message. Pin the loose `in (…)` assertions to the observed codes. Check `_DB_ONLY_PROVIDERS` in `src/api/llm_models_live.py` and add one test: `GET /llm-models/available?provider=<a db-only provider>` with a seeded enabled `llm_models` row returns it with `"source": "db"`.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/integration/sqla_phase1
@@ -825,7 +825,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>"
   async def upsert(session: AsyncSession, key: str, value: str) -> SettingRecord
   ```
 
-- [ ] **Step 1: Write the failing repository test**
+- [x] **Step 1: Write the failing repository test**
 
 `tests/integration/db/repos/test_deployment_settings.py`:
 ```python
@@ -856,11 +856,11 @@ async def test_get_missing_is_none_and_list_is_sorted(session: AsyncSession) -> 
     assert keys == sorted(keys)
 ```
 
-- [ ] **Step 2: Run it; expect ImportError**
+- [x] **Step 2: Run it; expect ImportError**
 
 Run: `.venv/Scripts/python -m pytest --no-cov -q -m integration tests/integration/db/repos/test_deployment_settings.py` → FAIL (no module).
 
-- [ ] **Step 3: Implement the repository**
+- [x] **Step 3: Implement the repository**
 
 `src/db/repos/deployment_settings.py`:
 ```python
@@ -912,9 +912,9 @@ async def upsert(session: AsyncSession, key: str, value: str) -> SettingRecord:
     return _record((await session.scalars(stmt)).one())
 ```
 
-- [ ] **Step 4: Run the repository test; expect PASS**
+- [x] **Step 4: Run the repository test; expect PASS**
 
-- [ ] **Step 5: Port the callers**
+- [x] **Step 5: Port the callers**
 
 `src/api/admin_deployment_settings.py`: remove the Prisma and `get_db` imports; import `AsyncSession`, `get_session` and `deployment_settings as settings_repo`. Each handler takes `session: AsyncSession = Depends(get_session)`:
 ```python
@@ -947,7 +947,7 @@ async def upsert_setting(
     return SettingItem(key=row.key, value=row.value)
 ```
 
-- [ ] **Step 6: Convert the unit tests**
+- [x] **Step 6: Convert the unit tests**
 
 Rewrite `tests/unit/api/test_admin_deployment_settings.py` with this pattern (example for `test_list_all`; convert every test in the file the same way):
 ```python
@@ -973,12 +973,12 @@ def test_list_all(monkeypatch: pytest.MonkeyPatch) -> None:
 ```
 Mapping for the rest of the file: `db.deploymentsetting.find_many` → `settings_repo.list_all`; `find_unique` → `settings_repo.get`; `create`/`update` → `settings_repo.upsert`. Where a test asserted on `db.deploymentsetting.update.call_args`, assert on the patched `upsert`'s `await_args` instead, and assert `session.commit.await_count == 1` for the PUT. The `_client_member` 403 test keeps working unchanged because no `db_sessionmaker` is set (auth treats the caller as `member`).
 
-- [ ] **Step 7: Run unit tests, the repo test and the behaviour tests**
+- [x] **Step 7: Run unit tests, the repo test and the behaviour tests**
 
 Run: `.venv/Scripts/python -m pytest --no-cov -q tests/unit/api/test_admin_deployment_settings.py` then `-m integration tests/integration/db/repos/test_deployment_settings.py tests/integration/sqla_phase1/test_settings_and_models.py`.
 Expected: all pass.
 
-- [ ] **Step 8: Commit** — `feat(db): deployment settings on SQLAlchemy (phase 1)` with a why-line: upsert is now one atomic statement instead of find-then-write.
+- [x] **Step 8: Commit** — `feat(db): deployment settings on SQLAlchemy (phase 1)` with a why-line: upsert is now one atomic statement instead of find-then-write.
 
 ---
 
@@ -1008,7 +1008,7 @@ Expected: all pass.
   ```
   `LlmModelSummary.model_validate(record)` works on the dataclass: the model has `from_attributes=True` and `populate_by_name=True`, so snake_case attributes fill the camelCase-aliased fields.
 
-- [ ] **Step 1: Write the failing repository test**
+- [x] **Step 1: Write the failing repository test**
 
 `tests/integration/db/repos/test_llm_models.py`:
 ```python
@@ -1059,9 +1059,9 @@ async def test_record_verification_can_disable(session: AsyncSession) -> None:
     assert await repo.delete(session, m.id) is True and await repo.delete(session, m.id) is False
 ```
 
-- [ ] **Step 2: Run it; expect ImportError**
+- [x] **Step 2: Run it; expect ImportError**
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 `src/db/repos/llm_models.py`:
 ```python
@@ -1175,9 +1175,9 @@ async def delete(session: AsyncSession, model_pk: str) -> bool:
 ```
 Note: an empty PATCH (`{}`) still bumps `updated_at`, exactly as Prisma's `update(data={})` did.
 
-- [ ] **Step 4: Run the repository test; expect PASS**
+- [x] **Step 4: Run the repository test; expect PASS**
 
-- [ ] **Step 5: Port the callers**
+- [x] **Step 5: Port the callers**
 
 `src/api/llm_models.py` `list_enabled_models`: `rows = await models_repo.list_models(session, provider=provider, enabled_only=True)`; return `[LlmModelSummary.model_validate(r) for r in rows]`.
 
@@ -1222,13 +1222,13 @@ In `save_policy`, replace the Prisma `upsert` with `await settings_repo.upsert(s
 ```
 Remove the now-unused `get_current_db` import from `agent.py` only if nothing else in the file uses it.
 
-- [ ] **Step 6: Convert the unit tests**
+- [x] **Step 6: Convert the unit tests**
 
 Mapping: `db.llmmodel.find_many` → `models_repo.list_models`; `find_unique(where={"id"})` → `get_by_id`; `find_unique(where={"provider_modelId"})` → `get_by_provider_model`; `create` → `create`; `update` → `update` or `record_verification`; `delete` → `delete`. Rows become `LlmModelRecord(...)` with snake_case fields. A test that made `create` raise a generic `Exception` to get 409 must raise `AlreadyExists("llm_models_provider_model_id_key")` instead. Agent tests that used `set_current_db(mock)` for the catalog lookup now `register_sessionmaker(FakeSessionmaker())` and patch `models_repo.get_by_provider_model`, and `register_sessionmaker(None)` in teardown.
 
-- [ ] **Step 7: Run** the converted unit tests, `tests/unit/executors`, the repo test and `tests/integration/sqla_phase1/test_settings_and_models.py`. Expected: all pass.
+- [x] **Step 7: Run** the converted unit tests, `tests/unit/executors`, the repo test and `tests/integration/sqla_phase1/test_settings_and_models.py`. Expected: all pass.
 
-- [ ] **Step 8: Commit** — `feat(db): LLM model catalog on SQLAlchemy (phase 1)`; mention that only a real duplicate is a 409 now.
+- [x] **Step 8: Commit** — `feat(db): LLM model catalog on SQLAlchemy (phase 1)`; mention that only a real duplicate is a 409 now.
 
 ---
 
@@ -1255,7 +1255,7 @@ Mapping: `db.llmmodel.find_many` → `models_repo.list_models`; `find_unique(whe
   async def sync_llm_keys_from_db(session: AsyncSession) -> dict[str, str]   # key_sync.py, new parameter type
   ```
 
-- [ ] **Step 1: Write the failing repository test**
+- [x] **Step 1: Write the failing repository test**
 
 ```python
 import pytest
@@ -1282,9 +1282,9 @@ async def test_delete_and_missing(session: AsyncSession) -> None:
     assert await repo.get(session, PROVIDER) is None and await repo.delete(session, PROVIDER) is False
 ```
 
-- [ ] **Step 2: Run; expect ImportError.**
+- [x] **Step 2: Run; expect ImportError.**
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 """Encrypted LLM/tool provider API keys, one row per provider."""
@@ -1363,9 +1363,9 @@ async def delete(session: AsyncSession, provider: str) -> bool:
 ```
 (`insert(...).values(id=...)` is not needed: the model's `id_column` default supplies a UUIDv7 for the Core insert because `default=new_id` is a Python-side column default.)
 
-- [ ] **Step 4: Run the repository test; expect PASS.** If `id` comes back NULL-constraint-failed, add `id=new_id()` to `.values(...)` (import from `src.db.ids`) and re-run.
+- [x] **Step 4: Run the repository test; expect PASS.** If `id` comes back NULL-constraint-failed, add `id=new_id()` to `.values(...)` (import from `src.db.ids`) and re-run.
 
-- [ ] **Step 5: Port the callers**
+- [x] **Step 5: Port the callers**
 
 - `admin_llm_keys.py`: list → `keys_repo.list_keys`; build `LlmKeySummary(provider=r.provider, key_prefix=r.key_prefix, updated_at=str(r.updated_at))`. get → `keys_repo.get`. put → `result = await keys_repo.upsert(session, provider, encrypted_key=encrypted, key_prefix=prefix)`, `await session.commit()`, keep the in-process `setattr(get_settings(), field, payload.value)` **after** the commit, return from `result.record`. test-connection → `keys_repo.get` then `decrypt(row.encrypted_key)`. delete → `if not await keys_repo.delete(...)`: 404; commit; then clear the setting.
 - `admin_tools.py`: `has_db_key = await asyncio.wait_for(keys_repo.exists(session, tool_id), timeout=3.0)` inside the existing try/except; the route takes `session`.
@@ -1379,11 +1379,11 @@ async def delete(session: AsyncSession, provider: str) -> bool:
   Change nothing else in `main.py`.
 - `cli/keys.py`: every `db = Prisma(); await db.connect()` … `finally: await db.disconnect()` block becomes `async with one_shot_session(get_settings()) as session:`; list → `keys_repo.list_keys`, set → `result = await keys_repo.upsert(...)`, `await session.commit()`, print `created key …` if `result.created` else `updated key …`; delete → `if not await keys_repo.delete(...)` print the existing "no key set" message and return 1, else commit. `keys_sync` replaces its `find_many` the same way. Keep every printed message and return code identical.
 
-- [ ] **Step 6: Convert the unit tests** — mapping: `db.llmapikey.find_many` → `keys_repo.list_keys`; `find_unique` → `keys_repo.get` (or `exists` in admin_tools); `create`/`update` → `keys_repo.upsert` returning `UpsertResult(record, created)`; `delete` → `keys_repo.delete` returning `bool`. `test_key_sync.py` passes a `FakeSession()` and patches `keys_repo.list_keys`. CLI tests patch `src.cli.keys.one_shot_session` with `lambda _s: fake_scope(FakeSession())` from `tests.unit.db_fakes`.
+- [x] **Step 6: Convert the unit tests** — mapping: `db.llmapikey.find_many` → `keys_repo.list_keys`; `find_unique` → `keys_repo.get` (or `exists` in admin_tools); `create`/`update` → `keys_repo.upsert` returning `UpsertResult(record, created)`; `delete` → `keys_repo.delete` returning `bool`. `test_key_sync.py` passes a `FakeSession()` and patches `keys_repo.list_keys`. CLI tests patch `src.cli.keys.one_shot_session` with `lambda _s: fake_scope(FakeSession())` from `tests.unit.db_fakes`.
 
-- [ ] **Step 7: Run** the converted unit tests, the repo test and `tests/integration/sqla_phase1/test_llm_keys.py`. Expected: PASS.
+- [x] **Step 7: Run** the converted unit tests, the repo test and `tests/integration/sqla_phase1/test_llm_keys.py`. Expected: PASS.
 
-- [ ] **Step 8: Commit** — `feat(db): LLM API keys on SQLAlchemy (phase 1)`; note the in-process setting now updates only after the row is committed.
+- [x] **Step 8: Commit** — `feat(db): LLM API keys on SQLAlchemy (phase 1)`; note the in-process setting now updates only after the row is committed.
 
 ---
 
@@ -1413,7 +1413,7 @@ async def delete(session: AsyncSession, provider: str) -> bool:
   async def delete(session, user_id: str) -> bool
   ```
 
-- [ ] **Step 1: Write the failing repository test**
+- [x] **Step 1: Write the failing repository test**
 
 ```python
 import secrets
@@ -1462,9 +1462,9 @@ async def test_setters(session: AsyncSession) -> None:
 ```
 **Decided after Task 2:** Prisma's `contains` does not escape `_` or `%` (pinned by `test_user_search_does_not_escape_like_wildcards_today`). The port keeps that: no escaping. Changing it would be a product decision, out of scope for the migration.
 
-- [ ] **Step 2: Run; expect ImportError.**
+- [x] **Step 2: Run; expect ImportError.**
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 """Application users."""
@@ -1569,9 +1569,9 @@ async def delete(session: AsyncSession, user_id: str) -> bool:
     return result.first() is not None
 ```
 
-- [ ] **Step 4: Run the repository test; expect PASS.**
+- [x] **Step 4: Run the repository test; expect PASS.**
 
-- [ ] **Step 5: Port `src/security/auth.py`**
+- [x] **Step 5: Port `src/security/auth.py`**
 
 Replace each "if the app-wide Prisma client is available" block with the sessionmaker equivalent. The rule is unchanged: no database attached (unit tests) means no live check.
 ```python
@@ -1599,7 +1599,7 @@ def _ensure_active(user: users_repo.UserRecord | None) -> None:
 - `get_current_role`: `checked, user = …`; if not `checked`: return `(user_id, "member")`; else `role = user.role.value if user else "member"`.
 - Delete `_ensure_active_user` and `_ensure_active_and_no_pending_password_change` and their Prisma imports; keep every `AuthError` message identical (the behaviour tests and unit tests assert on them).
 
-- [ ] **Step 6: Port the user routes**
+- [x] **Step 6: Port the user routes**
 
 - `auth_common.py` `me`: `user = await users_repo.get_by_id(session, user_id)`; `StandaloneMeResponse(id=user.id, email=user.email, displayName=user.display_name, role=user.role.value)`. `sso_exchange`: `user = await users_repo.get_by_email(session, email)`; if None, `user = await users_repo.create(session, email=email, password_hash=None, display_name=display_name)` then `await session.commit()`; elif not `user.is_active`: raise `AuthError("account is deactivated")`.
 - `auth_standalone.py`: register → keep the 409 pre-check via `get_by_email`, then `try: user = await users_repo.create(...)` / `except AlreadyExists: raise HTTPException(409, "email already registered")` (closes the race where two concurrent registrations used to 500), then commit. Login → `get_by_email`, `user.password_hash`. Refresh → `get_by_id`, `user.is_active`. Change password and reset password → `get_by_id` then `await users_repo.set_password(session, user_id, hash_password(...), must_change=False)` + commit. Forgot password → `get_by_email`. Keep every status code and detail string.
@@ -1621,13 +1621,13 @@ def _ensure_active(user: users_repo.UserRecord | None) -> None:
 - `test_cleanup.py`: user find → `users_repo.get_by_id`; the final `db.user.delete` → `await users_repo.delete(session, user_id)` + `await session.commit()`, after the existing Prisma `delete_many` calls (those autocommit, so ordering is preserved).
 - `migration/reconcile.py`: `reconcile_by_email(db, session, email)`; the user lookup uses `users_repo.get_by_email(session, email_lc)`. In `src/cli/main.py` wrap the call: `async with one_shot_session(get_settings()) as session: … run_reconcile(…, session=session)` — read `run_reconcile` first and thread `session` through it the same way.
 
-- [ ] **Step 7: Convert the unit tests**
+- [x] **Step 7: Convert the unit tests**
 
 Mapping: `db.user.find_unique(where={"id"})` → `users_repo.get_by_id`; `where={"email"}` → `get_by_email`; `create` → `create`; `find_many` → `list_all` / `search_active`; `update(data={"role"})` → `set_role`; `{"isActive"}` → `set_active`; `{"passwordHash", "mustChangePassword"}` → `set_password` (returns bool); `delete` → `delete`. Fake rows become `UserRecord(...)` with `role=UserRole.MEMBER` etc. Tests that exercised the live auth checks (deactivated user → 401, pending password change → 401) set `app.state.db_sessionmaker = FakeSessionmaker()` and patch `users_repo.get_by_id`; tests that relied on "no Prisma client → member" need no change.
 
-- [ ] **Step 8: Run** `tests/unit/security tests/unit/api tests/unit/migration`, the repo test, and `tests/integration/sqla_phase1/test_users_and_auth.py` plus the existing `tests/integration/test_standalone_auth_lifecycle.py` and `test_security_hardening.py`. Expected: PASS.
+- [x] **Step 8: Run** `tests/unit/security tests/unit/api tests/unit/migration`, the repo test, and `tests/integration/sqla_phase1/test_users_and_auth.py` plus the existing `tests/integration/test_standalone_auth_lifecycle.py` and `test_security_hardening.py`. Expected: PASS.
 
-- [ ] **Step 9: Commit** — `feat(db): users and auth checks on SQLAlchemy (phase 1)`; mention the registration race now returns 409 instead of 500.
+- [x] **Step 9: Commit** — `feat(db): users and auth checks on SQLAlchemy (phase 1)`; mention the registration race now returns 409 instead of 500.
 
 ---
 
@@ -1655,7 +1655,7 @@ Mapping: `db.user.find_unique(where={"id"})` → `users_repo.get_by_id`; `where=
   async def touch_last_used(session, key_id: str, at: datetime) -> None
   ```
 
-- [ ] **Step 1: Write the failing repository tests, including a race test**
+- [x] **Step 1: Write the failing repository tests, including a race test**
 
 ```python
 import asyncio
@@ -1713,9 +1713,9 @@ async def test_concurrent_revocations_have_exactly_one_winner(engine: AsyncEngin
             await s.commit()
 ```
 
-- [ ] **Step 2: Run; expect ImportError.**
+- [x] **Step 2: Run; expect ImportError.**
 
-- [ ] **Step 3: Implement**
+- [x] **Step 3: Implement**
 
 ```python
 """Hashed per-user API keys ('ck_…') for external workflow invocation."""
@@ -1797,9 +1797,9 @@ async def touch_last_used(session: AsyncSession, key_id: str, at: datetime) -> N
     await session.execute(sa_update(ApiKey).where(ApiKey.id == key_id).values(last_used_at=at))
 ```
 
-- [ ] **Step 4: Run the repository tests; expect PASS.**
+- [x] **Step 4: Run the repository tests; expect PASS.**
 
-- [ ] **Step 5: Port the callers**
+- [x] **Step 5: Port the callers**
 
 - `api_keys.py` create: `expires_at = ensure_utc(payload.expires_at) if payload.expires_at else None` (keeps today's acceptance of a naive `expiresAt`, which `UTCDateTime` would otherwise reject with a 500); `row = await keys_repo.create(...)`; commit; build the response from `row.id`, `row.label`, `row.key_prefix`, `row.created_at`, `row.expires_at`. List: `[ApiKeySummary.model_validate(k) for k in await keys_repo.list_for_user(session, user_id)]`. Revoke: `row = await keys_repo.get(...)`; 404 if missing or `row.user_id != user_id`; `if row.revoked_at is None: await keys_repo.revoke_if_active(session, key_id, utcnow()); await session.commit()`.
 - `api_key_auth.py`:
@@ -1824,11 +1824,11 @@ async def touch_last_used(session: AsyncSession, key_id: str, at: datetime) -> N
   The dependency takes `session: AsyncSession = Depends(get_session)`; FastAPI gives the route the same session object within one request.
 - `admin_users.py`: `_summary_from_row(row: UserRecord)` → `UserSummary(id=row.id, email=row.email, role=row.role.value, displayName=row.display_name, isActive=row.is_active)`. list → `users_repo.list_all`. role → `users_repo.set_role(session, user_id, UserRole(payload.role))`, 404 on None, commit. deactivate → 404 check via `get_by_id`, then **one transaction**: `await keys_repo.revoke_all_active_for_user(session, user_id, utcnow())` and `updated = await users_repo.set_active(session, user_id, False)`, then a single `await session.commit()` (Prisma ran these as two separate writes). reactivate → `set_active(..., True)` + commit. admin revoke → `get` + owner check + `revoke_if_active` + commit. reset-password → `get_by_id` 404 check, `set_password(..., must_change=True)` + commit.
 
-- [ ] **Step 6: Convert the unit tests** — mapping: `db.apikey.create` → `keys_repo.create`; `find_many` → `list_for_user`; `find_unique` → `get`; `find_first` → `first_by_prefix`; `update(data={"revokedAt"})` → `revoke_if_active`; `update(data={"lastUsedAt"})` → `touch_last_used`; `update_many` → `revoke_all_active_for_user`; plus the user mapping from Task 6. Add one new unit test: `POST /api-keys` with a naive `expiresAt` passes an **aware** UTC datetime to `keys_repo.create` (assert on `await_args.kwargs["expires_at"].tzinfo is UTC`). Add one for deactivate: both repo calls happen and `session.commit.await_count == 1`.
+- [x] **Step 6: Convert the unit tests** — mapping: `db.apikey.create` → `keys_repo.create`; `find_many` → `list_for_user`; `find_unique` → `get`; `find_first` → `first_by_prefix`; `update(data={"revokedAt"})` → `revoke_if_active`; `update(data={"lastUsedAt"})` → `touch_last_used`; `update_many` → `revoke_all_active_for_user`; plus the user mapping from Task 6. Add one new unit test: `POST /api-keys` with a naive `expiresAt` passes an **aware** UTC datetime to `keys_repo.create` (assert on `await_args.kwargs["expires_at"].tzinfo is UTC`). Add one for deactivate: both repo calls happen and `session.commit.await_count == 1`.
 
-- [ ] **Step 7: Run** the converted unit tests, the repo tests, `tests/integration/sqla_phase1/test_api_keys.py`, `test_users_and_auth.py` and `tests/integration/test_external_invoke.py`. Expected: PASS.
+- [x] **Step 7: Run** the converted unit tests, the repo tests, `tests/integration/sqla_phase1/test_api_keys.py`, `test_users_and_auth.py` and `tests/integration/test_external_invoke.py`. Expected: PASS.
 
-- [ ] **Step 8: Commit** — `feat(db): API keys and admin user management on SQLAlchemy (phase 1)`; mention deactivation (revoke keys + mark inactive) is now one transaction.
+- [x] **Step 8: Commit** — `feat(db): API keys and admin user management on SQLAlchemy (phase 1)`; mention deactivation (revoke keys + mark inactive) is now one transaction.
 
 ---
 
@@ -1837,7 +1837,7 @@ async def touch_last_used(session: AsyncSession, key_id: str, at: datetime) -> N
 **Files:**
 - Modify: `tests/unit/db/test_prisma_import_boundary.py` (`MIGRATED_PATHS`), `CHANGELOG.md`, `docs/architecture.md` (data-access section), `docs/superpowers/specs/2026-11-20-prisma-to-sqlalchemy-migration-design.md` (phase table: mark 1 done), `docs/superpowers/plans/2026-11-20-sqlalchemy-phase-1-settings-and-admin.md` (tick boxes)
 
-- [ ] **Step 1: Grow the allow-list and watch it pass**
+- [x] **Step 1: Grow the allow-list and watch it pass**
 
 Set:
 ```python
@@ -1864,13 +1864,13 @@ MIGRATED_PATHS = [
 Run `.venv/Scripts/python -m pytest --no-cov -q tests/unit/db/test_prisma_import_boundary.py`. Any offender means a leftover `prisma` or `src.storage` import (often `from src.storage.db import get_db`): remove it. Then confirm no Phase 1 table is still queried through Prisma anywhere:
 `grep -rnE '\b(db|prisma)\.(user|llmmodel|llmapikey|apikey|deploymentsetting)\.' src` → expected: no output.
 
-- [ ] **Step 2: Docs**
+- [x] **Step 2: Docs**
 
 - `CHANGELOG.md` `[Unreleased]`: `### Changed — SQLAlchemy migration phase 1: settings and admin (2026-11-20)`, listing: the five tables now go through `src/db/repos/`; behaviour unchanged, proven by API tests run on Prisma first; three deliberate fixes (only real duplicates give 409 on LLM models; concurrent registration gives 409 instead of 500; user deactivation is one transaction); `check_database()` added for the readiness probe.
 - `docs/architecture.md`: in the data-access section, one paragraph on repository modules and `src/db/runtime.py`, and that Phase 1 tables are on SQLAlchemy.
 - Spec §3.3: append "(done: PR #…)" to phase 1 once the PR exists.
 
-- [ ] **Step 3: Run everything CI runs**
+- [x] **Step 3: Run everything CI runs**
 
 ```bash
 .venv/Scripts/python -m ruff check src tests && .venv/Scripts/python -m ruff format --check src tests \
@@ -1880,7 +1880,7 @@ Run `.venv/Scripts/python -m pytest --no-cov -q tests/unit/db/test_prisma_import
 ```
 Expected: all green (integration with the container up). Stop and delete the container afterwards: `docker stop composer-p1-pg`.
 
-- [ ] **Step 4: Commit, push, open the PR**
+- [x] **Step 4: Commit, push, open the PR**
 
 ```bash
 git add -A tests/unit/db/test_prisma_import_boundary.py CHANGELOG.md docs
@@ -1899,3 +1899,16 @@ Wait for all six CI checks. **Do not merge**: merging deploys to production and 
 - Spec §2.1 rules → Global Constraints; §3.1 rule 3 (area moves whole) → mixed-file reads in Tasks 3–6; §4.5 `AlreadyExists` → Task 1; §5 testing layers → repository, race (Task 7), behaviour (Task 2) and unit tests; §5.1 criterion 1 → Task 8 Step 1.
 - Phase 0 carry-over: settings after env override (the `app` fixture already clears the cache; Task 2 relies on it); Json `json_serializer` (no Phase 1 table has a JSON column, so not needed yet, re-check in Phase 2); compare against bound `utcnow()` (API-key expiry in Task 7); relationships `lazy="raise"` (none added); `MIGRATED_PATHS` (Task 8); timestamp rounding (all writes use `utcnow()`, which is already whole milliseconds); deploy `concurrency:` group (owner decision, not in this plan).
 - Types used across tasks: `SettingRecord`, `LlmModelRecord`, `LlmApiKeyRecord`/`UpsertResult`, `UserRecord`, `ApiKeyRecord`; `UNSET`/`Unset`; `FakeSession`, `FakeSessionmaker`, `fake_scope`, `override_session`. Names match between Interfaces blocks and code.
+
+---
+
+## Outcome
+
+Tasks 1 to 8 are done on `feat/sqlalchemy-phase-1` (push and PR left to the controller). Deviations recorded during execution:
+
+- `add_or_already_exists` replaced `flush_or_already_exists`: flushing inside a savepoint hid the duplicate error.
+- User search keeps unescaped `_` and `%` wildcards, matching Prisma's behaviour.
+- `model_policy` moved to SQLAlchemy in Task 4 rather than a later task.
+- API-key auth uses a short session of its own, not `Depends(get_session)`, so the connection is released before the workflow runs.
+- The live user checks fail closed outside `ENVIRONMENT=development` when the database is not attached.
+- `populate_existing` is needed for `ON CONFLICT` upserts but redundant for ORM `UPDATE ... RETURNING` (`synchronize_session='evaluate'`).

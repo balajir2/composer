@@ -90,7 +90,7 @@ The first Alembic revision is empty and is *stamped* on existing databases (prod
 | # | Scope | Risk | Rough size |
 |---|---|---|---|
 | 0 | **Foundation:** dependencies; `src/db` engine, session, ids, types; models for all 17 tables; Alembic baseline; parity test; schema-freeze CI check; deploy and CI steps; CLAUDE.md, ADR and ops docs. No behaviour change. | Low | 2–3 days |
-| 1 | **Settings and admin:** deployment settings, LLM models and keys, API keys, users | Low | 2 days |
+| 1 | **Settings and admin (done, PR pending):** deployment settings, LLM models and keys, API keys, users | Low | 2 days |
 | 2 | **Integrations:** MCP servers, MCP OAuth tokens and state, cloud-storage connections | Medium | 2 days |
 | 3 | **Workflows:** CRUD, assignments, builder saves | Medium | 2 days |
 | 4 | **Executions core:** create, list, delete, resume, approvals, events, rate limiter, claim and sweep, all 15 guarded status updates | High | 3–4 days |

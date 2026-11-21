@@ -27,7 +27,7 @@ How Composer is built today. This is the document to read before adding a node t
 - Frontend authenticates the user via NextAuth (Azure AD or username/password). Every API call carries a Composer JWT (HS256) the backend mints from the auth provider's claims.
 - API routes are FastAPI `APIRouter`s. Each major surface (workflows, executions, MCP, admin, uploads, run) lives in its own module under [`src/api/`](../src/api/).
 - LangGraph drives execution. The graph is built fresh per run from the workflow's `nodes`/`edges` JSON; node executors are registered via a small `register_executor` decorator in [`src/executors/base.py`](../src/executors/base.py).
-- Postgres (Prisma) is the single source of truth: workflows, executions, checkpoints, users, API keys, MCP servers + OAuth tokens, LLM API keys, deployment settings, LLM model catalog, approvals.
+- Postgres (SQLAlchemy and Prisma, mid-migration) is the single source of truth: workflows, executions, checkpoints, users, API keys, MCP servers + OAuth tokens, LLM API keys, deployment settings, LLM model catalog, approvals.
 
 ## Repository layout
 
@@ -127,6 +127,10 @@ composer/
 ├── scripts/seed_templates.py       Seeds the 21 reference templates
 └── docs/                           ← you are here
 ```
+
+## Data access during the Prisma to SQLAlchemy migration
+
+Tables are moving from Prisma to SQLAlchemy 2.x one group at a time (spec: `docs/superpowers/specs/2026-11-20-prisma-to-sqlalchemy-migration-design.md`). Migrated tables are reached through repository modules in `src/db/repos/`: routes and services call named functions (for example in `users.py` or `api_keys.py`) instead of building queries. The caller owns the transaction, and repositories return plain records rather than ORM objects. Code outside a request (the CLI, key sync, API-key auth) gets sessions from `src/db/runtime.py`. Phase 1 is done: `deployment_settings`, `llm_models`, `llm_api_keys`, `users` and `api_keys` are on SQLAlchemy. Every other table, including workflows, executions and checkpoints, stays on Prisma until its later phase, and `tests/unit/db/test_prisma_import_boundary.py` keeps migrated files from importing Prisma.
 
 ## Execution model
 
