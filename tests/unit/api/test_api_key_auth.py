@@ -177,3 +177,42 @@ def test_touch_failure_rolls_back_and_still_authenticates(monkeypatch: pytest.Mo
     monkeypatch.setattr(keys_repo, "touch_last_used", AsyncMock(side_effect=RuntimeError("db")))
     assert client.get("/probe", headers=AUTH).status_code == 200
     assert sm.session.rollback.await_count == 1
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_owner_check_still_runs_after_touch_failure(
+    monkeypatch: pytest.MonkeyPatch, missing: bool
+) -> None:
+    client = _app(
+        monkeypatch,
+        key=_key(),
+        user_missing=missing,
+        user_active=False,
+        sessionmaker=FakeSessionmaker(),
+    )
+    monkeypatch.setattr(keys_repo, "touch_last_used", AsyncMock(side_effect=RuntimeError("db")))
+    r = client.get("/probe", headers=AUTH)
+    assert (r.status_code, r.json()["detail"]) == (401, "API key owner is inactive")
+
+
+def test_touch_commit_failure_still_checks_owner(monkeypatch: pytest.MonkeyPatch) -> None:
+    sm = FakeSessionmaker()
+    sm.session.commit.side_effect = RuntimeError("commit failed")
+    client = _app(monkeypatch, key=_key(), user_active=False, sessionmaker=sm)
+    r = client.get("/probe", headers=AUTH)
+    assert (r.status_code, r.json()["detail"]) == (401, "API key owner is inactive")
+    assert sm.session.rollback.await_count == 1
+
+
+def test_expiry_boundary_is_strict(monkeypatch: pytest.MonkeyPatch) -> None:
+    t = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
+    monkeypatch.setattr(aka, "utcnow", lambda: t)
+    ok = _app(monkeypatch, key=_key(expires_at=t), sessionmaker=FakeSessionmaker())
+    assert ok.get("/probe", headers=AUTH).status_code == 200
+    expired = _app(
+        monkeypatch,
+        key=_key(expires_at=t - timedelta(milliseconds=1)),
+        sessionmaker=FakeSessionmaker(),
+    )
+    r = expired.get("/probe", headers=AUTH)
+    assert (r.status_code, r.json()["detail"]) == (401, "API key expired")

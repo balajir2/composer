@@ -128,6 +128,20 @@ def test_deactivate_revokes_keys_and_deactivates_in_one_commit(
     assert session.commit.await_count == 1
 
 
+def test_deactivate_user_deleted_concurrently_rolls_back_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, session = _client_admin(monkeypatch)
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=make_user(id="u1")))
+    monkeypatch.setattr(keys_repo, "revoke_all_active_for_user", AsyncMock(return_value=0))
+    monkeypatch.setattr(users_repo, "set_active", AsyncMock(return_value=None))
+    resp = client.delete("/admin/users/u1")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "user 'u1' not found"
+    assert session.rollback.await_count == 1
+    assert session.commit.await_count == 0
+
+
 def test_deactivate_unknown_user_404_touches_nothing(monkeypatch: pytest.MonkeyPatch) -> None:
     client, session = _client_admin(monkeypatch)
     monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=None))
