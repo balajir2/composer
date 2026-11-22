@@ -20,7 +20,13 @@ from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
 from src.mcp.oauth import exchange_code_for_tokens, refresh_token
 from src.security.encryption import encrypt
 from tests.unit.db_fakes import RecordingSessionmaker
-from tests.unit.mcp._oauth_fakes import RepoCalls, make_state, make_token, script_repo
+from tests.unit.mcp._oauth_fakes import (
+    RepoCalls,
+    make_state,
+    make_token,
+    script_lock,
+    script_repo,
+)
 from tests.unit.mcp._server_fakes import make_server
 
 pytestmark = pytest.mark.integration
@@ -68,12 +74,17 @@ async def test_oab_regression_token_exchange_includes_resource(
     script_repo(
         monkeypatch,
         calls,
-        consume_state=make_state(mcp_server_id="srv-hs", state="s1", code_verifier="cv"),
+        consume_state=make_state(
+            mcp_server_id="srv-hs", user_id="dev", state="s1", code_verifier="cv"
+        ),
         upsert_token=make_token(),
     )
+    keys = script_lock(monkeypatch, calls.events)
     sm: Any = RecordingSessionmaker(calls.events)
 
     await exchange_code_for_tokens(_highspot_server(), code="c", state="s1", sessionmaker=sm)
+
+    assert keys == ["mcp_oauth_token:srv-hs:dev"]
 
     req = httpx_mock.get_request()  # pyright: ignore[reportUnknownMemberType]
     assert req is not None
@@ -104,7 +115,8 @@ async def test_oab_regression_refresh_includes_resource(
         scope="read",
     )
     calls = RepoCalls()
-    script_repo(monkeypatch, calls, update_token=make_token())
+    script_repo(monkeypatch, calls, get_token_by_id=token_row, update_token=make_token())
+    script_lock(monkeypatch, calls.events)
     sm: Any = RecordingSessionmaker(calls.events)
 
     await refresh_token(_highspot_server(), token_row, sm)

@@ -188,8 +188,9 @@ async def delete_for_user(session, user_id: str) -> int
 - [ ] Commit; push; open the PR; wait for all six checks; merge only with Balaji's go-ahead (merging deploys to production).
 
 ## Follow-ups (not in this phase)
-- MCP custom `headers` are stored but never sent by `src/mcp/client.py`; decide whether to send them (decrypting sensitive values) and add tests.
-- Google Drive re-grant without a refresh token overwrites the stored refresh token with NULL; keep the old one instead.
+- ~~MCP custom `headers` are stored but never sent by `src/mcp/client.py`~~ **Done 2026-11-22** (branch `fix/integration-followups`): `McpToolProvider` sends them, sensitive values decrypted; client and auth headers win.
+- ~~Google Drive re-grant without a refresh token overwrites the stored refresh token with NULL~~ **Done 2026-11-22** (branch `fix/integration-followups`): Drive and MCP upserts COALESCE the refresh token and scope.
+- ~~Concurrent refreshes of one token can both POST the same refresh token~~ **Done 2026-11-22** (branch `fix/integration-followups`): serialized with a transaction-scoped advisory lock; documented short-session exception.
 
 ## Outcome
 
@@ -200,4 +201,4 @@ What changed while executing this plan:
 - **Task 2 kept temporary dual Prisma/SQLAlchemy plumbing** for MCP servers so the OAuth code, still on Prisma, kept working. Task 3 removed it.
 - **Task 4's review found a stale-token bug:** the Drive token helper returned an expired token when the connection vanished mid-refresh. It now raises `DriveConnectionMissingError` (the picker-token route answers 404), with a regression test.
 - **Review follow-ups (commit "small phase 2 review follow-ups"):** the Drive OAuth popup gets its close page when the database is unavailable; one shared `require_sessionmaker` in `src/db/runtime.py`; `_post_token_form` shared by the Drive code exchange and refresh; a docstring rewrap in `download_pdf.py`; and a flaky phase 1 ordering test (`test_api_keys_list_newest_first`) given a wider gap between keys.
-- **Still open (see Follow-ups):** MCP custom headers never sent; Drive re-grant without a refresh token clears the stored one; concurrent refreshes of one token can both POST the same refresh token.
+- **Follow-ups since done (2026-11-22, branch `fix/integration-followups`):** MCP custom headers are sent; re-grants keep the stored refresh token and scope; concurrent refreshes of one token are serialized by an advisory lock.

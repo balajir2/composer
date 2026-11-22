@@ -21,6 +21,7 @@ from src.db.repos.mcp_servers import McpServerChanges, McpServerRecord
 from src.db.runtime import require_sessionmaker
 from src.db.session import get_session
 from src.mcp.base import McpToolProvider
+from src.mcp.headers import InvalidHeaderError, is_latin1, validate_custom_headers
 from src.mcp.oauth import (
     STATE_NOT_FOUND_TAIL,
     InvalidStateError,
@@ -203,9 +204,32 @@ async def create_mcp_server(
             detail=f"authType={payload.auth_type!r} requires accessToken",
         )
 
+    # A token or header value containing CR/LF/NUL would make the HTTP stack raise an error
+    # quoting it. Strip surrounding whitespace (a pasted key often ends in a newline) and
+    # reject the rest; the 422 names the field, never the value.
+    access_token = payload.access_token.strip() if payload.access_token else None
+    if access_token and any(ch in access_token for ch in ("\r", "\n", "\0")):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="accessToken must not contain CR, LF or NUL characters",
+        )
+    if access_token and not is_latin1(access_token):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="accessToken must only contain Latin-1 (ISO 8859-1) characters",
+        )
+    try:
+        custom_headers = (
+            validate_custom_headers(payload.headers) if payload.headers is not None else None
+        )
+    except InvalidHeaderError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=str(exc)
+        ) from None
+
     encrypted_token = (
-        encrypt(payload.access_token)
-        if payload.access_token and payload.auth_type in {"api-key", "bearer"}
+        encrypt(access_token)
+        if access_token and payload.auth_type in {"api-key", "bearer"}
         else None
     )
 
@@ -220,11 +244,11 @@ async def create_mcp_server(
         header_name=payload.header_name,
         is_shared=payload.is_shared,
     )
-    if payload.headers is not None:
+    if custom_headers is not None:
         # P0-5: encrypt secret-looking header values at rest — no prior
         # server row exists yet at create time, so no preserve-on-marker
         # concern (there's currently no PATCH endpoint for headers either).
-        values["headers"] = encrypt_sensitive_headers(payload.headers)
+        values["headers"] = encrypt_sensitive_headers(custom_headers)
     if payload.oauth_config is not None:
         values["oauth_config"] = _encrypted_oauth_config_dict(payload.oauth_config)
 

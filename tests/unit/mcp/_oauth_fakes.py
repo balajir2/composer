@@ -80,3 +80,28 @@ def script_repo(
 
     for name, scripted in results.items():
         monkeypatch.setattr(mcp_oauth_repo, name, _make(name, scripted))
+
+
+def script_lock(
+    monkeypatch: pytest.MonkeyPatch, events: list[str], *, grants: list[bool] | None = None
+) -> list[str]:
+    """Replace the non-blocking advisory-lock helper and shrink its retry jitter.
+
+    Logs ``db:lock`` into ``events`` when granted and ``db:lock-denied`` when refused. ``grants``
+    is consumed one per attempt (the last value repeats); the default grants every attempt.
+    Returns the list the lock keys are appended to."""
+    from src.db import locks
+
+    queue = list(grants if grants is not None else [True])
+    keys: list[str] = []
+
+    async def _try(session: Any, key: str) -> bool:
+        keys.append(key)
+        granted = queue.pop(0) if len(queue) > 1 else queue[0]
+        events.append("db:lock" if granted else "db:lock-denied")
+        return granted
+
+    monkeypatch.setattr(locks, "try_acquire_xact_lock", _try)
+    monkeypatch.setattr(locks, "POLL_MIN_S", 0.001)
+    monkeypatch.setattr(locks, "POLL_MAX_S", 0.002)
+    return keys

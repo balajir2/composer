@@ -14,6 +14,7 @@ from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
 from src.db.repos import cloud_storage as cloud_storage_repo
 from src.db.repos.cloud_storage import CloudStorageConnectionRecord
 from tests.unit.db_fakes import RecordingSessionmaker, assert_no_network_inside_session
+from tests.unit.mcp._oauth_fakes import script_lock
 
 
 def _connection(**overrides: Any) -> CloudStorageConnectionRecord:
@@ -38,7 +39,9 @@ def _wire_repo(
     monkeypatch: pytest.MonkeyPatch,
     connection: CloudStorageConnectionRecord | None,
     updated: CloudStorageConnectionRecord | None = None,
+    grants: list[bool] | None = None,
 ) -> tuple[RecordingSessionmaker, AsyncMock, list[str]]:
+    """Wire the repo and the advisory lock; ``events`` logs db and lock calls in order."""
     events: list[str] = []
 
     async def _get(_session: Any, _connection_id: str) -> CloudStorageConnectionRecord | None:
@@ -51,6 +54,7 @@ def _wire_repo(
         events.append("db:update")
         return updated
 
+    script_lock(monkeypatch, events, grants=grants)
     update = AsyncMock(side_effect=_update)
     monkeypatch.setattr(cloud_storage_repo, "get", AsyncMock(side_effect=_get))
     monkeypatch.setattr(cloud_storage_repo, "update_tokens", update)
@@ -396,11 +400,12 @@ async def test_get_valid_drive_access_token_raises_when_expired_with_no_refresh_
         await get_valid_drive_access_token("conn1", sm)  # type: ignore[arg-type]
 
 
-async def test_get_valid_drive_access_token_never_holds_a_session_across_the_refresh(
+async def test_refresh_holds_one_session_under_the_lock_and_posts_only_after_lock_and_reread(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Short-session rule: the read session closes before the Google refresh POST, and the
-    write uses a fresh one that is committed."""
+    """The fast-path read closes before anything else; the refresh then runs in ONE committed
+    session: lock, re-read, the Google POST (the only network call allowed inside a session),
+    write (documented exception to the short-session rule)."""
     _set_enc_key(monkeypatch)
     _set_oauth_settings(monkeypatch)
     import src.integrations.google_drive.oauth as drive_oauth
@@ -426,12 +431,14 @@ async def test_get_valid_drive_access_token_never_holds_a_session_across_the_ref
         "session:enter",
         "db:get",
         "session:exit",
-        "net:refresh",
         "session:enter",
+        "db:lock",
+        "db:get",
+        "net:refresh",
         "db:update",
         "session:exit",
     ]
-    assert_no_network_inside_session(events)
+    assert_no_network_inside_session(events, allowed_inside=frozenset({"net:refresh"}))
     sm.session.commit.assert_awaited_once()
 
 
@@ -462,3 +469,214 @@ def test_consume_state_propagates_missing_encryption_key(
 
     with pytest.raises(EncryptionKeyMissingError):
         consume_state("anything")
+
+
+async def test_refresh_skips_the_post_when_another_caller_just_refreshed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Fast path sees an expired token; the re-read under the lock sees a fresh one."""
+    _set_enc_key(monkeypatch)
+    _set_oauth_settings(monkeypatch)
+    import src.integrations.google_drive.oauth as drive_oauth
+    from src.security.encryption import encrypt
+
+    stale = _connection(
+        encrypted_access_token=encrypt("old-at"),
+        encrypted_refresh_token=encrypt("rt-1"),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    fresh = _connection(
+        encrypted_access_token=encrypt("fresh-at"),
+        encrypted_refresh_token=encrypt("rt-1"),
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    sm, update, events = _wire_repo(monkeypatch, stale)
+    reads = iter([stale, fresh])
+
+    async def _get(_session: Any, _id: str) -> Any:
+        events.append("db:get")
+        return next(reads)
+
+    monkeypatch.setattr(cloud_storage_repo, "get", _get)
+    post = AsyncMock()
+    monkeypatch.setattr(drive_oauth, "refresh_access_token", post)
+
+    assert await drive_oauth.get_valid_drive_access_token("conn1", sm) == "fresh-at"  # type: ignore[arg-type]
+    post.assert_not_awaited()
+    update.assert_not_awaited()
+    assert events == [
+        "session:enter",
+        "db:get",
+        "session:exit",
+        "session:enter",
+        "db:lock",
+        "db:get",
+        "session:exit",
+    ]
+
+
+async def test_refused_waiter_holds_no_session_while_it_waits(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Refused the lock: roll back and close, sleep, re-read in a short session; the winner
+    already refreshed it, so return the fresh token without posting."""
+    _set_enc_key(monkeypatch)
+    _set_oauth_settings(monkeypatch)
+    import src.integrations.google_drive.oauth as drive_oauth
+    from src.security.encryption import encrypt
+
+    stale = _connection(
+        encrypted_access_token=encrypt("old-at"),
+        encrypted_refresh_token=encrypt("rt-1"),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    fresh = _connection(
+        encrypted_access_token=encrypt("fresh-at"),
+        encrypted_refresh_token=encrypt("rt-1"),
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    sm, update, events = _wire_repo(monkeypatch, stale, grants=[False])
+    reads = iter([stale, fresh])
+
+    async def _get(_session: Any, _id: str) -> Any:
+        events.append("db:get")
+        return next(reads)
+
+    monkeypatch.setattr(cloud_storage_repo, "get", _get)
+    post = AsyncMock()
+    monkeypatch.setattr(drive_oauth, "refresh_access_token", post)
+
+    assert await drive_oauth.get_valid_drive_access_token("conn1", sm) == "fresh-at"  # type: ignore[arg-type]
+    post.assert_not_awaited()
+    update.assert_not_awaited()
+    assert events == [
+        "session:enter",
+        "db:get",
+        "session:exit",
+        "session:enter",
+        "db:lock-denied",
+        "session:exit",
+        "session:enter",
+        "db:get",
+        "session:exit",
+    ]
+    assert_no_network_inside_session(events)
+
+
+async def test_waiter_deadline_raises_a_clear_refresh_error_without_posting(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_enc_key(monkeypatch)
+    _set_oauth_settings(monkeypatch)
+    import src.integrations.google_drive.oauth as drive_oauth
+    from src.security.encryption import encrypt
+
+    connection = _connection(
+        encrypted_access_token=encrypt("old-at"),
+        encrypted_refresh_token=encrypt("rt-1"),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    sm, update, _events = _wire_repo(monkeypatch, connection, grants=[False])
+    monkeypatch.setattr(drive_oauth, "_REFRESH_WAIT_DEADLINE_S", 0.05)
+    post = AsyncMock()
+    monkeypatch.setattr(drive_oauth, "refresh_access_token", post)
+
+    with pytest.raises(
+        drive_oauth.TokenRefreshError, match="Timed out waiting for a concurrent token refresh"
+    ):
+        await drive_oauth.get_valid_drive_access_token("conn1", sm)  # type: ignore[arg-type]
+    post.assert_not_awaited()
+    update.assert_not_awaited()
+
+
+async def test_refresh_post_is_bounded_and_the_waiter_deadline_exceeds_it(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    _set_enc_key(monkeypatch)
+    _set_oauth_settings(monkeypatch)
+    import src.integrations.google_drive.oauth as drive_oauth
+    from src.security.encryption import encrypt
+
+    assert drive_oauth._REFRESH_WAIT_DEADLINE_S > drive_oauth._REFRESH_POST_TIMEOUT_S  # pyright: ignore[reportPrivateUsage]
+    connection = _connection(
+        encrypted_access_token=encrypt("old-at"),
+        encrypted_refresh_token=encrypt("rt-1"),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    sm, update, _events = _wire_repo(monkeypatch, connection)
+
+    async def _hang(_rt: str) -> dict[str, Any]:
+        await asyncio.sleep(30)
+        return {}
+
+    monkeypatch.setattr(drive_oauth, "refresh_access_token", _hang)
+    monkeypatch.setattr(drive_oauth, "_REFRESH_POST_TIMEOUT_S", 0.05)
+    with pytest.raises(drive_oauth.TokenRefreshError, match="timed out"):
+        await drive_oauth.get_valid_drive_access_token("conn1", sm)  # type: ignore[arg-type]
+    update.assert_not_awaited()
+
+
+async def test_lock_key_is_the_natural_key_of_the_connection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_enc_key(monkeypatch)
+    _set_oauth_settings(monkeypatch)
+    import src.integrations.google_drive.oauth as drive_oauth
+    from src.security.encryption import encrypt
+
+    connection = _connection(
+        encrypted_access_token=encrypt("old-at"),
+        encrypted_refresh_token=encrypt("rt-1"),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    sm, _update, events = _wire_repo(
+        monkeypatch, connection, _connection(encrypted_access_token=encrypt("new-at"))
+    )
+    keys = script_lock(monkeypatch, events)
+    monkeypatch.setattr(
+        drive_oauth,
+        "refresh_access_token",
+        AsyncMock(return_value={"access_token": "new-at", "expires_in": 3600}),
+    )
+    await drive_oauth.get_valid_drive_access_token("conn1", sm)  # type: ignore[arg-type]
+    assert keys == ["cloud_storage_connection:user1:google-drive:a@example.com"]
+
+
+async def test_save_connection_grant_takes_the_same_lock_as_a_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A re-grant waits (holding no session) for an in-flight refresh of the same connection,
+    then upserts under the same natural-key lock, so the refresh cannot overwrite it."""
+    import src.integrations.google_drive.oauth as drive_oauth
+
+    sm, _update, events = _wire_repo(monkeypatch, None)
+
+    async def _upsert(_session: Any, **kwargs: Any) -> CloudStorageConnectionRecord:
+        events.append("db:upsert")
+        return _connection()
+
+    monkeypatch.setattr(cloud_storage_repo, "upsert", _upsert)
+    keys = script_lock(monkeypatch, events, grants=[False, True])
+    values = cloud_storage_repo.ConnectionTokens(
+        encrypted_access_token="a", encrypted_refresh_token=None, expires_at=None, scope="s"
+    )
+    await drive_oauth.save_connection_grant(
+        sm,  # type: ignore[arg-type]
+        user_id="user1",
+        provider="google-drive",
+        account_email="a@example.com",
+        values=values,
+    )
+    assert events == [
+        "session:enter",
+        "db:lock-denied",
+        "session:exit",
+        "session:enter",
+        "db:lock",
+        "db:upsert",
+        "session:exit",
+    ]
+    assert keys == ["cloud_storage_connection:user1:google-drive:a@example.com"] * 2
+    sm.session.commit.assert_awaited_once()

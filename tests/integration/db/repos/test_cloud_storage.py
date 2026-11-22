@@ -51,10 +51,55 @@ async def test_upsert_creates_then_updates_in_place(
     second = await _upsert(session, uid, values=_values("a2", None))
     assert second.id == first.id
     assert second.encrypted_access_token == "a2"
-    # A re-grant without a refresh token clears the stored one (pinned, like-for-like).
-    assert second.encrypted_refresh_token is None
+    # A re-grant without a refresh token keeps the stored one (Google omits it on re-consent).
+    assert second.encrypted_refresh_token == "r1"
     assert first.created_at == t1 and second.created_at == t1
     assert first.updated_at == t1 and second.updated_at == t2
+
+
+async def test_regrant_without_refresh_token_keeps_the_stored_one_and_stores_the_given_scope(
+    session: AsyncSession,
+) -> None:
+    uid = _id()
+    await _upsert(session, uid, values=_values("a1", "r1"))
+    second = await _upsert(
+        session,
+        uid,
+        values=repo.ConnectionTokens(
+            encrypted_access_token="a2",
+            encrypted_refresh_token=None,
+            expires_at=None,
+            scope="drive.metadata.readonly",
+        ),
+    )
+    assert second.encrypted_access_token == "a2"
+    assert second.encrypted_refresh_token == "r1"  # byte-for-byte
+    # scope is stored as given (the route passes the requested scopes when Google omits it)
+    assert second.scope == "drive.metadata.readonly"
+    assert second.expires_at is None  # expiry is NOT kept: it belongs to the new access token
+
+
+async def test_regrant_with_new_refresh_token_and_scope_replaces_them(
+    session: AsyncSession,
+) -> None:
+    uid = _id()
+    await _upsert(session, uid, values=_values("a1", "r1"))
+    second = await _upsert(
+        session,
+        uid,
+        values=repo.ConnectionTokens(
+            encrypted_access_token="a2",
+            encrypted_refresh_token="r2",
+            expires_at=None,
+            scope="drive.file",
+        ),
+    )
+    assert second.encrypted_refresh_token == "r2" and second.scope == "drive.file"
+
+
+async def test_first_grant_without_refresh_token_stores_null(session: AsyncSession) -> None:
+    first = await _upsert(session, _id(), values=_values("a1", None))
+    assert first.encrypted_refresh_token is None
 
 
 async def test_upsert_refreshes_a_row_already_held_in_the_session(session: AsyncSession) -> None:

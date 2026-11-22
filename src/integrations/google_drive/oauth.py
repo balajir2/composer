@@ -17,6 +17,7 @@ and only within the TTL.
 See docs/archive/phase-history/specs/2026-07-15-google-drive-oauth-file-trigger-design.md §B.
 """
 
+import asyncio
 import json
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -26,7 +27,9 @@ import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import get_settings
+from src.db import locks
 from src.db.repos import cloud_storage as cloud_storage_repo
+from src.db.repos.cloud_storage import CloudStorageConnectionRecord
 from src.security.encryption import EncryptionError, EncryptionKeyMissingError, decrypt, encrypt
 
 GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -65,6 +68,10 @@ OAUTH_SCOPES = f"{DRIVE_READONLY_SCOPE} {DRIVE_METADATA_SCOPE} {USERINFO_EMAIL_S
 
 _STATE_TTL = timedelta(minutes=10)
 _EXPIRY_BUFFER_SECONDS = 60
+# The refresh POST is bounded; a waiter's deadline must exceed it so a waiter outlives one
+# in-flight refresh.
+_REFRESH_POST_TIMEOUT_S = 30.0
+_REFRESH_WAIT_DEADLINE_S = 35.0
 
 
 class GoogleDriveOAuthError(RuntimeError):
@@ -191,6 +198,130 @@ async def refresh_access_token(refresh_token_plaintext: str) -> dict[str, Any]:
     return await _post_token_form(form, TokenRefreshError, "token refresh")
 
 
+def _needs_refresh(connection: CloudStorageConnectionRecord, buffer_seconds: int) -> bool:
+    if connection.expires_at is None:
+        return False
+    return datetime.now(UTC) >= connection.expires_at - timedelta(seconds=buffer_seconds)
+
+
+async def save_connection_grant(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    user_id: str,
+    provider: str,
+    account_email: str,
+    values: cloud_storage_repo.ConnectionTokens,
+) -> CloudStorageConnectionRecord:
+    """Store a (re-)grant under the same natural-key lock a refresh of that connection takes,
+    so an in-flight refresh cannot overwrite it. A refused caller waits holding no session."""
+
+    async def _store(session: AsyncSession) -> CloudStorageConnectionRecord:
+        record = await cloud_storage_repo.upsert(
+            session,
+            user_id=user_id,
+            provider=provider,
+            account_email=account_email,
+            values=values,
+        )
+        await session.commit()
+        return record
+
+    try:
+        return await locks.run_under_lock(
+            sessionmaker,
+            cloud_storage_repo.connection_lock_key(user_id, provider, account_email),
+            _store,
+            wait_s=_REFRESH_WAIT_DEADLINE_S,
+        )
+    except locks.LockTimeoutError as exc:
+        raise TokenExchangeError(
+            "Timed out waiting for a token refresh of this connection to finish; try again."
+        ) from exc
+
+
+async def _refresh_connection(
+    connection: CloudStorageConnectionRecord,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    expiry_buffer_seconds: int,
+) -> CloudStorageConnectionRecord:
+    """Refresh one connection's token once, even when several callers race.
+
+    Serialized per connection with a transaction-scoped Postgres advisory lock keyed on the
+    connection's natural key. A caller refused the lock holds no connection while it waits: it
+    sleeps, re-reads the row in a short session and returns it once the winner has refreshed it
+    (a refresh token posted twice can get revoked by an IdP that detects reuse).
+
+    Raises ``TokenRefreshError`` if the Google call fails, takes longer than
+    ``_REFRESH_POST_TIMEOUT_S``, or the lock is not granted within ``_REFRESH_WAIT_DEADLINE_S``.
+
+    SHORT-SESSION RULE EXCEPTION: the winner holds ONE session (one pooled connection) open
+    across the Google refresh POST, because the lock lives exactly as long as the transaction.
+    That POST is the only network call allowed inside an open session.
+    """
+    connection_id = connection.id
+    missing = f"No CloudStorageConnection found for id {connection_id!r}."
+
+    async def _check() -> CloudStorageConnectionRecord | None:
+        """Between attempts, in its own short session: has the winner finished?"""
+        async with sessionmaker() as session:
+            current = await cloud_storage_repo.get(session, connection_id)
+        if current is None:
+            raise DriveConnectionMissingError(missing)
+        return None if _needs_refresh(current, expiry_buffer_seconds) else current
+
+    async def _refresh(session: AsyncSession) -> CloudStorageConnectionRecord:
+        current = await cloud_storage_repo.get(session, connection_id)
+        if current is None:
+            raise DriveConnectionMissingError(missing)
+        if not _needs_refresh(current, expiry_buffer_seconds):
+            await session.commit()  # refreshed by a caller that held the lock before us
+            return current
+        if not current.encrypted_refresh_token:
+            raise DriveTokenExpiredError(
+                f"Drive connection {connection_id!r} expired with no refresh token; "
+                f"user must reconnect."
+            )
+        # A failure leaves the session without committing: it rolls back, the lock is
+        # released and the row is unchanged.
+        try:
+            async with asyncio.timeout(_REFRESH_POST_TIMEOUT_S):
+                refreshed = await refresh_access_token(decrypt(current.encrypted_refresh_token))
+        except TimeoutError as exc:
+            raise TokenRefreshError(
+                f"Google token refresh timed out after {_REFRESH_POST_TIMEOUT_S:g}s"
+            ) from exc
+        changes = cloud_storage_repo.TokenChanges(
+            encrypted_access_token=encrypt(refreshed["access_token"]),
+            expires_at=expires_at_from_in(refreshed.get("expires_in")),
+        )
+        new_refresh_token = refreshed.get("refresh_token")
+        if new_refresh_token:
+            # Google doesn't always rotate the refresh token; only persist a new one
+            # when the response actually includes one.
+            changes["encrypted_refresh_token"] = encrypt(new_refresh_token)
+        updated = await cloud_storage_repo.update_tokens(session, connection_id, changes)
+        if updated is None:
+            # Deleted after the first read: don't hand back the stale, expired token.
+            raise DriveConnectionMissingError(missing)
+        await session.commit()  # releases the advisory lock
+        return updated
+
+    try:
+        return await locks.run_under_lock(
+            sessionmaker,
+            cloud_storage_repo.connection_lock_key(
+                connection.user_id, connection.provider, connection.account_email
+            ),
+            _refresh,
+            wait_s=_REFRESH_WAIT_DEADLINE_S,
+            check=_check,
+        )
+    except locks.LockTimeoutError as exc:
+        raise TokenRefreshError(
+            f"Timed out waiting for a concurrent token refresh of connection {connection_id!r}."
+        ) from exc
+
+
 async def get_valid_drive_access_token(
     connection_id: str,
     sessionmaker: async_sessionmaker[AsyncSession],
@@ -199,8 +330,9 @@ async def get_valid_drive_access_token(
 ) -> str:
     """Return a decrypted plaintext access token, refreshing if near-expiry.
 
-    Short-session rule: the read and the post-refresh write each use their own session; none
-    is open while the Google refresh request is in flight.
+    The fast path is one short read session, closed before anything else. A refresh runs in its
+    own session under an advisory lock (see ``_refresh_connection``, a documented exception to
+    the short-session rule).
     """
     async with sessionmaker() as session:
         connection = await cloud_storage_repo.get(session, connection_id)
@@ -209,33 +341,13 @@ async def get_valid_drive_access_token(
             f"No CloudStorageConnection found for id {connection_id!r}."
         )
 
-    if connection.expires_at is not None:
-        now = datetime.now(UTC)
-        if now >= connection.expires_at - timedelta(seconds=expiry_buffer_seconds):
-            if not connection.encrypted_refresh_token:
-                raise DriveTokenExpiredError(
-                    f"Drive connection {connection_id!r} expired with no refresh token; "
-                    f"user must reconnect."
-                )
-            refreshed = await refresh_access_token(decrypt(connection.encrypted_refresh_token))
-            changes = cloud_storage_repo.TokenChanges(
-                encrypted_access_token=encrypt(refreshed["access_token"]),
-                expires_at=expires_at_from_in(refreshed.get("expires_in")),
+    if _needs_refresh(connection, expiry_buffer_seconds):
+        if not connection.encrypted_refresh_token:
+            raise DriveTokenExpiredError(
+                f"Drive connection {connection_id!r} expired with no refresh token; "
+                f"user must reconnect."
             )
-            new_refresh_token = refreshed.get("refresh_token")
-            if new_refresh_token:
-                # Google doesn't always rotate the refresh token; only persist a new one
-                # when the response actually includes one.
-                changes["encrypted_refresh_token"] = encrypt(new_refresh_token)
-            async with sessionmaker() as session:
-                updated = await cloud_storage_repo.update_tokens(session, connection_id, changes)
-                await session.commit()
-            if updated is None:
-                # Deleted after the first read: don't hand back the stale, expired token.
-                raise DriveConnectionMissingError(
-                    f"No CloudStorageConnection found for id {connection_id!r}."
-                )
-            connection = updated
+        connection = await _refresh_connection(connection, sessionmaker, expiry_buffer_seconds)
 
     return decrypt(connection.encrypted_access_token)
 
@@ -258,4 +370,5 @@ __all__ = [
     "expires_at_from_in",
     "get_valid_drive_access_token",
     "refresh_access_token",
+    "save_connection_grant",
 ]

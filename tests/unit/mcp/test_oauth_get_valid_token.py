@@ -17,7 +17,7 @@ from src.mcp.oauth import (
 )
 from src.security.encryption import decrypt, encrypt
 from tests.unit.db_fakes import RecordingSessionmaker, assert_no_network_inside_session
-from tests.unit.mcp._oauth_fakes import RepoCalls, make_token, script_repo
+from tests.unit.mcp._oauth_fakes import RepoCalls, make_token, script_lock, script_repo
 from tests.unit.mcp._server_fakes import make_server
 
 
@@ -114,7 +114,7 @@ async def test_near_expiry_triggers_refresh(
 
     refresh_calls: list[Any] = []
 
-    async def _fake_refresh(server: Any, token_row: Any, _sm: Any) -> Any:
+    async def _fake_refresh(server: Any, token_row: Any, _sm: Any, **_kw: Any) -> Any:
         refresh_calls.append((server.id, token_row.id))
         # Return a new row with a fresh token
         return make_token(
@@ -145,12 +145,13 @@ async def test_near_expiry_without_refresh_token_raises(
         await get_valid_access_token(_server(owner="user1"), "user1", sm)
 
 
-async def test_refresh_reads_close_before_the_post_and_write_the_owners_row(
+async def test_fast_path_read_closes_then_refresh_posts_under_the_lock_and_writes_the_owners_row(
     monkeypatch: pytest.MonkeyPatch,
     httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
 ) -> None:
-    """Shared-server fallback + expired owner token: short read session, closed; the IdP POST
-    runs with no session open; the update goes to the OWNER's row by id (no row for the caller)."""
+    """Shared-server fallback + expired owner token: the short read session closes before any
+    network call; the refresh then runs in ONE session under the advisory lock on the OWNER's
+    row (re-read by id, POST, update by id; no row is created for the caller)."""
     owner_token = _valid_token(
         monkeypatch,
         id="owner-tok",
@@ -162,6 +163,7 @@ async def test_refresh_reads_close_before_the_post_and_write_the_owners_row(
         monkeypatch,
         calls,
         get_token=[None, owner_token],
+        get_token_by_id=owner_token,
         update_token=make_token(
             id="owner-tok",
             encrypted_access_token=encrypt("refreshed"),
@@ -169,6 +171,7 @@ async def test_refresh_reads_close_before_the_post_and_write_the_owners_row(
         ),
     )
     sm: Any = RecordingSessionmaker(calls.events)
+    keys = script_lock(monkeypatch, calls.events)
 
     def _idp(request: httpx.Request) -> httpx.Response:
         calls.events.append("net:token-post")
@@ -184,12 +187,15 @@ async def test_refresh_reads_close_before_the_post_and_write_the_owners_row(
         "db:get_token",
         "db:get_token",
         "session:exit",
-        "net:token-post",
         "session:enter",
+        "db:lock",
+        "db:get_token_by_id",
+        "net:token-post",
         "db:update_token",
         "session:exit",
     ]
-    assert_no_network_inside_session(calls.events)
+    assert keys == ["mcp_oauth_token:srv1:owner"]  # the OWNER's row, never the caller's
+    assert_no_network_inside_session(calls.events, allowed_inside=frozenset({"net:token-post"}))
     ((token_id, _changes),) = calls.of("update_token")
     assert token_id == "owner-tok"
     assert calls.of("upsert_token") == []
