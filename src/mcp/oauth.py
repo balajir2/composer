@@ -20,6 +20,7 @@ from urllib.parse import urlencode, urlsplit
 import httpx
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.db import locks
 from src.db.repos import mcp_oauth as mcp_oauth_repo
 from src.db.repos.mcp_oauth import McpOAuthStateRecord, McpOAuthTokenRecord
 from src.db.repos.mcp_servers import McpServerRecord
@@ -245,60 +246,94 @@ async def exchange_code_for_tokens(
     return stored
 
 
+_EXPIRY_BUFFER_SECONDS = 60
+
+
+def _needs_refresh(token: McpOAuthTokenRecord, buffer_seconds: int) -> bool:
+    """True when the access token is expired or within ``buffer_seconds`` of expiring."""
+    if token.expires_at is None:
+        return False
+    return datetime.now(UTC) >= token.expires_at - timedelta(seconds=buffer_seconds)
+
+
 async def refresh_token(
     server: McpServerRecord,
     token_row: McpOAuthTokenRecord,
     sessionmaker: Sessionmaker,
+    *,
+    expiry_buffer_seconds: int = _EXPIRY_BUFFER_SECONDS,
 ) -> McpOAuthTokenRecord:
-    """Refresh an expired access token. POST includes RFC 8707 resource (fix #1).
+    """Refresh an expired access token, once even when several callers race. POST includes
+    RFC 8707 resource (fix #1).
 
-    Updates the stored row by id (so a shared server's owner row is refreshed in place and
-    no row is ever created for the caller). Keeps the old refresh_token if the IdP doesn't
-    return a new one. The POST runs with no session open.
+    Serialized per token row with a transaction-scoped Postgres advisory lock: the second
+    caller waits, re-reads the row, finds it already refreshed and returns it without posting
+    (IdPs that detect refresh-token reuse may revoke a token posted twice). The row refreshed
+    is the one passed in, by id: a shared server's owner row on fallback, and no row is ever
+    created for the caller. Keeps the old refresh_token if the IdP doesn't return a new one.
+
+    SHORT-SESSION RULE EXCEPTION: this holds ONE session (one pooled connection) open across
+    the token POST, because the lock lives exactly as long as the transaction. The POST is the
+    only network call allowed inside an open session; everything else still closes first.
     """
     if not token_row.encrypted_refresh_token:
         raise McpTokenExpiredError(
             f"Token for server {server.id!r} has no refresh token; user must re-authorize."
         )
 
-    config: dict[str, Any] = server.oauth_config or {}
-    token_url = config["tokenUrl"]
-    client_id = config["clientId"]
-    # P0-5: see exchange_code_for_tokens.
-    client_secret = decrypt_marked(config.get("clientSecret", ""))
-    refresh_plaintext = decrypt(token_row.encrypted_refresh_token)
-
-    form: dict[str, Any] = {
-        "grant_type": "refresh_token",
-        "refresh_token": refresh_plaintext,
-        "client_id": client_id,
-        "client_secret": client_secret,
-        "resource": derive_resource(server.url),  # fix #1
-    }
-
-    payload = await _post_token_form(token_url, form, TokenRefreshError, "OAuth refresh failed")
-    access_token = payload.get("access_token", "")
-    new_refresh: str | None = payload.get("refresh_token")
-
-    changes = mcp_oauth_repo.TokenChanges(
-        encrypted_access_token=encrypt(access_token),
-        expires_at=_expires_at_from_in(payload.get("expires_in")),
-    )
-    if new_refresh:
-        changes["encrypted_refresh_token"] = encrypt(new_refresh)
-    # else: no rotation, the stored refresh token is left as it is.
-
     async with sessionmaker() as session:
-        updated = await mcp_oauth_repo.update_token(session, token_row.id, changes)
-        await session.commit()
-    if updated is None:  # disconnected while the IdP call was in flight
-        raise McpTokenMissingError(
-            f"Token for server {server.id!r} was removed while it was being refreshed."
+        try:
+            await locks.acquire_xact_lock(session, f"mcp_oauth_token:{token_row.id}")
+        except locks.LockTimeoutError as exc:
+            raise TokenRefreshError(
+                f"Timed out waiting for another refresh of the token for server {server.id!r}; "
+                f"try again."
+            ) from exc
+        current = await mcp_oauth_repo.get_token_by_id(session, token_row.id)
+        if current is None:  # disconnected before we got the lock
+            raise McpTokenMissingError(
+                f"Token for server {server.id!r} was removed while it was being refreshed."
+            )
+        if not _needs_refresh(current, expiry_buffer_seconds):
+            await session.commit()  # another caller refreshed it while we waited
+            return current
+        if not current.encrypted_refresh_token:
+            raise McpTokenExpiredError(
+                f"Token for server {server.id!r} has no refresh token; user must re-authorize."
+            )
+
+        config: dict[str, Any] = server.oauth_config or {}
+        token_url = config["tokenUrl"]
+        client_id = config["clientId"]
+        # P0-5: see exchange_code_for_tokens.
+        client_secret = decrypt_marked(config.get("clientSecret", ""))
+        form: dict[str, Any] = {
+            "grant_type": "refresh_token",
+            "refresh_token": decrypt(current.encrypted_refresh_token),
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "resource": derive_resource(server.url),  # fix #1
+        }
+        # Raises on failure: leaving the block rolls back, releasing the lock, row unchanged.
+        payload = await _post_token_form(token_url, form, TokenRefreshError, "OAuth refresh failed")
+        access_token = payload.get("access_token", "")
+        new_refresh: str | None = payload.get("refresh_token")
+
+        changes = mcp_oauth_repo.TokenChanges(
+            encrypted_access_token=encrypt(access_token),
+            expires_at=_expires_at_from_in(payload.get("expires_in")),
         )
-    return updated
+        if new_refresh:
+            changes["encrypted_refresh_token"] = encrypt(new_refresh)
+        # else: no rotation, the stored refresh token is left as it is.
 
-
-_EXPIRY_BUFFER_SECONDS = 60
+        updated = await mcp_oauth_repo.update_token(session, current.id, changes)
+        if updated is None:  # deleted while the IdP call was in flight
+            raise McpTokenMissingError(
+                f"Token for server {server.id!r} was removed while it was being refreshed."
+            )
+        await session.commit()  # releases the advisory lock
+        return updated
 
 
 async def get_valid_access_token(
@@ -314,8 +349,10 @@ async def get_valid_access_token(
     personal one (fix #5). Never leaks a token to a caller that can't access
     the server (resolver handles that check before we get here).
 
-    Reads happen in one short session that is closed before any refresh request; the
-    refreshed value is written to whichever row it came from (the owner's, on fallback).
+    The fast path reads in one short session, closed before anything else. A refresh runs in
+    its own session under an advisory lock (see ``refresh_token``, a documented exception to
+    the short-session rule) and writes to whichever row the token came from (the owner's, on
+    fallback).
     """
     effective_user = user_id or ""
     async with sessionmaker() as session:
@@ -343,15 +380,15 @@ async def get_valid_access_token(
             )
 
     # Refresh-on-use with expiry buffer
-    if token.expires_at is not None:
-        now = datetime.now(UTC)
-        if now >= token.expires_at - timedelta(seconds=expiry_buffer_seconds):
-            if not token.encrypted_refresh_token:
-                raise McpTokenExpiredError(
-                    f"Token for server {server.id!r} expired and has no refresh token; "
-                    f"user must re-authorize."
-                )
-            token = await refresh_token(server, token, sessionmaker)
+    if _needs_refresh(token, expiry_buffer_seconds):
+        if not token.encrypted_refresh_token:
+            raise McpTokenExpiredError(
+                f"Token for server {server.id!r} expired and has no refresh token; "
+                f"user must re-authorize."
+            )
+        token = await refresh_token(
+            server, token, sessionmaker, expiry_buffer_seconds=expiry_buffer_seconds
+        )
 
     return decrypt(token.encrypted_access_token)
 

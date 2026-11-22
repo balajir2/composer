@@ -84,15 +84,21 @@ class RecordingSessionmaker:
             return False
 
 
-def assert_no_network_inside_session(events: list[str]) -> None:
-    """Every ``net:*`` event must fall outside any open session; sessions must all close."""
+def assert_no_network_inside_session(
+    events: list[str], *, allowed_inside: frozenset[str] = frozenset()
+) -> None:
+    """Every ``net:*`` event must fall outside any open session; sessions must all close.
+
+    ``allowed_inside`` names the one documented exception: a network event that may run inside
+    an open session (the OAuth refresh POST while its advisory lock is held).
+    """
     open_sessions = 0
     for event in events:
         if event == "session:enter":
             open_sessions += 1
         elif event == "session:exit":
             open_sessions -= 1
-        elif event.startswith("net:"):
+        elif event.startswith("net:") and event not in allowed_inside:
             assert open_sessions == 0, f"{event} ran inside an open session: {events}"
     assert open_sessions == 0, f"a session was left open: {events}"
 

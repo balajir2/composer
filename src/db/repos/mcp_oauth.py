@@ -121,6 +121,16 @@ async def get_token(
     return _token(row) if row else None
 
 
+async def get_token_by_id(session: AsyncSession, token_id: str) -> McpOAuthTokenRecord | None:
+    """One token row by id, read fresh (never from the session's identity map)."""
+    row = await session.scalar(
+        select(McpOAuthToken)
+        .where(McpOAuthToken.id == token_id)
+        .execution_options(populate_existing=True)
+    )
+    return _token(row) if row else None
+
+
 async def upsert_token(
     session: AsyncSession, server_id: str, user_id: str, values: TokenValues
 ) -> McpOAuthTokenRecord:

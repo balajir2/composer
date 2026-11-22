@@ -80,3 +80,22 @@ def script_repo(
 
     for name, scripted in results.items():
         monkeypatch.setattr(mcp_oauth_repo, name, _make(name, scripted))
+
+
+def script_lock(
+    monkeypatch: pytest.MonkeyPatch, events: list[str], *, error: Exception | None = None
+) -> list[str]:
+    """Replace the advisory-lock helper; logs ``db:lock`` into ``events`` (raises ``error``).
+
+    Returns the list the lock keys are appended to."""
+    keys: list[str] = []
+    from src.db import locks
+
+    async def _lock(session: Any, key: str, **_kwargs: Any) -> None:
+        events.append("db:lock")
+        keys.append(key)
+        if error is not None:
+            raise error
+
+    monkeypatch.setattr(locks, "acquire_xact_lock", _lock)
+    return keys

@@ -170,8 +170,9 @@ async def test_drive_upload_with_real_token_helper_holds_no_session_across_netwo
     registered_sessionmaker: RecordingSessionmaker,
 ) -> None:
     """End to end through the real get_valid_drive_access_token with an expired token: the
-    connection read session is closed before the Google refresh and again before the Drive
-    upload; the refresh write uses its own short session."""
+    fast-path read session closes first; the refresh runs in one session under the advisory
+    lock (the Google refresh is the only network call inside it); the Drive upload runs with
+    no session open."""
     import base64
     import os
     from datetime import UTC, datetime, timedelta
@@ -179,6 +180,7 @@ async def test_drive_upload_with_real_token_helper_holds_no_session_across_netwo
     import src.executors.download_pdf as download_pdf_mod
     import src.integrations.google_drive.oauth as drive_oauth
     from src.config import get_settings
+    from src.db import locks
     from src.db.repos import cloud_storage as cloud_storage_repo
     from src.db.repos.cloud_storage import CloudStorageConnectionRecord
     from src.engine.state import initial_state
@@ -223,6 +225,10 @@ async def test_drive_upload_with_real_token_helper_holds_no_session_across_netwo
         async def write_file(self, dest: str, filename: str, content: bytes) -> None:
             events.append("net:drive-write")
 
+    async def _lock(_s: Any, _key: str, **_kw: Any) -> None:
+        events.append("db:lock")
+
+    monkeypatch.setattr(locks, "acquire_xact_lock", _lock)
     monkeypatch.setattr(cloud_storage_repo, "get", _get)
     monkeypatch.setattr(cloud_storage_repo, "update_tokens", _update)
     monkeypatch.setattr(drive_oauth, "refresh_access_token", _refresh)
@@ -235,13 +241,15 @@ async def test_drive_upload_with_real_token_helper_holds_no_session_across_netwo
         "session:enter",
         "db:get",
         "session:exit",
-        "net:refresh",
         "session:enter",
+        "db:lock",
+        "db:get",
+        "net:refresh",
         "db:update",
         "session:exit",
         "net:drive-write",
     ]
-    assert_no_network_inside_session(events)
+    assert_no_network_inside_session(events, allowed_inside=frozenset({"net:refresh"}))
 
 
 async def test_google_drive_without_a_registered_sessionmaker_raises_pinned_error(
