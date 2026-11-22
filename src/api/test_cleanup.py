@@ -35,15 +35,15 @@ import re
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
 from src.db.repos import cloud_storage as cloud_storage_repo
 from src.db.repos import mcp_oauth as mcp_oauth_repo
 from src.db.repos import mcp_servers as mcp_servers_repo
 from src.db.repos import users as users_repo
+from src.db.repos import workflow_assignments as assignments_repo
+from src.db.repos import workflows as workflows_repo
 from src.db.session import get_session
 from src.security.auth import get_current_user_id
-from src.storage.db import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,6 @@ _TEST_EMAIL_PATTERN = re.compile(r"^pw-[^@]+@example\.com$")
 
 @router.delete("/internal/test-users/me", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_own_test_account(  # pyright: ignore[reportUnusedFunction]
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     session: AsyncSession = Depends(get_session),
     user_id: str = Depends(get_current_user_id),
 ) -> None:
@@ -86,10 +85,8 @@ async def delete_own_test_account(  # pyright: ignore[reportUnusedFunction]
             detail="this endpoint only deletes accounts matching the e2e test-user pattern",
         )
 
-    await db.workflow.delete_many(where={"userId": user_id})  # pyright: ignore[reportAttributeAccessIssue]
-    await db.workflowassignment.delete_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"OR": [{"userId": user_id}, {"assignedById": user_id}]}
-    )
+    await workflows_repo.delete_for_user(session, user_id)
+    await assignments_repo.delete_involving_user(session, user_id)
     await mcp_servers_repo.delete_for_user(session, user_id)
     await mcp_oauth_repo.delete_tokens_for_user(session, user_id)
     await mcp_oauth_repo.delete_states_for_user(session, user_id)

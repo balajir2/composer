@@ -634,7 +634,7 @@ def _client_patch_owner(
     wf_row: Any | None,
     target_user: Any | None,
     updated_row: Any | None,
-) -> tuple[TestClient, MagicMock]:
+) -> tuple[TestClient, WorkflowRepoMocks]:
     """Helper for PATCH /workflows/{id}/owner tests (admin-only endpoint)."""
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", "development")
@@ -643,12 +643,10 @@ def _client_patch_owner(
     get_settings.cache_clear()
     app = create_app()
 
-    db = MagicMock()
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(return_value=wf_row)
-    db.workflow.update = AsyncMock(return_value=updated_row)
-    app.state.db = db
     app.state.session = override_session(app)
+    repos = patch_workflow_repos(monkeypatch)
+    repos.get.return_value = wf_row
+    repos.update.return_value = updated_row
     target = (
         make_user(id=target_user.id, email=target_user.email) if target_user is not None else None
     )
@@ -658,7 +656,7 @@ def _client_patch_owner(
     from src.engine.events import ExecutionEventBus
 
     app.state.event_bus = ExecutionEventBus()
-    return TestClient(app), db
+    return TestClient(app), repos
 
 
 def test_patch_workflow_owner_by_user_id(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -668,16 +666,16 @@ def test_patch_workflow_owner_by_user_id(monkeypatch: pytest.MonkeyPatch) -> Non
     target = SimpleNamespace(id="new-owner", email="target@x.com")
     wf = _wf_row(id="wx", user_id="old-owner")
     updated = _wf_row(id="wx", user_id="new-owner")
-    client, db = _client_patch_owner(monkeypatch, wf, target, updated)
+    client, repos = _client_patch_owner(monkeypatch, wf, target, updated)
     client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
     try:
         resp = client.patch("/workflows/wx/owner", json={"userId": "new-owner"})
     finally:
         client.app.dependency_overrides.pop(ensure_admin, None)  # type: ignore[attr-defined]
     assert resp.status_code == 200
-    db.workflow.update.assert_awaited_once()
-    call_data = db.workflow.update.await_args.kwargs["data"]  # type: ignore[union-attr]
-    assert call_data["userId"] == "new-owner"
+    repos.update.assert_awaited_once()
+    assert repos.update.await_args.args[1:] == ("wx", {"user_id": "new-owner"})  # type: ignore[union-attr]
+    client.app.state.session.commit.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 def test_patch_workflow_owner_by_email(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -687,16 +685,16 @@ def test_patch_workflow_owner_by_email(monkeypatch: pytest.MonkeyPatch) -> None:
     target = SimpleNamespace(id="uid-email", email="target@x.com")
     wf = _wf_row(id="wx", user_id="old-owner")
     updated = _wf_row(id="wx", user_id="uid-email")
-    client, db = _client_patch_owner(monkeypatch, wf, target, updated)
+    client, repos = _client_patch_owner(monkeypatch, wf, target, updated)
     client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
     try:
         resp = client.patch("/workflows/wx/owner", json={"email": "target@x.com"})
     finally:
         client.app.dependency_overrides.pop(ensure_admin, None)  # type: ignore[attr-defined]
     assert resp.status_code == 200
-    db.workflow.update.assert_awaited_once()
-    call_data = db.workflow.update.await_args.kwargs["data"]  # type: ignore[union-attr]
-    assert call_data["userId"] == "uid-email"
+    repos.update.assert_awaited_once()
+    assert repos.update.await_args.args[1:] == ("wx", {"user_id": "uid-email"})  # type: ignore[union-attr]
+    client.app.state.session.commit.assert_awaited_once()  # type: ignore[attr-defined]
 
 
 def test_patch_workflow_owner_unknown_email_returns_404(
@@ -854,37 +852,3 @@ def test_put_slug_conflict_returns_409(monkeypatch: pytest.MonkeyPatch) -> None:
     assert detail.startswith("external_slug already in use: ")
     assert "workflows_external_slug_key" in detail
     assert "[SQL" not in detail and "parameters" not in detail
-
-
-def test_patch_workflow_owner_releases_connection_after_user_lookup(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from src.security.auth import ensure_admin
-
-    order: list[str] = []
-    target = SimpleNamespace(id="new-owner", email="target@x.com")
-    wf = _wf_row(id="wx", user_id="old-owner")
-    client, db = _client_patch_owner(monkeypatch, wf, target, _wf_row(id="wx", user_id="new-owner"))
-
-    async def _lookup(*_a: object, **_k: object) -> object:
-        order.append("lookup")
-        return make_user(id="new-owner")
-
-    async def _rollback() -> None:
-        order.append("rollback")
-
-    async def _wf_lookup(**_k: object) -> object:
-        order.append("prisma")
-        return wf
-
-    monkeypatch.setattr(users_repo, "get_by_id", _lookup)
-    db.workflow.find_unique = _wf_lookup
-    session = client.app.state.session  # type: ignore[attr-defined]
-    session.rollback.side_effect = _rollback
-    client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
-    try:
-        resp = client.patch("/workflows/wx/owner", json={"userId": "new-owner"})
-    finally:
-        client.app.dependency_overrides.pop(ensure_admin, None)  # type: ignore[attr-defined]
-    assert resp.status_code == 200
-    assert order == ["lookup", "rollback", "prisma"]

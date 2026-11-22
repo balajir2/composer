@@ -4,11 +4,9 @@ import re
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
 from src.db.errors import AlreadyExists
 from src.db.repos import users as users_repo
@@ -37,7 +35,6 @@ from src.security.encryption import (
     is_marked_encrypted,
     redact_sensitive_headers,
 )
-from src.storage.db import get_db
 from src.variable_validation import find_unknown_variable_references
 
 # P0-5: vector-db node fields carrying secret API keys, same class of gap
@@ -669,50 +666,48 @@ async def admin_update_workflow_flags(
 async def assign_workflow_owner(
     workflow_id: str,
     payload: OwnerAssignRequest,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
+    # One transaction: the user lookup, the workflow read and the write share this
+    # session and the single commit below.
     target_user_id = payload.user_id
     if target_user_id is None:
         if not payload.email:
             raise HTTPException(422, "must provide user_id or email")
         target_user = await users_repo.get_by_email(session, payload.email.lower())
-        await session.rollback()  # release the pooled connection; the rest uses Prisma
         if target_user is None:
             raise HTTPException(404, f"user with email {payload.email!r} not found")
         target_user_id = target_user.id
     else:
         target_user = await users_repo.get_by_id(session, target_user_id)
-        await session.rollback()  # release the pooled connection; the rest uses Prisma
         if target_user is None:
             raise HTTPException(404, f"user {target_user_id!r} not found")
 
-    existing = await db.workflow.find_unique(where={"id": workflow_id})  # pyright: ignore[reportAttributeAccessIssue]
+    existing = await workflows_repo.get(session, workflow_id)
     if existing is None:
         raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
 
-    updated = await db.workflow.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": workflow_id}, data={"userId": target_user_id}
-    )
+    updated = await workflows_repo.update(session, workflow_id, {"user_id": target_user_id})
+    if updated is None:
+        raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
+    await session.commit()
     return _to_workflow_read(updated)
 
 
 @router.get("/workflows/{workflow_id}/assignments", response_model=list[WorkflowAssignmentRead])
 async def list_workflow_assignments(
     workflow_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
 ) -> list[WorkflowAssignmentRead]:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
-    existing = await db.workflow.find_unique(where={"id": workflow_id})  # pyright: ignore[reportAttributeAccessIssue]
+    existing = await workflows_repo.get(session, workflow_id)
     if existing is None:
         raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
-    if role != "admin" and existing.userId != user_id:
+    if role != "admin" and existing.user_id != user_id:
         raise HTTPException(403, "Forbidden: not workflow owner.")
-    rows = await db.workflowassignment.find_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"workflowId": workflow_id}
-    )
+    rows = await assignments_repo.list_for_workflow(session, workflow_id)
     return [WorkflowAssignmentRead.model_validate(r) for r in rows]
 
 
@@ -724,33 +719,29 @@ async def list_workflow_assignments(
 async def grant_workflow_assignment(
     workflow_id: str,
     target_user_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
 ) -> WorkflowAssignmentRead:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
-    existing = await db.workflow.find_unique(where={"id": workflow_id})  # pyright: ignore[reportAttributeAccessIssue]
+    existing = await workflows_repo.get(session, workflow_id)
     if existing is None:
         raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
-    if role != "admin" and existing.userId != user_id:
+    if role != "admin" and existing.user_id != user_id:
         raise HTTPException(403, "Forbidden: not workflow owner.")
     target_user = await users_repo.get_by_id(session, target_user_id)
-    await session.rollback()  # release the pooled connection; the rest uses Prisma
     if target_user is None:
         raise HTTPException(404, f"user {target_user_id!r} not found")
     try:
-        row = await db.workflowassignment.create(  # pyright: ignore[reportAttributeAccessIssue]
-            data={
-                "workflowId": workflow_id,
-                "userId": target_user_id,
-                "assignedById": user_id,
-            }
+        row = await assignments_repo.create(
+            session, workflow_id=workflow_id, user_id=target_user_id, assigned_by_id=user_id
         )
-    except UniqueViolationError as exc:
+    except AlreadyExists as exc:
+        # str(exc) names the constraint only: no SQL, parameters or ciphertext.
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"assignment already exists for user {target_user_id!r}: {exc}",
         ) from exc
+    await session.commit()
     return WorkflowAssignmentRead.model_validate(row)
 
 
@@ -761,23 +752,21 @@ async def grant_workflow_assignment(
 async def revoke_workflow_assignment(
     workflow_id: str,
     target_user_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
 ) -> None:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
-    existing = await db.workflow.find_unique(where={"id": workflow_id})  # pyright: ignore[reportAttributeAccessIssue]
+    existing = await workflows_repo.get(session, workflow_id)
     if existing is None:
         raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
-    if role != "admin" and existing.userId != user_id:
+    if role != "admin" and existing.user_id != user_id:
         raise HTTPException(403, "Forbidden: not workflow owner.")
-    deleted = await db.workflowassignment.delete(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"workflowId_userId": {"workflowId": workflow_id, "userId": target_user_id}}
-    )
-    if deleted is None:
+    if not await assignments_repo.delete(session, workflow_id, target_user_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"assignment not found for user {target_user_id!r}",
         )
+    await session.commit()
 
 
 __all__ = [
