@@ -56,20 +56,20 @@ def _edges() -> list[dict[str, Any]]:
 def _wf_row(**overrides: Any) -> WorkflowRecord:
     base: dict[str, Any] = {
         "id": "w1",
-        "userId": "dev",
+        "user_id": "dev",
         "name": "Sample",
         "description": None,
         "category": None,
         "tags": [],
         "difficulty": None,
-        "estimatedTime": None,
+        "estimated_time": None,
         "nodes": _nodes_with_http(),
         "edges": _edges(),
         "version": None,
-        "isTemplate": False,
-        "isPublic": False,
-        "createdAt": "2026-04-20T00:00:00Z",
-        "updatedAt": "2026-04-20T00:00:00Z",
+        "is_template": False,
+        "is_public": False,
+        "created_at": "2026-04-20T00:00:00Z",
+        "updated_at": "2026-04-20T00:00:00Z",
     }
     base.update(overrides)
     return make_workflow(**base)

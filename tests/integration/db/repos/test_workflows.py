@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.db.errors import AlreadyExists
 from src.db.models import User, UserRole, Workflow, WorkflowAssignment, WorkflowExecution
 from src.db.repos import workflows as repo
-from src.db.repos.workflows import Visibility, WorkflowCreate
+from src.db.repos.workflows import Visibility, WorkflowValues
 
 pytestmark = pytest.mark.integration
 
@@ -27,10 +27,10 @@ async def _user(session: AsyncSession) -> str:
     return uid
 
 
-def _values(**over: Any) -> WorkflowCreate:
+def _values(**over: Any) -> WorkflowValues:
     base: dict[str, Any] = {"name": "W", "nodes": [], "edges": []}
     base.update(over)
-    return cast("WorkflowCreate", base)
+    return cast("WorkflowValues", base)
 
 
 def _viewer(user_id: str, admin: bool = False) -> Visibility:

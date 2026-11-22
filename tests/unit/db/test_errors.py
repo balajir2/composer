@@ -8,7 +8,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.errors import AlreadyExists, add_or_already_exists
+from src.db.errors import AlreadyExists, add_or_already_exists, unique_violation_as_already_exists
 
 
 class _Diag:
@@ -59,3 +59,26 @@ async def test_successful_flush_returns_none() -> None:
     session.flush.assert_awaited_once()
     session.add_all.assert_called_once()
     assert session.nested_entered == 1
+
+
+async def test_helper_translates_unique_violation_raised_in_the_block() -> None:
+    session = _FakeSession()
+    with pytest.raises(AlreadyExists) as info:
+        async with unique_violation_as_already_exists(_as_session(session)):
+            raise IntegrityError("UPDATE", {}, _FakeUniqueViolation("dup"))
+    assert info.value.constraint == "workflows_slug_key"
+    assert session.nested_entered == 1
+
+
+async def test_helper_propagates_other_errors_and_passes_clean_blocks() -> None:
+    session = _FakeSession()
+    async with unique_violation_as_already_exists(_as_session(session)):
+        pass
+    err = IntegrityError("UPDATE", {}, psycopg.errors.ForeignKeyViolation("fk"))
+    with pytest.raises(IntegrityError) as info:
+        async with unique_violation_as_already_exists(_as_session(session)):
+            raise err
+    assert info.value is err
+    with pytest.raises(ValueError):
+        async with unique_violation_as_already_exists(_as_session(session)):
+            raise ValueError("x")

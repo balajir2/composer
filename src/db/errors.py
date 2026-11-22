@@ -1,5 +1,8 @@
 """Errors raised at the repository boundary."""
 
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
+
 import psycopg.errors
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -13,6 +16,22 @@ class AlreadyExists(Exception):
         self.constraint = constraint
 
 
+@asynccontextmanager
+async def unique_violation_as_already_exists(session: AsyncSession) -> AsyncGenerator[None]:
+    """Run the block in a savepoint, translating unique violations to AlreadyExists.
+
+    A violation rolls back only the savepoint, so the caller's transaction stays
+    usable. Other integrity errors propagate unchanged.
+    """
+    try:
+        async with session.begin_nested():
+            yield
+    except IntegrityError as exc:
+        if isinstance(exc.orig, psycopg.errors.UniqueViolation):
+            raise AlreadyExists(exc.orig.diag.constraint_name) from exc
+        raise
+
+
 async def add_or_already_exists(session: AsyncSession, *rows: object) -> None:
     """Insert ``rows`` in a savepoint, translating unique violations to AlreadyExists.
 
@@ -21,11 +40,6 @@ async def add_or_already_exists(session: AsyncSession, *rows: object) -> None:
     the caller's transaction stays usable. Callers must not have other
     unflushed changes they expect to survive a duplicate.
     """
-    try:
-        async with session.begin_nested():
-            session.add_all(rows)
-            await session.flush()
-    except IntegrityError as exc:
-        if isinstance(exc.orig, psycopg.errors.UniqueViolation):
-            raise AlreadyExists(exc.orig.diag.constraint_name) from exc
-        raise
+    async with unique_violation_as_already_exists(session):
+        session.add_all(rows)
+        await session.flush()

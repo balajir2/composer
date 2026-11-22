@@ -22,7 +22,7 @@ from tests.unit.db_fakes import (
 
 def _wf_row_create(**overrides: Any) -> WorkflowRecord:
     """Minimal workflow record for POST /workflows create tests."""
-    base: dict[str, Any] = {"id": "w-new", "userId": "dev", "name": "Created"}
+    base: dict[str, Any] = {"id": "w-new", "user_id": "dev", "name": "Created"}
     base.update(overrides)
     return make_workflow(**base)
 
@@ -30,12 +30,12 @@ def _wf_row_create(**overrides: Any) -> WorkflowRecord:
 def _wf_row(**overrides: Any) -> WorkflowRecord:
     base: dict[str, Any] = {
         "id": "w1",
-        "userId": "user-42",
+        "user_id": "user-42",
         "name": "Sample",
         "description": "A test workflow",
         "category": "utilities",
         "tags": ["x"],
-        "updatedAt": "2026-04-21T01:00:00Z",
+        "updated_at": "2026-04-21T01:00:00Z",
     }
     base.update(overrides)
     return make_workflow(**base)
@@ -79,7 +79,7 @@ def test_list_workflows_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_list_workflows_filters_by_is_template(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, repos = _client(monkeypatch, [_wf_row(isTemplate=True)], total=1)
+    client, repos = _client(monkeypatch, [_wf_row(is_template=True)], total=1)
     resp = client.get("/workflows?isTemplate=true")
     assert resp.status_code == 200
     kwargs = repos.list_page.await_args.kwargs
@@ -89,7 +89,7 @@ def test_list_workflows_filters_by_is_template(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_list_workflows_mine_filters_by_user(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, repos = _client(monkeypatch, [_wf_row(userId="dev")], total=1)
+    client, repos = _client(monkeypatch, [_wf_row(user_id="dev")], total=1)
     resp = client.get("/workflows?mine=true")
     assert resp.status_code == 200
     # dev-mode fallback (ADR-0015) sets user_id='dev'
@@ -104,12 +104,12 @@ def test_list_workflows_mine_overrides_admin_global_view(
     """Regression: admins asking for mine=true must NOT get the global
     feed.  The /designer (My workflows) page sets mine=true, and an
     admin viewing it was seeing every workflow on the system —
-    including userId=null templates — because the listing skipped the
+    including user_id=null templates — because the listing skipped the
     authz filter for admins.  mine=true is an explicit "scope to me"
     request and must apply regardless of role."""
     from src.security.auth import get_current_role
 
-    client, repos = _client(monkeypatch, [_wf_row(userId="dev")], total=1)
+    client, repos = _client(monkeypatch, [_wf_row(user_id="dev")], total=1)
     # Use FastAPI's dependency override (same pattern as the existing
     # admin-bypass tests below).  The MagicMock db isn't a real Prisma
     # instance, so the auth module's isinstance check forces 'member'
@@ -151,7 +151,7 @@ def test_list_workflows_admin_without_mine_sees_all(
 def test_list_workflows_mine_includes_assigned_not_owned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, repos = _client(monkeypatch, [_wf_row(userId="owner-other", id="w-shared")], total=1)
+    client, repos = _client(monkeypatch, [_wf_row(user_id="owner-other", id="w-shared")], total=1)
     resp = client.get("/workflows?mine=true")
     assert resp.status_code == 200
     body = resp.json()
@@ -164,7 +164,7 @@ def test_list_workflows_mine_includes_assigned_not_owned(
 def test_list_workflows_default_view_includes_assigned_private(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, repos = _client(monkeypatch, [_wf_row(userId="owner-other")], total=1)
+    client, repos = _client(monkeypatch, [_wf_row(user_id="owner-other")], total=1)
     resp = client.get("/workflows")
     assert resp.status_code == 200
     assert resp.json()["total"] == 1
@@ -199,7 +199,7 @@ def test_search_workflows_includes_assigned_not_owned(
     public) must still be findable through the search box, not just in
     the default /workflows listing."""
     client, repos = _client(
-        monkeypatch, [_wf_row(userId="owner-other", name="SearchTest")], total=1
+        monkeypatch, [_wf_row(user_id="owner-other", name="SearchTest")], total=1
     )
     resp = client.get("/workflows/search?q=search")
     assert resp.status_code == 200
@@ -248,7 +248,7 @@ def _client_fetch(
 
 
 def test_get_workflow_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    row = _wf_row(id="wx", name="Hello", userId="dev")  # match dev-mode caller
+    row = _wf_row(id="wx", name="Hello", user_id="dev")  # match dev-mode caller
     client, _ = _client_fetch(monkeypatch, row)
     resp = client.get("/workflows/wx")
     assert resp.status_code == 200
@@ -305,8 +305,8 @@ _VALID_BODY: dict[str, Any] = {
 
 
 def test_put_workflow_owner_happy(monkeypatch: pytest.MonkeyPatch) -> None:
-    existing = _wf_row(id="w1", userId="dev")  # dev-mode fallback user
-    updated = _wf_row(id="w1", userId="dev", name="Updated")
+    existing = _wf_row(id="w1", user_id="dev")  # dev-mode fallback user
+    updated = _wf_row(id="w1", user_id="dev", name="Updated")
     client, _ = _client_put(monkeypatch, existing, updated)
     resp = client.put("/workflows/w1", json=_VALID_BODY)
     assert resp.status_code == 200, resp.text
@@ -324,8 +324,8 @@ _DUP_EDGE_BODY: dict[str, Any] = {
 
 def test_put_workflow_collapses_duplicate_edges(monkeypatch: pytest.MonkeyPatch) -> None:
     """A canvas holding duplicate edges must still save, stored without the copies."""
-    existing = _wf_row(id="w1", userId="dev")
-    updated = _wf_row(id="w1", userId="dev", name="Updated")
+    existing = _wf_row(id="w1", user_id="dev")
+    updated = _wf_row(id="w1", user_id="dev", name="Updated")
     client, repos = _client_put(monkeypatch, existing, updated)
     resp = client.put("/workflows/w1", json=_DUP_EDGE_BODY)
     assert resp.status_code == 200, resp.text
@@ -343,7 +343,7 @@ def test_post_workflow_collapses_duplicate_edges(monkeypatch: pytest.MonkeyPatch
     app.state.db = MagicMock()
     override_session(app)
     repos = patch_workflow_repos(monkeypatch)
-    repos.create.return_value = _wf_row_create(userId="dev")
+    repos.create.return_value = _wf_row_create(user_id="dev")
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 
@@ -359,7 +359,7 @@ def test_post_workflow_collapses_duplicate_edges(monkeypatch: pytest.MonkeyPatch
 
 
 def test_put_workflow_not_owner_forbidden(monkeypatch: pytest.MonkeyPatch) -> None:
-    existing = _wf_row(id="w1", userId="someone-else")
+    existing = _wf_row(id="w1", user_id="someone-else")
     client, _ = _client_put(monkeypatch, existing, None)
     resp = client.put("/workflows/w1", json=_VALID_BODY)
     assert resp.status_code == 403
@@ -373,7 +373,7 @@ def test_put_workflow_not_found(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_put_workflow_invalid_shape(monkeypatch: pytest.MonkeyPatch) -> None:
     """No start node → validator raises → 422."""
-    existing = _wf_row(id="w1", userId="dev")
+    existing = _wf_row(id="w1", user_id="dev")
     client, _ = _client_put(monkeypatch, existing, None)
     bad_body: dict[str, Any] = {
         "name": "Bad",
@@ -417,7 +417,7 @@ def _client_delete(
 
 
 def test_delete_workflow_owner_happy(monkeypatch: pytest.MonkeyPatch) -> None:
-    existing = _wf_row(id="w1", userId="dev")
+    existing = _wf_row(id="w1", user_id="dev")
     client, repos = _client_delete(monkeypatch, existing)
     resp = client.delete("/workflows/w1")
     assert resp.status_code == 204
@@ -425,7 +425,7 @@ def test_delete_workflow_owner_happy(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_delete_workflow_not_owner_forbidden(monkeypatch: pytest.MonkeyPatch) -> None:
-    existing = _wf_row(id="w1", userId="other")
+    existing = _wf_row(id="w1", user_id="other")
     client, _ = _client_delete(monkeypatch, existing)
     resp = client.delete("/workflows/w1")
     assert resp.status_code == 403
@@ -446,7 +446,7 @@ def test_get_workflow_private_not_owner_returns_404(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Non-owner reading a private workflow gets 404 (info-leak tight)."""
-    row = _wf_row(id="wx", userId="someone-else", isPublic=False)
+    row = _wf_row(id="wx", user_id="someone-else", is_public=False)
     client, _ = _client_fetch(monkeypatch, row)
     resp = client.get("/workflows/wx")
     assert resp.status_code == 404
@@ -456,7 +456,7 @@ def test_get_workflow_public_non_owner_allowed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Public workflows are readable by non-owners."""
-    row = _wf_row(id="wx", userId="other", isPublic=True, name="Public")
+    row = _wf_row(id="wx", user_id="other", is_public=True, name="Public")
     client, _ = _client_fetch(monkeypatch, row)
     resp = client.get("/workflows/wx")
     assert resp.status_code == 200
@@ -466,7 +466,7 @@ def test_get_workflow_public_non_owner_allowed(
 def test_list_workflows_where_clause_has_authz_or(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """List query must OR(isPublic=true, userId=caller)."""
+    """List query must OR(is_public=true, user_id=caller)."""
     client, repos = _client(monkeypatch, [], total=0)
     resp = client.get("/workflows")
     assert resp.status_code == 200
@@ -515,7 +515,7 @@ def test_create_workflow_over_node_limit_rejected(
     app.state.db = MagicMock()
     override_session(app)
     repos = patch_workflow_repos(monkeypatch)
-    repos.create.return_value = _wf_row_create(id="w-big", userId="dev")
+    repos.create.return_value = _wf_row_create(id="w-big", user_id="dev")
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 
@@ -563,7 +563,7 @@ def test_create_workflow_at_node_limit_accepted(
     app.state.db = MagicMock()
     override_session(app)
     repos = patch_workflow_repos(monkeypatch)
-    repos.create.return_value = _wf_row_create(id="w-big", userId="dev")
+    repos.create.return_value = _wf_row_create(id="w-big", user_id="dev")
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 
@@ -586,7 +586,7 @@ def test_admin_can_read_other_users_private_workflow(
     """Admin bypass: 200 on another user's private workflow."""
     from src.security.auth import get_current_role
 
-    row = _wf_row(id="wx", userId="someone-else", isPublic=False, name="Private")
+    row = _wf_row(id="wx", user_id="someone-else", is_public=False, name="Private")
     client, _ = _client_fetch(monkeypatch, row)
     # Override the dependency on the app instance directly
     client.app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")  # type: ignore[attr-defined]
@@ -602,8 +602,8 @@ def test_admin_can_put_other_users_workflow(monkeypatch: pytest.MonkeyPatch) -> 
     """Admin can PUT another user's workflow."""
     from src.security.auth import get_current_role
 
-    existing = _wf_row(id="w1", userId="someone-else")
-    updated = _wf_row(id="w1", userId="someone-else", name="Updated")
+    existing = _wf_row(id="w1", user_id="someone-else")
+    updated = _wf_row(id="w1", user_id="someone-else", name="Updated")
     client, _ = _client_put(monkeypatch, existing, updated)
     client.app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")  # type: ignore[attr-defined]
     try:
@@ -618,7 +618,7 @@ def test_admin_can_delete_any_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
     """Admins can delete any workflow (admin panel requirement, Phase 10)."""
     from src.security.auth import get_current_role
 
-    existing = _wf_row(id="w1", userId="someone-else")
+    existing = _wf_row(id="w1", user_id="someone-else")
     client, repos = _client_delete(monkeypatch, existing)
     client.app.dependency_overrides[get_current_role] = lambda: ("admin-user", "admin")  # type: ignore[attr-defined]
     try:
@@ -666,8 +666,8 @@ def test_patch_workflow_owner_by_user_id(monkeypatch: pytest.MonkeyPatch) -> Non
     from src.security.auth import ensure_admin
 
     target = SimpleNamespace(id="new-owner", email="target@x.com")
-    wf = _wf_row(id="wx", userId="old-owner")
-    updated = _wf_row(id="wx", userId="new-owner")
+    wf = _wf_row(id="wx", user_id="old-owner")
+    updated = _wf_row(id="wx", user_id="new-owner")
     client, db = _client_patch_owner(monkeypatch, wf, target, updated)
     client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
     try:
@@ -685,8 +685,8 @@ def test_patch_workflow_owner_by_email(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.security.auth import ensure_admin
 
     target = SimpleNamespace(id="uid-email", email="target@x.com")
-    wf = _wf_row(id="wx", userId="old-owner")
-    updated = _wf_row(id="wx", userId="uid-email")
+    wf = _wf_row(id="wx", user_id="old-owner")
+    updated = _wf_row(id="wx", user_id="uid-email")
     client, db = _client_patch_owner(monkeypatch, wf, target, updated)
     client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
     try:
@@ -705,7 +705,7 @@ def test_patch_workflow_owner_unknown_email_returns_404(
     """PATCH with unknown email → 404."""
     from src.security.auth import ensure_admin
 
-    wf = _wf_row(id="wx", userId="old-owner")
+    wf = _wf_row(id="wx", user_id="old-owner")
     client, _ = _client_patch_owner(monkeypatch, wf, None, None)
     client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
     try:
@@ -737,7 +737,7 @@ def test_patch_workflow_owner_member_403(monkeypatch: pytest.MonkeyPatch) -> Non
     In test mode the db is a MagicMock (not Prisma), so get_current_role
     returns ('dev', 'member') and ensure_admin raises 403.
     """
-    wf = _wf_row(id="wx", userId="old-owner")
+    wf = _wf_row(id="wx", user_id="old-owner")
     target = SimpleNamespace(id="new-owner", email="t@x.com")
     client, _ = _client_patch_owner(monkeypatch, wf, target, None)
     # No admin override → dev-mode 'dev' user → member → ensure_admin raises 403
@@ -757,8 +757,8 @@ _PUBLISH_BODY: dict[str, Any] = {
 
 
 def test_put_publish_requires_external_slug(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Setting isProduction=True without externalSlug → 422."""
-    existing = _wf_row(id="w1", userId="dev")
+    """Setting is_production=True without externalSlug → 422."""
+    existing = _wf_row(id="w1", user_id="dev")
     client, _ = _client_put(monkeypatch, existing, None)
     body: dict[str, Any] = {**_VALID_BODY, "isProduction": True}
     resp = client.put("/workflows/w1", json=body)
@@ -768,7 +768,7 @@ def test_put_publish_requires_external_slug(monkeypatch: pytest.MonkeyPatch) -> 
 
 def test_put_publish_invalid_slug_format_422(monkeypatch: pytest.MonkeyPatch) -> None:
     """Invalid slug (uppercase, starts with hyphen) → 422."""
-    existing = _wf_row(id="w1", userId="dev")
+    existing = _wf_row(id="w1", user_id="dev")
     client, _ = _client_put(monkeypatch, existing, None)
     for bad_slug in ("-bad-slug", "UPPERCASE", "has space", "a"):
         body: dict[str, Any] = {**_VALID_BODY, "isProduction": True, "externalSlug": bad_slug}
@@ -783,7 +783,7 @@ def test_put_publish_rejects_unknown_variable_reference(monkeypatch: pytest.Monk
     {{variable}} is rejected with a 422 naming the bad placeholder — the
     exact live bug this guards against (Start input `MB`, a downstream
     node referencing `{{jira_project_key}}`)."""
-    existing = _wf_row(id="w1", userId="dev")
+    existing = _wf_row(id="w1", user_id="dev")
     client, _ = _client_put(monkeypatch, existing, None)
     body: dict[str, Any] = {
         "name": "Updated",
@@ -811,13 +811,13 @@ def test_put_publish_rejects_unknown_variable_reference(monkeypatch: pytest.Monk
 
 def test_put_publish_sets_isproduction_and_slug(monkeypatch: pytest.MonkeyPatch) -> None:
     """Valid publish request updates both isProduction and externalSlug."""
-    existing = _wf_row(id="w1", userId="dev")
+    existing = _wf_row(id="w1", user_id="dev")
     updated = _wf_row(
         id="w1",
-        userId="dev",
+        user_id="dev",
         name="Updated",
-        isProduction=True,
-        externalSlug="my-workflow",
+        is_production=True,
+        external_slug="my-workflow",
     )
     client, repos = _client_put(monkeypatch, existing, updated)
     resp = client.put("/workflows/w1", json=_PUBLISH_BODY)
@@ -829,8 +829,10 @@ def test_put_publish_sets_isproduction_and_slug(monkeypatch: pytest.MonkeyPatch)
 
 def test_put_unpublish_clears_slug(monkeypatch: pytest.MonkeyPatch) -> None:
     """isProduction=False clears externalSlug (sets to None)."""
-    existing = _wf_row(id="w1", userId="dev", isProduction=True, externalSlug="my-workflow")
-    updated = _wf_row(id="w1", userId="dev", name="Updated", isProduction=False, externalSlug=None)
+    existing = _wf_row(id="w1", user_id="dev", is_production=True, external_slug="my-workflow")
+    updated = _wf_row(
+        id="w1", user_id="dev", name="Updated", is_production=False, external_slug=None
+    )
     client, repos = _client_put(monkeypatch, existing, updated)
     body: dict[str, Any] = {**_VALID_BODY, "isProduction": False}
     resp = client.put("/workflows/w1", json=body)
@@ -842,7 +844,7 @@ def test_put_unpublish_clears_slug(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_put_slug_conflict_returns_409(monkeypatch: pytest.MonkeyPatch) -> None:
     """A unique violation on the slug becomes a 409 naming only the constraint."""
-    existing = _wf_row(id="w1", userId="dev")
+    existing = _wf_row(id="w1", user_id="dev")
     client, repos = _client_put(monkeypatch, existing, None)
     repos.update.side_effect = AlreadyExists("workflows_external_slug_key")
 
@@ -861,8 +863,8 @@ def test_patch_workflow_owner_releases_connection_after_user_lookup(
 
     order: list[str] = []
     target = SimpleNamespace(id="new-owner", email="target@x.com")
-    wf = _wf_row(id="wx", userId="old-owner")
-    client, db = _client_patch_owner(monkeypatch, wf, target, _wf_row(id="wx", userId="new-owner"))
+    wf = _wf_row(id="wx", user_id="old-owner")
+    client, db = _client_patch_owner(monkeypatch, wf, target, _wf_row(id="wx", user_id="new-owner"))
 
     async def _lookup(*_a: object, **_k: object) -> object:
         order.append("lookup")

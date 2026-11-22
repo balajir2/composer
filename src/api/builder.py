@@ -15,7 +15,6 @@ from src.api.workflows import (  # reuse existing secret helpers (additive impor
     _encrypt_http_headers,  # pyright: ignore[reportPrivateUsage]
     _encrypt_jira_tokens,  # pyright: ignore[reportPrivateUsage]
     _encrypt_vector_db_keys,  # pyright: ignore[reportPrivateUsage]
-    _has_assignment,  # pyright: ignore[reportPrivateUsage]
     _to_workflow_read,  # pyright: ignore[reportPrivateUsage]
 )
 from src.builder.builder_agent import BuildSession, run_builder_turn
@@ -33,6 +32,19 @@ from src.security.rate_limit import (
     per_minute_config,
 )
 from src.storage.db import get_db
+
+
+async def _has_assignment(db: Prisma, workflow_id: str, user_id: str) -> bool:
+    """Prisma assignment check.
+
+    TODO(phase 3 task 4): the builder moves to SQLAlchemy; delete this and use
+    ``workflow_assignments.exists``.
+    """
+    row = await db.workflowassignment.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
+        where={"workflowId_userId": {"workflowId": workflow_id, "userId": user_id}}
+    )
+    return row is not None
+
 
 router = APIRouter(tags=["builder"])
 

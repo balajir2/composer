@@ -294,22 +294,6 @@ def _encrypt_http_headers(nodes_json: list[dict[str, Any]], existing_nodes: list
         )
 
 
-async def _has_assignment(  # pyright: ignore[reportUnusedFunction]
-    db: Prisma,  # pyright: ignore[reportUnknownParameterType]
-    workflow_id: str,
-    user_id: str,
-) -> bool:
-    """Prisma assignment check, kept only for src/api/builder.py.
-
-    TODO(phase 3 task 4): the builder moves to SQLAlchemy; delete this and use
-    ``workflow_assignments.exists``.
-    """
-    row = await db.workflowassignment.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"workflowId_userId": {"workflowId": workflow_id, "userId": user_id}}
-    )
-    return row is not None
-
-
 class WorkflowCreate(BaseModel):
     """Request body for POST /workflows."""
 
@@ -510,7 +494,7 @@ async def update_workflow(
     payload: WorkflowCreate,
     session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
-) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
+) -> WorkflowRead:
     user_id, role = _role
     existing = await workflows_repo.get(session, workflow_id)
     if existing is None:

@@ -140,21 +140,8 @@ def make_user(**overrides: Any) -> UserRecord:
     return UserRecord(**base)
 
 
-_CAMEL_TO_SNAKE = {
-    "userId": "user_id",
-    "estimatedTime": "estimated_time",
-    "isTemplate": "is_template",
-    "isPublic": "is_public",
-    "isProduction": "is_production",
-    "externalSlug": "external_slug",
-    "originalOwnerEmail": "original_owner_email",
-    "createdAt": "created_at",
-    "updatedAt": "updated_at",
-}
-
-
 def make_workflow(**overrides: Any) -> WorkflowRecord:
-    """A WorkflowRecord with defaults. Overrides may use snake_case or the old camelCase names."""
+    """A WorkflowRecord with defaults; override any field by its snake_case name."""
     now = datetime(2026, 4, 21, tzinfo=UTC)
     base: dict[str, Any] = {
         "id": "w1",
@@ -176,8 +163,7 @@ def make_workflow(**overrides: Any) -> WorkflowRecord:
         "created_at": now,
         "updated_at": now,
     }
-    for key, value in overrides.items():
-        base[_CAMEL_TO_SNAKE.get(key, key)] = value
+    base.update(overrides)
     for key in ("created_at", "updated_at"):
         if isinstance(base[key], str):
             base[key] = datetime.fromisoformat(base[key].replace("Z", "+00:00"))

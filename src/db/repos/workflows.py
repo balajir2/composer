@@ -4,14 +4,12 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, NotRequired, TypedDict
 
-import psycopg.errors
 from sqlalchemy import ColumnElement, exists, func, or_, select
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import update as sa_update
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.errors import AlreadyExists, add_or_already_exists
+from src.db.errors import AlreadyExists, add_or_already_exists, unique_violation_as_already_exists
 from src.db.models import Workflow, WorkflowAssignment
 from src.db.types import utcnow
 
@@ -43,7 +41,7 @@ class Visibility(TypedDict):
     is_admin: bool
 
 
-class WorkflowCreate(TypedDict):
+class WorkflowValues(TypedDict):
     """The insertable columns; ``id`` is generated unless given (migration keeps OAB ids)."""
 
     name: str
@@ -64,9 +62,6 @@ class WorkflowCreate(TypedDict):
     original_owner_email: NotRequired[str | None]
     created_at: NotRequired[datetime]
     updated_at: NotRequired[datetime]
-
-
-WorkflowInsert = WorkflowCreate
 
 
 class WorkflowChanges(TypedDict, total=False):
@@ -112,7 +107,7 @@ def _record(r: Workflow) -> WorkflowRecord:
 
 
 def _contains_pattern(q: str) -> str:
-    """Prisma's `contains` semantics: wildcards in ``q`` are NOT escaped (pinned by the oracle)."""
+    """Wildcards in ``q`` are deliberately NOT escaped: matches Prisma, pinned by the oracle."""
     return f"%{q}%"
 
 
@@ -190,13 +185,13 @@ async def search(
     return await _page(session, where, limit, 0)
 
 
-async def create(session: AsyncSession, values: WorkflowCreate) -> WorkflowRecord:
+async def create(session: AsyncSession, values: WorkflowValues) -> WorkflowRecord:
     row = Workflow(**values)
     await add_or_already_exists(session, row)
     return _record(row)
 
 
-async def insert_if_absent(session: AsyncSession, values: WorkflowInsert) -> bool:
+async def insert_if_absent(session: AsyncSession, values: WorkflowValues) -> bool:
     """Insert unless a row with this id exists. True when inserted (migration writer)."""
     if "id" in values and await session.get(Workflow, values["id"]) is not None:
         return False
@@ -221,13 +216,8 @@ async def update(
         .returning(Workflow)
         .execution_options(populate_existing=True)
     )
-    try:
-        async with session.begin_nested():
-            row = (await session.scalars(stmt)).one_or_none()
-    except IntegrityError as exc:
-        if isinstance(exc.orig, psycopg.errors.UniqueViolation):
-            raise AlreadyExists(exc.orig.diag.constraint_name) from exc
-        raise
+    async with unique_violation_as_already_exists(session):
+        row = (await session.scalars(stmt)).one_or_none()
     return _record(row) if row else None
 
 
