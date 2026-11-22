@@ -41,6 +41,7 @@ Metric labels remain bounded by the catalog. Do not add execution, request, user
 
 ## Runbooks and deployment
 
+- [Monthly telemetry maintenance](telemetry-monthly-maintenance.md)
 - [Monitoring overview](monitoring.md#google-cloud-telemetry)
 - [Provider alert response](incident-response.md#provider-alerts)
 - [WebSocket delivery alert response](incident-response.md#websocket-alerts)
