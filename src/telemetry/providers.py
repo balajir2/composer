@@ -14,6 +14,14 @@ from src.telemetry.attributes import safe_attributes
 
 _meter_provider: MeterProvider | None = None
 _T = TypeVar("_T")
+_LLM_PROVIDERS = frozenset({"anthropic", "openai", "google", "groq", "deepseek", "qwen"})
+_STANDARD_TOOL_PROVIDER_BY_MODULE = {
+    "src.tools.providers.browserless": "browserless",
+    "src.tools.providers.firecrawl": "firecrawl",
+    "src.tools.providers.jira": "other",
+    "src.tools.providers.serper": "serper",
+    "src.tools.providers.tavily": "tavily",
+}
 
 
 def configure_provider_metrics(provider: MeterProvider | None) -> None:
@@ -91,7 +99,12 @@ class ProviderCall:
         exc: BaseException | None,
         _traceback: object,
     ) -> bool:
-        result = _outcome_for_exception(exc) if exc is not None else self._result
+        if self._result != "success":
+            result = self._result
+        elif exc is not None:
+            result = _outcome_for_exception(exc)
+        else:
+            result = self._result
         attributes = safe_attributes(
             "composer.provider.request",
             {"provider": self._provider, "operation": self._operation, "result": result},
@@ -128,6 +141,20 @@ class ProviderCall:
 def provider_call(provider: str, operation: str) -> ProviderCall:
     """Start one outbound call measurement with bounded provider dimensions."""
     return ProviderCall(provider, operation)
+
+
+def provider_name_for_model(model_string: str) -> str:
+    """Map a configured model string to a catalog provider without its model name."""
+    provider = model_string.partition("/")[0] if "/" in model_string else "openai"
+    return provider if provider in _LLM_PROVIDERS else "other"
+
+
+def provider_name_for_tool(tool: object) -> str | None:
+    """Return a mapped standard-tool provider; skip MCP and unknown tool classes."""
+    tool_type = type(tool)
+    if tool_type.__module__ == "src.mcp.base" and tool_type.__name__ == "_McpBoundTool":
+        return None
+    return _STANDARD_TOOL_PROVIDER_BY_MODULE.get(tool_type.__module__)
 
 
 @contextlib.contextmanager
@@ -210,6 +237,8 @@ __all__ = [
     "instrument_runnable",
     "instrument_tool",
     "provider_call",
+    "provider_name_for_model",
+    "provider_name_for_tool",
     "websocket_connection",
     "websocket_replay",
     "websocket_send_failed",

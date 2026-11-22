@@ -333,3 +333,72 @@ async def test_mcp_retry_records_each_outbound_request_once(
     finally:
         configure_provider_metrics(None)
         provider.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("response_kwargs", "error_type", "message", "expected_result"),
+    [
+        (
+            {
+                "json": {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {"code": -32601, "message": "method not found"},
+                }
+            },
+            MCPRpcError,
+            "method not found",
+            "provider_error",
+        ),
+        ({"text": "not json"}, MCPHTTPError, "valid JSON", "provider_error"),
+        (
+            {
+                "text": 'data: {"jsonrpc":"2.0","id":9,"result":{}}\n\n',
+                "headers": {"content-type": "text/event-stream"},
+            },
+            MCPHTTPError,
+            "frame with id=1",
+            "provider_error",
+        ),
+        ({"status_code": 401, "text": "private"}, MCPHTTPError, "HTTP 401", "authentication_error"),
+    ],
+)
+async def test_mcp_protocol_and_parse_failures_are_not_recorded_as_success(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+    response_kwargs: dict[str, Any],
+    error_type: type[Exception],
+    message: str,
+    expected_result: str,
+) -> None:
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    configure_provider_metrics(provider)
+    try:
+        httpx_mock.add_response(
+            url="https://mcp.example.com/rpc",
+            method="POST",
+            **response_kwargs,
+        )
+        with pytest.raises(error_type, match=message):
+            await MCPClient("https://mcp.example.com/rpc").tools_list()
+
+        data = reader.get_metrics_data()
+        assert data is not None
+        metrics = [
+            metric
+            for resource_metrics in data.resource_metrics
+            for scope in resource_metrics.scope_metrics
+            for metric in scope.metrics
+        ]
+        requests = next(metric for metric in metrics if metric.name == "composer.provider.request")
+        points = list(requests.data.data_points)
+        assert sum(cast("Any", point).value for point in points) == 1
+        assert len(points) == 1
+        assert points[0].attributes == {
+            "provider": "other",
+            "operation": "invoke",
+            "result": expected_result,
+        }
+    finally:
+        configure_provider_metrics(None)
+        provider.shutdown()

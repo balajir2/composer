@@ -108,7 +108,7 @@ class MCPClient:
         # This is the shared actual network boundary. Retried RPCs recurse only
         # after this context has closed, so each HTTP request is measured once.
         operation = "tool" if method == "tools/call" else "invoke"
-        resp: httpx.Response | None = None
+        retry_after_initialize = False
         with provider_call("other", operation) as call:
             try:
                 async with httpx.AsyncClient(
@@ -124,31 +124,37 @@ class MCPClient:
                 raise MCPHTTPError(
                     f"MCP {method} transport failed: {type(exc).__name__}: {exc}"
                 ) from exc
-        assert resp is not None
+            if resp.status_code >= 400:
+                if (
+                    _allow_initialize_retry
+                    and method != "initialize"
+                    and self._needs_initialize_before_request(resp)
+                ):
+                    retry_after_initialize = True
+                else:
+                    raise MCPHTTPError(
+                        f"MCP {method} returned HTTP {resp.status_code}: {resp.text[:200]}"
+                    )
+            else:
+                self._capture_session_id(resp)
+                payload = self._parse_response(resp, rpc_id)
 
-        if resp.status_code >= 400:
-            if (
-                _allow_initialize_retry
-                and method != "initialize"
-                and self._needs_initialize_before_request(resp)
-            ):
-                await self.initialize()
-                return await self._rpc(
-                    method,
-                    params,
-                    _allow_initialize_retry=False,
-                )
-            raise MCPHTTPError(f"MCP {method} returned HTTP {resp.status_code}: {resp.text[:200]}")
+                if "error" in payload:
+                    err = payload["error"]
+                    raise MCPRpcError(
+                        f"MCP {method} RPC error (code={err.get('code')}): "
+                        f"{err.get('message', 'unknown')}"
+                    )
+                return payload.get("result", {})  # type: ignore[no-any-return]
 
-        self._capture_session_id(resp)
-        payload = self._parse_response(resp, rpc_id)
-
-        if "error" in payload:
-            err = payload["error"]
-            raise MCPRpcError(
-                f"MCP {method} RPC error (code={err.get('code')}): {err.get('message', 'unknown')}"
+        if retry_after_initialize:
+            await self.initialize()
+            return await self._rpc(
+                method,
+                params,
+                _allow_initialize_retry=False,
             )
-        return payload.get("result", {})  # type: ignore[no-any-return]
+        raise AssertionError("unreachable MCP retry state")
 
     def _capture_session_id(self, resp: httpx.Response) -> None:
         """Remember the MCP session id returned by stateful streamable-HTTP servers."""
