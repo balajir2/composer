@@ -21,7 +21,7 @@ from src.db.repos.mcp_servers import McpServerChanges, McpServerRecord
 from src.db.runtime import require_sessionmaker
 from src.db.session import get_session
 from src.mcp.base import McpToolProvider
-from src.mcp.headers import InvalidHeaderError, validate_custom_headers
+from src.mcp.headers import InvalidHeaderError, is_latin1, validate_custom_headers
 from src.mcp.oauth import (
     STATE_NOT_FOUND_TAIL,
     InvalidStateError,
@@ -212,6 +212,11 @@ async def create_mcp_server(
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="accessToken must not contain CR, LF or NUL characters",
+        )
+    if access_token and not is_latin1(access_token):
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="accessToken must only contain Latin-1 (ISO 8859-1) characters",
         )
     try:
         custom_headers = (

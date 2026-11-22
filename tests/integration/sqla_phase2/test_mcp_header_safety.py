@@ -53,6 +53,7 @@ async def test_create_rejects_unsafe_headers_and_tokens_without_echoing_values(
         {"Bad Name": "v"},
         {"Host": "evil.example.com"},
         {"Content-Length": "5"},
+        {"X-Api-Key": f"{SECRET}☃"},  # not latin-1: fails at send time otherwise
     ]
     for headers in bad_headers:
         r = await client.post(
@@ -67,6 +68,12 @@ async def test_create_rejects_unsafe_headers_and_tokens_without_echoing_values(
         headers=member.headers,
     )
     assert r.status_code == 422 and SECRET not in r.text
+    r = await client.post(
+        "/mcp-servers",
+        json={**base, "authType": "bearer", "accessToken": f"{SECRET}☃"},
+        headers=member.headers,
+    )
+    assert r.status_code == 422 and SECRET not in r.text and "☃" not in r.text
 
 
 async def test_create_strips_surrounding_whitespace_from_token_and_header_values(

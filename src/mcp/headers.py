@@ -1,7 +1,7 @@
 """Validation of an MCP server's custom request headers.
 
-A header value with a CR, LF or NUL makes the HTTP stack raise an error whose text contains the
-value, which for an API key or bearer token would leak a secret into stored and returned error
+A header value with a CR, LF or NUL, or a character outside latin-1, makes the HTTP stack raise
+an error whose text contains the value, which for an API key or bearer token would leak a secret into stored and returned error
 messages. Everything here names a header only, never its value.
 """
 
@@ -28,6 +28,15 @@ UNSAFE_HEADER_NAMES = frozenset(
 )
 
 
+def is_latin1(value: str) -> bool:
+    """True when ``value`` can go on the wire: h11 encodes header values as latin-1."""
+    try:
+        value.encode("latin-1")
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 class InvalidHeaderError(ValueError):
     """A custom header that cannot be sent. ``name`` is the header; the value is never kept."""
 
@@ -46,6 +55,8 @@ def header_problem(name: str, value: str) -> str | None:
         return "this header is set by the HTTP client and cannot be customized"
     if any(ch in value for ch in _FORBIDDEN_VALUE_CHARS):
         return "value must not contain CR, LF or NUL characters"
+    if not is_latin1(value):
+        return "value must only contain Latin-1 (ISO 8859-1) characters"
     return None
 
 
@@ -69,5 +80,6 @@ __all__ = [
     "UNSAFE_HEADER_NAMES",
     "InvalidHeaderError",
     "header_problem",
+    "is_latin1",
     "validate_custom_headers",
 ]

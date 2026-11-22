@@ -42,3 +42,29 @@ def test_hop_by_hop_and_framing_headers_are_rejected(name: str) -> None:
     assert header_problem(name, "x") is not None
     with pytest.raises(InvalidHeaderError, match="set by the HTTP client"):
         validate_custom_headers({name: "x"})
+
+
+def test_non_latin1_value_is_rejected_without_echoing_it() -> None:
+    """h11 encodes header values as latin-1; a wider character fails at send time with an
+    error quoting it, so it must be refused up front, naming only the header."""
+    with pytest.raises(InvalidHeaderError) as exc_info:
+        validate_custom_headers({"X-Api-Key": "SECRET-\u2603-TOKEN"})
+    assert "X-Api-Key" in str(exc_info.value)
+    assert "SECRET" not in str(exc_info.value)
+    assert "\u2603" not in str(exc_info.value)
+    assert header_problem("X-Api-Key", "caf\u00e9") is None  # latin-1 is fine
+
+
+def test_send_time_filter_skips_non_latin1_values_and_logs_only_the_name(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from src.mcp.base import _merge_custom_headers  # pyright: ignore[reportPrivateUsage]
+
+    with caplog.at_level("WARNING"):
+        merged = _merge_custom_headers(
+            {"Authorization": "Bearer t"},
+            {"X-Bad": "SECRET-\u2603-TOKEN", "X-Good": "ok"},
+        )
+    assert merged == {"Authorization": "Bearer t", "X-Good": "ok"}
+    assert "X-Bad" in caplog.text
+    assert "SECRET" not in caplog.text
