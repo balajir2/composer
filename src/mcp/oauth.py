@@ -79,6 +79,32 @@ def derive_resource(server_url: str) -> str:
 
 _STATE_TTL = timedelta(minutes=5)
 
+# Shared by the callback route ("OAuth state not found (CSRF or replay).") and the
+# consume-time error ("OAuth state '<state>' not found (CSRF or replay).").
+STATE_NOT_FOUND_TAIL = "not found (CSRF or replay)."
+
+_TOKEN_TIMEOUT = httpx.Timeout(30.0, connect=5.0)
+
+
+async def _post_token_form(
+    token_url: str,
+    form: dict[str, Any],
+    error_cls: type[OAuthError],
+    failure_label: str,
+) -> dict[str, Any]:
+    """POST an OAuth token-endpoint form (no session may be open) and return the JSON body."""
+    async with httpx.AsyncClient(timeout=_TOKEN_TIMEOUT) as client:
+        resp = await client.post(
+            token_url,
+            data=form,
+            headers={"Accept": "application/json"},
+        )
+    if resp.status_code >= 400:
+        raise error_cls(f"{failure_label} (HTTP {resp.status_code}): {resp.text[:200]}")
+    payload: dict[str, Any] = resp.json()
+    return payload
+
+
 # Short-session rule: every database step below opens its own session and closes it before
 # the next network call, so a pooled connection is never held across an IdP request.
 
@@ -103,6 +129,7 @@ async def build_authorize_url(
     authorize_url = config.get("authorizeUrl")
     client_id = config.get("clientId")
     scopes: list[Any] = config.get("scopes") or []
+    scope_str = " ".join(scopes)
     if not authorize_url or not client_id:
         raise ValueError(f"MCP server {server.id!r} oauthConfig missing authorizeUrl or clientId.")
 
@@ -121,7 +148,7 @@ async def build_authorize_url(
                 state=state,
                 code_verifier=verifier,
                 redirect_uri=redirect_uri,
-                scope=" ".join(scopes) if scopes else None,
+                scope=scope_str or None,
                 expires_at=now + _STATE_TTL,
             ),
         )
@@ -134,13 +161,13 @@ async def build_authorize_url(
         "state": state,
         "code_challenge": challenge,
         "code_challenge_method": "S256",
-        "scope": " ".join(scopes) if scopes else "",
+        "scope": scope_str,
         "resource": derive_resource(server.url),  # fix #1
     }
     return f"{authorize_url}?{urlencode(params)}"
 
 
-async def _consume_state(state: str, sessionmaker: Sessionmaker) -> McpOAuthStateRecord:
+async def _consume_state_or_raise(state: str, sessionmaker: Sessionmaker) -> McpOAuthStateRecord:
     """Atomically take the one-shot state row; its own short session, closed on return.
 
     The delete is the single point of consumption, so of two callbacks carrying the same
@@ -152,10 +179,12 @@ async def _consume_state(state: str, sessionmaker: Sessionmaker) -> McpOAuthStat
         await session.commit()
         if row is not None:
             return row
+        # Reading after the commit is intentional: it diagnoses expired (row still there)
+        # versus consumed or never issued (row gone).
         still_there = await mcp_oauth_repo.get_state(session, state)
     if still_there is not None:
         raise InvalidStateError(f"OAuth state {state!r} has expired.")
-    raise InvalidStateError(f"OAuth state {state!r} not found (CSRF or replay).")
+    raise InvalidStateError(f"OAuth state {state!r} {STATE_NOT_FOUND_TAIL}")
 
 
 def _expires_at_from_in(expires_in: int | None) -> datetime | None:
@@ -175,7 +204,7 @@ async def exchange_code_for_tokens(
     Token-exchange POST includes RFC 8707 `resource` (fix #1). Order: consume the state
     (short session) -> token POST (no session) -> store the token (short session).
     """
-    state_row = await _consume_state(state, sessionmaker)
+    state_row = await _consume_state_or_raise(state, sessionmaker)
 
     config: dict[str, Any] = server.oauth_config or {}
     token_url = config["tokenUrl"]
@@ -196,18 +225,9 @@ async def exchange_code_for_tokens(
         "resource": derive_resource(server.url),  # fix #1
     }
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-        resp = await client.post(
-            token_url,
-            data=form,
-            headers={"Accept": "application/json"},
-        )
-    if resp.status_code >= 400:
-        raise TokenExchangeError(
-            f"OAuth token exchange failed (HTTP {resp.status_code}): {resp.text[:200]}"
-        )
-
-    payload = resp.json()
+    payload = await _post_token_form(
+        token_url, form, TokenExchangeError, "OAuth token exchange failed"
+    )
     access_token = payload.get("access_token", "")
     refresh_token: str | None = payload.get("refresh_token")
     expires_at = _expires_at_from_in(payload.get("expires_in"))
@@ -256,18 +276,7 @@ async def refresh_token(
         "resource": derive_resource(server.url),  # fix #1
     }
 
-    async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-        resp = await client.post(
-            token_url,
-            data=form,
-            headers={"Accept": "application/json"},
-        )
-    if resp.status_code >= 400:
-        raise TokenRefreshError(
-            f"OAuth refresh failed (HTTP {resp.status_code}): {resp.text[:200]}"
-        )
-
-    payload = resp.json()
+    payload = await _post_token_form(token_url, form, TokenRefreshError, "OAuth refresh failed")
     access_token = payload.get("access_token", "")
     new_refresh: str | None = payload.get("refresh_token")
 

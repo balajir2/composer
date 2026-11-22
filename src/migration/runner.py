@@ -118,7 +118,7 @@ async def run_migration(*, export_dir: str, dry_run: bool) -> int:
                 else:
                     report.bump_skipped("workflows")
             except Exception as exc:
-                msg = f"workflows row {row.get('_id')!r}: {exc}"
+                msg = f"workflows row {row.get('_id')!r}: {type(exc).__name__}"
                 report.errors.append(msg)
                 logger.warning("%s", msg)
 
@@ -132,7 +132,7 @@ async def run_migration(*, export_dir: str, dry_run: bool) -> int:
                 else:
                     report.bump_skipped("executions")
             except Exception as exc:
-                msg = f"executions row {row.get('_id')!r}: {exc}"
+                msg = f"executions row {row.get('_id')!r}: {type(exc).__name__}"
                 report.errors.append(msg)
                 logger.warning("%s", msg)
 
@@ -151,7 +151,7 @@ async def run_migration(*, export_dir: str, dry_run: bool) -> int:
                             report.bump_skipped("mcpServers")
                     except Exception as exc:
                         await session.rollback()
-                        msg = f"mcpServers row {row.get('_id')!r}: {exc}"
+                        msg = f"mcpServers row {row.get('_id')!r}: {type(exc).__name__}"
                         report.errors.append(msg)
                         logger.warning("%s", msg)
 
@@ -169,7 +169,7 @@ async def run_migration(*, export_dir: str, dry_run: bool) -> int:
                             report.bump_skipped("mcpOAuthTokens")
                     except Exception as exc:
                         await session.rollback()
-                        msg = f"mcpOAuthTokens row {row.get('_id')!r}: {exc}"
+                        msg = f"mcpOAuthTokens row {row.get('_id')!r}: {type(exc).__name__}"
                         report.errors.append(msg)
                         logger.warning("%s", msg)
     finally:

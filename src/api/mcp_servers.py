@@ -22,6 +22,7 @@ from src.db.runtime import request_sessionmaker
 from src.db.session import get_session
 from src.mcp.base import McpToolProvider
 from src.mcp.oauth import (
+    STATE_NOT_FOUND_TAIL,
     InvalidStateError,
     OAuthError,
     build_authorize_url,
@@ -450,6 +451,7 @@ async def oauth_disconnect(
     session: AsyncSession = Depends(get_session),
     user_id: str = Depends(get_current_user_id),
 ) -> None:
+    # Request-scoped session on purpose: two quick statements, no network.
     token = await mcp_oauth_repo.get_token(session, server_id, user_id)
     if token is None:
         # Idempotent: no token means nothing to disconnect.
@@ -490,6 +492,7 @@ async def oauth_callback(
     back to the admin MCP servers page with a status query param so the UI
     can surface a toast instead of leaving the user on a raw-JSON page."""
     sessionmaker = _require_sessionmaker(request)
+    # The pre-read exists to find the server and keep the deleted-server case from consuming the state.
     # One short read session for the pre-checks, closed before the token-endpoint call.
     # Nothing is consumed here: a deleted server leaves the state untouched, and an
     # expired state is reported by exchange_code_for_tokens (which leaves it in place).
@@ -502,7 +505,7 @@ async def oauth_callback(
         )
     if state_row is None:
         return RedirectResponse(
-            url=_admin_mcp_url("", "error", "OAuth state not found (CSRF or replay)."),
+            url=_admin_mcp_url("", "error", f"OAuth state {STATE_NOT_FOUND_TAIL}"),
             status_code=status.HTTP_303_SEE_OTHER,
         )
     if server is None:

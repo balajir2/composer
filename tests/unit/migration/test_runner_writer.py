@@ -429,6 +429,40 @@ async def test_run_migration_reencrypts_oauth_tokens_before_storing(
     assert decrypt(stored["encrypted_refresh_token"]) == "refresh-1"
 
 
+async def test_run_migration_logs_only_the_class_of_a_token_insert_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    _token_insert_stub: AsyncMock,
+) -> None:
+    """DB errors embed bound parameters (token ciphertext); the log must not."""
+    from src.config import get_settings
+
+    monkeypatch.setenv("OAB_MCP_OAUTH_ENCRYPTION_KEY", _OAB_KEY_B64)
+    monkeypatch.setenv("ENCRYPTION_KEY", _COMPOSER_KEY)
+    get_settings.cache_clear()
+    _write_jsonl(
+        tmp_path,
+        "mcpOAuthTokens",
+        [
+            {
+                "_id": "t1",
+                "mcpServerId": "s1",
+                "userId": "clerk_a",
+                "encryptedAccessToken": _oab_encrypt("access-1"),
+            }
+        ],
+    )
+    _token_insert_stub.side_effect = RuntimeError(
+        "INSERT failed [parameters: (FAKE-SECRET-CIPHERTEXT,)]"
+    )
+    _install_db(monkeypatch, _fake_db())
+    with caplog.at_level("WARNING"):
+        assert await runner.run_migration(export_dir=str(tmp_path), dry_run=False) == 0
+    assert "mcpOAuthTokens row 't1': RuntimeError" in caplog.text
+    assert "FAKE-SECRET-CIPHERTEXT" not in caplog.text
+
+
 async def test_run_migration_without_oab_key_fails_fast_before_any_write(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

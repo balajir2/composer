@@ -5,8 +5,8 @@ OAB source: D:/GitHub/open-agent-builder/tests/highspot-oauth-lifecycle.spec.ts
   a multi-day debugging session to this missing param).
 
 This port validates the same invariant in Composer's oauth.py. It does
-NOT require a real Highspot instance — it mocks the token endpoint and
-asserts the POST body.
+NOT require a real Highspot instance — it mocks the token endpoint, scripts
+the OAuth repo functions, and asserts the POST body.
 """
 
 import base64
