@@ -292,22 +292,23 @@ async def test_waiting_callers_do_not_hold_pooled_connections(
     backend: Backend, monkeypatch: pytest.MonkeyPatch, db: Db
 ) -> None:
     """With A inside the POST, a crowd of waiters must not pile up connections: only A's
-    session (the lock holder) stays open as a transaction in Postgres."""
+    session (the lock holder) stays open as a transaction in Postgres. Any open transaction
+    counts, not just idle ones: a waiter blocked in pg_advisory_xact_lock is 'active'."""
     from sqlalchemy import text
 
-    async def idle_in_transaction() -> int:
+    async def open_transactions() -> int:
         async with db.sm() as s:
             count = await s.scalar(
                 text(
                     "SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() "
-                    "AND state = 'idle in transaction' AND pid <> pg_backend_pid()"
+                    "AND xact_start IS NOT NULL AND pid <> pg_backend_pid()"
                 )
             )
         return int(count or 0)
 
     gate = gate_refresh_post(monkeypatch, backend.module, form_index=backend.form_index)
     backend.endpoint.push({"access_token": "new-access", "expires_in": 3600})
-    baseline = await idle_in_transaction()
+    baseline = await open_transactions()
 
     a = await start_a_inside_the_post(backend, gate)
     waiters = [asyncio.ensure_future(backend.call()) for _ in range(6)]
@@ -316,7 +317,7 @@ async def test_waiting_callers_do_not_hold_pooled_connections(
     samples: list[int] = []
     for _ in range(12):
         await asyncio.sleep(0.05)
-        samples.append(await idle_in_transaction() - baseline)
+        samples.append(await open_transactions() - baseline)
     # A's lock-holding transaction, plus at most one stray; six waiters holding connections
     # would read 7.
     assert min(samples) <= 2, samples

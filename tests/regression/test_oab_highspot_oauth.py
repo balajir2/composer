@@ -74,12 +74,17 @@ async def test_oab_regression_token_exchange_includes_resource(
     script_repo(
         monkeypatch,
         calls,
-        consume_state=make_state(mcp_server_id="srv-hs", state="s1", code_verifier="cv"),
+        consume_state=make_state(
+            mcp_server_id="srv-hs", user_id="dev", state="s1", code_verifier="cv"
+        ),
         upsert_token=make_token(),
     )
+    keys = script_lock(monkeypatch, calls.events)
     sm: Any = RecordingSessionmaker(calls.events)
 
     await exchange_code_for_tokens(_highspot_server(), code="c", state="s1", sessionmaker=sm)
+
+    assert keys == ["mcp_oauth_token:srv-hs:dev"]
 
     req = httpx_mock.get_request()  # pyright: ignore[reportUnknownMemberType]
     assert req is not None
