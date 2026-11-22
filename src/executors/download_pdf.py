@@ -17,9 +17,10 @@ a second copy could drift.
 
 Google Drive support resolves an OAuth access token at execution time via
 the registered SQLAlchemy sessionmaker (the same mechanism
-src/executors/mcp.py uses for its own server-side OAuth token retrieval) + get_valid_drive_access_token() (the
-same helper file-trigger's polling endpoint already uses) — no new
-plumbing, no token ever transits through the client.
+src/executors/mcp.py uses for its own server-side OAuth token retrieval)
+and get_valid_drive_access_token() (the same helper file-trigger's polling
+endpoint already uses) — no new plumbing, no token ever transits through
+the client.
 """
 
 from pathlib import Path

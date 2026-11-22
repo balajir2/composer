@@ -47,7 +47,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.config import get_settings
 from src.db.repos import cloud_storage as cloud_storage_repo
-from src.db.runtime import request_sessionmaker
+from src.db.runtime import require_sessionmaker
 from src.engine.langgraph_executor import LangGraphExecutor
 from src.engine.workflow import FileTriggerNode
 from src.execution.cloud_tasks import enqueue_execution
@@ -538,11 +538,8 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
     isolate-failures-per-item contract.
     """
     settings = get_settings()
-    sessionmaker = request_sessionmaker(request)
-    if sessionmaker is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="database unavailable"
-        )
+    # Interim up-front 503: goes away once the workflow read moves to SQLAlchemy (phases 3/4).
+    sessionmaker = require_sessionmaker(request)
     workflows = await db.workflow.find_many(where={"isProduction": True})  # pyright: ignore[reportAttributeAccessIssue]
     checkpointer = get_checkpointer(request)
     event_bus = get_event_bus(request)

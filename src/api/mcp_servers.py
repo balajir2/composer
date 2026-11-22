@@ -11,14 +11,14 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
 from src.db.repos import mcp_oauth as mcp_oauth_repo
 from src.db.repos import mcp_servers as mcp_servers_repo
 from src.db.repos import users as users_repo
 from src.db.repos.mcp_servers import McpServerChanges, McpServerRecord
-from src.db.runtime import request_sessionmaker
+from src.db.runtime import require_sessionmaker
 from src.db.session import get_session
 from src.mcp.base import McpToolProvider
 from src.mcp.oauth import (
@@ -50,16 +50,6 @@ from src.security.rate_limit import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["mcp-servers"])
-
-
-def _require_sessionmaker(request: Request) -> async_sessionmaker[AsyncSession]:
-    """The app's sessionmaker for routes that open their own short sessions around network I/O."""
-    sessionmaker = request_sessionmaker(request)
-    if sessionmaker is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="database unavailable"
-        )
-    return sessionmaker
 
 
 class OauthConfig(BaseModel):
@@ -265,7 +255,7 @@ async def test_mcp_connection(
         client_key=user_id,
         config=per_minute_config(get_settings().rate_limit_mcp_test_per_minute),
     )
-    sessionmaker = _require_sessionmaker(request)
+    sessionmaker = require_sessionmaker(request)
     # No session is open across the MCP network calls below: read in one short
     # session, close it, call out, then write the result in a second one.
     async with sessionmaker() as session:
@@ -421,7 +411,7 @@ async def oauth_authorize(
     request: Request,
     user_id: str = Depends(get_current_user_id),
 ) -> OAuthAuthorizeResponse:
-    sessionmaker = _require_sessionmaker(request)
+    sessionmaker = require_sessionmaker(request)
     async with sessionmaker() as session:
         server = await mcp_servers_repo.get(session, server_id)
     # Same visibility rule as the resolver: owner or shared.  A private server
@@ -491,7 +481,7 @@ async def oauth_callback(
     """Exchange the authorization code for tokens, then redirect the browser
     back to the admin MCP servers page with a status query param so the UI
     can surface a toast instead of leaving the user on a raw-JSON page."""
-    sessionmaker = _require_sessionmaker(request)
+    sessionmaker = require_sessionmaker(request)
     # The pre-read exists to find the server and keep the deleted-server case from consuming the state.
     # One short read session for the pre-checks, closed before the token-endpoint call.
     # Nothing is consumed here: a deleted server leaves the state untouched, and an

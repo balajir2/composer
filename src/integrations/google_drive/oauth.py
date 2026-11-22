@@ -136,6 +136,22 @@ def expires_at_from_in(expires_in: int | None) -> datetime | None:
     return datetime.now(UTC) + timedelta(seconds=int(expires_in))
 
 
+async def _post_token_form(
+    form: dict[str, str], error_cls: type[GoogleDriveOAuthError], label: str
+) -> dict[str, Any]:
+    """POST a grant to Google's token endpoint; failures raise ``error_cls`` naming ``label``."""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+            resp = await client.post(
+                GOOGLE_TOKEN_URL, data=form, headers={"Accept": "application/json"}
+            )
+    except httpx.HTTPError as exc:
+        raise error_cls(f"Google {label} request failed: {exc}") from exc
+    if resp.status_code >= 400:
+        raise error_cls(f"Google {label} failed (HTTP {resp.status_code}): {resp.text[:200]}")
+    return resp.json()  # type: ignore[no-any-return]
+
+
 async def exchange_code_for_tokens(code: str, redirect_uri: str) -> dict[str, Any]:
     settings = get_settings()
     form = {
@@ -145,18 +161,7 @@ async def exchange_code_for_tokens(code: str, redirect_uri: str) -> dict[str, An
         "client_id": settings.google_oauth_client_id,
         "client_secret": settings.google_oauth_client_secret,
     }
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-            resp = await client.post(
-                GOOGLE_TOKEN_URL, data=form, headers={"Accept": "application/json"}
-            )
-    except httpx.HTTPError as exc:
-        raise TokenExchangeError(f"Google token exchange request failed: {exc}") from exc
-    if resp.status_code >= 400:
-        raise TokenExchangeError(
-            f"Google token exchange failed (HTTP {resp.status_code}): {resp.text[:200]}"
-        )
-    payload: dict[str, Any] = resp.json()
+    payload = await _post_token_form(form, TokenExchangeError, "token exchange")
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
@@ -183,18 +188,7 @@ async def refresh_access_token(refresh_token_plaintext: str) -> dict[str, Any]:
         "client_id": settings.google_oauth_client_id,
         "client_secret": settings.google_oauth_client_secret,
     }
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-            resp = await client.post(
-                GOOGLE_TOKEN_URL, data=form, headers={"Accept": "application/json"}
-            )
-    except httpx.HTTPError as exc:
-        raise TokenRefreshError(f"Google token refresh request failed: {exc}") from exc
-    if resp.status_code >= 400:
-        raise TokenRefreshError(
-            f"Google token refresh failed (HTTP {resp.status_code}): {resp.text[:200]}"
-        )
-    return resp.json()  # type: ignore[no-any-return]
+    return await _post_token_form(form, TokenRefreshError, "token refresh")
 
 
 async def get_valid_drive_access_token(

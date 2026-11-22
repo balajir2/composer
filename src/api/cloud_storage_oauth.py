@@ -11,11 +11,10 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import get_settings
 from src.db.repos import cloud_storage as cloud_storage_repo
-from src.db.runtime import request_sessionmaker
+from src.db.runtime import request_sessionmaker, require_sessionmaker
 from src.integrations.google_drive.oauth import (
     DriveConnectionMissingError,
     DriveTokenExpiredError,
@@ -39,16 +38,6 @@ from src.security.rate_limit import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["cloud-storage"])
-
-
-def _require_sessionmaker(request: Request) -> async_sessionmaker[AsyncSession]:
-    """The app's sessionmaker; these routes open their own short sessions around network I/O."""
-    sessionmaker = request_sessionmaker(request)
-    if sessionmaker is None:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="database unavailable"
-        )
-    return sessionmaker
 
 
 class AuthorizeResponse(BaseModel):
@@ -95,7 +84,11 @@ async def google_drive_callback(
     code: str = Query(...),
     state: str = Query(...),
 ) -> HTMLResponse:
-    sessionmaker = _require_sessionmaker(request)
+    # The popup waits for the postMessage, so a missing database must answer with the
+    # popup-close page rather than a JSON 503.
+    if request_sessionmaker(request) is None:
+        return _popup_close_html("error", "database unavailable")
+    sessionmaker = require_sessionmaker(request)
     # The whole exchange-and-persist sequence is wrapped in one try block —
     # by the time we reach the upsert, the user has already successfully
     # authorized with Google, so a failure here (DB drop, constraint race,
@@ -139,7 +132,7 @@ async def list_cloud_storage_connections(
     provider: str | None = None,
     user_id: str = Depends(get_current_user_id),
 ) -> list[CloudStorageConnectionRead]:
-    sessionmaker = _require_sessionmaker(request)
+    sessionmaker = require_sessionmaker(request)
     async with sessionmaker() as session:
         rows = await cloud_storage_repo.list_for_user(session, user_id, provider)
     return [
@@ -185,7 +178,7 @@ async def get_picker_token(
         client_key=user_id,
         config=per_minute_config(get_settings().rate_limit_picker_token_per_minute),
     )
-    sessionmaker = _require_sessionmaker(request)
+    sessionmaker = require_sessionmaker(request)
     # Short read for the ownership check; closed before the (possibly network) token fetch.
     async with sessionmaker() as session:
         connection = await cloud_storage_repo.get(session, connection_id)

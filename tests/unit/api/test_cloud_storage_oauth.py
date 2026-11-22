@@ -377,7 +377,6 @@ def test_callback_persist_failure_is_a_friendly_error_page(
     [
         ("get", "/cloud-storage/connections"),
         ("post", "/cloud-storage/connections/conn1/picker-token"),
-        ("get", "/cloud-storage/google-drive/callback?code=c&state=s"),
     ],
 )
 def test_routes_fail_closed_without_a_database(
@@ -390,6 +389,20 @@ def test_routes_fail_closed_without_a_database(
     resp = getattr(client, method)(path, headers=_bearer_header("user1"))
     assert resp.status_code == 503
     assert resp.json() == {"detail": "database unavailable"}
+
+
+def test_callback_without_a_database_closes_the_popup_with_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The popup waits for the postMessage; a JSON 503 would leave it hanging."""
+    _set_encryption_key(monkeypatch)
+    app = create_app()
+    app.state.rate_limiter = RateLimiter()
+    client = TestClient(app)
+    resp = client.get("/cloud-storage/google-drive/callback", params={"code": "c", "state": "s"})
+    assert resp.status_code == 200
+    assert "window.close()" in resp.text
+    assert '"status": "error"' in resp.text and "database unavailable" in resp.text
 
 
 def test_picker_token_connection_vanished_mid_refresh_is_404(
