@@ -56,6 +56,47 @@ class FakeSessionmaker:
             return False
 
 
+class RecordingSessionmaker:
+    """Like FakeSessionmaker, but appends ``session:enter`` / ``session:exit`` to ``events``.
+
+    Tests append their own network and database events to the same list to prove that no
+    network call happens while a session is open.
+    """
+
+    def __init__(self, events: list[str], session: FakeSession | None = None) -> None:
+        self.events = events
+        self.session = session or FakeSession()
+
+    def __call__(self) -> "RecordingSessionmaker._Recorded":
+        return RecordingSessionmaker._Recorded(self.session, self.events)
+
+    class _Recorded:
+        def __init__(self, session: FakeSession, events: list[str]) -> None:
+            self._session = session
+            self._events = events
+
+        async def __aenter__(self) -> FakeSession:
+            self._events.append("session:enter")
+            return self._session
+
+        async def __aexit__(self, *exc: object) -> bool:
+            self._events.append("session:exit")
+            return False
+
+
+def assert_no_network_inside_session(events: list[str]) -> None:
+    """Every ``net:*`` event must fall outside any open session; sessions must all close."""
+    open_sessions = 0
+    for event in events:
+        if event == "session:enter":
+            open_sessions += 1
+        elif event == "session:exit":
+            open_sessions -= 1
+        elif event.startswith("net:"):
+            assert open_sessions == 0, f"{event} ran inside an open session: {events}"
+    assert open_sessions == 0, f"a session was left open: {events}"
+
+
 @asynccontextmanager
 async def fake_scope(session: FakeSession) -> AsyncGenerator[FakeSession]:
     yield session

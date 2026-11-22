@@ -6,9 +6,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from src.db.runtime import register_sessionmaker, unregister_sessionmaker
 from src.engine.state import initial_state
 from src.engine.workflow import McpNode
 from src.executors.mcp import McpExecutor
+from tests.unit.db_fakes import FakeSessionmaker
 
 
 def _mcp_node(
@@ -38,6 +40,14 @@ def _reset_db_ctx() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
     _current_db.reset(token)
 
 
+@pytest.fixture(autouse=True)
+def _registered_sessionmaker() -> Iterator[FakeSessionmaker]:  # pyright: ignore[reportUnusedFunction]
+    sm = FakeSessionmaker()
+    register_sessionmaker(sm)  # pyright: ignore[reportArgumentType]
+    yield sm
+    unregister_sessionmaker(sm)  # pyright: ignore[reportArgumentType]
+
+
 async def test_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     fake_tool = MagicMock()
     fake_tool.ainvoke = AsyncMock(return_value="echoed: hello")
@@ -49,7 +59,7 @@ async def test_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
     ctx_mod.set_current_db(fake_db)
 
     async def _fake_resolve(
-        mcp_server_id: str, tool_name: str, user_id: Any, db: Any
+        mcp_server_id: str, tool_name: str, user_id: Any, sessionmaker: Any
     ) -> tuple[Any, Any]:
         return MagicMock(), fake_tool
 
@@ -101,7 +111,7 @@ async def test_variable_substitution_in_arguments(
     ctx_mod.set_current_db(MagicMock())
 
     async def _fake_resolve(
-        mcp_server_id: str, tool_name: str, user_id: Any, db: Any
+        mcp_server_id: str, tool_name: str, user_id: Any, sessionmaker: Any
     ) -> tuple[Any, Any]:
         return MagicMock(), fake_tool
 
@@ -121,3 +131,14 @@ async def test_mcp_executor_is_registered() -> None:
     node = _mcp_node()
     executor = build_executor(node)
     assert isinstance(executor, McpExecutor)
+
+
+async def test_missing_sessionmaker_raises_same_error(
+    _registered_sessionmaker: FakeSessionmaker,  # pyright: ignore[reportUnusedParameter]
+) -> None:
+    import src.engine.context as ctx_mod
+
+    unregister_sessionmaker(_registered_sessionmaker)  # pyright: ignore[reportArgumentType]
+    ctx_mod.set_current_db(MagicMock())
+    with pytest.raises(RuntimeError, match="set_current_db"):
+        await McpExecutor(_mcp_node()).arun(initial_state())

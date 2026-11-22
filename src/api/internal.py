@@ -46,6 +46,8 @@ from google.oauth2 import id_token
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.config import get_settings
+from src.db.repos import cloud_storage as cloud_storage_repo
+from src.db.runtime import require_sessionmaker
 from src.engine.langgraph_executor import LangGraphExecutor
 from src.engine.workflow import FileTriggerNode
 from src.execution.cloud_tasks import enqueue_execution
@@ -536,6 +538,8 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
     isolate-failures-per-item contract.
     """
     settings = get_settings()
+    # Interim up-front 503: goes away once the workflow read moves to SQLAlchemy (phases 3/4).
+    sessionmaker = require_sessionmaker(request)
     workflows = await db.workflow.find_many(where={"isProduction": True})  # pyright: ignore[reportAttributeAccessIssue]
     checkpointer = get_checkpointer(request)
     event_bus = get_event_bus(request)
@@ -593,9 +597,9 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
                 )
                 continue
 
-            connection = await db.cloudstorageconnection.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-                where={"id": connection_id}
-            )
+            # Short session: closed before any Drive call below.
+            async with sessionmaker() as session:
+                connection = await cloud_storage_repo.get(session, connection_id)
             if connection is None:
                 logger.warning(
                     "poll_file_triggers: workflow %s node %s references missing connection %s",
@@ -620,7 +624,7 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
             # get_picker_token (src/api/cloud_storage_oauth.py) is the
             # 404-raising sibling of this same check for the interactive
             # (user-facing) path.
-            if connection.userId != wf.userId:
+            if connection.user_id != wf.userId:
                 logger.warning(
                     "poll_file_triggers: workflow %s node %s references connection %s "
                     "owned by %s, not the workflow's owner %s — skipping "
@@ -628,13 +632,13 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
                     wf.id,
                     node.id,
                     connection_id,
-                    connection.userId,
+                    connection.user_id,
                     wf.userId,
                 )
                 continue
 
             try:
-                access_token = await get_valid_drive_access_token(connection_id, db)
+                access_token = await get_valid_drive_access_token(connection_id, sessionmaker)
             except Exception:
                 logger.exception(
                     "poll_file_triggers: failed to get access token for connection %s",
@@ -686,7 +690,7 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
                     execution = await executor.start_execution(
                         workflow_id=wf.id,
                         input=input_payload,
-                        user_id=connection.userId,
+                        user_id=connection.user_id,
                     )
                     await enqueue_execution(execution.id, kind="run", db=db)
                 except Exception:

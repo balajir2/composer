@@ -17,7 +17,7 @@ from src.api.auth_standalone import TokenPairResponse
 from src.config import Settings, get_settings
 from src.db.errors import AlreadyExists
 from src.db.repos import users as users_repo
-from src.db.runtime import request_sessionmaker
+from src.db.runtime import require_sessionmaker
 from src.db.session import get_session
 from src.security.auth import AuthError, get_current_user_id
 from src.security.jwt import create_access_token, create_refresh_token
@@ -48,11 +48,7 @@ async def me(
     if settings.deployment_mode == "standalone":
         # A short session of our own, opened only here: embedded mode never
         # touches the database, so it must not depend on one being attached.
-        sessionmaker = request_sessionmaker(request)
-        if sessionmaker is None:
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="database unavailable"
-            )
+        sessionmaker = require_sessionmaker(request)
         async with sessionmaker() as session:
             user = await users_repo.get_by_id(session, user_id)
         if user is None:

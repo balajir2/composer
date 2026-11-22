@@ -2,17 +2,19 @@
 
 import base64
 import os
-from types import SimpleNamespace
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
 
+from src.db.repos.mcp_servers import McpServerRecord
 from src.engine.state import initial_state
 from src.engine.workflow import AgentNode
 from src.mcp.base import McpToolProvider
 from src.security.encryption import encrypt
 from src.tools.base import ApiKeyAuth, BuildContext, NoAuth
+from tests.unit.mcp._server_fakes import make_server
 
 
 def _set_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -22,20 +24,20 @@ def _set_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:
     get_settings.cache_clear()
 
 
-def _server_row(**overrides: Any) -> SimpleNamespace:
+def _server_row(**overrides: Any) -> McpServerRecord:
     base: dict[str, Any] = {
         "id": "srv1",
-        "userId": "dev",
+        "user_id": "dev",
         "name": "Test",
         "url": "https://mcp.example.com/rpc",
         "description": "test server",
-        "authType": "none",
-        "encryptedAccessToken": None,
-        "headerName": None,
-        "isShared": False,
+        "auth_type": "none",
+        "encrypted_access_token": None,
+        "header_name": None,
+        "is_shared": False,
     }
     base.update(overrides)
-    return SimpleNamespace(**base)
+    return make_server(**base)
 
 
 def _agent_node() -> AgentNode:
@@ -53,7 +55,7 @@ async def test_provider_metadata_no_auth() -> None:
 
 async def test_provider_metadata_api_key(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_encryption_key(monkeypatch)
-    srv = _server_row(authType="api-key", encryptedAccessToken=encrypt("secret"))
+    srv = _server_row(auth_type="api-key", encrypted_access_token=encrypt("secret"))
     provider = McpToolProvider(srv)
     assert isinstance(provider.auth, ApiKeyAuth)
 
@@ -176,7 +178,9 @@ async def test_api_key_auth_header_decrypted_on_demand(
 ) -> None:
     _set_encryption_key(monkeypatch)
     encrypted = encrypt("the-secret-key")
-    srv = _server_row(authType="api-key", encryptedAccessToken=encrypted, headerName="X-API-KEY")
+    srv = _server_row(
+        auth_type="api-key", encrypted_access_token=encrypted, header_name="X-API-KEY"
+    )
     httpx_mock.add_response(
         url="https://mcp.example.com/rpc",
         method="POST",
@@ -195,7 +199,7 @@ async def test_bearer_auth_adds_bearer_prefix(
 ) -> None:
     _set_encryption_key(monkeypatch)
     encrypted = encrypt("bearer-token-xyz")
-    srv = _server_row(authType="bearer", encryptedAccessToken=encrypted)
+    srv = _server_row(auth_type="bearer", encrypted_access_token=encrypted)
     httpx_mock.add_response(
         url="https://mcp.example.com/rpc",
         method="POST",
@@ -208,13 +212,13 @@ async def test_bearer_auth_adds_bearer_prefix(
 
 
 async def test_oauth_auth_returns_oauthauth_descriptor(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Phase 3b: authType='oauth' no longer raises NotImplementedError."""
+    """Phase 3b: auth_type='oauth' no longer raises NotImplementedError."""
     from unittest.mock import MagicMock
 
     _set_encryption_key(monkeypatch)
     srv = _server_row(
-        authType="oauth",
-        oauthConfig={
+        auth_type="oauth",
+        oauth_config={
             "authorizeUrl": "https://idp/auth",
             "tokenUrl": "https://idp/token",
             "clientId": "c",
@@ -224,7 +228,7 @@ async def test_oauth_auth_returns_oauthauth_descriptor(monkeypatch: pytest.Monke
     )
     from src.tools.base import OAuthAuth
 
-    provider = McpToolProvider(srv, db=MagicMock(), user_id="user1")
+    provider = McpToolProvider(srv, sessionmaker=MagicMock(), user_id="user1")
     assert isinstance(provider.auth, OAuthAuth)
     assert provider.auth.include_rfc8707_resource is True
 
@@ -239,8 +243,8 @@ async def test_oauth_auth_header_factory_calls_get_valid_access_token(
 
     _set_encryption_key(monkeypatch)
     srv = _server_row(
-        authType="oauth",
-        oauthConfig={
+        auth_type="oauth",
+        oauth_config={
             "authorizeUrl": "https://idp/auth",
             "tokenUrl": "https://idp/token",
             "clientId": "c",
@@ -251,7 +255,7 @@ async def test_oauth_auth_header_factory_calls_get_valid_access_token(
 
     captured: dict[str, Any] = {}
 
-    async def _fake_get_valid(server: Any, user_id: str, db: Any) -> str:
+    async def _fake_get_valid(server: Any, user_id: str, sessionmaker: Any) -> str:
         captured["server_id"] = server.id
         captured["user_id"] = user_id
         return "bearer-xyz"
@@ -266,7 +270,7 @@ async def test_oauth_auth_header_factory_calls_get_valid_access_token(
         json={"jsonrpc": "2.0", "id": 1, "result": {"tools": []}},
     )
 
-    provider = McpToolProvider(srv, db=MagicMock(), user_id="user1")
+    provider = McpToolProvider(srv, sessionmaker=MagicMock(), user_id="user1")
     await provider.tools()
     req = httpx_mock.get_request()
     assert req is not None
@@ -274,10 +278,18 @@ async def test_oauth_auth_header_factory_calls_get_valid_access_token(
     assert captured == {"server_id": "srv1", "user_id": "user1"}
 
 
-async def test_oauth_provider_without_db_raises() -> None:
-    """OAuth McpToolProvider requires db+user_id at construction; guards
-    against callers that wire it up incorrectly."""
-    srv = _server_row(authType="oauth", oauthConfig={"tokenUrl": "x", "clientId": "c"})
-    provider = McpToolProvider(srv)  # no db, no user_id
-    with pytest.raises(RuntimeError, match="db"):
-        await provider.tools()
+@pytest.mark.parametrize(
+    ("sessionmaker", "user_id"), [(None, None), (None, "user1"), (MagicMock(), None)]
+)
+def test_oauth_provider_without_sessionmaker_or_user_id_fails_fast(
+    sessionmaker: Any, user_id: str | None
+) -> None:
+    """OAuth McpToolProvider requires sessionmaker+user_id at construction, so a caller that wires it
+    up incorrectly fails immediately instead of on the first outbound request."""
+    srv = _server_row(auth_type="oauth", oauth_config={"tokenUrl": "x", "clientId": "c"})
+    with pytest.raises(ValueError, match="requires sessionmaker and user_id"):
+        McpToolProvider(srv, sessionmaker=sessionmaker, user_id=user_id)
+
+
+def test_static_auth_provider_does_not_need_db_or_user_id() -> None:
+    McpToolProvider(_server_row(auth_type="none"))

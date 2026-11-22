@@ -52,7 +52,10 @@ async def test_api_keys_list_newest_first(client: AsyncClient, member: Member) -
         r = await client.post("/api-keys", json={"label": label}, headers=member.headers)
         assert r.status_code == 201
         ids.append(r.json()["id"])
-        await asyncio.sleep(0.02)  # distinct created_at for newest-first ordering
+        # Distinct created_at for newest-first ordering. Windows' clock ticks about 15.6 ms
+        # and the timestamp column has millisecond resolution, so a 20 ms gap could still
+        # land two keys on one value and leave the order undefined.
+        await asyncio.sleep(0.05)
     listed = (await client.get("/api-keys", headers=member.headers)).json()
     assert [k["id"] for k in listed] == list(reversed(ids))
     assert [k["label"] for k in listed] == ["k3", "k2", "k1"]

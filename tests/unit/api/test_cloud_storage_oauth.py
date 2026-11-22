@@ -25,14 +25,37 @@ already-bound reference the router's `Depends()` captured.
 
 import base64
 import os
-from types import SimpleNamespace
+from datetime import UTC, datetime
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.repos import cloud_storage as cloud_storage_repo
+from src.db.repos import users as users_repo
+from src.db.repos.cloud_storage import CloudStorageConnectionRecord
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
+from tests.unit.db_fakes import RecordingSessionmaker, assert_no_network_inside_session, make_user
+
+
+def _connection(**overrides: Any) -> CloudStorageConnectionRecord:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    base: dict[str, Any] = {
+        "id": "conn1",
+        "user_id": "user1",
+        "provider": "google-drive",
+        "account_email": "a@example.com",
+        "encrypted_access_token": "enc",
+        "encrypted_refresh_token": None,
+        "expires_at": None,
+        "scope": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    base.update(overrides)
+    return CloudStorageConnectionRecord(**base)
 
 
 def _set_encryption_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -48,17 +71,25 @@ def _bearer_header(user_id: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {create_access_token(user_id)}"}
 
 
-def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
-    app = create_app()
-    db = MagicMock()
-    db.cloudstorageconnection = MagicMock()
-    app.state.db = db
-    app.state.checkpointer = MagicMock()
-    from src.engine.events_pg import PostgresEventStore
+def _consume_user1(_state: str) -> str:
+    return "user1"
 
-    app.state.event_bus = PostgresEventStore(db)
+
+def _client_with_mock_db(
+    monkeypatch: pytest.MonkeyPatch, events: list[str] | None = None
+) -> tuple[TestClient, RecordingSessionmaker]:
+    """App whose routes open sessions from a recording sessionmaker; repo calls are patched."""
+    app = create_app()
+    sessionmaker = RecordingSessionmaker(events if events is not None else [])
+    app.state.db_sessionmaker = sessionmaker
+
+    async def _live_user(_session: Any, user_id: str) -> Any:
+        return make_user(id=user_id)  # bearer callers must still exist (live user check)
+
+    monkeypatch.setattr(users_repo, "get_by_id", _live_user)
+    app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
-    return TestClient(app), db
+    return TestClient(app), sessionmaker
 
 
 def test_authorize_returns_google_url(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -67,7 +98,7 @@ def test_authorize_returns_google_url(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.config import get_settings
 
     get_settings.cache_clear()
-    client, _db = _client_with_mock_db()
+    client, _sm = _client_with_mock_db(monkeypatch)
 
     # No Authorization header: ADR-0015 dev-mode fallback authenticates as 'dev'.
     resp = client.get("/cloud-storage/google-drive/authorize")
@@ -77,7 +108,7 @@ def test_authorize_returns_google_url(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_callback_rejects_invalid_state(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_encryption_key(monkeypatch)
-    client, _db = _client_with_mock_db()
+    client, _sm = _client_with_mock_db(monkeypatch)
 
     resp = client.get(
         "/cloud-storage/google-drive/callback",
@@ -93,7 +124,7 @@ def test_callback_success_persists_connection(monkeypatch: pytest.MonkeyPatch) -
     response — this is exactly the path a prior review found was only
     partially covered by the try/except (the upsert sat outside it)."""
     _set_encryption_key(monkeypatch)
-    client, db = _client_with_mock_db()
+    client, sm = _client_with_mock_db(monkeypatch)
 
     def _fake_consume_state(_state: str) -> str:
         return "user1"
@@ -111,9 +142,8 @@ def test_callback_success_persists_connection(monkeypatch: pytest.MonkeyPatch) -
             }
         ),
     )
-    db.cloudstorageconnection.upsert = AsyncMock(
-        return_value=SimpleNamespace(id="conn1", userId="user1", accountEmail="user@example.com")
-    )
+    upsert = AsyncMock(return_value=_connection(account_email="user@example.com"))
+    monkeypatch.setattr(cloud_storage_repo, "upsert", upsert)
 
     resp = client.get(
         "/cloud-storage/google-drive/callback",
@@ -122,29 +152,32 @@ def test_callback_success_persists_connection(monkeypatch: pytest.MonkeyPatch) -
     assert resp.status_code == 200, resp.text
     assert "success" in resp.text
 
-    db.cloudstorageconnection.upsert.assert_awaited_once()
-    call_args = db.cloudstorageconnection.upsert.await_args
-    assert call_args is not None
-    where = call_args.kwargs["where"]["userId_provider_accountEmail"]
-    assert where["provider"] == "google-drive"
-    assert where["accountEmail"] == "user@example.com"
-    assert where["userId"] == "user1"
+    upsert.assert_awaited_once()
+    assert upsert.await_args is not None
+    kwargs = upsert.await_args.kwargs
+    assert kwargs["provider"] == "google-drive"
+    assert kwargs["account_email"] == "user@example.com"
+    assert kwargs["user_id"] == "user1"
+    values = kwargs["values"]
+    assert values["encrypted_refresh_token"] is not None
+    assert values["scope"] == "drive.readonly drive.metadata"
+    sm.session.commit.assert_awaited_once()
 
 
 def test_list_connections_filters_by_provider(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_encryption_key(monkeypatch)
-    client, db = _client_with_mock_db()
-    db.cloudstorageconnection.find_many = AsyncMock(
-        return_value=[
-            SimpleNamespace(id="conn1", provider="google-drive", accountEmail="a@example.com")
-        ]
-    )
+    client, _sm = _client_with_mock_db(monkeypatch)
+    listing = AsyncMock(return_value=[_connection()])
+    monkeypatch.setattr(cloud_storage_repo, "list_for_user", listing)
 
     resp = client.get("/cloud-storage/connections", params={"provider": "google-drive"})
     assert resp.status_code == 200, resp.text
+    # Only id/provider/accountEmail: never token material.
     assert resp.json() == [
         {"id": "conn1", "provider": "google-drive", "accountEmail": "a@example.com"}
     ]
+    assert listing.await_args is not None
+    assert listing.await_args.args[1:] == ("dev", "google-drive")
 
 
 def test_picker_token_returns_connections_access_token(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -155,12 +188,8 @@ def test_picker_token_returns_connections_access_token(monkeypatch: pytest.Monke
     scope: the Picker uses the exact drive.readonly+drive.metadata-scoped
     token already granted by the OAuth flow."""
     _set_encryption_key(monkeypatch)
-    client, db = _client_with_mock_db()
-    db.cloudstorageconnection.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            id="conn1", userId="user1", encryptedAccessToken="enc", expiresAt=None
-        )
-    )
+    client, _sm = _client_with_mock_db(monkeypatch)
+    monkeypatch.setattr(cloud_storage_repo, "get", AsyncMock(return_value=_connection()))
     monkeypatch.setattr(
         "src.api.cloud_storage_oauth.get_valid_drive_access_token",
         AsyncMock(return_value="at-1"),
@@ -183,12 +212,8 @@ def test_picker_token_returns_409_when_reconnect_required(monkeypatch: pytest.Mo
     _set_encryption_key(monkeypatch)
     from src.integrations.google_drive.oauth import DriveTokenExpiredError
 
-    client, db = _client_with_mock_db()
-    db.cloudstorageconnection.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            id="conn1", userId="user1", encryptedAccessToken="enc", expiresAt=None
-        )
-    )
+    client, _sm = _client_with_mock_db(monkeypatch)
+    monkeypatch.setattr(cloud_storage_repo, "get", AsyncMock(return_value=_connection()))
     monkeypatch.setattr(
         "src.api.cloud_storage_oauth.get_valid_drive_access_token",
         AsyncMock(side_effect=DriveTokenExpiredError("expired; user must reconnect")),
@@ -207,12 +232,8 @@ async def test_picker_token_rate_limited(monkeypatch: pytest.MonkeyPatch) -> Non
     own, but tests/unit/api/test_users_search.py's test_search_users_rate_limited
     exercises the same enforce()/per_minute_config() call shape)."""
     _set_encryption_key(monkeypatch)
-    client, db = _client_with_mock_db()
-    db.cloudstorageconnection.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            id="conn1", userId="user1", encryptedAccessToken="enc", expiresAt=None
-        )
-    )
+    client, _sm = _client_with_mock_db(monkeypatch)
+    monkeypatch.setattr(cloud_storage_repo, "get", AsyncMock(return_value=_connection()))
     monkeypatch.setattr(
         "src.api.cloud_storage_oauth.get_valid_drive_access_token",
         AsyncMock(return_value="at-1"),
@@ -240,14 +261,170 @@ def test_picker_token_rejects_other_users_connection(monkeypatch: pytest.MonkeyP
     """A connection belongs to the user who created it — another
     authenticated user must not be able to mint a Picker token for it."""
     _set_encryption_key(monkeypatch)
-    client, db = _client_with_mock_db()
-    db.cloudstorageconnection.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            id="conn1", userId="user1", encryptedAccessToken="enc", expiresAt=None
-        )
-    )
+    client, _sm = _client_with_mock_db(monkeypatch)
+    monkeypatch.setattr(cloud_storage_repo, "get", AsyncMock(return_value=_connection()))
 
     resp = client.post(
         "/cloud-storage/connections/conn1/picker-token", headers=_bearer_header("user2")
     )
     assert resp.status_code == 404
+
+
+def test_picker_token_unknown_connection_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _sm = _client_with_mock_db(monkeypatch)
+    monkeypatch.setattr(cloud_storage_repo, "get", AsyncMock(return_value=None))
+    resp = client.post(
+        "/cloud-storage/connections/nope/picker-token", headers=_bearer_header("user1")
+    )
+    assert resp.status_code == 404
+    assert resp.json() == {"detail": "Connection not found."}
+
+
+def test_picker_token_closes_its_session_before_fetching_the_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Short-session rule: the ownership read is closed before get_valid_drive_access_token
+    (which may call Google) runs."""
+    _set_encryption_key(monkeypatch)
+    events: list[str] = []
+    client, sm = _client_with_mock_db(monkeypatch, events)
+
+    async def _get(_session: Any, _connection_id: str) -> CloudStorageConnectionRecord:
+        events.append("db:get")
+        return _connection()
+
+    async def _token(_connection_id: str, passed_sm: Any) -> str:
+        events.append("net:token")
+        assert passed_sm is sm
+        return "at-1"
+
+    monkeypatch.setattr(cloud_storage_repo, "get", _get)
+    monkeypatch.setattr("src.api.cloud_storage_oauth.get_valid_drive_access_token", _token)
+
+    resp = client.post(
+        "/cloud-storage/connections/conn1/picker-token", headers=_bearer_header("user1")
+    )
+    assert resp.status_code == 200, resp.text
+    # (The auth dependency's live user check opens its own session earlier.)
+    assert events[-4:] == ["session:enter", "db:get", "session:exit", "net:token"]
+    assert_no_network_inside_session(events)
+
+
+def test_callback_upserts_only_after_the_google_calls(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Short-session rule: no session is open during the token exchange / userinfo calls; the
+    upsert gets its own session afterwards."""
+    _set_encryption_key(monkeypatch)
+    events: list[str] = []
+    client, _sm = _client_with_mock_db(monkeypatch, events)
+    monkeypatch.setattr("src.api.cloud_storage_oauth.consume_state", _consume_user1)
+
+    async def _exchange(_code: str, _redirect: str) -> dict[str, Any]:
+        events.append("net:exchange")
+        return {"access_token": "at-1", "expires_in": 3600, "email": "user@example.com"}
+
+    async def _upsert(_session: Any, **_kwargs: Any) -> CloudStorageConnectionRecord:
+        events.append("db:upsert")
+        return _connection()
+
+    monkeypatch.setattr("src.api.cloud_storage_oauth.exchange_code_for_tokens", _exchange)
+    monkeypatch.setattr(cloud_storage_repo, "upsert", _upsert)
+
+    resp = client.get("/cloud-storage/google-drive/callback", params={"code": "c", "state": "s"})
+    assert resp.status_code == 200 and "success" in resp.text
+    assert events == ["net:exchange", "session:enter", "db:upsert", "session:exit"]  # no auth dep
+    assert_no_network_inside_session(events)
+
+
+def test_callback_without_refresh_token_stores_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pinned like-for-like: a re-grant without a refresh_token writes NULL refresh token and
+    keeps whatever scope Google returned (None here)."""
+    _set_encryption_key(monkeypatch)
+    client, _sm = _client_with_mock_db(monkeypatch)
+    monkeypatch.setattr("src.api.cloud_storage_oauth.consume_state", _consume_user1)
+    monkeypatch.setattr(
+        "src.api.cloud_storage_oauth.exchange_code_for_tokens",
+        AsyncMock(return_value={"access_token": "at-1", "email": "user@example.com"}),
+    )
+    upsert = AsyncMock(return_value=_connection())
+    monkeypatch.setattr(cloud_storage_repo, "upsert", upsert)
+
+    resp = client.get("/cloud-storage/google-drive/callback", params={"code": "c", "state": "s"})
+    assert resp.status_code == 200 and "success" in resp.text
+    assert upsert.await_args is not None
+    values = upsert.await_args.kwargs["values"]
+    assert values["encrypted_refresh_token"] is None and values["scope"] is None
+
+
+def test_callback_persist_failure_is_a_friendly_error_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _set_encryption_key(monkeypatch)
+    client, _sm = _client_with_mock_db(monkeypatch)
+    monkeypatch.setattr("src.api.cloud_storage_oauth.consume_state", _consume_user1)
+    monkeypatch.setattr(
+        "src.api.cloud_storage_oauth.exchange_code_for_tokens",
+        AsyncMock(return_value={"access_token": "at-1", "email": "user@example.com"}),
+    )
+    monkeypatch.setattr(cloud_storage_repo, "upsert", AsyncMock(side_effect=RuntimeError("boom")))
+
+    resp = client.get("/cloud-storage/google-drive/callback", params={"code": "c", "state": "s"})
+    assert resp.status_code == 200
+    assert "error" in resp.text and "boom" not in resp.text
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/cloud-storage/connections"),
+        ("post", "/cloud-storage/connections/conn1/picker-token"),
+    ],
+)
+def test_routes_fail_closed_without_a_database(
+    monkeypatch: pytest.MonkeyPatch, method: str, path: str
+) -> None:
+    _set_encryption_key(monkeypatch)
+    app = create_app()
+    app.state.rate_limiter = RateLimiter()
+    client = TestClient(app)
+    resp = getattr(client, method)(path, headers=_bearer_header("user1"))
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "database unavailable"}
+
+
+def test_callback_without_a_database_closes_the_popup_with_an_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The popup waits for the postMessage; a JSON 503 would leave it hanging."""
+    _set_encryption_key(monkeypatch)
+    app = create_app()
+    app.state.rate_limiter = RateLimiter()
+    client = TestClient(app)
+    resp = client.get("/cloud-storage/google-drive/callback", params={"code": "c", "state": "s"})
+    assert resp.status_code == 200
+    assert "window.close()" in resp.text
+    assert '"status": "error"' in resp.text and "database unavailable" in resp.text
+
+
+def test_picker_token_connection_vanished_mid_refresh_is_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_picker_token maps DriveConnectionMissingError (row deleted between the ownership
+    read and the refresh write) to 404 with the helper's message."""
+    from src.integrations.google_drive.oauth import DriveConnectionMissingError
+
+    _set_encryption_key(monkeypatch)
+    client, _sm = _client_with_mock_db(monkeypatch)
+    monkeypatch.setattr(cloud_storage_repo, "get", AsyncMock(return_value=_connection()))
+    monkeypatch.setattr(
+        "src.api.cloud_storage_oauth.get_valid_drive_access_token",
+        AsyncMock(
+            side_effect=DriveConnectionMissingError(
+                "No CloudStorageConnection found for id 'conn1'."
+            )
+        ),
+    )
+    resp = client.post(
+        "/cloud-storage/connections/conn1/picker-token", headers=_bearer_header("user1")
+    )
+    assert resp.status_code == 404
+    assert resp.json() == {"detail": "No CloudStorageConnection found for id 'conn1'."}

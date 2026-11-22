@@ -7,17 +7,25 @@ from __future__ import annotations
 import base64
 import json
 import os
+from contextlib import asynccontextmanager
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from src.migration import convex_loader, runner, writer
+from src.db.repos import mcp_oauth as mcp_oauth_repo
+from src.db.repos import mcp_servers as mcp_servers_repo
+from src.migration import convex_loader, runner, transformers, writer
 from src.security.encryption import decrypt
+from tests.unit.db_fakes import FakeSession
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
     from pathlib import Path
+
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 _COMPOSER_KEY = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
 _OAB_KEY_BYTES = bytes(range(32))
@@ -43,7 +51,7 @@ def _fake_db(existing_ids: dict[str, set[str]] | None = None) -> MagicMock:
     """Fake Prisma client: find_unique answers from `existing_ids` per table."""
     existing_ids = existing_ids or {}
     db = MagicMock()
-    for table in ("workflow", "workflowexecution", "mcpserver", "mcpoauthtoken"):
+    for table in ("workflow", "workflowexecution"):
         ids = existing_ids.get(table, set())
 
         async def _find(*, where: dict[str, str], _ids: set[str] = ids) -> object | None:
@@ -61,6 +69,29 @@ class _FakePrismaClass:
 
     def __new__(cls) -> MagicMock:  # type: ignore[misc]
         return cls.db
+
+
+@pytest.fixture(autouse=True)
+def _mcp_server_session(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # pyright: ignore[reportUnusedFunction]
+    """MCP servers go through SQLAlchemy: stub the one-shot session and the repo insert."""
+    session = FakeSession()
+
+    @asynccontextmanager
+    async def _scope(_settings: object) -> AsyncGenerator[FakeSession]:
+        yield session
+
+    insert = AsyncMock(return_value=True)
+    monkeypatch.setattr(runner, "one_shot_session", _scope)
+    monkeypatch.setattr(mcp_servers_repo, "insert_if_absent", insert)
+    return insert
+
+
+@pytest.fixture(autouse=True)
+def _token_insert_stub(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # pyright: ignore[reportUnusedFunction]
+    """MCP OAuth tokens go through SQLAlchemy too: stub the repo insert."""
+    insert = AsyncMock(return_value=True)
+    monkeypatch.setattr(mcp_oauth_repo, "insert_token_if_absent", insert)
+    return insert
 
 
 def _install_db(monkeypatch: pytest.MonkeyPatch, db: MagicMock) -> None:
@@ -153,27 +184,99 @@ async def test_upsert_execution_skips_existing() -> None:
     db.workflowexecution.create.assert_not_called()
 
 
-async def test_upsert_mcp_server_wraps_optional_json_only_when_set() -> None:
-    db = _fake_db()
-    data = {"id": "s1", "oauthConfig": {"a": 1}, "tools": None, "headers": None}
-    assert await writer.upsert_mcp_server(db, data) is True
-    created = db.mcpserver.create.await_args.kwargs["data"]
-    assert type(created["oauthConfig"]).__name__ == "Json"
-    assert "tools" not in created and "headers" not in created
+async def test_upsert_mcp_server_maps_columns_and_passes_plain_json(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    insert = AsyncMock(return_value=True)
+    monkeypatch.setattr(mcp_servers_repo, "insert_if_absent", insert)
+    session = FakeSession()
+    data = {
+        "id": "s1",
+        "authType": "none",
+        "userId": None,
+        "originalOwnerEmail": "a@example.com",
+        "oauthConfig": {"a": 1},
+        "tools": None,
+        "headers": None,
+        "lastTested": 1_700_000_000_000,
+    }
+    assert await writer.upsert_mcp_server(cast("AsyncSession", session), data) is True
+    assert insert.await_args is not None
+    values = insert.await_args.args[1]
+    assert insert.await_args.args[0] is session
+    assert values["auth_type"] == "none" and values["original_owner_email"] == "a@example.com"
+    assert values["oauth_config"] == {"a": 1}  # plain dict, no prisma Json wrapper
+    assert values["tools"] is None and values["headers"] is None
+    assert values["last_tested"] == datetime(2023, 11, 14, 22, 13, 20, tzinfo=UTC)
+    assert "oauthConfig" not in values
 
 
-async def test_upsert_mcp_server_skips_existing() -> None:
-    db = _fake_db({"mcpserver": {"s1"}})
-    assert await writer.upsert_mcp_server(db, {"id": "s1"}) is False
-    db.mcpserver.create.assert_not_called()
+_AWARE = datetime(2023, 11, 14, 22, 13, 20, tzinfo=UTC)
 
 
-async def test_upsert_mcp_oauth_token_inserts_then_skips_on_rerun() -> None:
-    db = _fake_db()
-    assert await writer.upsert_mcp_oauth_token(db, {"id": "t1"}) is True
-    db2 = _fake_db({"mcpoauthtoken": {"t1"}})
-    assert await writer.upsert_mcp_oauth_token(db2, {"id": "t1"}) is False
-    db2.mcpoauthtoken.create.assert_not_called()
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (1_700_000_000_000, _AWARE),
+        (1_700_000_000_000.0, _AWARE),
+        ("2023-11-14T22:13:20Z", _AWARE),
+        ("2023-11-14T22:13:20+00:00", _AWARE),
+        ("2023-11-14T22:13:20", _AWARE),  # naive ISO: taken as UTC
+        ("2023-11-14T23:13:20+01:00", _AWARE),
+        (datetime(2023, 11, 14, 22, 13, 20), _AWARE),  # naive datetime
+        (_AWARE, _AWARE),
+        (None, None),
+    ],
+)
+def test_as_datetime_always_returns_aware_utc(value: object, expected: datetime | None) -> None:
+    got = writer._as_datetime(value)  # pyright: ignore[reportPrivateUsage]
+    assert got == expected
+    if got is not None:
+        assert got.utcoffset() is not None  # aware; the column type normalises the offset
+
+
+def test_transformer_keys_are_all_known_to_the_writer_column_map() -> None:
+    """A renamed transformer key must fail here, not silently drop a column on insert."""
+    row = {
+        "_id": "s1",
+        "userId": "clerk_a",
+        "name": "S",
+        "url": "https://m.example.com",
+        "authType": "none",
+    }
+    out = transformers.mcp_server_row(row, _users())
+    assert set(out) <= set(writer._MCP_SERVER_COLUMNS)  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_upsert_mcp_server_skips_existing(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(mcp_servers_repo, "insert_if_absent", AsyncMock(return_value=False))
+    assert (
+        await writer.upsert_mcp_server(cast("AsyncSession", FakeSession()), {"id": "s1"}) is False
+    )
+
+
+async def test_upsert_mcp_oauth_token_maps_columns_and_reports_the_repo_answer(
+    _token_insert_stub: AsyncMock,
+) -> None:
+    _token_insert_stub.side_effect = [True, False]
+    data = {
+        "id": "t1",
+        "mcpServerId": "s1",
+        "userId": "u1",
+        "encryptedAccessToken": "enc-a",
+        "encryptedRefreshToken": None,
+        "expiresAt": 1_700_000_000_000,
+        "scope": None,
+        "tokenType": "Bearer",
+    }
+    session = cast("AsyncSession", FakeSession())
+    assert await writer.upsert_mcp_oauth_token(session, data) is True
+    assert await writer.upsert_mcp_oauth_token(session, data) is False
+    values = _token_insert_stub.await_args_list[0].args[1]
+    assert values["id"] == "t1" and values["mcp_server_id"] == "s1"
+    assert values["user_id"] == "u1" and values["encrypted_access_token"] == "enc-a"
+    assert values["expires_at"] == datetime(2023, 11, 14, 22, 13, 20, tzinfo=UTC)
+    assert values["token_type"] == "Bearer" and values["encrypted_refresh_token"] is None
 
 
 # ─── runner: token re-encryption ────────────────────────────────────────────
@@ -227,7 +330,7 @@ async def test_dry_run_returns_0_and_never_connects_to_the_database(
 
 
 async def test_run_migration_inserts_rows_and_disconnects(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _mcp_server_session: AsyncMock
 ) -> None:
     _write_jsonl(tmp_path, "users", _users())
     _write_jsonl(tmp_path, "workflows", [_workflow(1), _workflow(2)])
@@ -251,7 +354,7 @@ async def test_run_migration_inserts_rows_and_disconnects(
     exec_data = db.workflowexecution.create.await_args.kwargs["data"]
     assert exec_data["status"] == "failed"  # in-flight state is not recoverable
     assert exec_data["threadId"].startswith("migrated-")
-    db.mcpserver.create.assert_awaited_once()
+    _mcp_server_session.assert_awaited_once()
     db.disconnect.assert_awaited_once()
 
 
@@ -297,7 +400,7 @@ async def test_run_migration_database_write_failure_is_recorded_and_run_continue
 
 
 async def test_run_migration_reencrypts_oauth_tokens_before_storing(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _token_insert_stub: AsyncMock
 ) -> None:
     from src.config import get_settings
 
@@ -320,9 +423,44 @@ async def test_run_migration_reencrypts_oauth_tokens_before_storing(
     db = _fake_db()
     _install_db(monkeypatch, db)
     assert await runner.run_migration(export_dir=str(tmp_path), dry_run=False) == 0
-    stored = db.mcpoauthtoken.create.await_args.kwargs["data"]
-    assert decrypt(stored["encryptedAccessToken"]) == "access-1"
-    assert decrypt(stored["encryptedRefreshToken"]) == "refresh-1"
+    assert _token_insert_stub.await_args is not None
+    stored = _token_insert_stub.await_args.args[1]
+    assert decrypt(stored["encrypted_access_token"]) == "access-1"
+    assert decrypt(stored["encrypted_refresh_token"]) == "refresh-1"
+
+
+async def test_run_migration_logs_only_the_class_of_a_token_insert_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    _token_insert_stub: AsyncMock,
+) -> None:
+    """DB errors embed bound parameters (token ciphertext); the log must not."""
+    from src.config import get_settings
+
+    monkeypatch.setenv("OAB_MCP_OAUTH_ENCRYPTION_KEY", _OAB_KEY_B64)
+    monkeypatch.setenv("ENCRYPTION_KEY", _COMPOSER_KEY)
+    get_settings.cache_clear()
+    _write_jsonl(
+        tmp_path,
+        "mcpOAuthTokens",
+        [
+            {
+                "_id": "t1",
+                "mcpServerId": "s1",
+                "userId": "clerk_a",
+                "encryptedAccessToken": _oab_encrypt("access-1"),
+            }
+        ],
+    )
+    _token_insert_stub.side_effect = RuntimeError(
+        "INSERT failed [parameters: (FAKE-SECRET-CIPHERTEXT,)]"
+    )
+    _install_db(monkeypatch, _fake_db())
+    with caplog.at_level("WARNING"):
+        assert await runner.run_migration(export_dir=str(tmp_path), dry_run=False) == 0
+    assert "mcpOAuthTokens row 't1': RuntimeError" in caplog.text
+    assert "FAKE-SECRET-CIPHERTEXT" not in caplog.text
 
 
 async def test_run_migration_without_oab_key_fails_fast_before_any_write(

@@ -6,6 +6,26 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — SQLAlchemy migration phase 2: integrations (2026-11-22)
+
+- **Repositories:** `mcp_servers`, `mcp_oauth_tokens`, `mcp_oauth_states` and `cloud_storage_connections` now go through repository modules in `src/db/repos/`. The Prisma import boundary test covers the MCP code, the Google Drive OAuth helpers, the MCP and cloud-storage routes, the tool registry and the mcp and download-pdf executors.
+- **Behaviour is proven:** the 63 tests in `tests/integration/sqla_phase2/` were written first against the Prisma code and pass unchanged after the move. They use fake MCP servers and fake OAuth and Google endpoints at the HTTP layer, and check on the wire MCP fix #1 (RFC 8707 `resource`) and fix #5 (shared-server token fallback).
+- **Short-session rule:** no database session is open across MCP, OAuth or Drive network calls. The executors, the MCP resolver, the OAuth helpers and the Drive helpers open one short session per database step. Unit tests pin the ordering.
+- **Deliberate behaviour changes:**
+  - OAuth state is consumed atomically (`DELETE ... RETURNING`), so a concurrent replay of the same state loses.
+  - The MCP and cloud-storage routes return 503 when no database is attached.
+  - A server deleted between the read and the update gives 404 instead of an error.
+  - Test-connection returns its result with "(result not saved)" if saving it fails.
+  - The Drive token helper raises `DriveConnectionMissingError` (404 from the picker-token route) when the connection vanishes mid-refresh, instead of returning an expired token.
+  - The Drive OAuth popup gets its close page with an error when the database is unavailable, instead of a JSON 503 that left the popup hanging.
+  - An ownerless shared MCP server gets "No OAuth token found".
+  - The migration writer accepts `lastTested` and `expiresAt` as epoch milliseconds and treats naive timestamps as UTC. The migration runner logs only the exception class and row id.
+- **Kept as-is, with follow-ups:**
+  - A Drive re-grant without a refresh token clears the stored one.
+  - MCP custom headers are stored but never sent.
+  - Concurrent refreshes of the same token can both POST the same refresh token.
+- **Cleanup:** one shared `require_sessionmaker` in `src/db/runtime.py` replaces three copies of the 503 check. The Drive code exchange and refresh share one token-endpoint helper. The phase 1 test `test_api_keys_list_newest_first` leaves 50 ms between keys, so Windows' coarse clock cannot tie two timestamps.
+
 ### Security — MCP test-connection and OAuth authorize check server visibility (2026-11-21)
 
 - **Before:** any authenticated member who knew another member's private MCP server id could call `POST /mcp-servers/{id}/test-connection` (server called with the owner's stored credential, reachability/tool count/error text returned, owner's connection status and tools overwritten) and `POST /mcp-servers/{id}/oauth/authorize` (authorize URL, client id, scopes and resource returned, state rows created).

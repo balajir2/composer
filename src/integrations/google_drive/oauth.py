@@ -23,8 +23,10 @@ from typing import Any
 from urllib.parse import urlencode
 
 import httpx
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import get_settings
+from src.db.repos import cloud_storage as cloud_storage_repo
 from src.security.encryption import EncryptionError, EncryptionKeyMissingError, decrypt, encrypt
 
 GOOGLE_AUTHORIZE_URL = "https://accounts.google.com/o/oauth2/v2/auth"
@@ -134,6 +136,22 @@ def expires_at_from_in(expires_in: int | None) -> datetime | None:
     return datetime.now(UTC) + timedelta(seconds=int(expires_in))
 
 
+async def _post_token_form(
+    form: dict[str, str], error_cls: type[GoogleDriveOAuthError], label: str
+) -> dict[str, Any]:
+    """POST a grant to Google's token endpoint; failures raise ``error_cls`` naming ``label``."""
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
+            resp = await client.post(
+                GOOGLE_TOKEN_URL, data=form, headers={"Accept": "application/json"}
+            )
+    except httpx.HTTPError as exc:
+        raise error_cls(f"Google {label} request failed: {exc}") from exc
+    if resp.status_code >= 400:
+        raise error_cls(f"Google {label} failed (HTTP {resp.status_code}): {resp.text[:200]}")
+    return resp.json()  # type: ignore[no-any-return]
+
+
 async def exchange_code_for_tokens(code: str, redirect_uri: str) -> dict[str, Any]:
     settings = get_settings()
     form = {
@@ -143,18 +161,7 @@ async def exchange_code_for_tokens(code: str, redirect_uri: str) -> dict[str, An
         "client_id": settings.google_oauth_client_id,
         "client_secret": settings.google_oauth_client_secret,
     }
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-            resp = await client.post(
-                GOOGLE_TOKEN_URL, data=form, headers={"Accept": "application/json"}
-            )
-    except httpx.HTTPError as exc:
-        raise TokenExchangeError(f"Google token exchange request failed: {exc}") from exc
-    if resp.status_code >= 400:
-        raise TokenExchangeError(
-            f"Google token exchange failed (HTTP {resp.status_code}): {resp.text[:200]}"
-        )
-    payload: dict[str, Any] = resp.json()
+    payload = await _post_token_form(form, TokenExchangeError, "token exchange")
 
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
@@ -181,56 +188,56 @@ async def refresh_access_token(refresh_token_plaintext: str) -> dict[str, Any]:
         "client_id": settings.google_oauth_client_id,
         "client_secret": settings.google_oauth_client_secret,
     }
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
-            resp = await client.post(
-                GOOGLE_TOKEN_URL, data=form, headers={"Accept": "application/json"}
-            )
-    except httpx.HTTPError as exc:
-        raise TokenRefreshError(f"Google token refresh request failed: {exc}") from exc
-    if resp.status_code >= 400:
-        raise TokenRefreshError(
-            f"Google token refresh failed (HTTP {resp.status_code}): {resp.text[:200]}"
-        )
-    return resp.json()  # type: ignore[no-any-return]
+    return await _post_token_form(form, TokenRefreshError, "token refresh")
 
 
 async def get_valid_drive_access_token(
-    connection_id: str, db: Any, *, expiry_buffer_seconds: int = _EXPIRY_BUFFER_SECONDS
+    connection_id: str,
+    sessionmaker: async_sessionmaker[AsyncSession],
+    *,
+    expiry_buffer_seconds: int = _EXPIRY_BUFFER_SECONDS,
 ) -> str:
-    """Return a decrypted plaintext access token, refreshing if near-expiry."""
-    connection = await db.cloudstorageconnection.find_unique(where={"id": connection_id})
+    """Return a decrypted plaintext access token, refreshing if near-expiry.
+
+    Short-session rule: the read and the post-refresh write each use their own session; none
+    is open while the Google refresh request is in flight.
+    """
+    async with sessionmaker() as session:
+        connection = await cloud_storage_repo.get(session, connection_id)
     if connection is None:
         raise DriveConnectionMissingError(
             f"No CloudStorageConnection found for id {connection_id!r}."
         )
 
-    if connection.expiresAt is not None:
+    if connection.expires_at is not None:
         now = datetime.now(UTC)
-        if now >= connection.expiresAt - timedelta(seconds=expiry_buffer_seconds):
-            if not connection.encryptedRefreshToken:
+        if now >= connection.expires_at - timedelta(seconds=expiry_buffer_seconds):
+            if not connection.encrypted_refresh_token:
                 raise DriveTokenExpiredError(
                     f"Drive connection {connection_id!r} expired with no refresh token; "
                     f"user must reconnect."
                 )
-            refreshed = await refresh_access_token(decrypt(connection.encryptedRefreshToken))
-            update_data: dict[str, Any] = {
-                "encryptedAccessToken": encrypt(refreshed["access_token"]),
-                "expiresAt": expires_at_from_in(refreshed.get("expires_in")),
-            }
+            refreshed = await refresh_access_token(decrypt(connection.encrypted_refresh_token))
+            changes = cloud_storage_repo.TokenChanges(
+                encrypted_access_token=encrypt(refreshed["access_token"]),
+                expires_at=expires_at_from_in(refreshed.get("expires_in")),
+            )
             new_refresh_token = refreshed.get("refresh_token")
             if new_refresh_token:
-                # Google doesn't always rotate the refresh token; only
-                # persist a new one when the response actually includes
-                # one (a partial Prisma update leaves the existing
-                # encryptedRefreshToken alone otherwise).
-                update_data["encryptedRefreshToken"] = encrypt(new_refresh_token)
-            connection = await db.cloudstorageconnection.update(
-                where={"id": connection_id},
-                data=update_data,
-            )
+                # Google doesn't always rotate the refresh token; only persist a new one
+                # when the response actually includes one.
+                changes["encrypted_refresh_token"] = encrypt(new_refresh_token)
+            async with sessionmaker() as session:
+                updated = await cloud_storage_repo.update_tokens(session, connection_id, changes)
+                await session.commit()
+            if updated is None:
+                # Deleted after the first read: don't hand back the stale, expired token.
+                raise DriveConnectionMissingError(
+                    f"No CloudStorageConnection found for id {connection_id!r}."
+                )
+            connection = updated
 
-    return decrypt(connection.encryptedAccessToken)  # type: ignore[no-any-return]
+    return decrypt(connection.encrypted_access_token)
 
 
 __all__ = [

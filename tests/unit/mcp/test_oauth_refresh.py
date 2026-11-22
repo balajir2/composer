@@ -3,15 +3,17 @@
 import base64
 import os
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
 from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
 
-from src.mcp.oauth import TokenRefreshError, refresh_token
+from src.mcp.oauth import McpTokenMissingError, TokenRefreshError, refresh_token
 from src.security.encryption import encrypt
+from tests.unit.db_fakes import RecordingSessionmaker, assert_no_network_inside_session
+from tests.unit.mcp._oauth_fakes import RepoCalls, make_token, script_repo
+from tests.unit.mcp._server_fakes import make_server
 
 
 def _set_enc_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -22,11 +24,12 @@ def _set_enc_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _server() -> Any:
-    return SimpleNamespace(
+    return make_server(
         id="srv1",
-        userId="owner",
+        user_id="owner",
         url="https://api.highspot.com/mcp",
-        oauthConfig={
+        auth_type="oauth",
+        oauth_config={
             "tokenUrl": "https://api.highspot.com/oauth/token",
             "clientId": "client-abc",
             "clientSecret": "plain-secret",
@@ -36,23 +39,21 @@ def _server() -> Any:
 
 def _token_row(monkeypatch: pytest.MonkeyPatch) -> Any:
     _set_enc_key(monkeypatch)
-    return SimpleNamespace(
-        id="tok1",
-        mcpServerId="srv1",
-        userId="user1",
-        encryptedAccessToken=encrypt("old-access"),
-        encryptedRefreshToken=encrypt("refresh-123"),
-        expiresAt=datetime.now(UTC) - timedelta(minutes=1),
+    return make_token(
+        encrypted_access_token=encrypt("old-access"),
+        encrypted_refresh_token=encrypt("refresh-123"),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
         scope="read",
-        tokenType="Bearer",
     )
 
 
-def _mock_db() -> MagicMock:
-    db = MagicMock()
-    db.mcpoauthtoken = MagicMock()
-    db.mcpoauthtoken.update = AsyncMock(return_value=SimpleNamespace(id="tok1"))
-    return db
+def _setup() -> tuple[RepoCalls, Any]:
+    calls = RepoCalls()
+    return calls, RecordingSessionmaker(calls.events)
+
+
+def _script(monkeypatch: pytest.MonkeyPatch, calls: RepoCalls, result: Any = ...) -> None:
+    script_repo(monkeypatch, calls, update_token=make_token() if result is ... else result)
 
 
 async def test_refresh_sends_resource_param(
@@ -61,13 +62,14 @@ async def test_refresh_sends_resource_param(
 ) -> None:
     """FIX #1 (third of four): refresh POST must include resource param."""
     tok = _token_row(monkeypatch)
-    db = _mock_db()
+    calls, sm = _setup()
+    _script(monkeypatch, calls)
     httpx_mock.add_response(
         url="https://api.highspot.com/oauth/token",
         method="POST",
         json={"access_token": "new-at", "expires_in": 3600},
     )
-    await refresh_token(_server(), tok, db)
+    await refresh_token(_server(), tok, sm)
     req = httpx_mock.get_request()
     assert req is not None
     body = req.content.decode()
@@ -76,24 +78,26 @@ async def test_refresh_sends_resource_param(
     assert "refresh_token=refresh-123" in body
 
 
-async def test_refresh_updates_token_row(
+async def test_refresh_updates_token_row_by_id(
     monkeypatch: pytest.MonkeyPatch,
     httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
 ) -> None:
     tok = _token_row(monkeypatch)
-    db = _mock_db()
+    calls, sm = _setup()
+    _script(monkeypatch, calls)
     httpx_mock.add_response(
         url="https://api.highspot.com/oauth/token",
         method="POST",
         json={"access_token": "new-at", "refresh_token": "new-rt", "expires_in": 3600},
     )
-    await refresh_token(_server(), tok, db)
-    db.mcpoauthtoken.update.assert_awaited_once()
-    call = db.mcpoauthtoken.update.await_args
-    data = call.kwargs["data"]
-    assert data["encryptedAccessToken"] != "new-at"  # encrypted
-    assert data["encryptedRefreshToken"] != "new-rt"
-    assert data["expiresAt"] > datetime.now(UTC) + timedelta(minutes=50)
+    await refresh_token(_server(), tok, sm)
+    ((token_id, changes),) = calls.of("update_token")
+    assert token_id == "tok1"
+    assert changes["encrypted_access_token"] != "new-at"  # encrypted
+    assert changes["encrypted_refresh_token"] != "new-rt"
+    assert changes["expires_at"] > datetime.now(UTC) + timedelta(minutes=50)
+    # Only the columns a refresh changes: scope, token type and created_at are never written.
+    assert set(changes) == {"encrypted_access_token", "encrypted_refresh_token", "expires_at"}
 
 
 async def test_refresh_keeps_old_refresh_token_if_idp_omits(
@@ -102,16 +106,17 @@ async def test_refresh_keeps_old_refresh_token_if_idp_omits(
 ) -> None:
     """Some IdPs don't rotate the refresh token on refresh. Keep the existing one."""
     tok = _token_row(monkeypatch)
-    db = _mock_db()
+    calls, sm = _setup()
+    _script(monkeypatch, calls)
     httpx_mock.add_response(
         url="https://api.highspot.com/oauth/token",
         method="POST",
         json={"access_token": "new-at", "expires_in": 3600},  # no refresh_token
     )
-    await refresh_token(_server(), tok, db)
-    data = db.mcpoauthtoken.update.await_args.kwargs["data"]
-    # Key is present and equal to the original (unchanged)
-    assert data["encryptedRefreshToken"] == tok.encryptedRefreshToken
+    await refresh_token(_server(), tok, sm)
+    ((_, changes),) = calls.of("update_token")
+    # The column is not in the update at all, so the stored refresh token is untouched.
+    assert "encrypted_refresh_token" not in changes
 
 
 async def test_refresh_raises_on_idp_error(
@@ -119,7 +124,8 @@ async def test_refresh_raises_on_idp_error(
     httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
 ) -> None:
     tok = _token_row(monkeypatch)
-    db = _mock_db()
+    calls, sm = _setup()
+    _script(monkeypatch, calls)
     httpx_mock.add_response(
         url="https://api.highspot.com/oauth/token",
         method="POST",
@@ -127,4 +133,44 @@ async def test_refresh_raises_on_idp_error(
         json={"error": "invalid_grant"},
     )
     with pytest.raises(TokenRefreshError, match="401"):
-        await refresh_token(_server(), tok, db)
+        await refresh_token(_server(), tok, sm)
+    assert calls.of("update_token") == []
+
+
+async def test_refresh_of_a_token_removed_meanwhile_raises(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    tok = _token_row(monkeypatch)
+    calls, sm = _setup()
+    _script(monkeypatch, calls, result=None)  # update_token finds no row
+    httpx_mock.add_response(
+        url="https://api.highspot.com/oauth/token",
+        method="POST",
+        json={"access_token": "new-at", "expires_in": 3600},
+    )
+    with pytest.raises(McpTokenMissingError):
+        await refresh_token(_server(), tok, sm)
+
+
+async def test_refresh_posts_with_no_session_open_then_updates_in_a_short_one(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    tok = _token_row(monkeypatch)
+    calls, sm = _setup()
+    _script(monkeypatch, calls)
+
+    def _idp(request: httpx.Request) -> httpx.Response:
+        calls.events.append("net:token-post")
+        return httpx.Response(200, json={"access_token": "new-at", "expires_in": 60})
+
+    httpx_mock.add_callback(_idp, url="https://api.highspot.com/oauth/token", method="POST")
+    await refresh_token(_server(), tok, sm)
+    assert calls.events == [
+        "net:token-post",
+        "session:enter",
+        "db:update_token",
+        "session:exit",
+    ]
+    assert_no_network_inside_session(calls.events)

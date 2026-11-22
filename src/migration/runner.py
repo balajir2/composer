@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.db.runtime import one_shot_session
 from src.migration import convex_loader, transformers, writer
 
 logger = logging.getLogger(__name__)
@@ -117,7 +118,7 @@ async def run_migration(*, export_dir: str, dry_run: bool) -> int:
                 else:
                     report.bump_skipped("workflows")
             except Exception as exc:
-                msg = f"workflows row {row.get('_id')!r}: {exc}"
+                msg = f"workflows row {row.get('_id')!r}: {type(exc).__name__}"
                 report.errors.append(msg)
                 logger.warning("%s", msg)
 
@@ -131,38 +132,46 @@ async def run_migration(*, export_dir: str, dry_run: bool) -> int:
                 else:
                     report.bump_skipped("executions")
             except Exception as exc:
-                msg = f"executions row {row.get('_id')!r}: {exc}"
+                msg = f"executions row {row.get('_id')!r}: {type(exc).__name__}"
                 report.errors.append(msg)
                 logger.warning("%s", msg)
 
-        # MCP servers
-        for row in tables.get("mcpServers", []):
-            try:
-                data = transformers.mcp_server_row(row, users)
-                inserted = await writer.upsert_mcp_server(db, data)
-                if inserted:
-                    report.bump_inserted("mcpServers")
-                else:
-                    report.bump_skipped("mcpServers")
-            except Exception as exc:
-                msg = f"mcpServers row {row.get('_id')!r}: {exc}"
-                report.errors.append(msg)
-                logger.warning("%s", msg)
+        # MCP servers (SQLAlchemy; one session, committed per row so one bad row can't undo the rest)
+        mcp_rows = tables.get("mcpServers", [])
+        if mcp_rows:
+            async with one_shot_session(get_settings()) as session:
+                for row in mcp_rows:
+                    try:
+                        data = transformers.mcp_server_row(row, users)
+                        inserted = await writer.upsert_mcp_server(session, data)
+                        await session.commit()
+                        if inserted:
+                            report.bump_inserted("mcpServers")
+                        else:
+                            report.bump_skipped("mcpServers")
+                    except Exception as exc:
+                        await session.rollback()
+                        msg = f"mcpServers row {row.get('_id')!r}: {type(exc).__name__}"
+                        report.errors.append(msg)
+                        logger.warning("%s", msg)
 
         # MCP OAuth tokens (requires re-encrypt)
         if reencrypt is not None:
-            for row in tables["mcpOAuthTokens"]:
-                try:
-                    data = transformers.mcp_oauth_token_row(row, reencrypt)
-                    inserted = await writer.upsert_mcp_oauth_token(db, data)
-                    if inserted:
-                        report.bump_inserted("mcpOAuthTokens")
-                    else:
-                        report.bump_skipped("mcpOAuthTokens")
-                except Exception as exc:
-                    msg = f"mcpOAuthTokens row {row.get('_id')!r}: {exc}"
-                    report.errors.append(msg)
-                    logger.warning("%s", msg)
+            async with one_shot_session(get_settings()) as session:
+                for row in tables["mcpOAuthTokens"]:
+                    try:
+                        data = transformers.mcp_oauth_token_row(row, reencrypt)
+                        inserted = await writer.upsert_mcp_oauth_token(session, data)
+                        await session.commit()
+                        if inserted:
+                            report.bump_inserted("mcpOAuthTokens")
+                        else:
+                            report.bump_skipped("mcpOAuthTokens")
+                    except Exception as exc:
+                        await session.rollback()
+                        msg = f"mcpOAuthTokens row {row.get('_id')!r}: {type(exc).__name__}"
+                        report.errors.append(msg)
+                        logger.warning("%s", msg)
     finally:
         await db.disconnect()
 

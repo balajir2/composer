@@ -3,9 +3,8 @@ paths of the MCP resolver (src/mcp/resolver.py)."""
 
 from __future__ import annotations
 
-from types import SimpleNamespace
 from typing import Any, ClassVar
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 from langchain_core.tools import BaseTool
@@ -19,16 +18,15 @@ from src.mcp.resolver import (
     resolve_single_mcp_tool,
 )
 from src.tools.base import ToolDefinition
+from tests.unit.mcp._server_fakes import install_server_get, make_server, sessionmaker_with
 
 
 def _server(user_id: str = "owner", is_shared: bool = False) -> Any:
-    return SimpleNamespace(id="srv1", userId=user_id, isShared=is_shared)
+    return make_server(user_id=user_id, is_shared=is_shared)
 
 
-def _db(server: Any | None) -> MagicMock:
-    db = MagicMock()
-    db.mcpserver.find_unique = AsyncMock(return_value=server)
-    return db
+def _db(server: Any | None) -> Any:
+    return sessionmaker_with(server)
 
 
 class _FakeProvider:
@@ -38,7 +36,9 @@ class _FakeProvider:
     advertised: ClassVar[list[str]] = ["alpha", "beta"]
     tools_error: Exception | None = None
 
-    def __init__(self, server: Any, *, db: Any = None, user_id: str | None = None) -> None:
+    def __init__(
+        self, server: Any, *, sessionmaker: Any = None, user_id: str | None = None
+    ) -> None:
         self.server = server
         self.user_id = user_id
         self.built: list[str] = []
@@ -70,6 +70,7 @@ def _fake_provider(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[
     _FakeProvider.advertised = ["alpha", "beta"]
     _FakeProvider.tools_error = None
     monkeypatch.setattr(resolver, "McpToolProvider", _FakeProvider)
+    install_server_get(monkeypatch)
 
 
 async def test_by_names_returns_only_requested_tools_in_requested_order() -> None:

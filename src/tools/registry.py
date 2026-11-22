@@ -77,14 +77,16 @@ async def resolve_tools_for_node(node: AgentNode, context: BuildContext) -> list
 
     if node.data.mcp_server_ids:
         # Phase 3a+: delegate to src.mcp.resolver
+        from src.db.runtime import get_registered_sessionmaker
         from src.mcp.resolver import resolve_mcp_tools_for_node
 
-        if context.db is None:
+        sessionmaker = get_registered_sessionmaker()
+        if sessionmaker is None:
             raise RuntimeError(
                 "BuildContext.db is required for MCP tool resolution. "
                 "Populate it in the Agent executor when mcp_server_ids is non-empty."
             )
-        out.extend(await resolve_mcp_tools_for_node(node, context, context.db))
+        out.extend(await resolve_mcp_tools_for_node(node, context, sessionmaker))
 
     return out
 

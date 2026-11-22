@@ -9,6 +9,7 @@ from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from typing import cast
 
+from fastapi import HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from starlette.requests import HTTPConnection
 
@@ -41,6 +42,16 @@ def request_sessionmaker(conn: HTTPConnection) -> async_sessionmaker[AsyncSessio
         "async_sessionmaker[AsyncSession] | None",
         getattr(conn.app.state, "db_sessionmaker", None),
     )
+
+
+def require_sessionmaker(conn: HTTPConnection) -> async_sessionmaker[AsyncSession]:
+    """The app's sessionmaker, or a 503 when the app runs without a database."""
+    sessionmaker = request_sessionmaker(conn)
+    if sessionmaker is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="database unavailable"
+        )
+    return sessionmaker
 
 
 @asynccontextmanager

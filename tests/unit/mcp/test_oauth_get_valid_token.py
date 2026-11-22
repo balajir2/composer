@@ -3,18 +3,22 @@
 import base64
 import os
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
 
+import httpx
 import pytest
+from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
 
+from src.db.repos.mcp_oauth import McpOAuthTokenRecord
 from src.mcp.oauth import (
     McpTokenExpiredError,
     McpTokenMissingError,
     get_valid_access_token,
 )
-from src.security.encryption import encrypt
+from src.security.encryption import decrypt, encrypt
+from tests.unit.db_fakes import RecordingSessionmaker, assert_no_network_inside_session
+from tests.unit.mcp._oauth_fakes import RepoCalls, make_token, script_repo
+from tests.unit.mcp._server_fakes import make_server
 
 
 def _set_enc_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -25,12 +29,13 @@ def _set_enc_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _server(is_shared: bool = False, owner: str = "owner") -> Any:
-    return SimpleNamespace(
+    return make_server(
         id="srv1",
-        userId=owner,
+        user_id=owner,
         url="https://api.highspot.com/mcp",
-        isShared=is_shared,
-        oauthConfig={
+        auth_type="oauth",
+        is_shared=is_shared,
+        oauth_config={
             "tokenUrl": "https://api.highspot.com/oauth/token",
             "clientId": "c",
             "clientSecret": "s",
@@ -38,36 +43,34 @@ def _server(is_shared: bool = False, owner: str = "owner") -> Any:
     )
 
 
-def _valid_token(monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> Any:
+def _valid_token(monkeypatch: pytest.MonkeyPatch, **overrides: Any) -> McpOAuthTokenRecord:
     _set_enc_key(monkeypatch)
     base: dict[str, Any] = {
         "id": "tok1",
-        "mcpServerId": "srv1",
-        "userId": "user1",
-        "encryptedAccessToken": encrypt("plain-access"),
-        "encryptedRefreshToken": encrypt("rt-1"),
-        "expiresAt": datetime.now(UTC) + timedelta(hours=1),
-        "tokenType": "Bearer",
+        "user_id": "user1",
+        "encrypted_access_token": encrypt("plain-access"),
+        "encrypted_refresh_token": encrypt("rt-1"),
+        "expires_at": datetime.now(UTC) + timedelta(hours=1),
     }
     base.update(overrides)
-    return SimpleNamespace(**base)
+    return make_token(**base)
 
 
-def _mock_db(primary: Any | None, fallback: Any | None = None) -> MagicMock:
-    """mcpoauthtoken.find_unique is called at most twice (primary, then fallback)."""
-    db = MagicMock()
-    db.mcpoauthtoken = MagicMock()
-    db.mcpoauthtoken.find_unique = AsyncMock(side_effect=[primary, fallback])
-    db.mcpoauthtoken.update = AsyncMock()
-    return db
+def _setup(
+    monkeypatch: pytest.MonkeyPatch, primary: Any | None, fallback: Any | None = None
+) -> tuple[RepoCalls, Any]:
+    """get_token is called at most twice (the caller's row, then the owner's)."""
+    calls = RepoCalls()
+    script_repo(monkeypatch, calls, get_token=[primary, fallback])
+    return calls, RecordingSessionmaker(calls.events)
 
 
 async def test_owner_with_valid_token_returns_plaintext(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     tok = _valid_token(monkeypatch)
-    db = _mock_db(tok)
-    out = await get_valid_access_token(_server(owner="user1"), "user1", db)
+    _, sm = _setup(monkeypatch, tok)
+    out = await get_valid_access_token(_server(owner="user1"), "user1", sm)
     assert out == "plain-access"
 
 
@@ -75,56 +78,56 @@ async def test_missing_token_and_not_shared_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_enc_key(monkeypatch)
-    db = _mock_db(None)  # user has no token, server not shared
+    _, sm = _setup(monkeypatch, None)  # user has no token, server not shared
     with pytest.raises(McpTokenMissingError, match="user1"):
-        await get_valid_access_token(_server(is_shared=False, owner="owner"), "user1", db)
+        await get_valid_access_token(_server(is_shared=False, owner="owner"), "user1", sm)
 
 
 async def test_service_account_fallback_for_shared_server(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """FIX #5: when user has no token for a shared server, fall back to owner's token."""
-    fallback = _valid_token(monkeypatch, userId="owner")
-    db = _mock_db(primary=None, fallback=fallback)
-    out = await get_valid_access_token(_server(is_shared=True, owner="owner"), "user1", db)
+    fallback = _valid_token(monkeypatch, user_id="owner")
+    calls, sm = _setup(monkeypatch, primary=None, fallback=fallback)
+    out = await get_valid_access_token(_server(is_shared=True, owner="owner"), "user1", sm)
     assert out == "plain-access"
-    # Two find_unique calls: one for user1, one for owner
-    assert db.mcpoauthtoken.find_unique.await_count == 2
+    # Two token reads: one for user1, one for owner (both in the same short session).
+    assert [args[1:] for args in calls.of("get_token")] == [("user1",), ("owner",)]
+    assert calls.events.count("session:enter") == 1
 
 
 async def test_shared_server_but_owner_also_missing_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     _set_enc_key(monkeypatch)
-    db = _mock_db(primary=None, fallback=None)
+    _, sm = _setup(monkeypatch, primary=None, fallback=None)
     with pytest.raises(McpTokenMissingError, match="server owner"):
-        await get_valid_access_token(_server(is_shared=True, owner="owner"), "user1", db)
+        await get_valid_access_token(_server(is_shared=True, owner="owner"), "user1", sm)
 
 
 async def test_near_expiry_triggers_refresh(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Within expiry buffer, refresh_token is invoked."""
-    tok = _valid_token(monkeypatch, expiresAt=datetime.now(UTC) + timedelta(seconds=30))
-    db = _mock_db(tok)
+    tok = _valid_token(monkeypatch, expires_at=datetime.now(UTC) + timedelta(seconds=30))
+    _, sm = _setup(monkeypatch, tok)
 
     refresh_calls: list[Any] = []
 
-    async def _fake_refresh(server: Any, token_row: Any, _db: Any) -> Any:
+    async def _fake_refresh(server: Any, token_row: Any, _sm: Any) -> Any:
         refresh_calls.append((server.id, token_row.id))
         # Return a new row with a fresh token
-        return SimpleNamespace(
-            id="tok1",
-            encryptedAccessToken=encrypt("refreshed"),
-            encryptedRefreshToken=token_row.encryptedRefreshToken,
-            expiresAt=datetime.now(UTC) + timedelta(hours=1),
+        return make_token(
+            encrypted_access_token=encrypt("refreshed"),
+            encrypted_refresh_token=token_row.encrypted_refresh_token,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
         )
 
     import src.mcp.oauth as oauth_mod
 
     monkeypatch.setattr(oauth_mod, "refresh_token", _fake_refresh)
 
-    out = await get_valid_access_token(_server(owner="user1"), "user1", db)
+    out = await get_valid_access_token(_server(owner="user1"), "user1", sm)
     assert out == "refreshed"
     assert refresh_calls == [("srv1", "tok1")]
 
@@ -134,9 +137,60 @@ async def test_near_expiry_without_refresh_token_raises(
 ) -> None:
     tok = _valid_token(
         monkeypatch,
-        expiresAt=datetime.now(UTC) + timedelta(seconds=30),
-        encryptedRefreshToken=None,
+        expires_at=datetime.now(UTC) + timedelta(seconds=30),
+        encrypted_refresh_token=None,
     )
-    db = _mock_db(tok)
+    _, sm = _setup(monkeypatch, tok)
     with pytest.raises(McpTokenExpiredError):
-        await get_valid_access_token(_server(owner="user1"), "user1", db)
+        await get_valid_access_token(_server(owner="user1"), "user1", sm)
+
+
+async def test_refresh_reads_close_before_the_post_and_write_the_owners_row(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """Shared-server fallback + expired owner token: short read session, closed; the IdP POST
+    runs with no session open; the update goes to the OWNER's row by id (no row for the caller)."""
+    owner_token = _valid_token(
+        monkeypatch,
+        id="owner-tok",
+        user_id="owner",
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    calls = RepoCalls()
+    script_repo(
+        monkeypatch,
+        calls,
+        get_token=[None, owner_token],
+        update_token=make_token(
+            id="owner-tok",
+            encrypted_access_token=encrypt("refreshed"),
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+        ),
+    )
+    sm: Any = RecordingSessionmaker(calls.events)
+
+    def _idp(request: httpx.Request) -> httpx.Response:
+        calls.events.append("net:token-post")
+        return httpx.Response(200, json={"access_token": "refreshed", "expires_in": 3600})
+
+    httpx_mock.add_callback(_idp, url="https://api.highspot.com/oauth/token", method="POST")
+
+    out = await get_valid_access_token(_server(is_shared=True, owner="owner"), "user1", sm)
+
+    assert out == "refreshed"
+    assert calls.events == [
+        "session:enter",
+        "db:get_token",
+        "db:get_token",
+        "session:exit",
+        "net:token-post",
+        "session:enter",
+        "db:update_token",
+        "session:exit",
+    ]
+    assert_no_network_inside_session(calls.events)
+    ((token_id, _changes),) = calls.of("update_token")
+    assert token_id == "owner-tok"
+    assert calls.of("upsert_token") == []
+    assert decrypt(owner_token.encrypted_access_token) == "plain-access"  # sanity: input untouched
