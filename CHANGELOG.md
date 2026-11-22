@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — MCP custom headers sent; refresh tokens kept on re-grant; concurrent token refreshes serialized (2026-11-22)
+
+- **MCP custom headers are now sent.** Before, headers saved on an MCP server (a tenant or gateway header, say) were stored and shown redacted but never put on a request, so servers that needed them rejected calls. Now every MCP request (initialize, tools/list, tools/call) carries them, with sensitive values decrypted just before use. The client's own headers (Content-Type, Accept, session id, protocol version) and the auth header from the server's auth type always win over a custom header of the same name.
+- **Re-granting OAuth keeps the stored refresh token and scope.** Before, a re-consent where Google (or an MCP IdP) omitted the refresh token overwrote the stored one with nothing, so the user had to reconnect once the access token expired. Now the stored refresh token and scope are kept when the new grant has none; a new one still replaces them. The first grant is unaffected.
+- **Concurrent refreshes of the same token are serialized.** Before, two callers that found the same token expired both posted the same refresh token, which IdPs that detect refresh-token reuse may revoke. Now a transaction-scoped Postgres advisory lock lets one caller refresh while the other waits, re-reads the row and uses the fresh token without posting. A wait over 15 s fails with a clear refresh error.
+- **Short-session rule exception:** a refresh holds one database connection open across the token POST (the lock lives as long as the transaction). The fast path, where the token is still valid, takes no lock and keeps the short read session. Documented in `docs/architecture.md`.
+
 ### Changed — SQLAlchemy migration phase 2: integrations (2026-11-22)
 
 - **Repositories:** `mcp_servers`, `mcp_oauth_tokens`, `mcp_oauth_states` and `cloud_storage_connections` now go through repository modules in `src/db/repos/`. The Prisma import boundary test covers the MCP code, the Google Drive OAuth helpers, the MCP and cloud-storage routes, the tool registry and the mcp and download-pdf executors.
@@ -20,7 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - The Drive OAuth popup gets its close page with an error when the database is unavailable, instead of a JSON 503 that left the popup hanging.
   - An ownerless shared MCP server gets "No OAuth token found".
   - The migration writer accepts `lastTested` and `expiresAt` as epoch milliseconds and treats naive timestamps as UTC. The migration runner logs only the exception class and row id.
-- **Kept as-is, with follow-ups:**
+- **Kept as-is, with follow-ups (all three since fixed, see the Fixed entry above):**
   - A Drive re-grant without a refresh token clears the stored one.
   - MCP custom headers are stored but never sent.
   - Concurrent refreshes of the same token can both POST the same refresh token.

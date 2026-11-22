@@ -134,6 +134,8 @@ Tables are moving from Prisma to SQLAlchemy 2.x one group at a time (spec: `docs
 
 **Short-session rule for code outside a request.** Executors, the MCP resolver and OAuth helpers, and the Drive token helpers take a `sessionmaker` parameter (executors get it from `get_registered_sessionmaker()` in `src/db/runtime.py`; routes use `require_sessionmaker(request)`, which answers 503 when no database is attached). Each DB step opens its own short `async with sessionmaker() as session:` block, commits, and closes it before the next step. No session is ever open across network I/O (MCP calls, OAuth token POSTs, Google refresh, Drive API, LLM calls), because an open session holds a pooled connection. Unit tests record session and network events to pin the ordering.
 
+**Documented exception: token refresh.** Refreshing an expired OAuth token (`refresh_token` in `src/mcp/oauth.py`, `_refresh_connection` in `src/integrations/google_drive/oauth.py`) holds ONE session open across the IdP refresh POST, because a transaction-scoped Postgres advisory lock (`src/db/locks.py`, `pg_advisory_xact_lock`, 15 s lock timeout) must live as long as the POST so that two concurrent callers post a refresh token once. The fast path (token still valid) keeps the short read session and takes no lock. The refresh POST is the only network call allowed inside an open session. The lock is transaction-scoped, never session-scoped, because Neon's transaction-mode pooler does not support session-level advisory locks.
+
 ## Execution model
 
 A workflow is a JSON pair of `nodes[]` + `edges[]`. The executor:
