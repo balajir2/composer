@@ -1,8 +1,11 @@
 """Tests for MCPClient."""
 
 import json
+from typing import Any, cast
 
 import pytest
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
 
 from src.mcp.client import (
@@ -11,6 +14,7 @@ from src.mcp.client import (
     MCPRpcError,
     MCPTimeoutError,  # noqa: F401  # pyright: ignore[reportUnusedImport]
 )
+from src.telemetry.providers import configure_provider_metrics
 
 
 async def test_initialize_plain_json(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
@@ -274,3 +278,127 @@ async def test_tools_list_initializes_and_retries_when_session_required(
     assert reqs[0].headers.get("mcp-session-id") is None
     assert reqs[1].headers.get("mcp-session-id") is None
     assert reqs[2].headers.get("mcp-session-id") == "sess-456"
+
+
+async def test_mcp_retry_records_each_outbound_request_once(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    configure_provider_metrics(provider)
+    try:
+        httpx_mock.add_response(
+            url="https://mcp.example.com/rpc",
+            method="POST",
+            status_code=400,
+            json={
+                "jsonrpc": "2.0",
+                "error": {
+                    "code": -32600,
+                    "message": "Request must be an initialize request if no session ID is provided.",
+                },
+            },
+        )
+        httpx_mock.add_response(
+            url="https://mcp.example.com/rpc",
+            method="POST",
+            json={"jsonrpc": "2.0", "id": 2, "result": {}},
+            headers={"mcp-session-id": "session"},
+        )
+        httpx_mock.add_response(
+            url="https://mcp.example.com/rpc",
+            method="POST",
+            json={"jsonrpc": "2.0", "id": 3, "result": {"tools": []}},
+        )
+        await MCPClient("https://mcp.example.com/rpc").tools_list()
+
+        data = reader.get_metrics_data()
+        assert data is not None
+        metrics = [
+            metric
+            for resource_metrics in data.resource_metrics
+            for scope in resource_metrics.scope_metrics
+            for metric in scope.metrics
+        ]
+        requests = next(metric for metric in metrics if metric.name == "composer.provider.request")
+        points = list(requests.data.data_points)
+        assert sum(cast("Any", point).value for point in points) == 3
+        assert all(point.attributes is not None for point in points)
+        assert {
+            tuple(sorted(cast("dict[str, str]", point.attributes).items())) for point in points
+        } == {
+            (("operation", "invoke"), ("provider", "other"), ("result", "other")),
+            (("operation", "invoke"), ("provider", "other"), ("result", "success")),
+        }
+    finally:
+        configure_provider_metrics(None)
+        provider.shutdown()
+
+
+@pytest.mark.parametrize(
+    ("response_kwargs", "error_type", "message", "expected_result"),
+    [
+        (
+            {
+                "json": {
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "error": {"code": -32601, "message": "method not found"},
+                }
+            },
+            MCPRpcError,
+            "method not found",
+            "provider_error",
+        ),
+        ({"text": "not json"}, MCPHTTPError, "valid JSON", "provider_error"),
+        (
+            {
+                "text": 'data: {"jsonrpc":"2.0","id":9,"result":{}}\n\n',
+                "headers": {"content-type": "text/event-stream"},
+            },
+            MCPHTTPError,
+            "frame with id=1",
+            "provider_error",
+        ),
+        ({"status_code": 401, "text": "private"}, MCPHTTPError, "HTTP 401", "authentication_error"),
+    ],
+)
+async def test_mcp_protocol_and_parse_failures_are_not_recorded_as_success(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+    response_kwargs: dict[str, Any],
+    error_type: type[Exception],
+    message: str,
+    expected_result: str,
+) -> None:
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    configure_provider_metrics(provider)
+    try:
+        httpx_mock.add_response(
+            url="https://mcp.example.com/rpc",
+            method="POST",
+            **response_kwargs,
+        )
+        with pytest.raises(error_type, match=message):
+            await MCPClient("https://mcp.example.com/rpc").tools_list()
+
+        data = reader.get_metrics_data()
+        assert data is not None
+        metrics = [
+            metric
+            for resource_metrics in data.resource_metrics
+            for scope in resource_metrics.scope_metrics
+            for metric in scope.metrics
+        ]
+        requests = next(metric for metric in metrics if metric.name == "composer.provider.request")
+        points = list(requests.data.data_points)
+        assert sum(cast("Any", point).value for point in points) == 1
+        assert len(points) == 1
+        assert points[0].attributes == {
+            "provider": "other",
+            "operation": "invoke",
+            "result": expected_result,
+        }
+    finally:
+        configure_provider_metrics(None)
+        provider.shutdown()

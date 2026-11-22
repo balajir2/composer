@@ -2,10 +2,12 @@
 
 import logging
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import PlainTextResponse
+from starlette.types import ASGIApp
 
 from src import __version__
 from src.api.admin_builder import router as admin_builder_router
@@ -28,6 +30,7 @@ from src.api.llm_models import router as llm_models_router
 from src.api.llm_models_live import router as llm_models_live_router
 from src.api.mcp_servers import oauth_router
 from src.api.mcp_servers import router as mcp_servers_router
+from src.api.readiness import router as readiness_router
 from src.api.run import router as run_router
 from src.api.test_cleanup import router as test_cleanup_router
 from src.api.uploads import router as uploads_router
@@ -40,15 +43,18 @@ from src.maintenance.execution_sweeper import start_sweeper, stop_sweeper
 from src.security.key_sync import sync_llm_keys_from_db
 from src.security.proxy_headers import TrustedProxyHeadersMiddleware
 from src.storage.db import prisma_lifespan
+from src.telemetry.context import CorrelationMiddleware
+from src.telemetry.logging import configure_logging
+from src.telemetry.runtime import TelemetryRuntime
 
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+async def _service_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application startup and shutdown hooks."""
     settings = get_settings()
-    logging.basicConfig(level=settings.log_level)
+    configure_logging(settings.log_level)
     logger.info("Starting Composer v%s in %s mode", __version__, settings.environment)
     # Fail fast rather than silently serving broken behavior (P0-4) — see
     # src/config_validation.py for what this catches and why.
@@ -69,12 +75,37 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             orphaned_running_grace_seconds=settings.orphaned_running_grace_seconds,
             approval_timeout_hours=settings.approval_wait_timeout_hours,
         )
+        app.state.runtime_initialized = True
         try:
             yield
         finally:
+            app.state.draining = True
             await stop_sweeper(sweeper_task)
 
     logger.info("Shutting down Composer")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    settings = get_settings()
+    runtime = app.state.telemetry_runtime
+    try:
+        with suppress(Exception):
+            runtime.start("composer", __version__, settings.environment)
+        async with _service_lifespan(app):
+            yield
+    finally:
+        with suppress(Exception):
+            runtime.shutdown()
+
+
+class CorrelatedFastAPI(FastAPI):
+    """Wrap Starlette's error handler while keeping trusted proxy processing outermost."""
+
+    def build_middleware_stack(self) -> ASGIApp:
+        app = super().build_middleware_stack()
+        app = CorrelationMiddleware(app, runtime=self.state.telemetry_runtime)
+        return TrustedProxyHeadersMiddleware(app, trusted_hops=self.state.telemetry_trusted_hops)
 
 
 def create_app() -> FastAPI:
@@ -102,12 +133,24 @@ def create_app() -> FastAPI:
             "Set ENVIRONMENT=production to require real auth."
         )
 
-    app = FastAPI(
+    app = CorrelatedFastAPI(
         title="Composer",
         description="Python rebuild of Open Agent Builder on IE-compatible stack.",
         version=__version__,
         lifespan=lifespan,
     )
+
+    @app.exception_handler(Exception)
+    async def correlation_error_response(request: Request, exc: Exception) -> PlainTextResponse:
+        request_id = getattr(request.state, "telemetry_request_id", None)
+        headers = {"x-request-id": request_id} if request_id else None
+        return PlainTextResponse("Internal Server Error", status_code=500, headers=headers)
+
+    runtime = TelemetryRuntime(settings)
+    app.state.telemetry_runtime = runtime
+    app.state.telemetry_trusted_hops = settings.trusted_proxy_hops
+    app.state.runtime_initialized = False
+    app.state.draining = False
 
     # Mode-aware CORS (Phase 7a)
     if settings.deployment_mode == "embedded":
@@ -137,10 +180,6 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
-    # Added last so it is the OUTERMOST middleware: the client address must be
-    # corrected before CORS, rate limiting, or any route sees the request.
-    app.add_middleware(TrustedProxyHeadersMiddleware, trusted_hops=settings.trusted_proxy_hops)
-
     app.include_router(admin_builder_router)
     app.include_router(admin_deployment_settings_router)
     app.include_router(admin_llm_keys_router)
@@ -163,6 +202,7 @@ def create_app() -> FastAPI:
     app.include_router(run_router)
     app.include_router(uploads_router)
     app.include_router(users_router)
+    app.include_router(readiness_router)
 
     # Test-only self-service hard-delete for e2e accounts (never in
     # production) -- see src/api/test_cleanup.py's module docstring.

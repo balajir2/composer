@@ -21,6 +21,16 @@ class Settings(BaseSettings):
     )
 
     # ─── App ──────────────────────────────────────
+    # --- telemetry ---
+    telemetry_enabled: bool = False
+    otel_exporter_otlp_endpoint: str = ""
+    otel_exporter_otlp_headers: str = Field(default="", repr=False)
+    otel_traces_sampler: str = "parentbased_traceidratio"
+    otel_traces_sampler_arg: float = Field(default=0.10, ge=0, le=1)
+    telemetry_export_timeout_seconds: int = Field(default=5, ge=1)
+    telemetry_max_attribute_bytes: int = Field(default=1024, ge=1)
+    telemetry_service_namespace: str = "composer"
+
     app_name: str = "composer"
     environment: str = Field(default="development", description="development | production")
     log_level: str = "INFO"

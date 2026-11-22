@@ -249,7 +249,7 @@ jobs:
           echo "Backend deployed: $URL"
           echo "BACKEND_URL=$URL" >> $GITHUB_STEP_SUMMARY
 
-      - name: Smoke test /health
+      - name: Smoke test /ready
         run: |
           URL=$(gcloud run services describe ${{ env.BACKEND_SERVICE }} \
             --region=${{ env.REGION }} \
@@ -257,14 +257,14 @@ jobs:
             --format='value(status.url)')
           # Health probe may need a moment for traffic to roll over.
           for i in 1 2 3 4 5; do
-            if curl -fsS --max-time 30 "$URL/health" > /dev/null; then
-              echo "Health probe passed"
+            if curl -fsS --max-time 30 "$URL/ready" > /dev/null; then
+              echo "Readiness probe passed"
               exit 0
             fi
             echo "Health probe attempt $i failed, retrying in 5s..."
             sleep 5
           done
-          echo "Health probe never passed" >&2
+          echo "Readiness probe never passed" >&2
           exit 1
 
   deploy-frontend:

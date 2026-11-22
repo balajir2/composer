@@ -1,13 +1,16 @@
 """Unit tests for WebSocket event streaming (Phase 9a)."""
 
 import json
+from collections.abc import Iterator
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import WebSocket as FastAPIWebSocket
 from fastapi.testclient import TestClient
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from starlette.websockets import WebSocketDisconnect
 
 from src.db.models import UserRole
@@ -16,6 +19,7 @@ from src.engine.events_pg import PostgresEventStore
 from src.main import create_app
 from src.security.jwt import create_access_token, create_refresh_token
 from src.security.rate_limit import RateLimiter
+from src.telemetry.providers import configure_provider_metrics
 from tests.unit.db_fakes import FakeSessionmaker, make_user
 
 
@@ -38,6 +42,16 @@ def _execution_row(**overrides: Any) -> SimpleNamespace:
 
 
 _ROLE = {"value": UserRole.MEMBER}
+
+
+@pytest.fixture
+def websocket_metric_reader() -> Iterator[InMemoryMetricReader]:
+    reader = InMemoryMetricReader()
+    provider = MeterProvider(metric_readers=[reader])
+    configure_provider_metrics(provider)
+    yield reader
+    configure_provider_metrics(None)
+    provider.shutdown()
 
 
 @pytest.fixture(autouse=True)
@@ -136,7 +150,10 @@ def test_ws_terminal_snapshot_closes() -> None:
         # server closes after terminal snapshot
 
 
-async def test_ws_replays_events_since_client_cursor(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_ws_replays_events_since_client_cursor(
+    monkeypatch: pytest.MonkeyPatch,
+    websocket_metric_reader: InMemoryMetricReader,
+) -> None:
     """A client reconnecting with ?after=1 must receive events with seq > 1
     from the persisted store before subscribing to new live notifications —
     the "recover missed terminal events" requirement (P1-4)."""
@@ -178,6 +195,25 @@ async def test_ws_replays_events_since_client_cursor(monkeypatch: pytest.MonkeyP
         assert replayed["nodeId"] == "n1"
 
     store.list_since.assert_awaited_once_with("exec-1", after_seq=1)
+    metric_data = websocket_metric_reader.get_metrics_data()
+    assert metric_data is not None
+    metrics = [
+        metric
+        for resource_metrics in metric_data.resource_metrics
+        for scope in resource_metrics.scope_metrics
+        for metric in scope.metrics
+    ]
+    assert {metric.name for metric in metrics} >= {
+        "composer.websocket.connection.duration",
+        "composer.websocket.reconnect",
+        "composer.websocket.replay.count",
+    }
+    assert all(not point.attributes for metric in metrics for point in metric.data.data_points)
+    replay = next(metric for metric in metrics if metric.name == "composer.websocket.replay.count")
+    replay_point = cast("Any", next(iter(replay.data.data_points)))
+    assert replay_point.sum == 1
+    reconnect = next(metric for metric in metrics if metric.name == "composer.websocket.reconnect")
+    assert cast("Any", next(iter(reconnect.data.data_points))).value == 1
 
 
 def test_ws_rejects_negative_after_query_param() -> None:
@@ -246,7 +282,10 @@ async def test_ws_timeout_triggers_list_since_poll(monkeypatch: pytest.MonkeyPat
     store.list_since.assert_any_await("exec-1", after_seq=0)
 
 
-async def test_ws_keepalive_send_failure_closes_loop(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_ws_keepalive_send_failure_closes_loop(
+    monkeypatch: pytest.MonkeyPatch,
+    websocket_metric_reader: InMemoryMetricReader,
+) -> None:
     """If sending the keepalive ping fails (dead client that never sent a
     clean close), the live loop must give up rather than swallow the error
     and hold the WebSocket + its dedicated Postgres LISTEN connection open
@@ -284,6 +323,18 @@ async def test_ws_keepalive_send_failure_closes_loop(monkeypatch: pytest.MonkeyP
             ws.receive_text()
 
     fake_conn.close.assert_awaited()
+    metric_data = websocket_metric_reader.get_metrics_data()
+    assert metric_data is not None
+    metrics = [
+        metric
+        for resource_metrics in metric_data.resource_metrics
+        for scope in resource_metrics.scope_metrics
+        for metric in scope.metrics
+    ]
+    send_failure = next(
+        metric for metric in metrics if metric.name == "composer.websocket.send.failure"
+    )
+    assert cast("Any", next(iter(send_failure.data.data_points))).value == 1
 
 
 @pytest.mark.parametrize("environment", ["production", "staging", "Production"])

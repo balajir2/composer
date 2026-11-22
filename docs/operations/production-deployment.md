@@ -273,6 +273,8 @@ The response should be a 200 with the agent's output, in under 30 seconds.
 
 ## Phase 9 — Document the deployment
 
+The GCP backend rollout includes the OTLP collector as a Cloud Run sidecar. Keep its receivers bound to instance loopback and use Cloud Run ADC with only `roles/telemetry.writer` and `roles/serviceusage.serviceUsageConsumer` for telemetry export. Collector health is diagnostic; do not make backend startup depend on it. See [gcp-cloud-run-setup.md](gcp-cloud-run-setup.md#otlp-collector-and-iam) for setup and failure behavior.
+
 Update your internal documentation with:
 
 - **Deployment URL** (frontend + backend)

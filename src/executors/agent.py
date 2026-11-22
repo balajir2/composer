@@ -25,6 +25,7 @@ from src.engine.workflow import AgentNode
 from src.executors.base import register_executor
 from src.llm import providers as _providers
 from src.llm.structured_output import structured_invoke
+from src.telemetry.providers import provider_call, provider_name_for_model, provider_name_for_tool
 from src.tools import registry as _registry
 from src.tools.base import BuildContext
 from src.variable_substitution import substitute
@@ -206,7 +207,11 @@ class AgentExecutor:
         )
 
         for _ in range(cap + 1):
-            response = await bound_model.ainvoke(current)  # pyright: ignore[reportUnknownMemberType]
+            response: Any = None
+            async with provider_call(
+                provider_name_for_model(self.node.data.model or DEFAULT_MODEL), "invoke"
+            ):
+                response = await bound_model.ainvoke(current)  # pyright: ignore[reportUnknownMemberType]
             tool_calls = getattr(response, "tool_calls", [])
 
             if not tool_calls:
@@ -246,10 +251,18 @@ class AgentExecutor:
                 tool_call_id=tool_id,
             )
         tool = tools_by_name[name]
+        result: Any = None
         try:
-            result = await tool.ainvoke(  # pyright: ignore[reportArgumentType, reportUnknownMemberType]
-                args
-            )
+            provider = provider_name_for_tool(tool)
+            if provider is None:
+                result = await tool.ainvoke(  # pyright: ignore[reportArgumentType, reportUnknownMemberType]
+                    args
+                )
+            else:
+                async with provider_call(provider, "tool"):
+                    result = await tool.ainvoke(  # pyright: ignore[reportArgumentType, reportUnknownMemberType]
+                        args
+                    )
         except Exception as exc:
             logger.exception("Tool %s raised", name)
             return ToolMessage(
@@ -274,12 +287,16 @@ class AgentExecutor:
                 ),
             ]
             schema = self.node.data.json_schema
-            result = await structured_invoke(
-                chat_model,
-                messages,
-                schema=schema,
-                json_mode=schema is None,
-            )
+            result: Any = None
+            async with provider_call(
+                provider_name_for_model(self.node.data.model or DEFAULT_MODEL), "invoke"
+            ):
+                result = await structured_invoke(
+                    chat_model,
+                    messages,
+                    schema=schema,
+                    json_mode=schema is None,
+                )
             # structured_invoke may return a raw AIMessage when the provider's
             # with_structured_output chain yields one instead of a dict/str.
             # Flatten content blocks first (Anthropic extended thinking can

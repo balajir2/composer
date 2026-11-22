@@ -12,11 +12,9 @@ dependencies = [
     # Web framework
     "fastapi>=0.163.1",
     "uvicorn[standard]>=0.54.0",
-
     # Validation
     "pydantic>=2.14.3",
     "pydantic-settings>=2.16.3",
-
     # Database (Prisma Python)
     "prisma>=0.15.0",
     # SQLAlchemy replaces Prisma area by area; see
@@ -24,13 +22,10 @@ dependencies = [
     "sqlalchemy[asyncio]>=2.1.9",
     "alembic>=1.20.1",
     "psycopg[binary]>=3.3.9",
-
     # Postgres LISTEN/NOTIFY (P1-4)
     "asyncpg>=0.32.0",
-
     # Cloud Tasks (P1-2 durable execution)
     "google-cloud-tasks>=2.26.0",
-
     # Orchestration
     "langgraph>=1.2.22",
     "langchain>=1.5.0",
@@ -43,38 +38,36 @@ dependencies = [
     "langchain-openai>=1.8.0",
     "langchain-google-genai>=4.5.0",
     "langchain-groq>=1.2.0",
-
     # MCP / HTTP
     "httpx>=0.28.0",
-
     # Security
     "cryptography>=44.0.0",
     "python-jose[cryptography]>=3.5.0",
     "bcrypt>=4.0.0",
     "simpleeval>=1.0.8",
-
     # Email validation (Pydantic EmailStr, Phase 7a)
     "email-validator>=2.4.0",
     # Security floor for email-validator's DNS dependency (CVE-2026-128089).
     "dnspython>=2.9.2",
-
     # Utilities
     "python-dotenv>=1.2.4",
     "python-multipart>=0.0.34",
-
     # LangSmith tracing
     "langsmith>=0.2.0",
-
     # Sandboxed code execution
     "e2b-code-interpreter>=2.11.10",
-
     # Document parsing (for Start node file uploads)
     "pypdf>=5.0.0",
     "python-docx>=1.1.0",
-
     # Document generation (file-write node — Markdown -> DOCX/PDF)
     "markdown-it-py>=4.3.0",
     "xhtml2pdf>=0.2.28",
+    "opentelemetry-sdk>=1.45.2",
+    "opentelemetry-exporter-otlp>=1.45.2",
+    "opentelemetry-instrumentation-fastapi>=0.66b2",
+    "opentelemetry-instrumentation-asgi>=0.66b2",
+    "opentelemetry-instrumentation-httpx>=0.66b2",
+    "opentelemetry-instrumentation-logging>=0.66b2",
 ]
 
 [project.optional-dependencies]

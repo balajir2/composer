@@ -7,6 +7,8 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from opentelemetry import context, trace
+from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 
 import src.execution.cloud_tasks as cloud_tasks_module
 from src.execution.cloud_tasks import (
@@ -34,31 +36,48 @@ async def test_enqueue_execution_builds_oidc_http_task(monkeypatch: pytest.Monke
 
     get_settings.cache_clear()
 
-    with patch("src.execution.cloud_tasks.tasks_v2.CloudTasksAsyncClient") as mock_client_cls:
-        mock_client = MagicMock()
-        # CloudTasksAsyncClient.create_task is a coroutine method on the real
-        # client -- enqueue_execution awaits it, so the mock must be an
-        # AsyncMock (a plain MagicMock's return value is not awaitable).
-        # This matches how async DB/client methods are mocked elsewhere in
-        # this suite (e.g. tests/unit/api/test_approval_email.py).
-        mock_client.create_task = AsyncMock(return_value=None)
-        mock_client_cls.return_value = mock_client
-        mock_client.queue_path = MagicMock(
-            return_value="projects/test-project/locations/us-central1/queues/composer-executions"
-        )
+    parent = SpanContext(
+        trace_id=0x0123456789ABCDEF0123456789ABCDEF,
+        span_id=0x0123456789ABCDEF,
+        is_remote=False,
+        trace_flags=TraceFlags(TraceFlags.SAMPLED),
+    )
+    token = context.attach(trace.set_span_in_context(NonRecordingSpan(parent)))
+    try:
+        with patch("src.execution.cloud_tasks.tasks_v2.CloudTasksAsyncClient") as mock_client_cls:
+            mock_client = MagicMock()
+            # CloudTasksAsyncClient.create_task is a coroutine method on the real
+            # client -- enqueue_execution awaits it, so the mock must be an
+            # AsyncMock (a plain MagicMock's return value is not awaitable).
+            # This matches how async DB/client methods are mocked elsewhere in
+            # this suite (e.g. tests/unit/api/test_approval_email.py).
+            mock_client.create_task = AsyncMock(return_value=None)
+            mock_client_cls.return_value = mock_client
+            mock_client.queue_path = MagicMock(
+                return_value="projects/test-project/locations/us-central1/queues/composer-executions"
+            )
 
-        await enqueue_execution("exec-123", kind="run", db=MagicMock())
+            await enqueue_execution("exec-123", kind="run", db=MagicMock())
 
-        mock_client.create_task.assert_called_once()
-        call_kwargs = mock_client.create_task.call_args.kwargs
-        task = call_kwargs["request"]["task"]
-        assert task["http_request"]["url"] == "https://composer.example.com/internal/claim-and-run"
-        assert task["http_request"]["oidc_token"]["service_account_email"] == (
-            "worker@test-project.iam.gserviceaccount.com"
-        )
+            mock_client.create_task.assert_called_once()
+            call_kwargs = mock_client.create_task.call_args.kwargs
+            task = call_kwargs["request"]["task"]
+            assert (
+                task["http_request"]["url"] == "https://composer.example.com/internal/claim-and-run"
+            )
+            assert task["http_request"]["oidc_token"]["service_account_email"] == (
+                "worker@test-project.iam.gserviceaccount.com"
+            )
+            assert task["http_request"]["headers"]["Content-Type"] == "application/json"
+            assert task["http_request"]["headers"]["traceparent"] == (
+                "00-0123456789abcdef0123456789abcdef-0123456789abcdef-01"
+            )
+            assert "baggage" not in task["http_request"]["headers"]
 
-        body = json.loads(task["http_request"]["body"])
-        assert body == {"executionId": "exec-123", "kind": "run"}
+            body = json.loads(task["http_request"]["body"])
+            assert body == {"executionId": "exec-123", "kind": "run"}
+    finally:
+        context.detach(token)
 
     get_settings.cache_clear()
 

@@ -53,6 +53,7 @@ from typing import Any, Literal
 from google.cloud import tasks_v2
 
 from src.config import get_settings
+from src.telemetry.propagation import inject_task_headers
 
 logger = logging.getLogger(__name__)
 
@@ -165,13 +166,15 @@ async def enqueue_execution(execution_id: str, *, kind: _TaskKind, db: Any) -> N
     )
     url = f"{settings.backend_public_url}/internal/claim-and-run"
     body = json.dumps({"executionId": execution_id, "kind": kind}).encode()
+    headers = {"Content-Type": "application/json"}
+    inject_task_headers(headers)
 
     task: dict[str, object] = {
         "dispatch_deadline": timedelta(seconds=settings.execution_dispatch_deadline_seconds),
         "http_request": {
             "http_method": tasks_v2.HttpMethod.POST,
             "url": url,
-            "headers": {"Content-Type": "application/json"},
+            "headers": headers,
             "body": body,
             "oidc_token": {
                 "service_account_email": settings.cloud_tasks_service_account,

@@ -352,7 +352,7 @@ jobs:
         run: |
           nohup uv run uvicorn src.main:app --port 8000 > "$RUNNER_TEMP/uvicorn.log" 2>&1 &
           for i in $(seq 1 60); do
-            if curl -fsS http://localhost:8000/health > /dev/null; then
+            if curl -fsS http://localhost:8000/ready > /dev/null; then
               echo "backend up after ${i}s"; exit 0
             fi
             sleep 1
