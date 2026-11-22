@@ -23,6 +23,10 @@ Don't create filters for request rate, queue age, claims, exporter health, execu
 token use, or cost until those metrics are emitted and their descriptors are visible in Cloud
 Monitoring. Collector queue/retry configuration is not an application exporter-health metric.
 
+Complete the [monthly telemetry maintenance checklist](telemetry-monthly-maintenance.md) to review
+cost, signal volume, SLOs, export health, cardinality, privacy, access, retention, and configuration
+drift.
+
 ---
 
 ## 1. LangSmith tracing
