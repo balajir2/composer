@@ -3,7 +3,8 @@
 These tests describe what the code does TODAY (Prisma-backed) and must keep passing unchanged
 while ``workflows`` and ``workflow_assignments`` move to SQLAlchemy. The only code later tasks may
 edit is the ADAPTER AREA: the ``Phase3Adapter`` class and the "ADAPTER AREA imports" block below.
-(Task 3 also updates the single test named ``test_revoke_missing_assignment_today_500``.)
+No test is edited by a later task: revoking a missing assignment returns 404 today
+(``test_revoke_missing_assignment_today_404``) and must keep doing so after the port.
 Everything else here talks to the app over HTTP, or to the database through SQLAlchemy
 setup/inspection helpers.
 
@@ -16,6 +17,10 @@ Seams:
   not change in the port.
 * Executor workflow read: ``LangGraphExecutor`` is driven through the adapter (its constructor
   and the workflow read inside ``_prepare_compiled`` change in the port).
+
+Coverage boundary: the OAB -> Composer migration writer (``insert_if_absent``) and reconcile
+(``claim_orphans_by_email``) are NOT covered by this oracle. They are guarded by
+``tests/integration/test_migration.py`` plus the new repository tests.
 
 Network is never real: ``httpx_mock`` (pytest-httpx) is requested for every test, so an
 unexpected outbound request fails the test. Loopback is excluded (Prisma's query engine is an
@@ -42,6 +47,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import get_settings
 from src.db.models import (
+    CloudStorageConnection,
     User,
     UserRole,
     Workflow,
@@ -53,7 +59,8 @@ from src.db.models import (
 # a rename in src only touches this block and the Phase3Adapter bodies. Tests import them from
 # this module, never from src. (Today none is needed: the executor raises a bare RuntimeError.)
 from src.main import create_app
-from src.security.encryption import decrypt_marked
+from src.security.encryption import decrypt_marked, encrypt
+from tests._rate_limit_reset import reset_rate_limit_buckets
 
 ISO = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(\.\d{1,6})?(Z|\+00:00)$")
 LONG_AGO = datetime(2020, 1, 1, tzinfo=UTC)
@@ -247,6 +254,8 @@ async def sessionmaker_(app: FastAPI) -> async_sessionmaker[AsyncSession]:
 
 async def _register_user(client: AsyncClient, *, email: str | None = None) -> Member:
     email = email or f"p3-{secrets.token_hex(6)}@example.com"
+    # register is capped at 5/min per client address; setup of many users must never trip it
+    await reset_rate_limit_buckets()
     password = "correct-horse-battery-staple"
     resp = await client.post("/auth/register", json={"email": email, "password": password})
     assert resp.status_code == 201, resp.text
@@ -271,6 +280,9 @@ async def make_user(
     yield _make
     async with sessionmaker_() as s:
         await s.execute(delete(Workflow).where(Workflow.user_id.in_(made)))
+        await s.execute(
+            delete(CloudStorageConnection).where(CloudStorageConnection.user_id.in_(made))
+        )
         await s.execute(
             delete(WorkflowAssignment).where(
                 or_(
@@ -454,6 +466,21 @@ class Db:
         row = await self.must(workflow_id)
         return node_of(cast("list[Any]", row.nodes), node_id)
 
+    async def seed_connection(self, user_id: str) -> str:
+        """A Google Drive connection with a still-valid access token (no refresh needed)."""
+        async with self.sm() as s:
+            row = CloudStorageConnection(
+                user_id=user_id,
+                provider="google-drive",
+                account_email=f"{unique('acct')}@gmail.test",
+                encrypted_access_token=encrypt("drive-access-p3"),
+                encrypted_refresh_token=encrypt("drive-refresh-p3"),
+                expires_at=datetime.now(UTC) + timedelta(hours=1),
+            )
+            s.add(row)
+            await s.commit()
+            return row.id
+
     async def user_exists(self, user_id: str) -> bool:
         async with self.sm() as s:
             return (await s.scalar(select(User.id).where(User.id == user_id))) is not None
@@ -543,10 +570,13 @@ class Phase3Adapter:
         *,
         rename_to: str | None = None,
         message: str = "build it",
+        during_turn: Callable[[], Awaitable[None]] | None = None,
     ) -> httpx.Response:
         """POST /builder/{id}/message where the builder's LLM turn is scripted to hand back a
         workflow with these nodes/edges (and optionally a different name and description, which
-        the route must NOT persist). Everything after the turn is the real route code."""
+        the route must NOT persist). `during_turn`, if given, runs while the "LLM" is thinking, so a
+        test can change the stored row between the route's load and its save. Everything after
+        the turn is the real route code."""
         import src.api.builder as builder_module
         from src.engine.workflow import Workflow as EngineWorkflow
 
@@ -554,6 +584,8 @@ class Phase3Adapter:
 
         async def _scripted_turn(**kwargs: Any) -> tuple[list[dict[str, Any]], str, Any]:
             calls.append(kwargs)
+            if during_turn is not None:
+                await during_turn()
             current = kwargs["workflow"]
             updated = EngineWorkflow.model_validate(
                 {
@@ -626,6 +658,21 @@ class Phase3Adapter:
             threadId=unique("thread"),
         )
         await self._executor()._prepare_compiled(execution)  # pyright: ignore[reportPrivateUsage]
+
+    async def poll_file_triggers(self) -> dict[str, int]:
+        """POST /internal/poll-file-triggers with the OIDC dependency overridden."""
+        from src.api.internal import _verify_internal_oidc  # pyright: ignore[reportPrivateUsage]
+
+        def _allow() -> None:
+            return None
+
+        self._app.dependency_overrides[_verify_internal_oidc] = _allow
+        try:
+            resp = await self._client.post("/internal/poll-file-triggers")
+        finally:
+            self._app.dependency_overrides.pop(_verify_internal_oidc, None)
+        assert resp.status_code == 200, resp.text
+        return cast("dict[str, int]", resp.json())
 
 
 @pytest.fixture

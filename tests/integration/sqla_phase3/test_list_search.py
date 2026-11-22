@@ -182,7 +182,7 @@ async def test_list_orders_by_current_updated_at_after_an_update(
     new = await db.seed(member, category=cat, updated_at=at(3))
     _, body = await list_(client, member, category=cat)
     assert ids(body) == [new, mid, old]
-    # an admin-flags write bumps updated_at to now, which moves the oldest row to the top
+    # a PUT (any write) bumps updated_at to now, which moves the oldest row to the top
     admin_resp = await client.get(f"/workflows/{old}", headers=member.headers)
     assert admin_resp.status_code == 200
     r = await client.put(
@@ -329,9 +329,78 @@ async def test_search_percent_and_underscore_today(
     _, body = await _search(client, member, f"{tok}_z")
     us_found = set(ids(body))
     # a lone `%` matches every visible row (including the ones just seeded)
-    _, body = await _search(client, member, "%")
-    all_found = set(ids(body))
+    _, body = await _search(client, member, "%", limit=100)
+    all_found = set(ids(body)) & {ab, cd, pct, us, xz}
 
     assert pct_found == {ab, cd, pct, us, xz}, "% is a wildcard today"
     assert us_found == {us, xz}, "_ is a single-character wildcard today"
-    assert {ab, cd, pct, us, xz} <= all_found, "a bare % matches everything"
+    assert all_found == {ab, cd, pct, us, xz}, "a bare % matches everything"
+
+
+# --------------------------------------------------------------------------- visibility fan-out
+
+
+async def test_visibility_with_many_assignments_never_duplicates_rows(
+    client: AsyncClient,
+    db: Db,
+    member: Member,
+    second_member: Member,
+    third_member: Member,
+    admin: Member,
+) -> None:
+    """A private and a public workflow, each assigned to two users: a join-based visibility
+    predicate would return a row once per matching assignment. Every viewer sees each row once,
+    and `total` equals the number of items."""
+    cat = unique("cat")
+    name = unique("zqd")
+    private = await db.seed(member, category=cat, name=f"{name} private", updated_at=at(1))
+    public = await db.seed(
+        member, category=cat, name=f"{name} public", is_public=True, updated_at=at(2)
+    )
+    for wid in (private, public):
+        await db.assign(wid, second_member.id, member.id)
+        await db.assign(wid, third_member.id, member.id)
+    both = [public, private]  # updated_at desc
+
+    views: list[tuple[Member, dict[str, str], list[str]]] = [
+        (member, {}, both),
+        (member, {"mine": "true"}, both),
+        (second_member, {}, both),
+        (second_member, {"mine": "true"}, both),
+        (third_member, {}, both),
+        (third_member, {"mine": "true"}, both),
+        (admin, {}, both),
+    ]
+    for who, params, expected in views:
+        _, body = await list_(client, who, category=cat, **params)
+        assert ids(body) == expected, (who.id, params)
+        assert body["total"] == len(body["items"]) == 2, (who.id, params)
+        assert len(set(ids(body))) == len(ids(body))
+    # search: same fan-out, same exact counts
+    for who in (member, second_member, third_member, admin):
+        _, body = await _search(client, who, name)
+        assert ids(body) == both, who.id
+        assert body["total"] == len(body["items"]) == 2, who.id
+
+
+async def test_null_tags_read_as_empty_list_everywhere(
+    client: AsyncClient, db: Db, member: Member
+) -> None:
+    cat = unique("cat")
+    name = unique("zqn")
+    wid = await db.seed(member, category=cat, name=name)
+    await db.set_workflow(wid, tags=None)
+    async with db.sm() as s:
+        from sqlalchemy import text as sql_text
+
+        is_null = await s.scalar(
+            sql_text("SELECT tags IS NULL FROM workflows WHERE id = :i"), {"i": wid}
+        )
+    assert is_null is True
+
+    r = await client.get(f"/workflows/{wid}", headers=member.headers)
+    assert r.status_code == 200 and jbody(r)["tags"] == []
+    _, body = await list_(client, member, category=cat)
+    assert [i["tags"] for i in body["items"]] == [[]]
+    _, body = await _search(client, member, name)
+    assert [i["tags"] for i in body["items"]] == [[]]

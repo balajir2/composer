@@ -220,6 +220,11 @@ async def test_every_read_path_redacts_and_never_leaks(
         ),
         ident,
     )
+    add(
+        "admin-flags/empty",
+        await client.patch(f"/workflows/{wid}/admin-flags", json={}, headers=admin.headers),
+        ident,
+    )
     echo_n, echo_e = echo_nodes(kind)
     add(
         "update",
@@ -451,3 +456,63 @@ async def test_no_secret_reaches_the_logs(
         assert secret and secret not in text, f"secret leaked into logs: {secret[:8]}..."
     # decrypting what we stored still works (the key was never rotated by the test)
     assert decrypt_marked(cipher[0]).startswith("jira-secret")
+
+
+# --------------------------------------------------------------------------- 409 leaks nothing
+
+
+async def test_slug_conflicts_do_not_leak_secrets_or_sql(
+    client: AsyncClient,
+    member: Member,
+    admin: Member,
+    wf_api: WorkflowApi,
+    db: Db,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The 409 detail embeds the driver's exception text after a fixed prefix. That text must not
+    carry the secrets of the rejected write (plaintext or ciphertext) or the SQL and parameters."""
+    caplog.set_level(logging.INFO)
+    plain = {k.name: values(k, "-conflict") for k in KINDS}
+    nodes, edges = chain(*[k.make(f"c{i}", plain[k.name]) for i, k in enumerate(KINDS)])
+    created = await wf_api.create(member, nodes=nodes, edges=edges)
+    wid = created["id"]
+    row = await db.must(wid)
+    cipher = [stored(k, row.nodes, f, nid=f"c{i}") for i, k in enumerate(KINDS) for f in k.secrets]
+
+    taken = unique("slug").lower()
+    holder = await db.seed(member, is_production=True, external_slug=taken)
+    holder_before = db.snapshot(await db.must(holder))
+    frozen = db.snapshot(await db.must(wid))
+
+    # PUT: send fresh plaintext secrets together with the conflicting slug
+    fresh = {k.name: values(k, "-rejected") for k in KINDS}
+    n2, e2 = chain(*[k.make(f"c{i}", fresh[k.name]) for i, k in enumerate(KINDS)])
+    r1 = await wf_api.put(
+        member,
+        wid,
+        payload(n2, e2, name=created["name"], isProduction=True, externalSlug=taken),
+    )
+    r2 = await client.patch(
+        f"/workflows/{wid}/admin-flags",
+        json={"isProduction": True, "externalSlug": taken},
+        headers=admin.headers,
+    )
+    for r in (r1, r2):
+        assert r.status_code == 409, r.text
+        assert r.json()["detail"].startswith("external_slug already in use: ")
+
+    logs = "\n".join(
+        rec.getMessage() + (f"\n{rec.exc_text}" if rec.exc_text else "") for rec in caplog.records
+    )
+    secret_values = [
+        v for vals in [*plain.values(), *fresh.values()] for v in vals.values()
+    ] + cipher
+    secret_values += [c.removeprefix("enc:v1:") for c in cipher]
+    for where, text_ in (("response", r1.text + r2.text), ("logs", logs)):
+        for secret in secret_values:
+            assert secret not in text_, f"{where} leaked {secret[:8]}"
+        assert "[SQL:" not in text_ and "parameters" not in text_, where
+        assert "enc:v1:" not in text_, where
+    # the rejected writes changed nothing
+    assert db.snapshot(await db.must(wid)) == frozen
+    assert db.snapshot(await db.must(holder)) == holder_before
