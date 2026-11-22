@@ -121,10 +121,12 @@ if ($activeProject -ne $ProjectId) {
 # Ensure docker is logged into Artifact Registry.
 Write-Host "Configuring docker auth for Artifact Registry..."
 gcloud auth configure-docker "$Region-docker.pkg.dev" --quiet | Out-Null
+gcloud services enable telemetry.googleapis.com --project=$ProjectId --quiet
 
 $registryHost = "$Region-docker.pkg.dev"
 $registryPath = "$registryHost/$ProjectId/$ArtifactRepo"
 $backendImage  = "$registryPath/backend:latest"
+$collectorImage = "$registryPath/otel-collector:latest"
 $frontendImage = "$registryPath/frontend:latest"
 
 # ─── 1. secrets ─────────────────────────────────────────────────────
@@ -227,6 +229,12 @@ if (-not $SkipBuild) {
     try {
         docker build -t $backendImage -f Dockerfile .
         docker push $backendImage
+        docker build -t $collectorImage -f deploy/otel-collector/Dockerfile deploy/otel-collector
+        docker push $collectorImage
+        docker run --rm `
+            -e "GOOGLE_CLOUD_PROJECT=$ProjectId" `
+            -e "ENVIRONMENT=production" `
+            $collectorImage validate --config=/etc/otelcol-contrib/config.yaml
     } finally {
         Pop-Location
     }
@@ -270,17 +278,21 @@ $setSecrets = $setSecretsParts -join ","
 # needed. Do not re-add --no-cpu-throttling.
 $backendDeployArgs = @(
     "run", "deploy", $BackendService,
-    "--image=$backendImage",
     "--region=$Region",
     "--project=$ProjectId",
     "--platform=managed",
-    "--cpu=1",
-    "--memory=1Gi",
     "--min-instances=0",
     "--max-instances=3",
     "--cpu-boost",
     "--timeout=3600",               # 60-minute request timeout (Cloud Run max) — covers long workflows
-    "--concurrency=80",
+    "--concurrency=80"
+)
+if ($AllowUnauthenticated) { $backendDeployArgs += "--allow-unauthenticated" }
+$backendDeployArgs += @(
+    "--container=app",
+    "--image=$backendImage",
+    "--cpu=1",
+    "--memory=1Gi",
     "--port=8080",
     # EXECUTION_SWEEPER_INTERVAL_SECONDS=0 disables the in-process sweeper
     # loop in production (src/config.py: "Set 0 to disable") now that
@@ -291,10 +303,14 @@ $backendDeployArgs = @(
     # are what enqueue_execution() (src/execution/cloud_tasks.py) and
     # _verify_internal_oidc() (src/api/internal.py) need at runtime to
     # enqueue tasks and verify push-auth tokens, respectively.
-    "--set-env-vars=ENVIRONMENT=production,COMPOSER_DEPLOYMENT_MODE=standalone,LOG_LEVEL=INFO,EXECUTION_SWEEPER_INTERVAL_SECONDS=0,GCP_PROJECT_ID=$ProjectId,GCP_REGION=$Region,CLOUD_TASKS_QUEUE=composer-executions,CLOUD_TASKS_SERVICE_ACCOUNT=$cloudTasksServiceAccountEmail",
-    "--set-secrets=$setSecrets"
+    "--set-env-vars=ENVIRONMENT=production,COMPOSER_DEPLOYMENT_MODE=standalone,LOG_LEVEL=INFO,EXECUTION_SWEEPER_INTERVAL_SECONDS=0,GCP_PROJECT_ID=$ProjectId,GCP_REGION=$Region,CLOUD_TASKS_QUEUE=composer-executions,CLOUD_TASKS_SERVICE_ACCOUNT=$cloudTasksServiceAccountEmail,TELEMETRY_ENABLED=true,OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318",
+    "--set-secrets=$setSecrets",
+    "--container=otel-collector",
+    "--image=$collectorImage",
+    "--cpu=0.5",
+    "--memory=512Mi",
+    "--set-env-vars=GOOGLE_CLOUD_PROJECT=$ProjectId,ENVIRONMENT=production"
 )
-if ($AllowUnauthenticated) { $backendDeployArgs += "--allow-unauthenticated" }
 gcloud @backendDeployArgs
 
 $backendRunUrl = gcloud run services describe $BackendService --region=$Region --project=$ProjectId --format="value(status.url)"
@@ -340,6 +356,22 @@ if (-not $backendRuntimeSa) {
     $backendRuntimeSa = "$projectNumber-compute@developer.gserviceaccount.com"
 }
 Write-Host "  Backend runtime SA: $backendRuntimeSa"
+
+# The Cloud Run service identity is shared with the collector sidecar. These
+# are the only extra project roles required for the Google Telemetry API:
+# writes and quota usage. The sidecar uses ADC from the Cloud Run metadata
+# server; no service-account key is mounted or copied into either image.
+Write-Host "  [grant] roles/telemetry.writer -> $backendRuntimeSa"
+gcloud projects add-iam-policy-binding $ProjectId `
+    --member="serviceAccount:$backendRuntimeSa" `
+    --role="roles/telemetry.writer" `
+    --condition=None | Out-Null
+
+Write-Host "  [grant] roles/serviceusage.serviceUsageConsumer -> $backendRuntimeSa"
+gcloud projects add-iam-policy-binding $ProjectId `
+    --member="serviceAccount:$backendRuntimeSa" `
+    --role="roles/serviceusage.serviceUsageConsumer" `
+    --condition=None | Out-Null
 
 # add-iam-policy-binding is itself idempotent (safe to re-run; matches
 # the style used for $cloudTasksServiceAccountEmail's enqueuer grant

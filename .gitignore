@@ -104,5 +104,8 @@ client_secret*.json
 # (superpowers:using-git-worktrees).
 .worktrees/
 
+# Ignored task checkpoint reports are kept out of the source history.
+task-4.1-report.md
+
 # Superpowers brainstorming visual-companion scratch (mockups, session state).
 .superpowers/

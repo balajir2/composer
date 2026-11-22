@@ -124,7 +124,7 @@ What it does (idempotent — safe to re-run any time):
 
 1. Pushes every `.env` value to Secret Manager (creates new secrets the first time, adds a new version on re-run).
 1a. Provisions the `composer-executions` Cloud Tasks queue and a shared OIDC service account (`composer-tasks@...`) used for both Cloud Tasks push delivery (`claim-and-run`) and Cloud Scheduler push delivery (`sweep`, `poll-file-triggers`) — ADR-0033/P1-2/P1-4.
-2. Builds + pushes the backend image to Artifact Registry.
+2. Builds + pushes the backend and OTLP collector images to Artifact Registry, then validates the collector configuration.
 3. Deploys `composer-backend` to Cloud Run, with `EXECUTION_SWEEPER_INTERVAL_SECONDS=0` (the in-process sweeper fallback loop is disabled — Cloud Scheduler drives sweeping instead) and the `CLOUD_TASKS_*`/`GCP_PROJECT_ID`/`GCP_REGION` env vars `enqueue_execution()` needs.
 3a–3b. Grants the backend's runtime service account permission to enqueue Cloud Tasks and mint the OIDC token embedded in each task; grants the shared OIDC service account `roles/run.invoker` on the backend.
 3c. Provisions the `composer-sweep` Cloud Scheduler job (`POST /internal/sweep` every 5 minutes — orphaned running attempts, opt-in approval expiration, expired leases, old `execution_events`). Lease expiry fails the attempt and never automatically enqueues replay.
@@ -274,6 +274,23 @@ gcloud run services update composer-frontend `
 Each `min-instances=1` instance costs ~$20–25/month. Roll back any time with `--min-instances=0`.
 
 Alternative: a free warmup ping (no min-instances cost). Add a cron job (e.g. [cron-job.org](https://cron-job.org)) that hits `/health` every 10 minutes. Cloud Run instances stay warm for ~15 minutes after the last request, so a 10-minute ping keeps one warm indefinitely. ~4,320 pings/month sits inside the free 2M-request Cloud Run quota.
+
+### OTLP collector and IAM
+
+The collector is a sidecar in each backend Cloud Run instance, not a separately reachable service. Its OTLP receivers and health extension bind to `127.0.0.1`; there is no public ingestion endpoint. The app container has no startup dependency on collector health, so collector restart, overload, or export failure can drop telemetry but does not gate API requests or workflow execution. The app exporter has a bounded timeout and the collector applies a memory limiter, batch processor, finite sending queues, and bounded retries.
+
+The bootstrap grants the backend service identity only the additional Google Telemetry API roles needed by the collector: `roles/telemetry.writer` and `roles/serviceusage.serviceUsageConsumer`. The first writes logs, metrics, and traces; the second allows the API calls to consume project quota. The collector uses ADC from Cloud Run; do not create or mount a service-account JSON key. The bootstrap enables `telemetry.googleapis.com` and runs the collector's built-in `validate` command before deployment.
+
+To validate a local collector image without contacting Google Cloud:
+
+```powershell
+docker run --rm `
+  -e GOOGLE_CLOUD_PROJECT=your-project-id `
+  -e ENVIRONMENT=production `
+  your-collector-image validate --config=/etc/otelcol-contrib/config.yaml
+```
+
+`GOOGLE_CLOUD_PROJECT` is required for both the auth extension and resource processor; `ENVIRONMENT` enriches the resource metadata and defaults to `production` in the config. Native validation succeeded with Collector `0.138.0` and both variables set. No live IAM grant or Cloud Run deployment is part of local validation.
 
 ## Operations
 

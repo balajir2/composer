@@ -1,0 +1,92 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 127.0.0.1:4317
+      http:
+        endpoint: 127.0.0.1:4318
+
+processors:
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 384
+    spike_limit_mib: 64
+  resourcedetection:
+    detectors: [env, gcp]
+    timeout: 2s
+    override: false
+  resource/composer:
+    attributes:
+      - key: service.namespace
+        value: composer
+        action: upsert
+      - key: deployment.environment.name
+        value: ${env:ENVIRONMENT:-production}
+        action: upsert
+  resource/gcp_project_id:
+    attributes:
+      - key: gcp.project_id
+        value: ${env:GOOGLE_CLOUD_PROJECT}
+        action: insert
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+    send_batch_max_size: 1024
+
+exporters:
+  otlphttp/traces:
+    encoding: proto
+    endpoint: https://telemetry.googleapis.com
+    auth:
+      authenticator: googleclientauth
+    sending_queue:
+      enabled: true
+      queue_size: 256
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 300s
+  otlphttp/metrics:
+    encoding: proto
+    endpoint: https://telemetry.googleapis.com
+    auth:
+      authenticator: googleclientauth
+    sending_queue:
+      enabled: true
+      queue_size: 256
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 300s
+  otlp/logs:
+    endpoint: telemetry.googleapis.com:443
+    balancer_name: pick_first
+    auth:
+      authenticator: googleclientauth
+    sending_queue:
+      enabled: true
+      queue_size: 256
+    retry_on_failure:
+      enabled: true
+      max_elapsed_time: 300s
+
+extensions:
+  health_check:
+    endpoint: 127.0.0.1:13133
+  googleclientauth:
+    project: ${env:GOOGLE_CLOUD_PROJECT}
+    quota_project: ${env:GOOGLE_CLOUD_PROJECT}
+
+service:
+  extensions: [health_check, googleclientauth]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, resource/gcp_project_id, resource/composer, batch]
+      exporters: [otlphttp/traces]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, resource/gcp_project_id, resource/composer, batch]
+      exporters: [otlphttp/metrics]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, resourcedetection, resource/gcp_project_id, resource/composer, batch]
+      exporters: [otlp/logs]
