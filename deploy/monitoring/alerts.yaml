@@ -1,0 +1,69 @@
+alertPolicies:
+  - displayName: Composer provider failures sustained
+    documentation:
+      content: "Runbook: docs/operations/incident-response.md#provider-alerts"
+      mimeType: text/markdown
+    userLabels:
+      owner: execution-operations
+      severity: warning
+    severity: WARNING
+    combiner: OR
+    conditions:
+      - displayName: At least 5 provider failures in 5 minutes
+        conditionThreshold:
+          filter: 'metric.type="prometheus.googleapis.com/composer.provider.request/counter" AND resource.type="prometheus_target" AND (metric.labels.result="timeout" OR metric.labels.result="rate_limited" OR metric.labels.result="authentication_error" OR metric.labels.result="provider_error")'
+          aggregations:
+            - alignmentPeriod: 300s
+              perSeriesAligner: ALIGN_DELTA
+              crossSeriesReducer: REDUCE_SUM
+          comparison: COMPARISON_GT
+          thresholdValue: 4
+          duration: 300s
+          trigger:
+            count: 1
+      - displayName: At least 20 provider failures in 1 hour
+        conditionThreshold:
+          filter: 'metric.type="prometheus.googleapis.com/composer.provider.request/counter" AND resource.type="prometheus_target" AND (metric.labels.result="timeout" OR metric.labels.result="rate_limited" OR metric.labels.result="authentication_error" OR metric.labels.result="provider_error")'
+          aggregations:
+            - alignmentPeriod: 3600s
+              perSeriesAligner: ALIGN_DELTA
+              crossSeriesReducer: REDUCE_SUM
+          comparison: COMPARISON_GT
+          thresholdValue: 19
+          duration: 0s
+          trigger:
+            count: 1
+  - displayName: Composer WebSocket send failures
+    documentation:
+      content: "Runbook: docs/operations/incident-response.md#websocket-alerts"
+      mimeType: text/markdown
+    userLabels:
+      owner: execution-operations
+      severity: warning
+    severity: WARNING
+    combiner: OR
+    conditions:
+      - displayName: At least 5 send failures in 5 minutes
+        conditionThreshold:
+          filter: 'metric.type="prometheus.googleapis.com/composer.websocket.send.failure/counter" AND resource.type="prometheus_target"'
+          aggregations:
+            - alignmentPeriod: 300s
+              perSeriesAligner: ALIGN_DELTA
+              crossSeriesReducer: REDUCE_SUM
+          comparison: COMPARISON_GT
+          thresholdValue: 4
+          duration: 300s
+          trigger:
+            count: 1
+      - displayName: At least 20 send failures in 1 hour
+        conditionThreshold:
+          filter: 'metric.type="prometheus.googleapis.com/composer.websocket.send.failure/counter" AND resource.type="prometheus_target"'
+          aggregations:
+            - alignmentPeriod: 3600s
+              perSeriesAligner: ALIGN_DELTA
+              crossSeriesReducer: REDUCE_SUM
+          comparison: COMPARISON_GT
+          thresholdValue: 19
+          duration: 0s
+          trigger:
+            count: 1

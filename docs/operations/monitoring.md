@@ -3,6 +3,26 @@
 **Audience:** platform ops/SRE. Covers LangSmith traces, Vercel logs and log drains, error rate
 monitoring, and post-cutover watchlist.
 
+## Google Cloud telemetry
+
+The Cloud Run telemetry sidecar forwards OpenTelemetry metrics to Cloud Monitoring. Import the
+versioned [Composer dashboard](../../deploy/monitoring/composer-dashboard.json) and review the
+[telemetry SLIs, objectives, and current measurement limits](telemetry-slos.md). Current application
+metrics cover provider calls and WebSocket delivery; execution and HTTP SLOs still use their stated
+external or aggregate database sources until the corresponding catalogued instruments are emitted.
+
+The [alert policy bundle](../../deploy/monitoring/alerts.yaml) currently covers sustained provider
+failures and WebSocket send failures. Each policy carries an owner, severity, window, and incident
+runbook anchor. The YAML file is a bundle of API policy objects; submit each item in `alertPolicies`
+as a separate Cloud Monitoring `AlertPolicy` create request. Google Cloud's API accepts policy
+objects from JSON or YAML files; see the [official API guide](https://docs.cloud.google.com/monitoring/alerts/policies-in-api).
+Set the active project in the gcloud configuration before import. Exercise alerts in staging and
+record the incident IDs and metric evidence in the deployment checklist before enabling paging.
+
+Don't create filters for request rate, queue age, claims, exporter health, execution terminal status,
+token use, or cost until those metrics are emitted and their descriptors are visible in Cloud
+Monitoring. Collector queue/retry configuration is not an application exporter-health metric.
+
 ---
 
 ## 1. LangSmith tracing

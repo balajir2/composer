@@ -39,6 +39,32 @@ Detection happens via:
 
 When any channel fires, the on-call engineer is paged. Multiple firings on the same incident are collapsed by the alerting tool.
 
+Current Google Cloud policy alerts include provider failure bursts and WebSocket send failures. See
+[telemetry SLO triage](#telemetry-slo-triage) before treating them as execution availability or
+successful-execution SLO breaches.
+
+### Telemetry SLO triage
+
+Open the [Composer dashboard](../../deploy/monitoring/composer-dashboard.json) and
+[telemetry SLO definition](telemetry-slos.md). Check the external `/health` uptime history for
+service availability. For successful execution, use the aggregate terminal-execution query in the
+[signal catalog](../telemetry/signal-catalog.md#baseline-query-definitions); the corresponding
+terminal metric is not yet emitted. Do not infer workflow success from HTTP availability or provider
+trace volume. For service impact and severity, use the regular [SLA triage](#3-triage).
+
+### Provider alerts
+
+The provider alert requires at least five bounded failure outcomes in a five-minute window or at
+least twenty in an hour. Review the provider outcome and latency panels, then check the affected
+provider's status page and credential health. The metrics contain bounded provider and outcome
+labels only; use authorized traces or provider consoles for request-level diagnosis.
+
+### WebSocket alerts
+
+The WebSocket policy requires at least five send failures in five minutes or twenty in an hour.
+Check WebSocket delivery logs and reconnect trends, then confirm whether durable event persistence
+and replay are working. A send failure alone does not establish that the workflow execution failed.
+
 ## 2. Acknowledge
 
 Within the response SLA for the customer's plan ([`../saas/sla.md`](../saas/sla.md)):

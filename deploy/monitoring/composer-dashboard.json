@@ -1,0 +1,85 @@
+{
+  "displayName": "Composer telemetry",
+  "dashboardFilters": [],
+  "gridLayout": {
+    "columns": 2,
+    "widgets": [
+      {
+        "title": "Outbound provider requests by outcome",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"prometheus.googleapis.com/composer.provider.request/counter\" AND resource.type=\"prometheus_target\"",
+                  "aggregation": {"alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_RATE", "crossSeriesReducer": "REDUCE_SUM", "groupByFields": ["metric.label.result"]}
+                }
+              },
+              "plotType": "STACKED_BAR"
+            }
+          ],
+          "timeshiftDuration": "0s",
+          "yAxis": {"label": "requests / second", "scale": "LINEAR"}
+        }
+      },
+      {
+        "title": "Outbound provider request latency",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"prometheus.googleapis.com/composer.provider.request.duration/histogram\" AND resource.type=\"prometheus_target\"",
+                  "aggregation": {"alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_DELTA", "crossSeriesReducer": "REDUCE_PERCENTILE_95", "groupByFields": []}
+                }
+              },
+              "plotType": "LINE"
+            }
+          ],
+          "yAxis": {"label": "seconds", "scale": "LINEAR"}
+        }
+      },
+      {
+        "title": "WebSocket send failures",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"prometheus.googleapis.com/composer.websocket.send.failure/counter\" AND resource.type=\"prometheus_target\"",
+                  "aggregation": {"alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_DELTA", "crossSeriesReducer": "REDUCE_SUM", "groupByFields": []}
+                }
+              },
+              "plotType": "LINE"
+            }
+          ],
+          "yAxis": {"label": "failures", "scale": "LINEAR"}
+        }
+      },
+      {
+        "title": "WebSocket reconnects",
+        "xyChart": {
+          "dataSets": [
+            {
+              "timeSeriesQuery": {
+                "timeSeriesFilter": {
+                  "filter": "metric.type=\"prometheus.googleapis.com/composer.websocket.reconnect/counter\" AND resource.type=\"prometheus_target\"",
+                  "aggregation": {"alignmentPeriod": "300s", "perSeriesAligner": "ALIGN_RATE", "crossSeriesReducer": "REDUCE_SUM", "groupByFields": []}
+                }
+              },
+              "plotType": "LINE"
+            }
+          ],
+          "yAxis": {"label": "reconnects / second", "scale": "LINEAR"}
+        }
+      },
+      {
+        "title": "Telemetry coverage",
+        "text": {
+          "content": "Current application metrics cover outbound provider calls and WebSocket delivery only. HTTP requests, execution terminal outcomes, queue age, claim failures, exporter health, tokens, and cost are not emitted. See [Telemetry SLOs](https://github.com/BalajiRajan/composer/blob/main/docs/operations/telemetry-slos.md) for measurement limits and operational sources.",
+          "format": "MARKDOWN"
+        }
+      }
+    ]
+  }
+}
