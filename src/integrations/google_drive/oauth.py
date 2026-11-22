@@ -236,8 +236,12 @@ async def get_valid_drive_access_token(
             async with sessionmaker() as session:
                 updated = await cloud_storage_repo.update_tokens(session, connection_id, changes)
                 await session.commit()
-            if updated is not None:
-                connection = updated
+            if updated is None:
+                # Deleted after the first read: don't hand back the stale, expired token.
+                raise DriveConnectionMissingError(
+                    f"No CloudStorageConnection found for id {connection_id!r}."
+                )
+            connection = updated
 
     return decrypt(connection.encrypted_access_token)
 

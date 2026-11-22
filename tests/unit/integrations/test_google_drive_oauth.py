@@ -105,6 +105,33 @@ def test_consume_state_round_trips_user_id(monkeypatch: pytest.MonkeyPatch) -> N
     assert consume_state(state) == "user1"
 
 
+async def test_get_valid_drive_access_token_raises_when_connection_vanishes_mid_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The row is deleted between the read and the post-refresh update: the helper must not
+    fall back to the stale, expired access token (Prisma's update raised here)."""
+    _set_enc_key(monkeypatch)
+    _set_oauth_settings(monkeypatch)
+    import src.integrations.google_drive.oauth as drive_oauth
+    from src.security.encryption import encrypt
+
+    connection = _connection(
+        encrypted_access_token=encrypt("old-at"),
+        encrypted_refresh_token=encrypt("rt-1"),
+        expires_at=datetime.now(UTC) - timedelta(minutes=1),
+    )
+    sm, _update, _events = _wire_repo(monkeypatch, connection, updated=None)
+    monkeypatch.setattr(
+        drive_oauth,
+        "refresh_access_token",
+        AsyncMock(return_value={"access_token": "new-at", "expires_in": 3600}),
+    )
+
+    with pytest.raises(drive_oauth.DriveConnectionMissingError) as exc_info:
+        await drive_oauth.get_valid_drive_access_token("conn1", sm)  # type: ignore[arg-type]
+    assert str(exc_info.value) == "No CloudStorageConnection found for id 'conn1'."
+
+
 def test_consume_state_rejects_expired_state(monkeypatch: pytest.MonkeyPatch) -> None:
     _set_enc_key(monkeypatch)
     import json

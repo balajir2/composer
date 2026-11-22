@@ -390,3 +390,28 @@ def test_routes_fail_closed_without_a_database(
     resp = getattr(client, method)(path, headers=_bearer_header("user1"))
     assert resp.status_code == 503
     assert resp.json() == {"detail": "database unavailable"}
+
+
+def test_picker_token_connection_vanished_mid_refresh_is_404(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """get_picker_token maps DriveConnectionMissingError (row deleted between the ownership
+    read and the refresh write) to 404 with the helper's message."""
+    from src.integrations.google_drive.oauth import DriveConnectionMissingError
+
+    _set_encryption_key(monkeypatch)
+    client, _sm = _client_with_mock_db(monkeypatch)
+    monkeypatch.setattr(cloud_storage_repo, "get", AsyncMock(return_value=_connection()))
+    monkeypatch.setattr(
+        "src.api.cloud_storage_oauth.get_valid_drive_access_token",
+        AsyncMock(
+            side_effect=DriveConnectionMissingError(
+                "No CloudStorageConnection found for id 'conn1'."
+            )
+        ),
+    )
+    resp = client.post(
+        "/cloud-storage/connections/conn1/picker-token", headers=_bearer_header("user1")
+    )
+    assert resp.status_code == 404
+    assert resp.json() == {"detail": "No CloudStorageConnection found for id 'conn1'."}
