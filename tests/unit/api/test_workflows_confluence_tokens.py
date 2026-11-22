@@ -3,15 +3,21 @@
 Mirrors tests/unit/api/test_workflows_vector_db_keys.py's pattern exactly.
 """
 
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.repos.workflows import WorkflowRecord
 from src.main import create_app
 from src.security.encryption import REDACTED_MARKER, decrypt_marked
+from tests.unit.db_fakes import (
+    WorkflowRepoMocks,
+    make_workflow,
+    override_session,
+    patch_workflow_repos,
+)
 
 
 def _confluence_node(**data_overrides: Any) -> dict[str, Any]:
@@ -43,7 +49,7 @@ def _edges() -> list[dict[str, Any]]:
     ]
 
 
-def _wf_row(**overrides: Any) -> SimpleNamespace:
+def _wf_row(**overrides: Any) -> WorkflowRecord:
     base: dict[str, Any] = {
         "id": "w1",
         "userId": "dev",
@@ -62,10 +68,10 @@ def _wf_row(**overrides: Any) -> SimpleNamespace:
         "updatedAt": "2026-07-19T00:00:00Z",
     }
     base.update(overrides)
-    return SimpleNamespace(**base)
+    return make_workflow(**base)
 
 
-def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MagicMock]:
+def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, WorkflowRepoMocks]:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", "development")
     from src.config import get_settings
@@ -73,24 +79,23 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MagicMock]:
     get_settings.cache_clear()
     app = create_app()
     db = MagicMock()
-    db.workflow = MagicMock()
     db.user = MagicMock()
     db.user.find_unique = AsyncMock(return_value=None)
-    db.workflowassignment = MagicMock()
-    db.workflowassignment.find_unique = AsyncMock(return_value=None)
     app.state.db = db
+    override_session(app)
+    repos = patch_workflow_repos(monkeypatch)
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 
     app.state.event_bus = ExecutionEventBus()
-    return TestClient(app), db
+    return TestClient(app), repos
 
 
 def test_post_workflow_encrypts_confluence_token_before_persisting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, db = _client(monkeypatch)
-    db.workflow.create = AsyncMock(return_value=_wf_row())
+    client, repos = _client(monkeypatch)
+    repos.create.return_value = _wf_row()
 
     resp = client.post(
         "/workflows",
@@ -101,8 +106,7 @@ def test_post_workflow_encrypts_confluence_token_before_persisting(
     resp_node = next(n for n in resp.json()["nodes"] if n["type"] == "confluence")
     assert resp_node["data"]["apiToken"] == REDACTED_MARKER
 
-    call_kwargs = db.workflow.create.await_args.kwargs  # type: ignore[union-attr]
-    persisted_nodes = call_kwargs["data"]["nodes"].data
+    persisted_nodes = repos.create.await_args.args[1]["nodes"]
     persisted = next(n for n in persisted_nodes if n["type"] == "confluence")
     stored_token = persisted["data"]["apiToken"]
     assert stored_token != "plaintext-confluence-token"
@@ -110,8 +114,8 @@ def test_post_workflow_encrypts_confluence_token_before_persisting(
 
 
 def test_get_workflow_redacts_confluence_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _client(monkeypatch)
-    db.workflow.find_unique = AsyncMock(return_value=_wf_row())
+    client, repos = _client(monkeypatch)
+    repos.get.return_value = _wf_row()
 
     resp = client.get("/workflows/w1")
     assert resp.status_code == 200, resp.text
@@ -121,9 +125,8 @@ def test_get_workflow_redacts_confluence_token(monkeypatch: pytest.MonkeyPatch) 
 
 
 def test_list_workflows_redacts_confluence_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _client(monkeypatch)
-    db.workflow.count = AsyncMock(return_value=1)
-    db.workflow.find_many = AsyncMock(return_value=[_wf_row()])
+    client, repos = _client(monkeypatch)
+    repos.list_page.return_value = ([_wf_row()], 1)
 
     resp = client.get("/workflows")
     assert resp.status_code == 200, resp.text
@@ -138,9 +141,9 @@ def test_put_workflow_with_redacted_marker_preserves_stored_token(
     stored_token = encrypt_marked("original-confluence-token")
     existing = _wf_row(nodes=_nodes_with_confluence(apiToken=stored_token))
 
-    client, db = _client(monkeypatch)
-    db.workflow.find_unique = AsyncMock(return_value=existing)
-    db.workflow.update = AsyncMock(return_value=existing)
+    client, repos = _client(monkeypatch)
+    repos.get.return_value = existing
+    repos.update.return_value = existing
 
     body = {
         "name": "Sample",
@@ -150,8 +153,7 @@ def test_put_workflow_with_redacted_marker_preserves_stored_token(
     resp = client.put("/workflows/w1", json=body)
     assert resp.status_code == 200, resp.text
 
-    call_kwargs = db.workflow.update.await_args.kwargs  # type: ignore[union-attr]
-    persisted_nodes = call_kwargs["data"]["nodes"].data
+    persisted_nodes = repos.update.await_args.args[2]["nodes"]
     persisted = next(n for n in persisted_nodes if n["type"] == "confluence")
     assert persisted["data"]["apiToken"] == stored_token
 
@@ -161,9 +163,9 @@ def test_put_workflow_with_new_plaintext_token_encrypts_it(monkeypatch: pytest.M
 
     existing = _wf_row(nodes=_nodes_with_confluence(apiToken=encrypt_marked("old-token")))
 
-    client, db = _client(monkeypatch)
-    db.workflow.find_unique = AsyncMock(return_value=existing)
-    db.workflow.update = AsyncMock(return_value=existing)
+    client, repos = _client(monkeypatch)
+    repos.get.return_value = existing
+    repos.update.return_value = existing
 
     body = {
         "name": "Sample",
@@ -173,7 +175,6 @@ def test_put_workflow_with_new_plaintext_token_encrypts_it(monkeypatch: pytest.M
     resp = client.put("/workflows/w1", json=body)
     assert resp.status_code == 200, resp.text
 
-    call_kwargs = db.workflow.update.await_args.kwargs  # type: ignore[union-attr]
-    persisted_nodes = call_kwargs["data"]["nodes"].data
+    persisted_nodes = repos.update.await_args.args[2]["nodes"]
     persisted = next(n for n in persisted_nodes if n["type"] == "confluence")
     assert decrypt_marked(persisted["data"]["apiToken"]) == "brand-new-token"

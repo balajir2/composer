@@ -10,7 +10,13 @@ from fastapi.testclient import TestClient
 from src.db.repos import users as users_repo
 from src.main import create_app
 from src.security.jwt import create_access_token
-from tests.unit.db_fakes import FakeSessionmaker, make_user, override_session
+from tests.unit.db_fakes import (
+    FakeSessionmaker,
+    make_user,
+    make_workflow,
+    override_session,
+    patch_workflow_repos,
+)
 
 
 def _wf_row(**overrides: Any) -> SimpleNamespace:
@@ -159,9 +165,10 @@ def test_list_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_assignee_can_read_private_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _client(monkeypatch)
-    db.workflow.find_unique = AsyncMock(return_value=_wf_row())
-    db.workflowassignment.find_unique = AsyncMock(return_value=_assignment_row())
+    client, _ = _client(monkeypatch)
+    repos = patch_workflow_repos(monkeypatch)
+    repos.get.return_value = make_workflow(user_id="owner1")
+    repos.exists.return_value = True
     token = create_access_token("assignee1")
     resp = client.get("/workflows/w1", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200, resp.text
@@ -170,19 +177,21 @@ def test_assignee_can_read_private_workflow(monkeypatch: pytest.MonkeyPatch) -> 
 def test_non_assignee_still_gets_404_on_private_workflow(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, db = _client(monkeypatch)
-    db.workflow.find_unique = AsyncMock(return_value=_wf_row())
-    db.workflowassignment.find_unique = AsyncMock(return_value=None)
+    client, _ = _client(monkeypatch)
+    repos = patch_workflow_repos(monkeypatch)
+    repos.get.return_value = make_workflow(user_id="owner1")
+    repos.exists.return_value = False
     token = create_access_token("stranger1")
     resp = client.get("/workflows/w1", headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 404
 
 
 def test_assignee_can_update_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _client(monkeypatch)
-    db.workflow.find_unique = AsyncMock(return_value=_wf_row())
-    db.workflowassignment.find_unique = AsyncMock(return_value=_assignment_row())
-    db.workflow.update = AsyncMock(return_value=_wf_row(name="Renamed"))
+    client, _ = _client(monkeypatch)
+    repos = patch_workflow_repos(monkeypatch)
+    repos.get.return_value = make_workflow(user_id="owner1")
+    repos.exists.return_value = True
+    repos.update.return_value = make_workflow(user_id="owner1", name="Renamed")
     token = create_access_token("assignee1")
     body = {
         "name": "Renamed",
@@ -204,6 +213,8 @@ def test_assignee_can_update_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
     }
     resp = client.put("/workflows/w1", json=body, headers={"Authorization": f"Bearer {token}"})
     assert resp.status_code == 200, resp.text
+    repos.exists.assert_awaited_once()
+    repos.update.assert_awaited_once()
 
 
 def test_grant_assignment_releases_connection_after_user_lookup(

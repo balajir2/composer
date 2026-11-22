@@ -7,35 +7,27 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.errors import AlreadyExists
 from src.db.repos import users as users_repo
+from src.db.repos.workflows import WorkflowRecord
 from src.main import create_app
-from tests.unit.db_fakes import make_user, override_session
+from tests.unit.db_fakes import (
+    WorkflowRepoMocks,
+    make_user,
+    make_workflow,
+    override_session,
+    patch_workflow_repos,
+)
 
 
-def _wf_row_create(**overrides: Any) -> SimpleNamespace:
-    """Minimal workflow row for POST /workflows create tests."""
-    base: dict[str, Any] = {
-        "id": "w-new",
-        "userId": "dev",
-        "name": "Created",
-        "description": None,
-        "category": None,
-        "tags": [],
-        "difficulty": None,
-        "estimatedTime": None,
-        "nodes": [],
-        "edges": [],
-        "version": None,
-        "isTemplate": False,
-        "isPublic": False,
-        "createdAt": "2026-04-22T00:00:00Z",
-        "updatedAt": "2026-04-22T00:00:00Z",
-    }
+def _wf_row_create(**overrides: Any) -> WorkflowRecord:
+    """Minimal workflow record for POST /workflows create tests."""
+    base: dict[str, Any] = {"id": "w-new", "userId": "dev", "name": "Created"}
     base.update(overrides)
-    return SimpleNamespace(**base)
+    return make_workflow(**base)
 
 
-def _wf_row(**overrides: Any) -> SimpleNamespace:
+def _wf_row(**overrides: Any) -> WorkflowRecord:
     base: dict[str, Any] = {
         "id": "w1",
         "userId": "user-42",
@@ -43,23 +35,15 @@ def _wf_row(**overrides: Any) -> SimpleNamespace:
         "description": "A test workflow",
         "category": "utilities",
         "tags": ["x"],
-        "difficulty": None,
-        "estimatedTime": None,
-        "nodes": [],
-        "edges": [],
-        "version": None,
-        "isTemplate": False,
-        "isPublic": False,
-        "createdAt": "2026-04-21T00:00:00Z",
         "updatedAt": "2026-04-21T01:00:00Z",
     }
     base.update(overrides)
-    return SimpleNamespace(**base)
+    return make_workflow(**base)
 
 
 def _client(
     monkeypatch: pytest.MonkeyPatch, rows: list[Any], total: int
-) -> tuple[TestClient, MagicMock]:
+) -> tuple[TestClient, WorkflowRepoMocks]:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", "development")
     from src.config import get_settings
@@ -68,18 +52,19 @@ def _client(
     app = create_app()
 
     db = MagicMock()
-    db.workflow = MagicMock()
-    db.workflow.count = AsyncMock(return_value=total)
-    db.workflow.find_many = AsyncMock(return_value=rows)
-    # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
+    # Dev-mode user_id='dev' has no user row by default -> role defaults to 'member'
     db.user = MagicMock()
     db.user.find_unique = AsyncMock(return_value=None)
     app.state.db = db
+    override_session(app)
+    repos = patch_workflow_repos(monkeypatch)
+    repos.list_page.return_value = (rows, total)
+    repos.search.return_value = (rows, total)
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 
     app.state.event_bus = ExecutionEventBus()
-    return TestClient(app), db
+    return TestClient(app), repos
 
 
 def test_list_workflows_default(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -94,23 +79,23 @@ def test_list_workflows_default(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_list_workflows_filters_by_is_template(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _client(monkeypatch, [_wf_row(isTemplate=True)], total=1)
+    client, repos = _client(monkeypatch, [_wf_row(isTemplate=True)], total=1)
     resp = client.get("/workflows?isTemplate=true")
     assert resp.status_code == 200
-    # With authz, where is {"AND": [authz_or, {"isTemplate": True}]}
-    where = db.workflow.find_many.await_args.kwargs["where"]
-    and_clauses = where.get("AND", [])
-    assert any(c.get("isTemplate") is True for c in and_clauses)
+    kwargs = repos.list_page.await_args.kwargs
+    assert kwargs["is_template"] is True
+    assert kwargs["is_public"] is None and kwargs["category"] is None
+    assert kwargs["viewer"] == {"user_id": "dev", "is_admin": False}
 
 
 def test_list_workflows_mine_filters_by_user(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _client(monkeypatch, [_wf_row(userId="dev")], total=1)
+    client, repos = _client(monkeypatch, [_wf_row(userId="dev")], total=1)
     resp = client.get("/workflows?mine=true")
     assert resp.status_code == 200
-    # mine=true → authz_where = {"OR": [{"userId": user_id}, assignment_clause]}
     # dev-mode fallback (ADR-0015) sets user_id='dev'
-    where = db.workflow.find_many.await_args.kwargs["where"]
-    assert {"userId": "dev"} in where["OR"]
+    kwargs = repos.list_page.await_args.kwargs
+    assert kwargs["mine"] is True
+    assert kwargs["viewer"]["user_id"] == "dev"
 
 
 def test_list_workflows_mine_overrides_admin_global_view(
@@ -124,7 +109,7 @@ def test_list_workflows_mine_overrides_admin_global_view(
     request and must apply regardless of role."""
     from src.security.auth import get_current_role
 
-    client, db = _client(monkeypatch, [_wf_row(userId="dev")], total=1)
+    client, repos = _client(monkeypatch, [_wf_row(userId="dev")], total=1)
     # Use FastAPI's dependency override (same pattern as the existing
     # admin-bypass tests below).  The MagicMock db isn't a real Prisma
     # instance, so the auth module's isinstance check forces 'member'
@@ -135,11 +120,10 @@ def test_list_workflows_mine_overrides_admin_global_view(
     finally:
         client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
     assert resp.status_code == 200
-    where = db.workflow.find_many.await_args.kwargs["where"]
-    # Scoped to "me" (owner OR assignee) — no OR-with-isPublic, no None / unfiltered.
-    assert where is not None, "admin + mine=true must apply a filter"
-    assert {"userId": "dev"} in where["OR"]
-    # And critically: NOT the global "see all" (where=None) that the bug produced.
+    kwargs = repos.list_page.await_args.kwargs
+    # Scoped to "me" (owner OR assignee), not the global "see all" the bug produced.
+    assert kwargs["mine"] is True, "admin + mine=true must apply the mine scope"
+    assert kwargs["viewer"] == {"user_id": "dev", "is_admin": True}
 
 
 def test_list_workflows_admin_without_mine_sees_all(
@@ -151,41 +135,42 @@ def test_list_workflows_admin_without_mine_sees_all(
     break that path."""
     from src.security.auth import get_current_role
 
-    client, db = _client(monkeypatch, [], total=0)
+    client, repos = _client(monkeypatch, [], total=0)
     client.app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")  # type: ignore[attr-defined]
     try:
         resp = client.get("/workflows")
     finally:
         client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
     assert resp.status_code == 200
-    where = db.workflow.find_many.await_args.kwargs["where"]
-    # No filter when admin asks for the global view — everything shows.
-    assert where is None
+    kwargs = repos.list_page.await_args.kwargs
+    # No mine scope for an admin's global view; the repo applies no visibility filter.
+    assert kwargs["mine"] is False
+    assert kwargs["viewer"] == {"user_id": "dev", "is_admin": True}
 
 
 def test_list_workflows_mine_includes_assigned_not_owned(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, db = _client(monkeypatch, [_wf_row(userId="owner-other", id="w-shared")], total=1)
+    client, repos = _client(monkeypatch, [_wf_row(userId="owner-other", id="w-shared")], total=1)
     resp = client.get("/workflows?mine=true")
     assert resp.status_code == 200
-    where = db.workflow.find_many.await_args.kwargs["where"]
-    # mine=true must now match owner OR assignment, not just userId
-    assert "OR" in where
-    or_clauses = where["OR"]
-    assert {"userId": "dev"} in or_clauses
-    assert any("assignments" in c for c in or_clauses)
+    body = resp.json()
+    assert [w["id"] for w in body["items"]] == ["w-shared"]
+    # The owner-or-assignee predicate lives in the repo (EXISTS; see the repo integration tests).
+    kwargs = repos.list_page.await_args.kwargs
+    assert kwargs["mine"] is True and kwargs["viewer"]["user_id"] == "dev"
 
 
 def test_list_workflows_default_view_includes_assigned_private(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, db = _client(monkeypatch, [_wf_row(userId="owner-other")], total=1)
+    client, repos = _client(monkeypatch, [_wf_row(userId="owner-other")], total=1)
     resp = client.get("/workflows")
     assert resp.status_code == 200
-    where = db.workflow.find_many.await_args.kwargs["where"]
-    or_clauses = where["OR"]
-    assert any("assignments" in c for c in or_clauses)
+    assert resp.json()["total"] == 1
+    kwargs = repos.list_page.await_args.kwargs
+    assert kwargs["mine"] is False
+    assert kwargs["viewer"] == {"user_id": "dev", "is_admin": False}
 
 
 def test_list_workflows_limit_over_100_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -195,17 +180,15 @@ def test_list_workflows_limit_over_100_rejected(monkeypatch: pytest.MonkeyPatch)
 
 
 def test_search_workflows_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _client(monkeypatch, [_wf_row(name="SearchTest")], total=1)
+    client, repos = _client(monkeypatch, [_wf_row(name="SearchTest")], total=1)
     resp = client.get("/workflows/search?q=search")
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] == 1
     assert body["items"][0]["name"] == "SearchTest"
-    where = db.workflow.find_many.await_args.kwargs["where"]
-    # With authz: where = {"AND": [authz_or, text_match_or]}
-    assert "AND" in where
-    where_str = str(where)
-    assert "OR" in where_str
+    kwargs = repos.search.await_args.kwargs
+    assert kwargs["q"] == "search" and kwargs["limit"] == 50
+    assert kwargs["viewer"] == {"user_id": "dev", "is_admin": False}
 
 
 def test_search_workflows_includes_assigned_not_owned(
@@ -215,16 +198,17 @@ def test_search_workflows_includes_assigned_not_owned(
     a workflow the caller has via WorkflowAssignment (not ownership, not
     public) must still be findable through the search box, not just in
     the default /workflows listing."""
-    client, db = _client(monkeypatch, [_wf_row(userId="owner-other", name="SearchTest")], total=1)
+    client, repos = _client(
+        monkeypatch, [_wf_row(userId="owner-other", name="SearchTest")], total=1
+    )
     resp = client.get("/workflows/search?q=search")
     assert resp.status_code == 200
     body = resp.json()
     assert body["total"] == 1
     assert body["items"][0]["name"] == "SearchTest"
-    where = db.workflow.find_many.await_args.kwargs["where"]
-    assert "AND" in where
-    authz_or = where["AND"][0]["OR"]
-    assert any("assignments" in c for c in authz_or)
+    # Assigned-but-not-owned visibility is the repo's EXISTS predicate (repo integration tests).
+    kwargs = repos.search.await_args.kwargs
+    assert kwargs["viewer"] == {"user_id": "dev", "is_admin": False}
 
 
 def test_search_workflows_empty_q_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -238,7 +222,9 @@ def test_search_workflows_empty_q_rejected(monkeypatch: pytest.MonkeyPatch) -> N
 # ---------------------------------------------------------------------------
 
 
-def _client_fetch(monkeypatch: pytest.MonkeyPatch, row: Any | None) -> tuple[TestClient, MagicMock]:
+def _client_fetch(
+    monkeypatch: pytest.MonkeyPatch, row: Any | None
+) -> tuple[TestClient, WorkflowRepoMocks]:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", "development")
     from src.config import get_settings
@@ -247,19 +233,18 @@ def _client_fetch(monkeypatch: pytest.MonkeyPatch, row: Any | None) -> tuple[Tes
     app = create_app()
 
     db = MagicMock()
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(return_value=row)
-    # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
+    # Dev-mode user_id='dev' has no user row by default -> role defaults to 'member'
     db.user = MagicMock()
     db.user.find_unique = AsyncMock(return_value=None)
-    db.workflowassignment = MagicMock()
-    db.workflowassignment.find_unique = AsyncMock(return_value=None)
     app.state.db = db
+    override_session(app)
+    repos = patch_workflow_repos(monkeypatch)
+    repos.get.return_value = row
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 
     app.state.event_bus = ExecutionEventBus()
-    return TestClient(app), db
+    return TestClient(app), repos
 
 
 def test_get_workflow_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -285,7 +270,7 @@ def _client_put(
     monkeypatch: pytest.MonkeyPatch,
     existing: Any | None,
     updated: Any | None,
-) -> tuple[TestClient, MagicMock]:
+) -> tuple[TestClient, WorkflowRepoMocks]:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", "development")
     from src.config import get_settings
@@ -294,20 +279,19 @@ def _client_put(
     app = create_app()
 
     db = MagicMock()
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(return_value=existing)
-    db.workflow.update = AsyncMock(return_value=updated)
-    # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
+    # Dev-mode user_id='dev' has no user row by default -> role defaults to 'member'
     db.user = MagicMock()
     db.user.find_unique = AsyncMock(return_value=None)
-    db.workflowassignment = MagicMock()
-    db.workflowassignment.find_unique = AsyncMock(return_value=None)
     app.state.db = db
+    override_session(app)
+    repos = patch_workflow_repos(monkeypatch)
+    repos.get.return_value = existing
+    repos.update.return_value = updated
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 
     app.state.event_bus = ExecutionEventBus()
-    return TestClient(app), db
+    return TestClient(app), repos
 
 
 _VALID_BODY: dict[str, Any] = {
@@ -342,10 +326,10 @@ def test_put_workflow_collapses_duplicate_edges(monkeypatch: pytest.MonkeyPatch)
     """A canvas holding duplicate edges must still save, stored without the copies."""
     existing = _wf_row(id="w1", userId="dev")
     updated = _wf_row(id="w1", userId="dev", name="Updated")
-    client, db = _client_put(monkeypatch, existing, updated)
+    client, repos = _client_put(monkeypatch, existing, updated)
     resp = client.put("/workflows/w1", json=_DUP_EDGE_BODY)
     assert resp.status_code == 200, resp.text
-    stored = db.workflow.update.await_args.kwargs["data"]["edges"].data
+    stored = repos.update.await_args.args[2]["edges"]
     assert [e["id"] for e in stored] == ["e1"]
 
 
@@ -356,10 +340,10 @@ def test_post_workflow_collapses_duplicate_edges(monkeypatch: pytest.MonkeyPatch
 
     get_settings.cache_clear()
     app = create_app()
-    db = MagicMock()
-    db.workflow = MagicMock()
-    db.workflow.create = AsyncMock(return_value=_wf_row_create(userId="dev"))
-    app.state.db = db
+    app.state.db = MagicMock()
+    override_session(app)
+    repos = patch_workflow_repos(monkeypatch)
+    repos.create.return_value = _wf_row_create(userId="dev")
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 
@@ -368,9 +352,9 @@ def test_post_workflow_collapses_duplicate_edges(monkeypatch: pytest.MonkeyPatch
 
     resp = client.post("/workflows", json=_DUP_EDGE_BODY)
     assert resp.status_code == 201, resp.text
-    call = db.workflow.create.await_args
+    call = repos.create.await_args
     assert call is not None
-    stored = call.kwargs["data"]["edges"].data
+    stored = call.args[1]["edges"]
     assert [e["id"] for e in stored] == ["e1"]
 
 
@@ -409,7 +393,7 @@ def test_put_workflow_invalid_shape(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def _client_delete(
     monkeypatch: pytest.MonkeyPatch, existing: Any | None
-) -> tuple[TestClient, MagicMock]:
+) -> tuple[TestClient, WorkflowRepoMocks]:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", "development")
     from src.config import get_settings
@@ -418,26 +402,26 @@ def _client_delete(
     app = create_app()
 
     db = MagicMock()
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(return_value=existing)
-    db.workflow.delete = AsyncMock()
-    # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
+    # Dev-mode user_id='dev' has no user row by default -> role defaults to 'member'
     db.user = MagicMock()
     db.user.find_unique = AsyncMock(return_value=None)
     app.state.db = db
+    override_session(app)
+    repos = patch_workflow_repos(monkeypatch)
+    repos.get.return_value = existing
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 
     app.state.event_bus = ExecutionEventBus()
-    return TestClient(app), db
+    return TestClient(app), repos
 
 
 def test_delete_workflow_owner_happy(monkeypatch: pytest.MonkeyPatch) -> None:
     existing = _wf_row(id="w1", userId="dev")
-    client, db = _client_delete(monkeypatch, existing)
+    client, repos = _client_delete(monkeypatch, existing)
     resp = client.delete("/workflows/w1")
     assert resp.status_code == 204
-    db.workflow.delete.assert_awaited_once()
+    repos.delete.assert_awaited_once()
 
 
 def test_delete_workflow_not_owner_forbidden(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -483,14 +467,13 @@ def test_list_workflows_where_clause_has_authz_or(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """List query must OR(isPublic=true, userId=caller)."""
-    client, db = _client(monkeypatch, [], total=0)
+    client, repos = _client(monkeypatch, [], total=0)
     resp = client.get("/workflows")
     assert resp.status_code == 200
-    where = db.workflow.find_many.await_args.kwargs["where"]
-    # Inspect: the authz OR should be nested somewhere
-    where_str = str(where)
-    assert "isPublic" in where_str
-    assert "OR" in where_str
+    # The repo applies is_public OR owner OR assigned for a non-admin viewer.
+    kwargs = repos.list_page.await_args.kwargs
+    assert kwargs["viewer"] == {"user_id": "dev", "is_admin": False}
+    assert kwargs["mine"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -529,10 +512,10 @@ def test_create_workflow_over_node_limit_rejected(
     get_settings.cache_clear()
 
     app = create_app()
-    db = MagicMock()
-    db.workflow = MagicMock()
-    db.workflow.create = AsyncMock(return_value=_wf_row_create(id="w-big", userId="dev"))
-    app.state.db = db
+    app.state.db = MagicMock()
+    override_session(app)
+    repos = patch_workflow_repos(monkeypatch)
+    repos.create.return_value = _wf_row_create(id="w-big", userId="dev")
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 
@@ -577,10 +560,10 @@ def test_create_workflow_at_node_limit_accepted(
     get_settings.cache_clear()
 
     app = create_app()
-    db = MagicMock()
-    db.workflow = MagicMock()
-    db.workflow.create = AsyncMock(return_value=_wf_row_create(id="w-big", userId="dev"))
-    app.state.db = db
+    app.state.db = MagicMock()
+    override_session(app)
+    repos = patch_workflow_repos(monkeypatch)
+    repos.create.return_value = _wf_row_create(id="w-big", userId="dev")
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 
@@ -636,14 +619,14 @@ def test_admin_can_delete_any_workflow(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.security.auth import get_current_role
 
     existing = _wf_row(id="w1", userId="someone-else")
-    client, db = _client_delete(monkeypatch, existing)
+    client, repos = _client_delete(monkeypatch, existing)
     client.app.dependency_overrides[get_current_role] = lambda: ("admin-user", "admin")  # type: ignore[attr-defined]
     try:
         resp = client.delete("/workflows/w1")
     finally:
         client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
     assert resp.status_code == 204
-    db.workflow.delete.assert_awaited_once()
+    repos.delete.assert_awaited_once()
 
 
 def _client_patch_owner(
@@ -836,60 +819,39 @@ def test_put_publish_sets_isproduction_and_slug(monkeypatch: pytest.MonkeyPatch)
         isProduction=True,
         externalSlug="my-workflow",
     )
-    client, db = _client_put(monkeypatch, existing, updated)
+    client, repos = _client_put(monkeypatch, existing, updated)
     resp = client.put("/workflows/w1", json=_PUBLISH_BODY)
     assert resp.status_code == 200, resp.text
-    call_data = db.workflow.update.await_args.kwargs["data"]  # type: ignore[union-attr]
-    assert call_data["isProduction"] is True
-    assert call_data["externalSlug"] == "my-workflow"
+    call_data = repos.update.await_args.args[2]
+    assert call_data["is_production"] is True
+    assert call_data["external_slug"] == "my-workflow"
 
 
 def test_put_unpublish_clears_slug(monkeypatch: pytest.MonkeyPatch) -> None:
     """isProduction=False clears externalSlug (sets to None)."""
     existing = _wf_row(id="w1", userId="dev", isProduction=True, externalSlug="my-workflow")
     updated = _wf_row(id="w1", userId="dev", name="Updated", isProduction=False, externalSlug=None)
-    client, db = _client_put(monkeypatch, existing, updated)
+    client, repos = _client_put(monkeypatch, existing, updated)
     body: dict[str, Any] = {**_VALID_BODY, "isProduction": False}
     resp = client.put("/workflows/w1", json=body)
     assert resp.status_code == 200, resp.text
-    call_data = db.workflow.update.await_args.kwargs["data"]  # type: ignore[union-attr]
-    assert call_data["isProduction"] is False
-    assert call_data["externalSlug"] is None
+    call_data = repos.update.await_args.args[2]
+    assert call_data["is_production"] is False
+    assert call_data["external_slug"] is None
 
 
 def test_put_slug_conflict_returns_409(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Prisma UniqueViolationError on slug collision → 409."""
-    from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
-
+    """A unique violation on the slug becomes a 409 naming only the constraint."""
     existing = _wf_row(id="w1", userId="dev")
-    monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
-    monkeypatch.setenv("ENVIRONMENT", "development")
-    from src.config import get_settings
-
-    get_settings.cache_clear()
-    app = create_app()
-
-    db = MagicMock()
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(return_value=existing)
-    # Simulate a Prisma unique violation on update
-    db.workflow.update = AsyncMock(
-        side_effect=UniqueViolationError(
-            {"user_facing_error": {"message": "Unique constraint failed"}}
-        )
-    )
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=None)
-    app.state.db = db
-    app.state.checkpointer = MagicMock()
-    from src.engine.events import ExecutionEventBus
-
-    app.state.event_bus = ExecutionEventBus()
-    client = TestClient(app)
+    client, repos = _client_put(monkeypatch, existing, None)
+    repos.update.side_effect = AlreadyExists("workflows_external_slug_key")
 
     resp = client.put("/workflows/w1", json=_PUBLISH_BODY)
     assert resp.status_code == 409
-    assert "external_slug already in use" in resp.json()["detail"]
+    detail = resp.json()["detail"]
+    assert detail.startswith("external_slug already in use: ")
+    assert "workflows_external_slug_key" in detail
+    assert "[SQL" not in detail and "parameters" not in detail
 
 
 def test_patch_workflow_owner_releases_connection_after_user_lookup(

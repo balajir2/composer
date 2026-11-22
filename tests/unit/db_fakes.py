@@ -2,14 +2,19 @@
 
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import AsyncMock
 
+import pytest
 from fastapi import FastAPI
 
 from src.db.models import UserRole
+from src.db.repos import workflow_assignments as assignments_repo
+from src.db.repos import workflows as workflows_repo
 from src.db.repos.users import UserRecord
+from src.db.repos.workflows import WorkflowRecord
 from src.db.session import get_session
 
 
@@ -133,3 +138,77 @@ def make_user(**overrides: Any) -> UserRecord:
     }
     base.update(overrides)
     return UserRecord(**base)
+
+
+_CAMEL_TO_SNAKE = {
+    "userId": "user_id",
+    "estimatedTime": "estimated_time",
+    "isTemplate": "is_template",
+    "isPublic": "is_public",
+    "isProduction": "is_production",
+    "externalSlug": "external_slug",
+    "originalOwnerEmail": "original_owner_email",
+    "createdAt": "created_at",
+    "updatedAt": "updated_at",
+}
+
+
+def make_workflow(**overrides: Any) -> WorkflowRecord:
+    """A WorkflowRecord with defaults. Overrides may use snake_case or the old camelCase names."""
+    now = datetime(2026, 4, 21, tzinfo=UTC)
+    base: dict[str, Any] = {
+        "id": "w1",
+        "user_id": "user-42",
+        "name": "Sample",
+        "description": None,
+        "category": None,
+        "tags": [],
+        "difficulty": None,
+        "estimated_time": None,
+        "nodes": [],
+        "edges": [],
+        "version": None,
+        "is_template": False,
+        "is_public": False,
+        "is_production": False,
+        "external_slug": None,
+        "original_owner_email": None,
+        "created_at": now,
+        "updated_at": now,
+    }
+    for key, value in overrides.items():
+        base[_CAMEL_TO_SNAKE.get(key, key)] = value
+    for key in ("created_at", "updated_at"):
+        if isinstance(base[key], str):
+            base[key] = datetime.fromisoformat(base[key].replace("Z", "+00:00"))
+    return WorkflowRecord(**base)
+
+
+@dataclass
+class WorkflowRepoMocks:
+    """The patched ``workflows`` / ``workflow_assignments`` repo functions of one test."""
+
+    get: AsyncMock
+    create: AsyncMock
+    update: AsyncMock
+    delete: AsyncMock
+    list_page: AsyncMock
+    search: AsyncMock
+    exists: AsyncMock
+
+
+def patch_workflow_repos(monkeypatch: pytest.MonkeyPatch) -> WorkflowRepoMocks:
+    """Replace the repo functions the workflow routes call; nothing touches a database."""
+    mocks = WorkflowRepoMocks(
+        get=AsyncMock(return_value=None),
+        create=AsyncMock(return_value=None),
+        update=AsyncMock(return_value=None),
+        delete=AsyncMock(return_value=True),
+        list_page=AsyncMock(return_value=([], 0)),
+        search=AsyncMock(return_value=([], 0)),
+        exists=AsyncMock(return_value=False),
+    )
+    for name in ("get", "create", "update", "delete", "list_page", "search"):
+        monkeypatch.setattr(workflows_repo, name, getattr(mocks, name))
+    monkeypatch.setattr(assignments_repo, "exists", mocks.exists)
+    return mocks
