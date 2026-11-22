@@ -293,3 +293,112 @@ def test_oauth_provider_without_sessionmaker_or_user_id_fails_fast(
 
 def test_static_auth_provider_does_not_need_db_or_user_id() -> None:
     McpToolProvider(_server_row(auth_type="none"))
+
+
+# ─── custom headers (stored mcp_servers.headers) ───────────────────────
+
+
+def _tools_list_response(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnknownParameterType]
+    httpx_mock.add_response(
+        url="https://mcp.example.com/rpc",
+        method="POST",
+        json={"jsonrpc": "2.0", "id": 1, "result": {"tools": []}},
+    )
+
+
+async def test_custom_headers_are_sent_and_sensitive_values_decrypted(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    from src.security.encryption import encrypt_sensitive_headers
+
+    _set_encryption_key(monkeypatch)
+    stored = encrypt_sensitive_headers({"X-Api-Key": "hdr-secret", "X-Plain": "plain"})
+    assert stored["X-Api-Key"] != "hdr-secret"  # really encrypted at rest
+    _tools_list_response(httpx_mock)
+    await McpToolProvider(_server_row(headers=stored)).tools()
+    req = httpx_mock.get_request()
+    assert req is not None
+    assert req.headers["x-api-key"] == "hdr-secret"
+    assert req.headers["x-plain"] == "plain"
+
+
+async def test_custom_headers_never_override_client_or_bearer_auth_headers(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    _set_encryption_key(monkeypatch)
+    srv = _server_row(
+        auth_type="bearer",
+        encrypted_access_token=encrypt("real-token"),
+        headers={
+            "authorization": "Bearer custom",
+            "CONTENT-TYPE": "text/plain",
+            "Accept": "text/html",
+            "Mcp-Session-Id": "forged",
+            "X-Extra": "ok",
+        },
+    )
+    _tools_list_response(httpx_mock)
+    await McpToolProvider(srv).tools()
+    req = httpx_mock.get_request()
+    assert req is not None
+    assert req.headers.get_list("authorization") == ["Bearer real-token"]
+    assert req.headers["content-type"] == "application/json"
+    assert req.headers["accept"] == "application/json, text/event-stream"
+    assert "mcp-session-id" not in req.headers
+    assert req.headers["x-extra"] == "ok"
+
+
+async def test_custom_header_cannot_override_api_key_header_name(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    _set_encryption_key(monkeypatch)
+    srv = _server_row(
+        auth_type="api-key",
+        header_name="X-Api-Key",
+        encrypted_access_token=encrypt("key-1"),
+        headers={"x-api-key": "other", "Authorization": "Basic abc"},
+    )
+    _tools_list_response(httpx_mock)
+    await McpToolProvider(srv).tools()
+    req = httpx_mock.get_request()
+    assert req is not None
+    assert req.headers.get_list("x-api-key") == ["key-1"]
+    assert req.headers["authorization"] == "Basic abc"  # not an auth header here, so it passes
+
+
+async def test_custom_headers_are_sent_on_oauth_requests_but_bearer_wins(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    _set_encryption_key(monkeypatch)
+    srv = _server_row(
+        auth_type="oauth",
+        oauth_config={"tokenUrl": "https://idp/token", "clientId": "c"},
+        headers={"X-Tenant": "t1", "authorization": "Bearer custom"},
+    )
+
+    async def _fake_get_valid(server: Any, user_id: str, sessionmaker: Any) -> str:
+        return "oauth-tok"
+
+    import src.mcp.base as base_mod
+
+    monkeypatch.setattr(base_mod, "get_valid_access_token", _fake_get_valid)
+    _tools_list_response(httpx_mock)
+    await McpToolProvider(srv, sessionmaker=MagicMock(), user_id="u").tools()
+    req = httpx_mock.get_request()
+    assert req is not None
+    assert req.headers.get_list("authorization") == ["Bearer oauth-tok"]
+    assert req.headers["x-tenant"] == "t1"
+
+
+async def test_no_custom_headers_changes_nothing(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    _tools_list_response(httpx_mock)
+    await McpToolProvider(_server_row(headers=None)).tools()
+    req = httpx_mock.get_request()
+    assert req is not None
+    assert "authorization" not in req.headers

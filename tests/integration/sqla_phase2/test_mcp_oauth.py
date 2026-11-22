@@ -657,7 +657,7 @@ async def test_refresh_failures_leave_the_row_unchanged(
 # --------------------------------------------------------------------------- 11. resolver
 
 
-async def test_resolver_returns_the_servers_tools_with_static_auth(
+async def test_resolver_returns_the_servers_tools_with_static_auth_and_sends_custom_headers(
     member: Member, servers: ServerApi, adapter: Phase2Adapter, fake_mcp: FakeMcpFactory
 ) -> None:
     fake = fake_mcp()
@@ -666,14 +666,20 @@ async def test_resolver_returns_the_servers_tools_with_static_auth(
         url=fake.url,
         authType="bearer",
         accessToken="bearer-tok",
-        headers={"X-Custom": "never-sent", "Authorization": "Bearer also-never-sent"},
+        headers={
+            "X-Custom": "plain-value",
+            "X-Api-Key": "sensitive-header-value",
+            "Authorization": "Bearer custom-must-not-win",
+        },
     )
     sid = created["id"]
     assert await adapter.resolve_tools(sid, member.id) == ["alpha", "beta"]
     assert fake.methods() == ["tools/list"]  # the resolver lists tools only: no initialize
     assert fake.authorizations() == {"Bearer bearer-tok"}
-    # custom `headers` are stored (redacted on read) but the MCP client never sends them today
-    assert all("x-custom" not in c.headers for c in fake.calls)
+    # custom `headers` are sent on every request: plain verbatim, sensitive decrypted; the
+    # bearer from authType wins over a custom Authorization header (already asserted above)
+    assert all(c.headers.get("x-custom") == "plain-value" for c in fake.calls)
+    assert all(c.headers.get("x-api-key") == "sensitive-header-value" for c in fake.calls)
 
     assert await adapter.resolve_named_tools(sid, member.id, ["beta", "ghost"]) == ["beta"]
     assert await adapter.resolve_named_tools(sid, member.id, []) == ["alpha", "beta"]

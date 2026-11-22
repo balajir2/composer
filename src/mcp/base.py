@@ -18,7 +18,7 @@ from src.mcp.client import MCPClient
 from src.mcp.oauth import get_valid_access_token
 from src.mcp.sanitize import strip_binary_blobs
 from src.mcp.schema_adapter import normalize_input_schema, substitute_url_placeholders
-from src.security.encryption import decrypt
+from src.security.encryption import decrypt, decrypt_sensitive_headers
 from src.tools.base import (
     ApiKeyAuth,
     AuthRequirement,
@@ -29,6 +29,30 @@ from src.tools.base import (
     ToolDefinition,
     ToolProvider,
 )
+
+# Headers MCPClient itself sets on every request. A server's custom headers may never override
+# them (compared case-insensitively), whatever the stored value.
+_CLIENT_OWNED_HEADERS = frozenset(
+    {"content-type", "accept", "mcp-session-id", "mcp-protocol-version"}
+)
+
+
+def _merge_custom_headers(
+    auth_headers: dict[str, str] | None, custom_headers: dict[str, str] | None
+) -> dict[str, str]:
+    """Merge a server's (already decrypted) custom headers under the auth headers.
+
+    Auth headers (from authType) and the client-owned headers win over a custom header with the
+    same name, case-insensitively; a custom header can never replace them. MCPClient layers the
+    returned dict over its own Content-Type/Accept, so client-owned names are dropped here too.
+    """
+    merged: dict[str, str] = dict(auth_headers or {})
+    taken = {name.lower() for name in merged} | _CLIENT_OWNED_HEADERS
+    for name, value in (custom_headers or {}).items():
+        if name.lower() in taken:
+            continue
+        merged[name] = value
+    return merged
 
 
 class McpToolProvider(ToolProvider):
@@ -69,7 +93,7 @@ class McpToolProvider(ToolProvider):
             # Static auth: resolve header once at construction.
             self._client = MCPClient(
                 resolved_url,
-                auth_header=self._build_auth_header(),
+                auth_header=self._with_custom_headers(self._build_auth_header()),
             )
 
     @property
@@ -184,6 +208,13 @@ class McpToolProvider(ToolProvider):
             raise RuntimeError("OAuth auth headers must be built via the async factory.")
         raise ValueError(f"Unknown authType {auth_type!r}")
 
+    def _with_custom_headers(self, auth_headers: dict[str, str] | None) -> dict[str, str]:
+        """Auth headers plus the server's custom headers (sensitive values decrypted here)."""
+        custom = self._server.headers
+        return _merge_custom_headers(
+            auth_headers, decrypt_sensitive_headers(custom) if custom else None
+        )
+
     async def _build_oauth_auth_header(self) -> dict[str, str]:
         """Async factory: fetches a valid OAuth token per request (refreshes if needed)."""
         if self._sessionmaker is None:
@@ -192,7 +223,7 @@ class McpToolProvider(ToolProvider):
                 f"resolver must pass them."
             )
         token = await get_valid_access_token(self._server, self._user_id, self._sessionmaker)
-        return {"Authorization": f"Bearer {token}"}
+        return self._with_custom_headers({"Authorization": f"Bearer {token}"})
 
 
 class _McpBoundTool(BaseTool):
