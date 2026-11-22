@@ -3,9 +3,11 @@
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
+
+from src.db.runtime import register_sessionmaker, unregister_sessionmaker
+from tests.unit.db_fakes import RecordingSessionmaker, assert_no_network_inside_session
 
 
 @pytest.fixture(autouse=True)
@@ -15,6 +17,16 @@ def _reset_db_ctx() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
     token = _current_db.set(None)
     yield
     _current_db.reset(token)
+
+
+@pytest.fixture
+def registered_sessionmaker() -> Iterator[RecordingSessionmaker]:
+    """The app-lifespan sessionmaker the executor reads Drive connections with."""
+    events: list[str] = []
+    sm = RecordingSessionmaker(events)
+    register_sessionmaker(sm)  # pyright: ignore[reportArgumentType]
+    yield sm
+    unregister_sessionmaker(sm)  # pyright: ignore[reportArgumentType]
 
 
 def _node(tmp_path: Path, **data_overrides: Any):
@@ -101,18 +113,21 @@ async def test_rejects_empty_destination_path(tmp_path: Path) -> None:
     assert not (Path.cwd() / "report.pdf").exists()
 
 
-async def test_writes_pdf_to_google_drive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import src.engine.context as ctx_mod
+async def test_writes_pdf_to_google_drive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, registered_sessionmaker: RecordingSessionmaker
+) -> None:
     import src.executors.download_pdf as download_pdf_mod
     from src.engine.state import initial_state
     from src.executors.download_pdf import DownloadPdfExecutor
 
-    fake_db = MagicMock()
-    ctx_mod.set_current_db(fake_db)
+    events = registered_sessionmaker.events
 
-    async def _fake_token(connection_id: str, db: Any) -> str:
+    async def _fake_token(connection_id: str, sessionmaker: Any) -> str:
         assert connection_id == "conn-1"
-        assert db is fake_db
+        assert sessionmaker is registered_sessionmaker
+        # The helper opens (and closes) its own short sessions around its database reads.
+        async with sessionmaker():
+            events.append("db:get")
         return "fake-access-token"
 
     monkeypatch.setattr(download_pdf_mod, "get_valid_drive_access_token", _fake_token)
@@ -124,6 +139,7 @@ async def test_writes_pdf_to_google_drive(tmp_path: Path, monkeypatch: pytest.Mo
             assert access_token == "fake-access-token"
 
         async def write_file(self, dest: str, filename: str, content: bytes) -> None:
+            events.append("net:drive-write")
             write_calls.append((dest, filename, content))
 
     monkeypatch.setattr(download_pdf_mod, "GoogleDriveProvider", _FakeDriveProvider)
@@ -143,25 +159,37 @@ async def test_writes_pdf_to_google_drive(tmp_path: Path, monkeypatch: pytest.Mo
     assert content.startswith(b"%PDF-")
     assert delta["variables"]["lastOutput"] == "drive://folder-1/report.pdf"
     assert delta["node_results"]["dp1"]["status"] == "completed"
+    # Short-session rule: the Drive upload happens with no session open.
+    assert events == ["session:enter", "db:get", "session:exit", "net:drive-write"]
+    assert_no_network_inside_session(events)
+
+
+async def test_google_drive_without_a_registered_sessionmaker_raises_pinned_error(
+    tmp_path: Path,
+) -> None:
+    """The message predates the SQLAlchemy move and is pinned; what it asks for is now the
+    registered sessionmaker (set by the app lifespan)."""
+    from src.engine.state import initial_state
+    from src.executors.download_pdf import DownloadPdfExecutor
+
+    node = _node(tmp_path, provider="google-drive", connectionId="conn-1", driveFolderId="f")
+    with pytest.raises(RuntimeError, match=r"requires src\.engine\.context\.set_current_db"):
+        await DownloadPdfExecutor(node).arun(initial_state())
 
 
 async def test_google_drive_missing_connection_id_raises(tmp_path: Path) -> None:
-    import src.engine.context as ctx_mod
     from src.engine.state import initial_state
     from src.executors.download_pdf import DownloadPdfExecutor, MissingDriveConfigError
 
-    ctx_mod.set_current_db(MagicMock())
     node = _node(tmp_path, provider="google-drive", driveFolderId="folder-1")
     with pytest.raises(MissingDriveConfigError):
         await DownloadPdfExecutor(node).arun(initial_state())
 
 
 async def test_google_drive_missing_folder_id_raises(tmp_path: Path) -> None:
-    import src.engine.context as ctx_mod
     from src.engine.state import initial_state
     from src.executors.download_pdf import DownloadPdfExecutor, MissingDriveConfigError
 
-    ctx_mod.set_current_db(MagicMock())
     node = _node(tmp_path, provider="google-drive", connectionId="conn-1")
     with pytest.raises(MissingDriveConfigError):
         await DownloadPdfExecutor(node).arun(initial_state())

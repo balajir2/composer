@@ -1,21 +1,48 @@
 """Tests for POST /internal/poll-file-triggers."""
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.repos import cloud_storage as cloud_storage_repo
+from src.db.repos.cloud_storage import CloudStorageConnectionRecord
 from src.main import create_app
+from tests.unit.db_fakes import RecordingSessionmaker, assert_no_network_inside_session
+
+
+def _connection_record(user_id: str) -> CloudStorageConnectionRecord:
+    now = datetime(2026, 1, 1, tzinfo=UTC)
+    return CloudStorageConnectionRecord(
+        id="conn1",
+        user_id=user_id,
+        provider="google-drive",
+        account_email="a@example.com",
+        encrypted_access_token="enc",
+        encrypted_refresh_token=None,
+        expires_at=None,
+        scope=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+
+def _patch_connection(monkeypatch: pytest.MonkeyPatch, user_id: str) -> AsyncMock:
+    get = AsyncMock(return_value=_connection_record(user_id))
+    monkeypatch.setattr(cloud_storage_repo, "get", get)
+    return get
 
 
 def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     app = create_app()
     db = MagicMock()
     db.workflow = MagicMock()
-    db.cloudstorageconnection = MagicMock()
     db.workflowexecution = MagicMock()
     app.state.db = db
+    app.state.db_sessionmaker = RecordingSessionmaker([])
     app.state.checkpointer = MagicMock()
     from src.engine.events_pg import PostgresEventStore
 
@@ -103,11 +130,7 @@ def test_poll_endpoint_rejects_unauthenticated_call(monkeypatch: pytest.MonkeyPa
 def test_poll_endpoint_processes_new_file_and_marks_it(monkeypatch: pytest.MonkeyPatch) -> None:
     client, db = _client_with_mock_db()
     db.workflow.find_many = AsyncMock(return_value=[_workflow_with_drive_trigger()])
-    db.cloudstorageconnection.find_unique = AsyncMock(
-        return_value=SimpleNamespace(id="conn1", userId="user1")
-    )
-
-    from datetime import UTC, datetime
+    _patch_connection(monkeypatch, "user1")
 
     from src.storage_providers.base import FileRef
 
@@ -153,11 +176,7 @@ def test_poll_endpoint_passes_processed_and_error_folder_ids_to_provider(
     workflow.nodes[0]["data"]["driveProcessedFolderId"] = "done-folder"
     workflow.nodes[0]["data"]["driveErrorFolderId"] = "err-folder"
     db.workflow.find_many = AsyncMock(return_value=[workflow])
-    db.cloudstorageconnection.find_unique = AsyncMock(
-        return_value=SimpleNamespace(id="conn1", userId="user1")
-    )
-
-    from datetime import UTC, datetime
+    _patch_connection(monkeypatch, "user1")
 
     from src.storage_providers.base import FileRef
 
@@ -195,11 +214,7 @@ def test_poll_endpoint_isolates_per_file_failure(monkeypatch: pytest.MonkeyPatch
     — mirrors composer watch's per-file try/except (design doc §D.4)."""
     client, db = _client_with_mock_db()
     db.workflow.find_many = AsyncMock(return_value=[_workflow_with_drive_trigger()])
-    db.cloudstorageconnection.find_unique = AsyncMock(
-        return_value=SimpleNamespace(id="conn1", userId="user1")
-    )
-
-    from datetime import UTC, datetime
+    _patch_connection(monkeypatch, "user1")
 
     from src.storage_providers.base import FileRef
 
@@ -247,9 +262,7 @@ def test_poll_endpoint_skips_node_when_connection_owner_mismatches_workflow_owne
     # actually owned by "victim" — these must NOT match.
     workflow = _workflow_with_drive_trigger(owner="attacker")
     db.workflow.find_many = AsyncMock(return_value=[workflow])
-    db.cloudstorageconnection.find_unique = AsyncMock(
-        return_value=SimpleNamespace(id="conn1", userId="victim")
-    )
+    _patch_connection(monkeypatch, "victim")
 
     fake_provider = MagicMock()
     fake_provider.list_new_files = AsyncMock(return_value=[])
@@ -292,11 +305,7 @@ def test_poll_endpoint_isolates_malformed_node_from_other_workflows(
     bad_workflow = _workflow_with_malformed_node()
     good_workflow = _workflow_with_drive_trigger()
     db.workflow.find_many = AsyncMock(return_value=[bad_workflow, good_workflow])
-    db.cloudstorageconnection.find_unique = AsyncMock(
-        return_value=SimpleNamespace(id="conn1", userId="user1")
-    )
-
-    from datetime import UTC, datetime
+    _patch_connection(monkeypatch, "user1")
 
     from src.storage_providers.base import FileRef
 
@@ -331,3 +340,65 @@ def test_poll_endpoint_isolates_malformed_node_from_other_workflows(
     fake_provider.move_file.assert_awaited_once_with(
         fake_provider.list_new_files.return_value[0], "processed"
     )
+
+
+def test_poll_endpoint_closes_the_connection_session_before_drive_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Short-session rule: the per-node connection read is closed before the token fetch and
+    every Drive call."""
+    client, db = _client_with_mock_db()
+    events: list[str] = []
+    client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
+    db.workflow.find_many = AsyncMock(return_value=[_workflow_with_drive_trigger()])
+
+    async def _get(_session: Any, _connection_id: str) -> CloudStorageConnectionRecord:
+        events.append("db:get")
+        return _connection_record("user1")
+
+    async def _token(_connection_id: str, _sm: Any) -> str:
+        events.append("net:token")
+        return "at-1"
+
+    async def _list(_folder: str) -> list[Any]:
+        events.append("net:list")
+        return []
+
+    monkeypatch.setattr(cloud_storage_repo, "get", _get)
+    monkeypatch.setattr("src.api.internal.get_valid_drive_access_token", _token)
+    fake_provider = MagicMock()
+    fake_provider.list_new_files = _list
+    monkeypatch.setattr(
+        "src.api.internal.GoogleDriveProvider", MagicMock(return_value=fake_provider)
+    )
+
+    resp = client.post("/internal/poll-file-triggers")
+
+    assert resp.status_code == 200, resp.text
+    assert events == ["session:enter", "db:get", "session:exit", "net:token", "net:list"]
+    assert_no_network_inside_session(events)
+
+
+def test_poll_endpoint_missing_connection_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, db = _client_with_mock_db()
+    db.workflow.find_many = AsyncMock(return_value=[_workflow_with_drive_trigger()])
+    monkeypatch.setattr(cloud_storage_repo, "get", AsyncMock(return_value=None))
+    fake_get_token = AsyncMock(return_value="at-1")
+    monkeypatch.setattr("src.api.internal.get_valid_drive_access_token", fake_get_token)
+
+    resp = client.post("/internal/poll-file-triggers")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"triggered": 0, "failed": 0}
+    fake_get_token.assert_not_awaited()
+
+
+def test_poll_endpoint_fails_closed_without_a_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, db = _client_with_mock_db()
+    client.app.state.db_sessionmaker = None  # type: ignore[attr-defined]
+    db.workflow.find_many = AsyncMock(side_effect=AssertionError("should not be called"))
+
+    resp = client.post("/internal/poll-file-triggers")
+
+    assert resp.status_code == 503
+    assert resp.json() == {"detail": "database unavailable"}

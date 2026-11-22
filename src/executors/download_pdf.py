@@ -16,9 +16,8 @@ where sharing matters: that's substantial, security-critical code where
 a second copy could drift.
 
 Google Drive support resolves an OAuth access token at execution time via
-get_current_db() (a per-execution ContextVar set by LangGraphExecutor,
-the same mechanism src/executors/mcp.py already uses for its own
-server-side OAuth token retrieval) + get_valid_drive_access_token() (the
+the registered SQLAlchemy sessionmaker (the same mechanism
+src/executors/mcp.py uses for its own server-side OAuth token retrieval) + get_valid_drive_access_token() (the
 same helper file-trigger's polling endpoint already uses) — no new
 plumbing, no token ever transits through the client.
 """
@@ -26,9 +25,11 @@ plumbing, no token ever transits through the client.
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
 from src.conversion.html_to_pdf import html_to_pdf
 from src.conversion.markdown_to_pdf import markdown_to_pdf
-from src.engine.context import get_current_db
+from src.db.runtime import get_registered_sessionmaker
 from src.engine.state import WorkflowStateDict
 from src.engine.workflow import DownloadPdfNode
 from src.executors.base import register_executor
@@ -72,14 +73,17 @@ class MissingDriveConfigError(ValueError):
     reasonable default destination to fall back to."""
 
 
-def _require_db() -> Any:
-    db = get_current_db()
-    if db is None:
+def _require_db() -> async_sessionmaker[AsyncSession]:
+    """The registered SQLAlchemy sessionmaker the Drive token lookup reads with."""
+    sessionmaker = get_registered_sessionmaker()
+    if sessionmaker is None:
+        # The wording predates the SQLAlchemy move and is kept verbatim: callers and tests
+        # match on it. What it asks for is now a registered sessionmaker (app lifespan).
         raise RuntimeError(
             "DownloadPdfExecutor requires src.engine.context.set_current_db to be "
             "called before the compiled graph runs. LangGraphExecutor.run does this."
         )
-    return db
+    return sessionmaker
 
 
 def _validate_filename(node_id: str, filename: str) -> None:

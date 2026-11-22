@@ -37,6 +37,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.db.repos import cloud_storage as cloud_storage_repo
 from src.db.repos import mcp_oauth as mcp_oauth_repo
 from src.db.repos import mcp_servers as mcp_servers_repo
 from src.db.repos import users as users_repo
@@ -92,7 +93,7 @@ async def delete_own_test_account(  # pyright: ignore[reportUnusedFunction]
     await mcp_servers_repo.delete_for_user(session, user_id)
     await mcp_oauth_repo.delete_tokens_for_user(session, user_id)
     await mcp_oauth_repo.delete_states_for_user(session, user_id)
-    await db.cloudstorageconnection.delete_many(where={"userId": user_id})  # pyright: ignore[reportAttributeAccessIssue]
+    await cloud_storage_repo.delete_for_user(session, user_id)
     await users_repo.delete(session, user_id)
     await session.commit()
 

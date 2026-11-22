@@ -718,7 +718,7 @@ class Phase2Adapter:
         """Plaintext Google Drive access token for a connection, refreshed when near expiry."""
         from src.integrations.google_drive.oauth import get_valid_drive_access_token
 
-        return await get_valid_drive_access_token(connection_id, self._db)
+        return await get_valid_drive_access_token(connection_id, self._sm)
 
     # ---- executors ----------------------------------------------------------------------------
 

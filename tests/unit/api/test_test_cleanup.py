@@ -14,6 +14,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from src.api.test_cleanup import router as cleanup_router
+from src.db.repos import cloud_storage as cloud_storage_repo
 from src.db.repos import mcp_oauth as mcp_oauth_repo
 from src.db.repos import mcp_servers as mcp_servers_repo
 from src.db.repos import users as users_repo
@@ -42,8 +43,6 @@ def _client(
     db.workflow.delete_many = AsyncMock(return_value=0)
     db.workflowassignment = MagicMock()
     db.workflowassignment.delete_many = AsyncMock(return_value=0)
-    db.cloudstorageconnection = MagicMock()
-    db.cloudstorageconnection.delete_many = AsyncMock(return_value=0)
     app.state.db = db
     session = override_session(app)
     app.state.db_sessionmaker = FakeSessionmaker()  # production fails closed without it
@@ -58,6 +57,9 @@ def _client(
     monkeypatch.setattr(mcp_oauth_repo, "delete_states_for_user", delete_states)
     app.state.delete_mcp_tokens = delete_tokens
     app.state.delete_mcp_states = delete_states
+    delete_connections = AsyncMock(return_value=0)
+    monkeypatch.setattr(cloud_storage_repo, "delete_for_user", delete_connections)
+    app.state.delete_connections = delete_connections
 
     return TestClient(app), db, session
 
@@ -78,7 +80,7 @@ def test_deletes_own_test_account_and_owned_data(monkeypatch: pytest.MonkeyPatch
     client.app.state.delete_mcp_servers.assert_awaited_once_with(session, "u1")  # type: ignore[attr-defined]
     client.app.state.delete_mcp_tokens.assert_awaited_once_with(session, "u1")  # type: ignore[attr-defined]
     client.app.state.delete_mcp_states.assert_awaited_once_with(session, "u1")  # type: ignore[attr-defined]
-    db.cloudstorageconnection.delete_many.assert_awaited_once_with(where={"userId": "u1"})
+    client.app.state.delete_connections.assert_awaited_once_with(session, "u1")  # type: ignore[attr-defined]
     users_repo.delete.assert_awaited_once()  # type: ignore[attr-defined]
     assert users_repo.delete.await_args.args[1] == "u1"  # type: ignore[attr-defined]
     session.commit.assert_awaited_once()
