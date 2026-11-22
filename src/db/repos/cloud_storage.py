@@ -62,6 +62,11 @@ def _record(r: CloudStorageConnection) -> CloudStorageConnectionRecord:
     )
 
 
+def connection_lock_key(user_id: str, provider: str, account_email: str) -> str:
+    """Advisory-lock key of one connection: shared by refreshes and re-grants."""
+    return f"cloud_storage_connection:{user_id}:{provider}:{account_email}"
+
+
 async def get(session: AsyncSession, connection_id: str) -> CloudStorageConnectionRecord | None:
     row = await session.get(CloudStorageConnection, connection_id)
     return _record(row) if row else None

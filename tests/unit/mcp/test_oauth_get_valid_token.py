@@ -194,7 +194,7 @@ async def test_fast_path_read_closes_then_refresh_posts_under_the_lock_and_write
         "db:update_token",
         "session:exit",
     ]
-    assert keys == ["mcp_oauth_token:owner-tok"]
+    assert keys == ["mcp_oauth_token:srv1:owner"]  # the OWNER's row, never the caller's
     assert_no_network_inside_session(calls.events, allowed_inside=frozenset({"net:token-post"}))
     ((token_id, _changes),) = calls.of("update_token")
     assert token_id == "owner-tok"

@@ -10,7 +10,7 @@ from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
 
 from src.mcp.oauth import InvalidStateError, TokenExchangeError, exchange_code_for_tokens
 from tests.unit.db_fakes import RecordingSessionmaker, assert_no_network_inside_session
-from tests.unit.mcp._oauth_fakes import RepoCalls, make_state, make_token, script_repo
+from tests.unit.mcp._oauth_fakes import RepoCalls, make_state, make_token, script_lock, script_repo
 from tests.unit.mcp._server_fakes import make_server
 
 
@@ -55,6 +55,7 @@ def _setup(
         get_state=existing_state,
         upsert_token=make_token(),
     )
+    script_lock(monkeypatch, calls.events)
     return calls, RecordingSessionmaker(calls.events)
 
 
@@ -203,7 +204,35 @@ async def test_exchange_orders_consume_then_post_then_store_with_no_session_on_t
         "session:exit",
         "net:token-post",
         "session:enter",
+        "db:lock",
         "db:upsert_token",
         "session:exit",
     ]
     assert_no_network_inside_session(calls.events)
+
+
+async def test_exchange_takes_the_token_lock_so_it_cannot_be_overwritten_by_a_refresh(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """The store waits (holding no session) while a refresh of the same (server, user) token
+    holds the lock, then upserts under the same natural-key lock the refresh uses."""
+    calls, sm = _setup(monkeypatch, consume=make_state())
+    keys = script_lock(monkeypatch, calls.events, grants=[False, True])
+    httpx_mock.add_response(
+        url="https://api.highspot.com/oauth/token",
+        method="POST",
+        json={"access_token": "at", "expires_in": 60},
+    )
+    await exchange_code_for_tokens(_server(), code="c", state="abc", sessionmaker=sm)
+    store_events = calls.events[calls.events.index("db:lock-denied") - 1 :]
+    assert store_events == [
+        "session:enter",
+        "db:lock-denied",
+        "session:exit",
+        "session:enter",
+        "db:lock",
+        "db:upsert_token",
+        "session:exit",
+    ]
+    assert keys == ["mcp_oauth_token:srv1:user1"] * 2  # same key as refresh_token

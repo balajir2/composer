@@ -39,6 +39,7 @@ from src.integrations.google_drive.oauth import OAUTH_SCOPES
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
 from tests.unit.db_fakes import RecordingSessionmaker, assert_no_network_inside_session, make_user
+from tests.unit.mcp._oauth_fakes import script_lock
 
 
 def _connection(**overrides: Any) -> CloudStorageConnectionRecord:
@@ -82,6 +83,7 @@ def _client_with_mock_db(
     """App whose routes open sessions from a recording sessionmaker; repo calls are patched."""
     app = create_app()
     sessionmaker = RecordingSessionmaker(events if events is not None else [])
+    script_lock(monkeypatch, sessionmaker.events)  # grants the advisory lock a re-grant takes
     app.state.db_sessionmaker = sessionmaker
 
     async def _live_user(_session: Any, user_id: str) -> Any:
@@ -332,7 +334,7 @@ def test_callback_upserts_only_after_the_google_calls(monkeypatch: pytest.Monkey
 
     resp = client.get("/cloud-storage/google-drive/callback", params={"code": "c", "state": "s"})
     assert resp.status_code == 200 and "success" in resp.text
-    assert events == ["net:exchange", "session:enter", "db:upsert", "session:exit"]  # no auth dep
+    assert events == ["net:exchange", "session:enter", "db:lock", "db:upsert", "session:exit"]
     assert_no_network_inside_session(events)
 
 

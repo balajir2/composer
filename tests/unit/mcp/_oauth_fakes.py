@@ -83,19 +83,25 @@ def script_repo(
 
 
 def script_lock(
-    monkeypatch: pytest.MonkeyPatch, events: list[str], *, error: Exception | None = None
+    monkeypatch: pytest.MonkeyPatch, events: list[str], *, grants: list[bool] | None = None
 ) -> list[str]:
-    """Replace the advisory-lock helper; logs ``db:lock`` into ``events`` (raises ``error``).
+    """Replace the non-blocking advisory-lock helper and shrink its retry jitter.
 
+    Logs ``db:lock`` into ``events`` when granted and ``db:lock-denied`` when refused. ``grants``
+    is consumed one per attempt (the last value repeats); the default grants every attempt.
     Returns the list the lock keys are appended to."""
-    keys: list[str] = []
     from src.db import locks
 
-    async def _lock(session: Any, key: str, **_kwargs: Any) -> None:
-        events.append("db:lock")
-        keys.append(key)
-        if error is not None:
-            raise error
+    queue = list(grants if grants is not None else [True])
+    keys: list[str] = []
 
-    monkeypatch.setattr(locks, "acquire_xact_lock", _lock)
+    async def _try(session: Any, key: str) -> bool:
+        keys.append(key)
+        granted = queue.pop(0) if len(queue) > 1 else queue[0]
+        events.append("db:lock" if granted else "db:lock-denied")
+        return granted
+
+    monkeypatch.setattr(locks, "try_acquire_xact_lock", _try)
+    monkeypatch.setattr(locks, "POLL_MIN_S", 0.001)
+    monkeypatch.setattr(locks, "POLL_MAX_S", 0.002)
     return keys

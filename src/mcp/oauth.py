@@ -10,6 +10,7 @@ personal token (fix #5).
 See Phase 3b spec §7, ADR-0011.
 """
 
+import asyncio
 import base64
 import hashlib
 import secrets
@@ -93,7 +94,11 @@ async def _post_token_form(
     error_cls: type[OAuthError],
     failure_label: str,
 ) -> dict[str, Any]:
-    """POST an OAuth token-endpoint form (no session may be open) and return the JSON body."""
+    """POST an OAuth token-endpoint form and return the JSON body.
+
+    No session may be open, with one exception: ``refresh_token`` posts while it holds its
+    advisory lock (and so one pooled connection).
+    """
     async with httpx.AsyncClient(timeout=_TOKEN_TIMEOUT) as client:
         resp = await client.post(
             token_url,
@@ -107,7 +112,9 @@ async def _post_token_form(
 
 
 # Short-session rule: every database step below opens its own session and closes it before
-# the next network call, so a pooled connection is never held across an IdP request.
+# the next network call, so a pooled connection is never held across an IdP request. The one
+# exception is ``refresh_token``, which holds a session across its refresh POST so the advisory
+# lock that serializes refreshes lives as long as the POST.
 
 Sessionmaker = async_sessionmaker[AsyncSession]
 
@@ -240,13 +247,33 @@ async def exchange_code_for_tokens(
         scope=payload.get("scope") or state_row.scope,
         token_type=payload.get("token_type", "Bearer"),
     )
-    async with sessionmaker() as session:
+
+    async def _store(session: AsyncSession) -> McpOAuthTokenRecord:
         stored = await mcp_oauth_repo.upsert_token(session, server.id, state_row.user_id, values)
         await session.commit()
+        return stored
+
+    # Same natural-key lock as refresh_token, so an in-flight refresh cannot overwrite this
+    # re-authorization. A refused caller waits holding no session (see locks.run_under_lock).
+    try:
+        stored = await locks.run_under_lock(
+            sessionmaker,
+            mcp_oauth_repo.token_lock_key(server.id, state_row.user_id),
+            _store,
+            wait_s=_REFRESH_WAIT_DEADLINE_S,
+        )
+    except locks.LockTimeoutError as exc:
+        raise TokenExchangeError(
+            f"Timed out waiting for a token refresh of server {server.id!r} to finish; try again."
+        ) from exc
     return stored
 
 
 _EXPIRY_BUFFER_SECONDS = 60
+# The refresh POST is bounded; a waiter's deadline must exceed it so a waiter outlives one
+# in-flight refresh.
+_REFRESH_POST_TIMEOUT_S = 30.0
+_REFRESH_WAIT_DEADLINE_S = 35.0
 
 
 def _needs_refresh(token: McpOAuthTokenRecord, buffer_seconds: int) -> bool:
@@ -266,36 +293,40 @@ async def refresh_token(
     """Refresh an expired access token, once even when several callers race. POST includes
     RFC 8707 resource (fix #1).
 
-    Serialized per token row with a transaction-scoped Postgres advisory lock: the second
-    caller waits, re-reads the row, finds it already refreshed and returns it without posting
-    (IdPs that detect refresh-token reuse may revoke a token posted twice). The row refreshed
+    Serialized per token with a transaction-scoped Postgres advisory lock keyed on the
+    (server, user) pair. A caller refused the lock holds no connection while it waits: it
+    sleeps, re-reads the row in a short session and returns it once the winner has refreshed
+    it (IdPs that detect refresh-token reuse may revoke a token posted twice). The row refreshed
     is the one passed in, by id: a shared server's owner row on fallback, and no row is ever
     created for the caller. Keeps the old refresh_token if the IdP doesn't return a new one.
 
-    SHORT-SESSION RULE EXCEPTION: this holds ONE session (one pooled connection) open across
-    the token POST, because the lock lives exactly as long as the transaction. The POST is the
-    only network call allowed inside an open session; everything else still closes first.
+    Raises ``TokenRefreshError`` if the IdP call fails, if it takes longer than
+    ``_REFRESH_POST_TIMEOUT_S``, or if the lock is not granted within ``_REFRESH_WAIT_DEADLINE_S``.
+
+    SHORT-SESSION RULE EXCEPTION: the winner holds ONE session (one pooled connection) open
+    across the token POST, because the lock lives exactly as long as the transaction. The POST
+    is the only network call allowed inside an open session.
     """
     if not token_row.encrypted_refresh_token:
         raise McpTokenExpiredError(
             f"Token for server {server.id!r} has no refresh token; user must re-authorize."
         )
+    removed = f"Token for server {server.id!r} was removed while it was being refreshed."
 
-    async with sessionmaker() as session:
-        try:
-            await locks.acquire_xact_lock(session, f"mcp_oauth_token:{token_row.id}")
-        except locks.LockTimeoutError as exc:
-            raise TokenRefreshError(
-                f"Timed out waiting for another refresh of the token for server {server.id!r}; "
-                f"try again."
-            ) from exc
+    async def _check() -> McpOAuthTokenRecord | None:
+        """Between attempts, in its own short session: has the winner finished?"""
+        async with sessionmaker() as session:
+            current = await mcp_oauth_repo.get_token_by_id(session, token_row.id)
+        if current is None:
+            raise McpTokenMissingError(removed)
+        return None if _needs_refresh(current, expiry_buffer_seconds) else current
+
+    async def _refresh(session: AsyncSession) -> McpOAuthTokenRecord:
         current = await mcp_oauth_repo.get_token_by_id(session, token_row.id)
         if current is None:  # disconnected before we got the lock
-            raise McpTokenMissingError(
-                f"Token for server {server.id!r} was removed while it was being refreshed."
-            )
+            raise McpTokenMissingError(removed)
         if not _needs_refresh(current, expiry_buffer_seconds):
-            await session.commit()  # another caller refreshed it while we waited
+            await session.commit()  # refreshed by a caller that held the lock before us
             return current
         if not current.encrypted_refresh_token:
             raise McpTokenExpiredError(
@@ -314,8 +345,18 @@ async def refresh_token(
             "client_secret": client_secret,
             "resource": derive_resource(server.url),  # fix #1
         }
-        # Raises on failure: leaving the block rolls back, releasing the lock, row unchanged.
-        payload = await _post_token_form(token_url, form, TokenRefreshError, "OAuth refresh failed")
+        # A failure leaves the session without committing: it rolls back, the lock is
+        # released and the row is unchanged.
+        try:
+            async with asyncio.timeout(_REFRESH_POST_TIMEOUT_S):
+                payload = await _post_token_form(
+                    token_url, form, TokenRefreshError, "OAuth refresh failed"
+                )
+        except TimeoutError as exc:
+            raise TokenRefreshError(
+                f"OAuth refresh for server {server.id!r} timed out after "
+                f"{_REFRESH_POST_TIMEOUT_S:g}s"
+            ) from exc
         access_token = payload.get("access_token", "")
         new_refresh: str | None = payload.get("refresh_token")
 
@@ -329,11 +370,22 @@ async def refresh_token(
 
         updated = await mcp_oauth_repo.update_token(session, current.id, changes)
         if updated is None:  # deleted while the IdP call was in flight
-            raise McpTokenMissingError(
-                f"Token for server {server.id!r} was removed while it was being refreshed."
-            )
+            raise McpTokenMissingError(removed)
         await session.commit()  # releases the advisory lock
         return updated
+
+    try:
+        return await locks.run_under_lock(
+            sessionmaker,
+            mcp_oauth_repo.token_lock_key(token_row.mcp_server_id, token_row.user_id),
+            _refresh,
+            wait_s=_REFRESH_WAIT_DEADLINE_S,
+            check=_check,
+        )
+    except locks.LockTimeoutError as exc:
+        raise TokenRefreshError(
+            f"Timed out waiting for a concurrent token refresh of server {server.id!r}."
+        ) from exc
 
 
 async def get_valid_access_token(

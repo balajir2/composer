@@ -26,6 +26,7 @@ from src.integrations.google_drive.oauth import (
     exchange_code_for_tokens,
     expires_at_from_in,
     get_valid_drive_access_token,
+    save_connection_grant,
 )
 from src.security.auth import get_current_user_id
 from src.security.encryption import encrypt
@@ -108,15 +109,13 @@ async def google_drive_callback(
             scope=payload.get("scope") or OAUTH_SCOPES,
         )
         # Token exchange and userinfo are network calls; the session opens only for the write.
-        async with sessionmaker() as session:
-            await cloud_storage_repo.upsert(
-                session,
-                user_id=user_id,
-                provider="google-drive",
-                account_email=payload["email"],
-                values=values,
-            )
-            await session.commit()
+        await save_connection_grant(
+            sessionmaker,
+            user_id=user_id,
+            provider="google-drive",
+            account_email=payload["email"],
+            values=values,
+        )
     except GoogleDriveOAuthError as exc:
         return _popup_close_html("error", str(exc))
     except Exception:

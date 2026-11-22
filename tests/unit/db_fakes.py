@@ -90,16 +90,25 @@ def assert_no_network_inside_session(
     """Every ``net:*`` event must fall outside any open session; sessions must all close.
 
     ``allowed_inside`` names the one documented exception: a network event that may run inside
-    an open session (the OAuth refresh POST while its advisory lock is held).
+    an open session (the OAuth refresh POST), and only after a ``db:lock`` was seen in THAT
+    session (the flag resets whenever a session opens or closes).
     """
     open_sessions = 0
+    locked = False
     for event in events:
         if event == "session:enter":
             open_sessions += 1
+            locked = False
         elif event == "session:exit":
             open_sessions -= 1
-        elif event.startswith("net:") and event not in allowed_inside:
-            assert open_sessions == 0, f"{event} ran inside an open session: {events}"
+            locked = False
+        elif event == "db:lock":
+            locked = True
+        elif event.startswith("net:"):
+            if open_sessions == 0:
+                continue
+            assert event in allowed_inside, f"{event} ran inside an open session: {events}"
+            assert locked, f"{event} ran inside a session that holds no advisory lock: {events}"
     assert open_sessions == 0, f"a session was left open: {events}"
 
 

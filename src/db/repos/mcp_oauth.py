@@ -121,6 +121,11 @@ async def get_token(
     return _token(row) if row else None
 
 
+def token_lock_key(server_id: str, user_id: str) -> str:
+    """Advisory-lock key of one (server, user) token: shared by refreshes and re-authorizations."""
+    return f"mcp_oauth_token:{server_id}:{user_id}"
+
+
 async def get_token_by_id(session: AsyncSession, token_id: str) -> McpOAuthTokenRecord | None:
     """One token row by id, read fresh (never from the session's identity map)."""
     row = await session.scalar(

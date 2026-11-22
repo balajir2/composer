@@ -186,7 +186,7 @@ async def test_refresh_holds_the_lock_for_the_post_and_orders_lock_reread_post_w
         "db:update_token",
         "session:exit",
     ]
-    assert keys == ["mcp_oauth_token:tok1"]
+    assert keys == ["mcp_oauth_token:srv1:user1"]  # the natural key: server and user
     assert_no_network_inside_session(calls.events, allowed_inside=frozenset({"net:token-post"}))
 
 
@@ -222,17 +222,94 @@ async def test_refresh_of_a_token_deleted_before_the_lock_was_granted_raises_wit
     assert httpx_mock.get_requests() == []
 
 
-async def test_lock_timeout_raises_a_clear_refresh_error_without_posting(
+async def test_refused_waiter_holds_no_session_while_it_waits_then_returns_the_fresh_token(
     monkeypatch: pytest.MonkeyPatch,
     httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
 ) -> None:
-    from src.db.locks import LockTimeoutError
+    """Refused the lock: roll back and close the session, sleep, re-read in a SHORT session;
+    the winner's token is fresh, so return it. No session is open while it waits."""
+    tok = _token_row(monkeypatch)
+    fresh = make_token(
+        encrypted_access_token=encrypt("fresh-at"),
+        encrypted_refresh_token=encrypt("refresh-456"),
+        expires_at=datetime.now(UTC) + timedelta(hours=1),
+    )
+    calls, sm = _setup()
+    _script(monkeypatch, calls, fresh)
+    script_lock(monkeypatch, calls.events, grants=[False])
+    out = await refresh_token(_server(), tok, sm)
+    assert out == fresh
+    assert httpx_mock.get_requests() == []
+    assert calls.events == [
+        "session:enter",
+        "db:lock-denied",
+        "session:exit",
+        "session:enter",
+        "db:get_token_by_id",
+        "session:exit",
+    ]
+    assert_no_network_inside_session(calls.events)  # no exception needed: nothing ran inside
+    sm.session.rollback.assert_awaited()
+
+
+async def test_refused_waiter_retries_the_lock_while_the_token_is_still_stale(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    tok = _token_row(monkeypatch)
+    calls, sm = _setup()
+    _script(monkeypatch, calls, tok)  # always still expired
+    script_lock(monkeypatch, calls.events, grants=[False, False, True])
+    httpx_mock.add_response(
+        url="https://api.highspot.com/oauth/token",
+        method="POST",
+        json={"access_token": "new-at", "expires_in": 60},
+    )
+    await refresh_token(_server(), tok, sm)
+    assert calls.events.count("db:lock-denied") == 2
+    assert len(httpx_mock.get_requests()) == 1
+
+
+async def test_waiter_deadline_raises_a_clear_refresh_error_without_posting(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    import src.mcp.oauth as oauth_mod
 
     tok = _token_row(monkeypatch)
     calls, sm = _setup()
     _script(monkeypatch, calls, tok)
-    script_lock(monkeypatch, calls.events, error=LockTimeoutError("timed out"))
-    with pytest.raises(TokenRefreshError, match="another refresh"):
+    script_lock(monkeypatch, calls.events, grants=[False])
+    monkeypatch.setattr(oauth_mod, "_REFRESH_WAIT_DEADLINE_S", 0.05)
+    with pytest.raises(TokenRefreshError, match="Timed out waiting for a concurrent token refresh"):
         await refresh_token(_server(), tok, sm)
     assert httpx_mock.get_requests() == []
     assert calls.of("update_token") == []
+
+
+async def test_refresh_post_is_bounded_by_a_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import asyncio
+
+    import src.mcp.oauth as oauth_mod
+
+    tok = _token_row(monkeypatch)
+    calls, sm = _setup()
+    _script(monkeypatch, calls, tok)
+
+    async def _hang(*args: Any, **kwargs: Any) -> Any:
+        await asyncio.sleep(30)
+
+    monkeypatch.setattr(oauth_mod, "_post_token_form", _hang)
+    monkeypatch.setattr(oauth_mod, "_REFRESH_POST_TIMEOUT_S", 0.05)
+    with pytest.raises(TokenRefreshError, match="timed out"):
+        await refresh_token(_server(), tok, sm)
+    assert calls.of("update_token") == []
+    assert _REFRESH_DEADLINE_EXCEEDS_POST_TIMEOUT()
+
+
+def _REFRESH_DEADLINE_EXCEEDS_POST_TIMEOUT() -> bool:
+    import src.mcp.oauth as oauth_mod
+
+    return oauth_mod._REFRESH_WAIT_DEADLINE_S > oauth_mod._REFRESH_POST_TIMEOUT_S  # pyright: ignore[reportPrivateUsage]
