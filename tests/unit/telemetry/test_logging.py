@@ -1,3 +1,5 @@
+# The logging handler is replaced with a list-backed test double below.
+# pyright: reportAttributeAccessIssue=false
 import json
 import logging
 

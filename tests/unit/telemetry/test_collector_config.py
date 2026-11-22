@@ -99,5 +99,3 @@ def test_backend_startup_does_not_depend_on_collector_health() -> None:
     assert "--depends-on=otel-collector" not in bootstrap
     assert "--startup-probe=httpGet.port=13133" not in bootstrap
     assert "OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318" in bootstrap
-
-\n

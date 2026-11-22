@@ -1,3 +1,5 @@
+# Test doubles intentionally implement only the ASGI/runtime surface exercised here.
+# pyright: reportUnknownParameterType=false, reportMissingParameterType=false, reportArgumentType=false, reportPrivateUsage=false, reportAttributeAccessIssue=false
 import asyncio
 from typing import TYPE_CHECKING
 

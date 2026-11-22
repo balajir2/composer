@@ -1,5 +1,8 @@
 """Tests for create_app()'s mode-aware behavior (Phase 7a)."""
 
+# Tests use deliberately partial ASGI, span, and runtime doubles.
+# pyright: reportUnknownParameterType=false, reportMissingParameterType=false, reportArgumentType=false, reportOptionalMemberAccess=false, reportOptionalSubscript=false, reportUnknownLambdaType=false, reportOperatorIssue=false
+
 import pytest
 
 
