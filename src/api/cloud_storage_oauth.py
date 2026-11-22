@@ -16,6 +16,7 @@ from src.config import get_settings
 from src.db.repos import cloud_storage as cloud_storage_repo
 from src.db.runtime import request_sessionmaker, require_sessionmaker
 from src.integrations.google_drive.oauth import (
+    OAUTH_SCOPES,
     DriveConnectionMissingError,
     DriveTokenExpiredError,
     GoogleDriveOAuthError,
@@ -103,7 +104,8 @@ async def google_drive_callback(
                 encrypt(payload["refresh_token"]) if payload.get("refresh_token") else None
             ),
             expires_at=expires_at_from_in(payload.get("expires_in")),
-            scope=payload.get("scope"),
+            # Google may omit scope; RFC 6749 5.1 then means the requested scopes were granted.
+            scope=payload.get("scope") or OAUTH_SCOPES,
         )
         # Token exchange and userinfo are network calls; the session opens only for the write.
         async with sessionmaker() as session:

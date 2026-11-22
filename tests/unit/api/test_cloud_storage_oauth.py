@@ -35,6 +35,7 @@ from fastapi.testclient import TestClient
 from src.db.repos import cloud_storage as cloud_storage_repo
 from src.db.repos import users as users_repo
 from src.db.repos.cloud_storage import CloudStorageConnectionRecord
+from src.integrations.google_drive.oauth import OAUTH_SCOPES
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
 from tests.unit.db_fakes import RecordingSessionmaker, assert_no_network_inside_session, make_user
@@ -335,9 +336,11 @@ def test_callback_upserts_only_after_the_google_calls(monkeypatch: pytest.Monkey
     assert_no_network_inside_session(events)
 
 
-def test_callback_without_refresh_token_stores_none(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Pinned like-for-like: a re-grant without a refresh_token writes NULL refresh token and
-    keeps whatever scope Google returned (None here)."""
+def test_callback_without_refresh_token_or_scope_passes_none_refresh_and_requested_scopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """No refresh_token: the repo gets None (and keeps the stored one). No scope in Google's
+    reply: the REQUESTED scopes are stored (RFC 6749 5.1)."""
     _set_encryption_key(monkeypatch)
     client, _sm = _client_with_mock_db(monkeypatch)
     monkeypatch.setattr("src.api.cloud_storage_oauth.consume_state", _consume_user1)
@@ -352,7 +355,8 @@ def test_callback_without_refresh_token_stores_none(monkeypatch: pytest.MonkeyPa
     assert resp.status_code == 200 and "success" in resp.text
     assert upsert.await_args is not None
     values = upsert.await_args.kwargs["values"]
-    assert values["encrypted_refresh_token"] is None and values["scope"] is None
+    assert values["encrypted_refresh_token"] is None
+    assert values["scope"] == OAUTH_SCOPES
 
 
 def test_callback_persist_failure_is_a_friendly_error_page(

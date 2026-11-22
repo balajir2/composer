@@ -12,6 +12,7 @@ from typing import Any
 import pytest
 from httpx import AsyncClient, Response
 
+from src.integrations.google_drive.oauth import OAUTH_SCOPES
 from src.security.encryption import decrypt, encrypt
 from tests.integration.sqla_phase2.conftest import (
     HTTPX_MARK,
@@ -95,7 +96,7 @@ async def test_authorize_url_carries_scopes_offline_access_and_encrypted_state(
 # --------------------------------------------------------------------------- callback
 
 
-async def test_callback_creates_connection_and_a_second_grant_updates_it_in_place_keeping_refresh_token_and_scope(
+async def test_callback_creates_connection_and_a_second_grant_updates_it_in_place_keeping_the_refresh_token_and_requested_scopes(
     client: AsyncClient,
     member: Member,
     db: Db,
@@ -142,8 +143,8 @@ async def test_callback_creates_connection_and_a_second_grant_updates_it_in_plac
     await db.set_connection(first.id, updated_at=LONG_AGO)
 
     # Same account again (the Drive state is TTL-bound, NOT single-use, so it can be replayed):
-    # same row, new access token. Google omitted refresh_token and scope on the re-grant, so
-    # the stored refresh token and scope are kept.
+    # same row, new access token. Google omitted refresh_token and scope on the re-grant: the
+    # stored refresh token is kept, and the scope becomes the REQUESTED scopes (RFC 6749 5.1).
     token_ep.push({"access_token": "ga-2", "expires_in": 1800})
     userinfo_ep.push({"email": email})
     assert popup(await drive_callback(client, state, code="code-2"))["status"] == "success"
@@ -154,7 +155,7 @@ async def test_callback_creates_connection_and_a_second_grant_updates_it_in_plac
     assert second.encrypted_refresh_token == first.encrypted_refresh_token  # kept byte-for-byte
     assert second.encrypted_refresh_token is not None
     assert decrypt(second.encrypted_refresh_token) == "gr-1"
-    assert second.scope == "s1 s2"  # the new payload carried no scope: the stored one is kept
+    assert second.scope == OAUTH_SCOPES  # the new payload carried no scope: the requested ones
     assert near(second.expires_at, datetime.now(UTC) + timedelta(seconds=1800))
     assert second.created_at == first.created_at
     assert second.updated_at > LONG_AGO and near(second.updated_at, datetime.now(UTC))

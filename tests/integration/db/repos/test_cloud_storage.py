@@ -57,7 +57,7 @@ async def test_upsert_creates_then_updates_in_place(
     assert first.updated_at == t1 and second.updated_at == t2
 
 
-async def test_regrant_without_refresh_token_or_scope_keeps_the_stored_ones(
+async def test_regrant_without_refresh_token_keeps_the_stored_one_and_stores_the_given_scope(
     session: AsyncSession,
 ) -> None:
     uid = _id()
@@ -69,12 +69,13 @@ async def test_regrant_without_refresh_token_or_scope_keeps_the_stored_ones(
             encrypted_access_token="a2",
             encrypted_refresh_token=None,
             expires_at=None,
-            scope=None,
+            scope="drive.metadata.readonly",
         ),
     )
     assert second.encrypted_access_token == "a2"
     assert second.encrypted_refresh_token == "r1"  # byte-for-byte
-    assert second.scope == "drive.readonly"
+    # scope is stored as given (the route passes the requested scopes when Google omits it)
+    assert second.scope == "drive.metadata.readonly"
     assert second.expires_at is None  # expiry is NOT kept: it belongs to the new access token
 
 

@@ -31,7 +31,7 @@ class CloudStorageConnectionRecord:
 
 class ConnectionTokens(TypedDict):
     """What a grant stores. An upsert overwrites the access token and expiry; a NULL refresh
-    token or scope keeps the stored value (Google omits the refresh token on re-consent)."""
+    token keeps the stored value (Google omits the refresh token on re-consent)."""
 
     encrypted_access_token: str
     encrypted_refresh_token: str | None
@@ -106,13 +106,13 @@ async def upsert(
             ],
             set_={
                 **values,
-                # A re-grant that omits these keeps the stored value (Google and some IdPs
-                # omit refresh_token and scope on re-consent); the first grant is unaffected.
+                # A re-grant that omits the refresh token keeps the stored one (Google omits it on
+                # re-consent); the first grant is unaffected. Scope is overwritten: the caller stores
+                # the requested scopes when Google returns none (RFC 6749 5.1).
                 "encrypted_refresh_token": func.coalesce(
                     ins.excluded.encrypted_refresh_token,
                     CloudStorageConnection.encrypted_refresh_token,
                 ),
-                "scope": func.coalesce(ins.excluded.scope, CloudStorageConnection.scope),
                 "updated_at": now,
             },
         )
