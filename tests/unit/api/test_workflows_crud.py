@@ -678,6 +678,34 @@ def test_patch_workflow_owner_by_user_id(monkeypatch: pytest.MonkeyPatch) -> Non
     client.app.state.session.commit.assert_awaited_once()  # type: ignore[attr-defined]
 
 
+def test_patch_workflow_owner_writes_before_commit(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.security.auth import ensure_admin
+
+    target = SimpleNamespace(id="new-owner", email="target@x.com")
+    wf = _wf_row(id="wx", user_id="old-owner")
+    client, repos = _client_patch_owner(monkeypatch, wf, target, _wf_row(id="wx"))
+    order: list[str] = []
+    real_update = repos.update.side_effect
+
+    async def _update(*_a: object, **_k: object) -> Any:
+        order.append("update")
+        return _wf_row(id="wx", user_id="new-owner")
+
+    async def _commit() -> None:
+        order.append("commit")
+
+    del real_update
+    repos.update.side_effect = _update
+    client.app.state.session.commit.side_effect = _commit  # type: ignore[attr-defined]
+    client.app.dependency_overrides[ensure_admin] = lambda: "dev"  # type: ignore[attr-defined]
+    try:
+        resp = client.patch("/workflows/wx/owner", json={"userId": "new-owner"})
+    finally:
+        client.app.dependency_overrides.pop(ensure_admin, None)  # type: ignore[attr-defined]
+    assert resp.status_code == 200
+    assert order == ["update", "commit"]
+
+
 def test_patch_workflow_owner_by_email(monkeypatch: pytest.MonkeyPatch) -> None:
     """Admin PATCHes ownership to a user identified by email."""
     from src.security.auth import ensure_admin

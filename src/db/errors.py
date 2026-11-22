@@ -16,6 +16,14 @@ class AlreadyExists(Exception):
         self.constraint = constraint
 
 
+class ReferencedRowMissing(Exception):
+    """A foreign key rejected the write: the row it points at no longer exists."""
+
+    def __init__(self, constraint: str | None) -> None:
+        super().__init__(f"referenced row missing: {constraint or 'unknown'}")
+        self.constraint = constraint
+
+
 @asynccontextmanager
 async def unique_violation_as_already_exists(session: AsyncSession) -> AsyncGenerator[None]:
     """Run the block in a savepoint, translating unique violations to AlreadyExists.
@@ -43,3 +51,19 @@ async def add_or_already_exists(session: AsyncSession, *rows: object) -> None:
     async with unique_violation_as_already_exists(session):
         session.add_all(rows)
         await session.flush()
+
+
+async def add_or_referenced_row_missing(session: AsyncSession, *rows: object) -> None:
+    """Insert ``rows`` in a savepoint, translating a foreign-key violation to ReferencedRowMissing.
+
+    Unique violations are translated to AlreadyExists, as in ``add_or_already_exists``;
+    either way only the savepoint is rolled back.
+    """
+    try:
+        async with unique_violation_as_already_exists(session):
+            session.add_all(rows)
+            await session.flush()
+    except IntegrityError as exc:
+        if isinstance(exc.orig, psycopg.errors.ForeignKeyViolation):
+            raise ReferencedRowMissing(exc.orig.diag.constraint_name) from exc
+        raise

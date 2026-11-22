@@ -66,6 +66,9 @@ _WORKFLOW_COLUMNS = {
 
 async def upsert_workflow(session: AsyncSession, data: dict[str, Any]) -> bool:
     """Insert unless a row with this id exists. The caller commits."""
+    unknown = sorted(set(data) - set(_WORKFLOW_COLUMNS))
+    if unknown:
+        raise ValueError(f"unknown workflow keys: {', '.join(unknown)}")
     values: dict[str, Any] = {
         column: data[key] for key, column in _WORKFLOW_COLUMNS.items() if key in data
     }

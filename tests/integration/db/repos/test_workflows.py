@@ -73,6 +73,13 @@ async def test_tags_null_is_empty_list(session: AsyncSession) -> None:
     assert got is not None and got.tags == []
 
 
+async def test_get_for_update_returns_the_row(session: AsyncSession) -> None:
+    created = await repo.create(session, _values(name="Locked"))
+    locked = await repo.get(session, created.id, for_update=True)
+    assert locked is not None and locked.name == "Locked"
+    assert await repo.get(session, "missing", for_update=True) is None
+
+
 async def test_get_by_slug(session: AsyncSession) -> None:
     slug = "s-" + _tag()
     w = await repo.create(session, _values(external_slug=slug))

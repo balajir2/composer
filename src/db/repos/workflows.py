@@ -122,8 +122,11 @@ def _visible(user_id: str) -> ColumnElement[bool]:
     return or_(Workflow.is_public.is_(True), Workflow.user_id == user_id, _assigned(user_id))
 
 
-async def get(session: AsyncSession, workflow_id: str) -> WorkflowRecord | None:
-    row = await session.get(Workflow, workflow_id)
+async def get(
+    session: AsyncSession, workflow_id: str, *, for_update: bool = False
+) -> WorkflowRecord | None:
+    """One workflow by id. ``for_update`` takes the row lock until the transaction ends."""
+    row = await session.get(Workflow, workflow_id, with_for_update=for_update or None)
     return _record(row) if row else None
 
 

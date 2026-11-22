@@ -7,7 +7,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.errors import add_or_already_exists
+from src.db.errors import add_or_referenced_row_missing
 from src.db.models import WorkflowAssignment
 
 
@@ -49,11 +49,15 @@ async def list_for_workflow(session: AsyncSession, workflow_id: str) -> list[Ass
 async def create(
     session: AsyncSession, *, workflow_id: str, user_id: str, assigned_by_id: str
 ) -> AssignmentRecord:
-    """Insert an assignment; ``AlreadyExists`` on a duplicate, with the session still usable."""
+    """Insert an assignment, leaving the session usable on failure.
+
+    ``AlreadyExists`` on a duplicate; ``ReferencedRowMissing`` when the workflow or a
+    user was deleted concurrently.
+    """
     row = WorkflowAssignment(
         workflow_id=workflow_id, user_id=user_id, assigned_by_id=assigned_by_id
     )
-    await add_or_already_exists(session, row)
+    await add_or_referenced_row_missing(session, row)
     return _record(row)
 
 

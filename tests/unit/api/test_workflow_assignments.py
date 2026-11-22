@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from src.db.errors import AlreadyExists
+from src.db.errors import AlreadyExists, ReferencedRowMissing
 from src.db.repos import users as users_repo
 from src.db.repos import workflow_assignments as assignments_repo
 from src.db.repos.workflow_assignments import AssignmentRecord
@@ -98,6 +98,44 @@ def test_owner_can_grant_assignment(monkeypatch: pytest.MonkeyPatch) -> None:
     _commit(client).assert_awaited_once()
 
 
+def test_grant_writes_before_commit_and_locks_the_workflow_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client = _client(monkeypatch)
+    repos = _repos(monkeypatch)
+    order: list[str] = []
+
+    async def _create(*_a: object, **_k: object) -> AssignmentRecord:
+        order.append("create")
+        return _assignment()
+
+    async def _commit_side_effect() -> None:
+        order.append("commit")
+
+    repos.create.side_effect = _create
+    _commit(client).side_effect = _commit_side_effect
+    token = create_access_token("owner1")
+    resp = client.post(
+        "/workflows/w1/assignments/assignee1", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 201, resp.text
+    assert order == ["create", "commit"]
+    assert repos.wf.get.await_args.kwargs == {"for_update": True}  # type: ignore[union-attr]
+
+
+def test_grant_when_workflow_vanishes_concurrently_is_404(monkeypatch: pytest.MonkeyPatch) -> None:
+    client = _client(monkeypatch)
+    repos = _repos(monkeypatch)
+    repos.create.side_effect = ReferencedRowMissing("workflow_assignments_workflow_id_fkey")
+    token = create_access_token("owner1")
+    resp = client.post(
+        "/workflows/w1/assignments/assignee1", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"] == "Workflow 'w1' not found."
+    _commit(client).assert_not_awaited()
+
+
 def test_non_owner_non_admin_cannot_grant_assignment(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client(monkeypatch)
     repos = _repos(monkeypatch)
@@ -132,6 +170,7 @@ def test_owner_can_revoke_assignment(monkeypatch: pytest.MonkeyPatch) -> None:
     assert resp.status_code == 204, resp.text
     repos.delete.assert_awaited_once()
     assert repos.delete.await_args.args[1:] == ("w1", "assignee1")
+    assert repos.wf.get.await_args.kwargs == {"for_update": True}  # type: ignore[union-attr]
     _commit(client).assert_awaited_once()
 
 
@@ -163,6 +202,7 @@ def test_revoke_nonexistent_assignment_returns_404(monkeypatch: pytest.MonkeyPat
     )
     assert resp.status_code == 404, resp.text
     assert resp.json()["detail"] == "assignment not found for user 'assignee1'"
+    _commit(client).assert_not_awaited()
 
 
 def test_list_assignments(monkeypatch: pytest.MonkeyPatch) -> None:

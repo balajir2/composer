@@ -3,7 +3,7 @@ import secrets
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.errors import AlreadyExists
+from src.db.errors import AlreadyExists, ReferencedRowMissing
 from src.db.models import User, UserRole, Workflow, WorkflowAssignment
 from src.db.repos import workflow_assignments as repo
 
@@ -50,6 +50,17 @@ async def test_create_duplicate_raises_and_session_stays_usable(session: AsyncSe
     assert exc.value.constraint == "workflow_assignments_workflow_id_user_id_key"
     await repo.create(session, workflow_id=wid, user_id="b", assigned_by_id="o")
     assert len(await repo.list_for_workflow(session, wid)) == 2
+
+
+async def test_create_for_a_missing_workflow_raises_and_session_stays_usable(
+    session: AsyncSession,
+) -> None:
+    with pytest.raises(ReferencedRowMissing) as exc:
+        await repo.create(session, workflow_id="gone", user_id="a", assigned_by_id="o")
+    assert exc.value.constraint == "workflow_assignments_workflow_id_fkey"
+    wid = await _wf(session)
+    await repo.create(session, workflow_id=wid, user_id="a", assigned_by_id="o")
+    assert await repo.exists(session, wid, "a") is True
 
 
 async def test_delete(session: AsyncSession) -> None:

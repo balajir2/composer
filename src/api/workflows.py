@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
-from src.db.errors import AlreadyExists
+from src.db.errors import AlreadyExists, ReferencedRowMissing
 from src.db.repos import users as users_repo
 from src.db.repos import workflow_assignments as assignments_repo
 from src.db.repos import workflows as workflows_repo
@@ -723,7 +723,7 @@ async def grant_workflow_assignment(
     _role: tuple[str, str] = Depends(get_current_role),
 ) -> WorkflowAssignmentRead:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
-    existing = await workflows_repo.get(session, workflow_id)
+    existing = await workflows_repo.get(session, workflow_id, for_update=True)
     if existing is None:
         raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
     if role != "admin" and existing.user_id != user_id:
@@ -735,6 +735,9 @@ async def grant_workflow_assignment(
         row = await assignments_repo.create(
             session, workflow_id=workflow_id, user_id=target_user_id, assigned_by_id=user_id
         )
+    except ReferencedRowMissing as exc:
+        # The workflow or the target user was deleted after the checks above.
+        raise HTTPException(404, f"Workflow {workflow_id!r} not found.") from exc
     except AlreadyExists as exc:
         # str(exc) names the constraint only: no SQL, parameters or ciphertext.
         raise HTTPException(
@@ -756,7 +759,7 @@ async def revoke_workflow_assignment(
     _role: tuple[str, str] = Depends(get_current_role),
 ) -> None:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
-    existing = await workflows_repo.get(session, workflow_id)
+    existing = await workflows_repo.get(session, workflow_id, for_update=True)
     if existing is None:
         raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
     if role != "admin" and existing.user_id != user_id:

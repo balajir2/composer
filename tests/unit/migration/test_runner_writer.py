@@ -188,6 +188,17 @@ async def test_upsert_workflow_reports_the_repo_answer(_workflow_insert: AsyncMo
     assert await writer.upsert_workflow(session, {"id": "wf1", "nodes": [], "edges": []}) is False
 
 
+async def test_upsert_workflow_rejects_unknown_keys_naming_them_not_values(
+    _workflow_insert: AsyncMock,
+) -> None:
+    session = cast("AsyncSession", FakeSession())
+    data = {"id": "wf1", "nodes": [], "edges": [], "isProduction": True, "zeta": "SECRET"}
+    with pytest.raises(ValueError, match="isProduction, zeta") as info:
+        await writer.upsert_workflow(session, data)
+    assert "SECRET" not in str(info.value)
+    _workflow_insert.assert_not_awaited()
+
+
 def test_workflow_transformer_keys_are_all_known_to_the_writer_column_map() -> None:
     """A renamed transformer key must fail here, not silently drop a column on insert."""
     row = {"_id": "wf1", "userId": "clerk_a", "name": "W"}
