@@ -120,6 +120,12 @@ class MCPClient:
                 raise MCPTimeoutError(
                     f"MCP {method} request timed out after {self._timeout}s"
                 ) from exc
+            except httpx.LocalProtocolError:
+                # h11's message quotes the offending header VALUE (an API key, say): never
+                # forward it.
+                raise MCPHTTPError(
+                    f"MCP {method} request failed: invalid request header"
+                ) from None
             except httpx.HTTPError as exc:
                 raise MCPHTTPError(
                     f"MCP {method} transport failed: {type(exc).__name__}: {exc}"

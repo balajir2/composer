@@ -7,6 +7,7 @@ non-empty. Still implements the Phase 2 ToolProvider ABC.
 See Phase 3a spec §9.
 """
 
+import logging
 from typing import Any, cast
 
 from langchain_core.tools import BaseTool
@@ -15,10 +16,11 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.db.repos.mcp_servers import McpServerRecord
 from src.mcp.client import MCPClient
+from src.mcp.headers import header_problem
 from src.mcp.oauth import get_valid_access_token
 from src.mcp.sanitize import strip_binary_blobs
 from src.mcp.schema_adapter import normalize_input_schema, substitute_url_placeholders
-from src.security.encryption import decrypt, decrypt_sensitive_headers
+from src.security.encryption import EncryptionError, decrypt, decrypt_sensitive_headers
 from src.tools.base import (
     ApiKeyAuth,
     AuthRequirement,
@@ -29,6 +31,13 @@ from src.tools.base import (
     ToolDefinition,
     ToolProvider,
 )
+
+logger = logging.getLogger(__name__)
+
+
+class McpCustomHeadersError(RuntimeError):
+    """A server's stored custom headers cannot be used. Never carries a header value."""
+
 
 # Headers MCPClient itself sets on every request. A server's custom headers may never override
 # them (compared case-insensitively), whatever the stored value.
@@ -49,7 +58,14 @@ def _merge_custom_headers(
     merged: dict[str, str] = dict(auth_headers or {})
     taken = {name.lower() for name in merged} | _CLIENT_OWNED_HEADERS
     for name, value in (custom_headers or {}).items():
+        name = name.strip()
+        value = value.strip()
         if name.lower() in taken:
+            continue
+        problem = header_problem(name, value)
+        if problem is not None:
+            # Rows saved before create validated headers can still hold these. Name only.
+            logger.warning("Skipping custom MCP header %r: %s", name, problem)
             continue
         merged[name] = value
     return merged
@@ -211,9 +227,14 @@ class McpToolProvider(ToolProvider):
     def _with_custom_headers(self, auth_headers: dict[str, str] | None) -> dict[str, str]:
         """Auth headers plus the server's custom headers (sensitive values decrypted here)."""
         custom = self._server.headers
-        return _merge_custom_headers(
-            auth_headers, decrypt_sensitive_headers(custom) if custom else None
-        )
+        try:
+            decrypted = decrypt_sensitive_headers(custom) if custom else None
+        except EncryptionError:
+            raise McpCustomHeadersError(
+                f"Custom headers of MCP server {self._server.id!r} could not be decrypted; "
+                f"re-save the server's headers."
+            ) from None
+        return _merge_custom_headers(auth_headers, decrypted)
 
     async def _build_oauth_auth_header(self) -> dict[str, str]:
         """Async factory: fetches a valid OAuth token per request (refreshes if needed)."""

@@ -402,3 +402,63 @@ async def test_no_custom_headers_changes_nothing(
     req = httpx_mock.get_request()
     assert req is not None
     assert "authorization" not in req.headers
+
+
+# ─── custom header safety (no secrets in errors, unsafe headers dropped) ──
+
+
+async def test_unsafe_custom_headers_are_dropped_and_logged_by_name_only(
+    caplog: pytest.LogCaptureFixture,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    srv = _server_row(
+        headers={
+            "X-Good": "ok",
+            "X-Api-Key": "SECRETVALUE\ninjected",  # stored before validation existed
+            "Bad Name": "v",
+            "Host": "evil.example.com",
+            "content-length": "5",
+            "Transfer-Encoding": "chunked",
+            "Connection": "close",
+        }
+    )
+    _tools_list_response(httpx_mock)
+    with caplog.at_level("DEBUG"):
+        await McpToolProvider(srv).tools()
+    req = httpx_mock.get_request()
+    assert req is not None
+    assert req.headers["x-good"] == "ok"
+    assert "x-api-key" not in req.headers
+    assert req.headers["host"] == "mcp.example.com"
+    assert req.headers.get("connection") != "close"
+    assert req.headers.get("transfer-encoding") is None
+    assert "SECRETVALUE" not in caplog.text
+    assert "X-Api-Key" in caplog.text  # the name is logged so an operator can find it
+
+
+async def test_shared_server_sends_the_owners_custom_headers_to_every_user(
+    monkeypatch: pytest.MonkeyPatch,
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    """Like the owner-token fallback, a shared server's custom headers are the OWNER's and are
+    sent for every user who can use the server."""
+    _set_encryption_key(monkeypatch)
+    srv = _server_row(user_id="owner", is_shared=True, headers={"X-Tenant": "owners-tenant"})
+    _tools_list_response(httpx_mock)
+    await McpToolProvider(srv, user_id="someone-else").tools()
+    req = httpx_mock.get_request()
+    assert req is not None and req.headers["x-tenant"] == "owners-tenant"
+
+
+async def test_undecryptable_stored_header_fails_loudly_without_the_secret(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.mcp.base import McpCustomHeadersError
+    from src.security.encryption import SECRET_ENC_PREFIX
+
+    _set_encryption_key(monkeypatch)
+    srv = _server_row(headers={"X-Api-Key": SECRET_ENC_PREFIX + "bm90LXJlYWwtY2lwaGVydGV4dA=="})
+    with pytest.raises(McpCustomHeadersError) as exc_info:
+        McpToolProvider(srv)
+    assert "srv1" in str(exc_info.value) and "could not be decrypted" in str(exc_info.value)
+    assert "bm90LXJl" not in str(exc_info.value)

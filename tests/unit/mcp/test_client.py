@@ -402,3 +402,21 @@ async def test_mcp_protocol_and_parse_failures_are_not_recorded_as_success(
     finally:
         configure_provider_metrics(None)
         provider.shutdown()
+
+
+async def test_illegal_header_error_does_not_echo_the_header_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """h11 puts the offending header VALUE in its error text; for a stored API key that is a
+    secret, and MCPHTTPError text is stored as last_error and returned to users."""
+    import httpx
+
+    async def _boom(self: httpx.AsyncClient, *args: object, **kwargs: object) -> httpx.Response:
+        raise httpx.LocalProtocolError("Illegal header value b'Bearer SECRET-TOKEN\n'")
+
+    monkeypatch.setattr(httpx.AsyncClient, "post", _boom)
+    client = MCPClient("https://mcp.example.com/rpc", auth_header={"Authorization": "x"})
+    with pytest.raises(MCPHTTPError) as exc_info:
+        await client.tools_list()
+    assert "SECRET-TOKEN" not in str(exc_info.value)
+    assert "invalid request header" in str(exc_info.value)
