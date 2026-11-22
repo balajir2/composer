@@ -22,7 +22,9 @@ All Global Constraints from phases 1 and 2 apply unchanged (repos are the only q
 | Topic | Decision |
 |---|---|
 | Search wildcards | The behaviour tests pin today's behaviour for `%`/`_` in `GET /workflows/search` (phase 1 found Prisma's `contains` does **not** escape them for user search; verify for workflows rather than assume). The port matches whatever is pinned. |
-| Revoking a missing assignment | **Fix:** today the `deleted is None → 404` branch is unreachable (Prisma's delete raises, so the client gets 500). The port returns 404 with today's intended detail. Task 1 pins the 500; Task 3 updates that one test deliberately. |
+| Revoking a missing assignment | **No fix needed (corrected after Task 1):** Prisma Python's `delete()` returns `None` for a missing row, so today already answers 404 `assignment not found for user '<id>'` (pinned by `test_revoke_missing_assignment_today_404`). The port keeps it. |
+| Search wildcards (result) | Task 1 confirmed `%` and `_` are LIKE wildcards today (as in phase 1). The port keeps wildcard semantics. |
+| Redacted echo for a new node id (result) | Jira, vector-DB and Confluence store `None`; HTTP headers store the literal redacted marker (`prior.get(k, v)` falls back to the incoming value). Both pinned; the port keeps both. |
 | `tags` NULL | Repo coalesces `NULL` to `[]` (Prisma always returned a list; `WorkflowRead.tags` is `list[str]`). |
 | Owner assignment and grant | **Improvement:** today each splits a request across SQLAlchemy (user lookup) and Prisma (workflow write) with no atomicity. On SQLAlchemy, each becomes one transaction. No visible behaviour change. |
 | Kept as-is | `create` ignores `isProduction`/`externalSlug`; concurrent edits are last-write-wins (no optimistic lock); builder save overwrites only `nodes`/`edges`; `poll_file_triggers` reads all production workflows unbounded; `executions.py` doesn't let assignees start runs (differs from the workflow routes). Follow-ups noted at the end. |
@@ -126,7 +128,7 @@ async def delete_involving_user(session, user_id: str) -> int                   
 ```
 
 - [ ] Repo tests first (duplicate → `AlreadyExists` with the session usable; delete returns False for a missing row; `delete_involving_user` covers both columns).
-- [ ] Port: owner assignment and grant become **one transaction each** (user lookup + write + one commit); revoke missing → **404** (deliberate fix; update the one Task 1 test that pinned the 500, rename it, and note it in the commit); `test_cleanup` uses `delete_for_user` + `delete_involving_user` in the same session as the other repos (its Prisma use for workflows is gone; executions still cascade at the DB level).
+- [ ] Port: owner assignment and grant become **one transaction each** (user lookup + write + one commit); revoke missing keeps today's **404** (pinned); `test_cleanup` uses `delete_for_user` + `delete_involving_user` in the same session as the other repos (its Prisma use for workflows is gone; executions still cascade at the DB level).
 - [ ] Migration writer/runner: `insert_if_absent` per row with per-row commit (phase 2 pattern; exception class + row id only in logs); reconcile uses `claim_orphans_by_email` in its session (its execution update stays Prisma until phase 4).
 - [ ] Convert unit tests (`test_workflow_assignments.py`, `test_test_cleanup.py`, `test_runner_writer.py`, `test_reconcile.py`). Verify as in Task 2. Commit `feat(db): workflow assignments on SQLAlchemy (phase 3)`.
 
