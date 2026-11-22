@@ -30,6 +30,7 @@ from src.api.llm_models import router as llm_models_router
 from src.api.llm_models_live import router as llm_models_live_router
 from src.api.mcp_servers import oauth_router
 from src.api.mcp_servers import router as mcp_servers_router
+from src.api.readiness import router as readiness_router
 from src.api.run import router as run_router
 from src.api.test_cleanup import router as test_cleanup_router
 from src.api.uploads import router as uploads_router
@@ -74,9 +75,11 @@ async def _service_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             orphaned_running_grace_seconds=settings.orphaned_running_grace_seconds,
             approval_timeout_hours=settings.approval_wait_timeout_hours,
         )
+        app.state.runtime_initialized = True
         try:
             yield
         finally:
+            app.state.draining = True
             await stop_sweeper(sweeper_task)
 
     logger.info("Shutting down Composer")
@@ -146,6 +149,8 @@ def create_app() -> FastAPI:
     runtime = TelemetryRuntime(settings)
     app.state.telemetry_runtime = runtime
     app.state.telemetry_trusted_hops = settings.trusted_proxy_hops
+    app.state.runtime_initialized = False
+    app.state.draining = False
 
     # Mode-aware CORS (Phase 7a)
     if settings.deployment_mode == "embedded":
@@ -197,6 +202,7 @@ def create_app() -> FastAPI:
     app.include_router(run_router)
     app.include_router(uploads_router)
     app.include_router(users_router)
+    app.include_router(readiness_router)
 
     # Test-only self-service hard-delete for e2e accounts (never in
     # production) -- see src/api/test_cleanup.py's module docstring.

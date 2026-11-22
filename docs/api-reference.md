@@ -284,9 +284,10 @@ GET    /admin/tools                                     built-in + MCP tool cata
 
 ```
 GET /health    →    {"status": "ok", "service": "composer", "version": "...", "environment": "..."}
+GET /ready     →    {"status": "ready", "components": {"database": "ready", "schema": "current", "runtime": "ready", "telemetry": "ready"}}
 ```
 
-Always returns 200 if the FastAPI process is responsive — does not check Postgres or LLM provider connectivity. For deeper checks, use the workflow execution path as a smoke test.
+`/health` is process liveness and returns 200 while the process responds. `/ready` checks the SQLAlchemy database and Alembic head with a one-second timeout, plus runtime initialization and draining state. Database or schema failures return 503. Telemetry exporter degradation is diagnostic and does not make the service unready. The readiness response contains only bounded component classifications.
 
 ## Error shapes
 

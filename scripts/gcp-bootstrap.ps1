@@ -294,6 +294,8 @@ $backendDeployArgs += @(
     "--cpu=1",
     "--memory=1Gi",
     "--port=8080",
+    "--startup-probe=initialDelaySeconds=0,timeoutSeconds=2,periodSeconds=10,failureThreshold=3,httpGet.path=/ready,httpGet.port=8080",
+    "--liveness-probe=timeoutSeconds=2,periodSeconds=30,failureThreshold=3,httpGet.path=/health,httpGet.port=8080",
     # EXECUTION_SWEEPER_INTERVAL_SECONDS=0 disables the in-process sweeper
     # loop in production (src/config.py: "Set 0 to disable") now that
     # composer-sweep (section 3c below) covers lease/retention cleanup via
@@ -578,5 +580,5 @@ if ($BackendDomain -or $FrontendDomain) {
 }
 Write-Host ""
 Write-Host "Smoke test:" -ForegroundColor Yellow
-Write-Host "  curl $backendRunUrl/health"
+Write-Host "  curl $backendRunUrl/ready"
 Write-Host "  open $frontendRunUrl"

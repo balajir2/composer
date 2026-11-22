@@ -21,7 +21,8 @@ The component-specific runbooks the deployment checklist depends on:
 
 A completed deployment passes all of these smoke tests:
 
-- `GET /health` returns 200 with `{"status": "ok", ...}`
+- `GET /health` returns 200 while the process responds (liveness)
+- `GET /ready` returns 200 only after the database schema and critical runtime initialization are ready
 - A test user can register / sign in via SSO
 - Admin can save an LLM API key via Admin → LLM keys and a designer can run a workflow that uses it
 - An external invoke (`POST /api/run/{slug}` with `Bearer ck_...`) executes successfully
@@ -84,7 +85,8 @@ For Azure SSO add `AUTH_AZURE_AD_*` plus the NextAuth secret. For LangSmith trac
 
 | Check | Frequency | Where |
 |---|---|---|
-| `/health` reachable | Every minute (your uptime monitor) | Should return 200 |
+| `/health` reachable | Cloud Run liveness probe | Should return 200 while the process responds |
+| `/ready` reachable | Every minute (your uptime monitor) | Should return 200; checks database/schema readiness |
 | Auth flow end-to-end | Daily | Sign in, run a workflow, sign out |
 | LangSmith trace count | Daily | `composer-production` project — if traces stop, tracing's broken |
 | Postgres connection pool | Weekly | Neon dashboard — alert at 80% of plan |

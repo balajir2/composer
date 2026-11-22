@@ -148,8 +148,8 @@ First build takes ~3–5 minutes; subsequent re-runs are faster.
 $BackendUrl  = gcloud run services describe composer-backend  --region=us-central1 --format='value(status.url)'
 $FrontendUrl = gcloud run services describe composer-frontend --region=us-central1 --format='value(status.url)'
 
-curl "$BackendUrl/health"
-# Expect: {"status":"ok","service":"composer",...}
+curl "$BackendUrl/ready"
+# Expect: {"status":"ready","components":{"database":"ready","schema":"current",...}}
 
 start $FrontendUrl
 # Browser opens; you can sign in with the credentials you registered locally
@@ -251,7 +251,7 @@ Any push to `main` triggers `.github/workflows/deploy-gcp.yml`. It:
 1. Authenticates as `composer-deployer` using the JSON key.
 2. Builds + pushes both images to Artifact Registry, tagged with the commit SHA + `latest`.
 3. Deploys both Cloud Run services (frontend depends on backend so it picks up the right API URL).
-4. Smoke-tests `/health` before declaring success.
+4. Uses `/ready` for the startup probe and deployment smoke test, with `/health` for liveness.
 
 You can also trigger manually via the Actions tab → Deploy to GCP Cloud Run → Run workflow.
 
@@ -443,12 +443,14 @@ Going to always-warm (`min-instances=1` on both): add ~$25–35/month. Going to 
 
 Check who you're authenticated as: `gcloud auth list`. If running locally, your user account needs `roles/run.admin` on the project. If running from CI, confirm `GCP_SA_KEY` is set + the SA has the four deploy roles.
 
-### Build succeeds but `/health` returns 500
+### Build succeeds but `/ready` returns 503
 
-Most common cause: a secret is missing or has the wrong value. Cloud Run logs show the FastAPI startup error. Check:
-- `DATABASE_URL` points at a reachable Neon endpoint
+The readiness probe returns 503 when the database is unreachable, the Alembic schema is behind, or critical runtime initialization has not completed. Check:
+- `DATABASE_URL` points at a reachable Neon endpoint and the expected Alembic migration is applied
 - `JWT_SECRET` and `ENCRYPTION_KEY` are set
 - The Neon endpoint isn't suspended (paste the URL into [https://console.neon.tech](https://console.neon.tech) and wake it)
+
+`/health` is the process liveness endpoint and does not check database readiness.
 
 ### Frontend loads but calls fail with 404 / CORS / connection errors
 
