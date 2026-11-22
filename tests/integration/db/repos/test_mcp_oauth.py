@@ -46,11 +46,50 @@ async def test_upsert_creates_then_updates_in_place(session: AsyncSession) -> No
     first = await repo.upsert_token(session, sid, uid, _values("a1", "r1"))
     second = await repo.upsert_token(session, sid, uid, _values("a2", None))
     assert second.id == first.id
-    assert second.encrypted_access_token == "a2" and second.encrypted_refresh_token is None
+    # no refresh token in the re-grant: the stored one is kept
+    assert second.encrypted_access_token == "a2" and second.encrypted_refresh_token == "r1"
     assert second.created_at == first.created_at
     assert second.updated_at >= first.updated_at
     got = await repo.get_token(session, sid, uid)
     assert got is not None and got.encrypted_access_token == "a2"
+
+
+async def test_regrant_without_refresh_token_or_scope_keeps_the_stored_ones(
+    session: AsyncSession,
+) -> None:
+    sid, uid = _id(), _id()
+    await repo.upsert_token(session, sid, uid, _values("a1", "r1"))
+    again = repo.TokenValues(
+        encrypted_access_token="a2",
+        encrypted_refresh_token=None,
+        expires_at=None,
+        scope=None,
+        token_type="Bearer",
+    )
+    second = await repo.upsert_token(session, sid, uid, again)
+    assert second.encrypted_refresh_token == "r1" and second.scope == "read"
+    assert second.expires_at is None  # expiry belongs to the new access token
+
+
+async def test_regrant_with_new_refresh_token_and_scope_replaces_them(
+    session: AsyncSession,
+) -> None:
+    sid, uid = _id(), _id()
+    await repo.upsert_token(session, sid, uid, _values("a1", "r1"))
+    again = repo.TokenValues(
+        encrypted_access_token="a2",
+        encrypted_refresh_token="r2",
+        expires_at=None,
+        scope="write",
+        token_type="Bearer",
+    )
+    second = await repo.upsert_token(session, sid, uid, again)
+    assert second.encrypted_refresh_token == "r2" and second.scope == "write"
+
+
+async def test_first_grant_without_refresh_token_stores_null(session: AsyncSession) -> None:
+    first = await repo.upsert_token(session, _id(), _id(), _values("a1", None))
+    assert first.encrypted_refresh_token is None
 
 
 async def test_upsert_refreshes_a_row_already_held_in_the_session(session: AsyncSession) -> None:

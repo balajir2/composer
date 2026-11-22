@@ -95,7 +95,7 @@ async def test_authorize_url_carries_scopes_offline_access_and_encrypted_state(
 # --------------------------------------------------------------------------- callback
 
 
-async def test_callback_creates_connection_and_a_second_grant_updates_it_in_place(
+async def test_callback_creates_connection_and_a_second_grant_updates_it_in_place_keeping_refresh_token_and_scope(
     client: AsyncClient,
     member: Member,
     db: Db,
@@ -142,8 +142,8 @@ async def test_callback_creates_connection_and_a_second_grant_updates_it_in_plac
     await db.set_connection(first.id, updated_at=LONG_AGO)
 
     # Same account again (the Drive state is TTL-bound, NOT single-use, so it can be replayed):
-    # same row, new access token. Google omitted refresh_token on the re-grant, so today the
-    # stored refresh token is overwritten with NULL.
+    # same row, new access token. Google omitted refresh_token and scope on the re-grant, so
+    # the stored refresh token and scope are kept.
     token_ep.push({"access_token": "ga-2", "expires_in": 1800})
     userinfo_ep.push({"email": email})
     assert popup(await drive_callback(client, state, code="code-2"))["status"] == "success"
@@ -151,8 +151,10 @@ async def test_callback_creates_connection_and_a_second_grant_updates_it_in_plac
     assert len(rows) == 1 and rows[0].id == first.id
     second = rows[0]
     assert decrypt(second.encrypted_access_token) == "ga-2"
-    assert second.encrypted_refresh_token is None
-    assert second.scope is None  # the new payload carried no scope
+    assert second.encrypted_refresh_token == first.encrypted_refresh_token  # kept byte-for-byte
+    assert second.encrypted_refresh_token is not None
+    assert decrypt(second.encrypted_refresh_token) == "gr-1"
+    assert second.scope == "s1 s2"  # the new payload carried no scope: the stored one is kept
     assert near(second.expires_at, datetime.now(UTC) + timedelta(seconds=1800))
     assert second.created_at == first.created_at
     assert second.updated_at > LONG_AGO and near(second.updated_at, datetime.now(UTC))

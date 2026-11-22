@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import TypedDict
 
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,8 +30,8 @@ class CloudStorageConnectionRecord:
 
 
 class ConnectionTokens(TypedDict):
-    """What a grant stores. An upsert overwrites all of it, so a re-grant without a refresh
-    token clears the stored one (pinned, like-for-like with the Prisma behaviour)."""
+    """What a grant stores. An upsert overwrites the access token and expiry; a NULL refresh
+    token or scope keeps the stored value (Google omits the refresh token on re-consent)."""
 
     encrypted_access_token: str
     encrypted_refresh_token: str | None
@@ -85,26 +85,36 @@ async def upsert(
     account_email: str,
     values: ConnectionTokens,
 ) -> CloudStorageConnectionRecord:
-    """One atomic statement; a re-grant overwrites the stored tokens in place."""
+    """One atomic statement; a re-grant updates the stored tokens in place, keeping the refresh
+    token and scope when the new grant omits them."""
     now = utcnow()  # ON CONFLICT bypasses the ORM's onupdate, so set it here
+    ins = insert(CloudStorageConnection).values(
+        id=new_id(),
+        user_id=user_id,
+        provider=provider,
+        account_email=account_email,
+        created_at=now,
+        updated_at=now,
+        **values,
+    )
     stmt = (
-        insert(CloudStorageConnection)
-        .values(
-            id=new_id(),
-            user_id=user_id,
-            provider=provider,
-            account_email=account_email,
-            created_at=now,
-            updated_at=now,
-            **values,
-        )
-        .on_conflict_do_update(
+        ins.on_conflict_do_update(
             index_elements=[
                 CloudStorageConnection.user_id,
                 CloudStorageConnection.provider,
                 CloudStorageConnection.account_email,
             ],
-            set_={**values, "updated_at": now},
+            set_={
+                **values,
+                # A re-grant that omits these keeps the stored value (Google and some IdPs
+                # omit refresh_token and scope on re-consent); the first grant is unaffected.
+                "encrypted_refresh_token": func.coalesce(
+                    ins.excluded.encrypted_refresh_token,
+                    CloudStorageConnection.encrypted_refresh_token,
+                ),
+                "scope": func.coalesce(ins.excluded.scope, CloudStorageConnection.scope),
+                "updated_at": now,
+            },
         )
         .returning(CloudStorageConnection)
         # Refresh a row already loaded in the session instead of returning stale values.

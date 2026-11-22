@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import TypedDict
 
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -44,7 +44,7 @@ class McpOAuthStateRecord:
 
 
 class TokenValues(TypedDict):
-    """What a code exchange stores; an upsert overwrites all of it."""
+    """What a code exchange stores; an upsert keeps the stored refresh token and scope when NULL."""
 
     encrypted_access_token: str
     encrypted_refresh_token: str | None
@@ -124,21 +124,31 @@ async def get_token(
 async def upsert_token(
     session: AsyncSession, server_id: str, user_id: str, values: TokenValues
 ) -> McpOAuthTokenRecord:
-    """One atomic statement; a re-authorization overwrites the stored token in place."""
+    """One atomic statement; a re-authorization updates the stored token in place, keeping the
+    refresh token and scope when the new grant omits them."""
     now = utcnow()  # ON CONFLICT bypasses the ORM's onupdate, so set it here
+    ins = insert(McpOAuthToken).values(
+        id=new_id(),
+        mcp_server_id=server_id,
+        user_id=user_id,
+        created_at=now,
+        updated_at=now,
+        **values,
+    )
     stmt = (
-        insert(McpOAuthToken)
-        .values(
-            id=new_id(),
-            mcp_server_id=server_id,
-            user_id=user_id,
-            created_at=now,
-            updated_at=now,
-            **values,
-        )
-        .on_conflict_do_update(
+        ins.on_conflict_do_update(
             index_elements=[McpOAuthToken.mcp_server_id, McpOAuthToken.user_id],
-            set_={**values, "updated_at": now},
+            set_={
+                **values,
+                # A re-grant that omits these keeps the stored value (Google and some IdPs
+                # omit refresh_token and scope on re-consent); the first grant is unaffected.
+                "encrypted_refresh_token": func.coalesce(
+                    ins.excluded.encrypted_refresh_token,
+                    McpOAuthToken.encrypted_refresh_token,
+                ),
+                "scope": func.coalesce(ins.excluded.scope, McpOAuthToken.scope),
+                "updated_at": now,
+            },
         )
         .returning(McpOAuthToken)
         # Refresh a row already loaded in the session instead of returning stale values.
