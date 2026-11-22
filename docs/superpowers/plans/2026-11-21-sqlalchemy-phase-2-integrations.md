@@ -73,10 +73,10 @@ Write these tests (each cleans up its own rows; names unique per run):
 12. **Cloud storage** — Google callback with `httpx_mock`ed token exchange creates a connection (encrypted tokens; unique on user+provider+email; a second callback for the same account updates in place: same id, new token); `GET` connections lists the caller's only (second member sees none), provider filter works; picker token with an expired access token and mocked refresh returns the new token and updates the row; another user's connection id → today's status/detail.
 13. **Cleanup** — the e2e cleanup endpoint removes a test user's servers, tokens, states and connections (assert all four tables empty for that user).
 
-- [ ] Write the conftest (fixtures, adapter, `phase2_env`) and the tests above.
-- [ ] Run on the unchanged code twice: `-m integration tests/integration/sqla_phase2` → all pass. Where today's behaviour differs from the expectation above, fix the TEST to match today (never the app) and list each case in the commit message.
-- [ ] Commit: `test(db): pin phase 2 integration behaviour on the Prisma code`.
-- [ ] **Review gate:** spec review on Opus (oracle strength: would a plausible port bug pass?), then fix, then re-review, before Task 2 starts.
+- [x] Write the conftest (fixtures, adapter, `phase2_env`) and the tests above.
+- [x] Run on the unchanged code twice: `-m integration tests/integration/sqla_phase2` → all pass. Where today's behaviour differs from the expectation above, fix the TEST to match today (never the app) and list each case in the commit message.
+- [x] Commit: `test(db): pin phase 2 integration behaviour on the Prisma code`.
+- [x] **Review gate:** spec review on Opus (oracle strength: would a plausible port bug pass?), then fix, then re-review, before Task 2 starts.
 
 ---
 
@@ -106,10 +106,10 @@ async def insert_if_absent(session, values: McpServerCreate) -> bool           #
 ```
 JSONB values are replaced, never mutated; pass plain dicts/lists (no Prisma `Json(...)` wrappers).
 
-- [ ] Repo tests first (real Postgres, rolled-back `session` fixture): CRUD, `list_visible` semantics, `update` only changes given keys and bumps `updated_at` (patched `utcnow`), JSON round trip of `oauth_config`/`tools`/`headers` (including `None` → SQL NULL), `claim_orphans_by_email` count and idempotence, `delete_for_user` count. Watch them fail; implement; pass.
-- [ ] Port the callers. Routes: `Depends(get_session)` for simple CRUD; `test_mcp_connection` follows the short-session rule — read the server in one short session, close it, run the MCP calls, then write the result in a second short session (unit test proves no network call happens inside an open session). Resolver/executors: `sessionmaker` parameter; executors pass `get_registered_sessionmaker()` and raise today's `_require_db()` error when it is None.
-- [ ] Convert unit tests (`tests/unit/api/test_mcp_servers.py`, `tests/unit/mcp/test_resolver*.py`, executor tests, migration tests) to patched repo functions + `FakeSessionmaker`/`override_session`; keep every behaviour assertion.
-- [ ] Verify: repo tests; converted unit tests; `tests/integration/sqla_phase2` unchanged and passing (except the adapter body); full unit suite; CI-parity pyright. Commit: `feat(db): MCP servers on SQLAlchemy (phase 2)`.
+- [x] Repo tests first (real Postgres, rolled-back `session` fixture): CRUD, `list_visible` semantics, `update` only changes given keys and bumps `updated_at` (patched `utcnow`), JSON round trip of `oauth_config`/`tools`/`headers` (including `None` → SQL NULL), `claim_orphans_by_email` count and idempotence, `delete_for_user` count. Watch them fail; implement; pass.
+- [x] Port the callers. Routes: `Depends(get_session)` for simple CRUD; `test_mcp_connection` follows the short-session rule — read the server in one short session, close it, run the MCP calls, then write the result in a second short session (unit test proves no network call happens inside an open session). Resolver/executors: `sessionmaker` parameter; executors pass `get_registered_sessionmaker()` and raise today's `_require_db()` error when it is None.
+- [x] Convert unit tests (`tests/unit/api/test_mcp_servers.py`, `tests/unit/mcp/test_resolver*.py`, executor tests, migration tests) to patched repo functions + `FakeSessionmaker`/`override_session`; keep every behaviour assertion.
+- [x] Verify: repo tests; converted unit tests; `tests/integration/sqla_phase2` unchanged and passing (except the adapter body); full unit suite; CI-parity pyright. Commit: `feat(db): MCP servers on SQLAlchemy (phase 2)`.
 
 ---
 
@@ -144,11 +144,11 @@ async def delete_states_for_user(session, user_id: str) -> int
 async def insert_token_if_absent(session, values: …) -> bool                    # migration writer
 ```
 
-- [ ] Repo tests first: token upsert creates then updates in place (same id; `updated_at` deterministic; held-reference refresh test — ON CONFLICT needs `populate_existing`, prove it fails without), `consume_state` returns the row once and `None` on the second call, `None` for an expired state; **race test**: five concurrent `consume_state` calls on committed data → exactly one returns the row (copy phase 1's `test_concurrent_revocations_have_exactly_one_winner` shape, with cleanup).
-- [ ] Port `src/mcp/oauth.py` under the short-session rule: `build_authorize_url` (reap + create state in one short session), `exchange_code_for_tokens` (consume state in one short session → close → token POST → upsert token in a second short session), `refresh_token` (POST → short session update), `get_valid_access_token` (short-session read(s), including the creator-token fallback for shared servers → close → maybe refresh → short-session write). Each gets an ordering unit test. Keep the RFC 8707 `resource` parameter on every token request (MCP fix #1) and keep tokens server-side (fix #4).
-- [ ] Port the OAuth routes; `oauth_callback` has no auth today — keep that, and keep its error responses identical.
-- [ ] Convert unit tests (`tests/unit/mcp/test_oauth_*.py`, `tests/unit/api/test_mcp_servers_oauth.py`, `tests/regression/test_oab_highspot_oauth.py`, `tests/integration/test_mcp_highspot.py` only as far as signatures require).
-- [ ] Verify as in Task 2 (plus the race test). Commit: `feat(db): MCP OAuth tokens and states on SQLAlchemy (phase 2)` — body notes the atomic state consumption.
+- [x] Repo tests first: token upsert creates then updates in place (same id; `updated_at` deterministic; held-reference refresh test — ON CONFLICT needs `populate_existing`, prove it fails without), `consume_state` returns the row once and `None` on the second call, `None` for an expired state; **race test**: five concurrent `consume_state` calls on committed data → exactly one returns the row (copy phase 1's `test_concurrent_revocations_have_exactly_one_winner` shape, with cleanup).
+- [x] Port `src/mcp/oauth.py` under the short-session rule: `build_authorize_url` (reap + create state in one short session), `exchange_code_for_tokens` (consume state in one short session → close → token POST → upsert token in a second short session), `refresh_token` (POST → short session update), `get_valid_access_token` (short-session read(s), including the creator-token fallback for shared servers → close → maybe refresh → short-session write). Each gets an ordering unit test. Keep the RFC 8707 `resource` parameter on every token request (MCP fix #1) and keep tokens server-side (fix #4).
+- [x] Port the OAuth routes; `oauth_callback` has no auth today — keep that, and keep its error responses identical.
+- [x] Convert unit tests (`tests/unit/mcp/test_oauth_*.py`, `tests/unit/api/test_mcp_servers_oauth.py`, `tests/regression/test_oab_highspot_oauth.py`, `tests/integration/test_mcp_highspot.py` only as far as signatures require).
+- [x] Verify as in Task 2 (plus the race test). Commit: `feat(db): MCP OAuth tokens and states on SQLAlchemy (phase 2)` — body notes the atomic state consumption.
 
 ---
 
@@ -172,21 +172,32 @@ async def update_tokens(session, connection_id: str, values: ConnectionTokens) -
 async def delete_for_user(session, user_id: str) -> int
 ```
 
-- [ ] Repo tests first (upsert in place, held-reference refresh test, deterministic `updated_at`, `list_for_user` scoping and provider filter).
-- [ ] Port under the short-session rule: `google_drive_callback` (token exchange first, then a short-session upsert), `get_picker_token` (short read → close → `get_valid_drive_access_token`), `get_valid_drive_access_token` (short read → close → refresh POST → short update), `poll_file_triggers` (per-node connection read in a short session closed before Drive calls; its workflow/execution Prisma work is untouched), `download_pdf` executor (sessionmaker from the registry). Ordering unit tests for each.
-- [ ] Convert unit tests (`tests/unit/api/test_cloud_storage_oauth.py`, `tests/unit/integrations/test_google_drive_oauth.py`, `tests/unit/api/test_internal_poll_file_triggers.py`, download-pdf executor tests, `tests/unit/api/test_test_cleanup.py`).
-- [ ] Verify as in Task 2. Commit: `feat(db): cloud-storage connections on SQLAlchemy (phase 2)`.
+- [x] Repo tests first (upsert in place, held-reference refresh test, deterministic `updated_at`, `list_for_user` scoping and provider filter).
+- [x] Port under the short-session rule: `google_drive_callback` (token exchange first, then a short-session upsert), `get_picker_token` (short read → close → `get_valid_drive_access_token`), `get_valid_drive_access_token` (short read → close → refresh POST → short update), `poll_file_triggers` (per-node connection read in a short session closed before Drive calls; its workflow/execution Prisma work is untouched), `download_pdf` executor (sessionmaker from the registry). Ordering unit tests for each.
+- [x] Convert unit tests (`tests/unit/api/test_cloud_storage_oauth.py`, `tests/unit/integrations/test_google_drive_oauth.py`, `tests/unit/api/test_internal_poll_file_triggers.py`, download-pdf executor tests, `tests/unit/api/test_test_cleanup.py`).
+- [x] Verify as in Task 2. Commit: `feat(db): cloud-storage connections on SQLAlchemy (phase 2)`.
 
 ---
 
 ### Task 5: Lock, docs, CI, PR
 
-- [ ] Grow `MIGRATED_PATHS` in `tests/unit/db/test_prisma_import_boundary.py` with every file that now has no `prisma`/`src.storage` import (verify each; list exclusions with reasons). Done-criterion grep: `grep -rnE "\b(db|prisma)\.(mcpserver|mcpoauthtoken|mcpoauthstate|cloudstorageconnection)\." src` → empty.
-- [ ] CHANGELOG (`[Unreleased]`, first entry): the four tables now on SQLAlchemy; behaviour proven by `tests/integration/sqla_phase2`; deliberate changes (atomic OAuth state consumption; short sessions around network I/O; fail-closed outside development where applicable); kept-as-is items with follow-ups (Drive refresh-token wipe on re-grant; MCP custom headers never sent).
-- [ ] `docs/architecture.md`: extend the data-access section with the short-session rule for out-of-request code. Spec §3.3: phase 2 "(done, PR pending)". This plan: tick boxes and add an Outcome section.
+- [x] Grow `MIGRATED_PATHS` in `tests/unit/db/test_prisma_import_boundary.py` with every file that now has no `prisma`/`src.storage` import (verify each; list exclusions with reasons). Done-criterion grep: `grep -rnE "\b(db|prisma)\.(mcpserver|mcpoauthtoken|mcpoauthstate|cloudstorageconnection)\." src` → empty.
+- [x] CHANGELOG (`[Unreleased]`, first entry): the four tables now on SQLAlchemy; behaviour proven by `tests/integration/sqla_phase2`; deliberate changes (atomic OAuth state consumption; short sessions around network I/O; fail-closed outside development where applicable); kept-as-is items with follow-ups (Drive refresh-token wipe on re-grant; MCP custom headers never sent).
+- [x] `docs/architecture.md`: extend the data-access section with the short-session rule for out-of-request code. Spec §3.3: phase 2 "(done, PR pending)". This plan: tick boxes and add an Outcome section.
 - [ ] Run everything CI runs, including CI-parity pyright and `-m "integration and not live"` against a throwaway Postgres 15 (`docker run -d --rm --name composer-p2-pg …`, then `prisma migrate deploy` + `alembic upgrade head`). Delete the container when the phase is done.
 - [ ] Commit; push; open the PR; wait for all six checks; merge only with Balaji's go-ahead (merging deploys to production).
 
 ## Follow-ups (not in this phase)
 - MCP custom `headers` are stored but never sent by `src/mcp/client.py`; decide whether to send them (decrypting sensitive values) and add tests.
 - Google Drive re-grant without a refresh token overwrites the stored refresh token with NULL; keep the old one instead.
+
+## Outcome
+
+What changed while executing this plan:
+
+- **PR #28 landed mid-phase.** The MCP visibility security fix (test-connection and OAuth authorize check `user_can_use_server`) merged while this phase was in progress, and two oracle tests were updated for the new 404 behaviour.
+- **The oracle grew from 49 to 63 tests** (`tests/integration/sqla_phase2/`) after two Opus reviews found behaviour a plausible wrong port could break unnoticed.
+- **Task 2 kept temporary dual Prisma/SQLAlchemy plumbing** for MCP servers so the OAuth code, still on Prisma, kept working. Task 3 removed it.
+- **Task 4's review found a stale-token bug:** the Drive token helper returned an expired token when the connection vanished mid-refresh. It now raises `DriveConnectionMissingError` (the picker-token route answers 404), with a regression test.
+- **Review follow-ups (commit "small phase 2 review follow-ups"):** the Drive OAuth popup gets its close page when the database is unavailable; one shared `require_sessionmaker` in `src/db/runtime.py`; `_post_token_form` shared by the Drive code exchange and refresh; a docstring rewrap in `download_pdf.py`; and a flaky phase 1 ordering test (`test_api_keys_list_newest_first`) given a wider gap between keys.
+- **Still open (see Follow-ups):** MCP custom headers never sent; Drive re-grant without a refresh token clears the stored one; concurrent refreshes of one token can both POST the same refresh token.

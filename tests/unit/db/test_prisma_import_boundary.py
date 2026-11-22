@@ -12,6 +12,12 @@ import ast
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+# Phase 2 (integrations) areas: src/mcp, src/integrations/google_drive, the MCP and
+# cloud-storage routes, src/tools/registry.py and the mcp / download-pdf executors.
+# Deliberately NOT listed, because they still use Prisma for workflows/executions or
+# other not-yet-migrated tables: src/api/internal.py (workflow reads, executions),
+# src/api/test_cleanup.py (deletes workflows/executions via Prisma), src/migration/*
+# (reconcile, runner and writer work on Prisma-backed rows). They move in later phases.
 MIGRATED_PATHS = [
     "src/db",
     "src/api/admin_deployment_settings.py",
@@ -25,11 +31,18 @@ MIGRATED_PATHS = [
     "src/api/llm_models.py",
     "src/api/llm_models_live.py",
     "src/api/users.py",
+    "src/api/cloud_storage_oauth.py",
+    "src/api/mcp_servers.py",
     "src/builder/model_policy.py",
     "src/cli/keys.py",
+    "src/executors/download_pdf.py",
+    "src/executors/mcp.py",
+    "src/integrations/google_drive",
+    "src/mcp",
     "src/security/api_key_auth.py",
     "src/security/auth.py",
     "src/security/key_sync.py",
+    "src/tools/registry.py",
 ]
 FORBIDDEN_ROOTS = ("prisma", "src.storage")
 
