@@ -711,6 +711,11 @@ async def list_workflow_assignments(
     return [WorkflowAssignmentRead.model_validate(r) for r in rows]
 
 
+_ASSIGNMENT_USER_FKS = frozenset(
+    {"workflow_assignments_user_id_fkey", "workflow_assignments_assigned_by_id_fkey"}
+)
+
+
 @router.post(
     "/workflows/{workflow_id}/assignments/{target_user_id}",
     response_model=WorkflowAssignmentRead,
@@ -736,7 +741,10 @@ async def grant_workflow_assignment(
             session, workflow_id=workflow_id, user_id=target_user_id, assigned_by_id=user_id
         )
     except ReferencedRowMissing as exc:
-        # The workflow or the target user was deleted after the checks above.
+        # The workflow row is locked, so the reachable case is a user (the target or
+        # the grantor) deleted after the checks above; anything else is the workflow.
+        if exc.constraint in _ASSIGNMENT_USER_FKS:
+            raise HTTPException(404, f"user {target_user_id!r} not found") from exc
         raise HTTPException(404, f"Workflow {workflow_id!r} not found.") from exc
     except AlreadyExists as exc:
         # str(exc) names the constraint only: no SQL, parameters or ciphertext.

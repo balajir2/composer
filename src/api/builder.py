@@ -98,19 +98,30 @@ async def _load_workflow(
     Callers hold no session afterwards, so the LLM loop never pins a connection.
     """
     async with sessionmaker() as session:
-        row = await workflows_repo.get(session, workflow_id)
-        if row is None:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Workflow {workflow_id!r} not found.",
-            )
-        if (
-            role != "admin"
-            and row.user_id != user_id
-            and not await assignments_repo.exists(session, workflow_id, user_id)
-        ):
-            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found.")
-        return row
+        return await _get_accessible(session, workflow_id, user_id, role)
+
+
+async def _get_accessible(
+    session: AsyncSession, workflow_id: str, user_id: str, role: str, *, for_update: bool = False
+) -> WorkflowRecord:
+    """The workflow if the caller may build on it: owner, admin or assignee.
+
+    404 when it is gone; the same 404 as a missing row when access is lacking, so a
+    workflow the caller may not see is not revealed to exist.
+    """
+    row = await workflows_repo.get(session, workflow_id, for_update=for_update)
+    if row is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow {workflow_id!r} not found.",
+        )
+    if (
+        role != "admin"
+        and row.user_id != user_id
+        and not await assignments_repo.exists(session, workflow_id, user_id)
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found.")
+    return row
 
 
 def _to_engine_workflow(row: WorkflowRecord) -> Workflow:
@@ -119,8 +130,9 @@ def _to_engine_workflow(row: WorkflowRecord) -> Workflow:
             "id": row.id,
             "name": row.name,
             "description": row.description,
-            "nodes": row.nodes,
-            "edges": row.edges,
+            # The JSONB columns are untyped: a migrated row could hold a non-list.
+            "nodes": row.nodes if isinstance(row.nodes, list) else [],  # pyright: ignore[reportUnnecessaryIsInstance]
+            "edges": row.edges if isinstance(row.edges, list) else [],  # pyright: ignore[reportUnnecessaryIsInstance]
         }
     )
 
@@ -130,8 +142,13 @@ async def _persist(
     workflow_id: str,
     workflow: Workflow,
     existing: WorkflowRecord,
+    user_id: str,
+    role: str,
 ) -> WorkflowRecord:
     """Write nodes and edges in a fresh short session.
+
+    Access is checked again under a row lock: it may have been revoked, or the
+    workflow deleted, during the LLM turn. Nothing is committed in that case.
 
     Secrets are encrypted, and a redacted echo keeps the stored value, against the
     row read at load time (``existing``), as before the move to SQLAlchemy.
@@ -145,6 +162,7 @@ async def _persist(
     edges_json = [edge.model_dump(by_alias=True) for edge in workflow.edges]
     # Metadata ruling: update ONLY nodes + edges; never the metadata columns.
     async with sessionmaker() as session:
+        await _get_accessible(session, workflow_id, user_id, role, for_update=True)
         row = await workflows_repo.update(
             session, workflow_id, {"nodes": nodes_json, "edges": edges_json}
         )
@@ -237,7 +255,7 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
     )
 
     _check_workflow_size_limits(updated)
-    row = await _persist(sessionmaker, workflow_id, updated, existing)
+    row = await _persist(sessionmaker, workflow_id, updated, existing, user_id, role)
     validation_errors = collect_workflow_violations(updated)
     return BuilderMessageResponse(
         sessionId=sid,

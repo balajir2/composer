@@ -4,7 +4,7 @@ from typing import Any, cast
 
 import pytest
 from sqlalchemy import text
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
 from src.db.errors import AlreadyExists
 from src.db.models import User, UserRole, Workflow, WorkflowAssignment, WorkflowExecution
@@ -78,6 +78,35 @@ async def test_get_for_update_returns_the_row(session: AsyncSession) -> None:
     locked = await repo.get(session, created.id, for_update=True)
     assert locked is not None and locked.name == "Locked"
     assert await repo.get(session, "missing", for_update=True) is None
+
+
+async def test_get_for_update_refreshes_an_instance_already_in_the_session(
+    engine: AsyncEngine,
+) -> None:
+    """SELECT ... FOR UPDATE must not hand back stale attributes from the identity map."""
+    async with AsyncSession(engine, expire_on_commit=False) as setup:
+        old, new = await _user(setup), await _user(setup)
+        w = await repo.create(setup, _values(user_id=old))
+        await setup.commit()
+    try:
+        async with AsyncSession(engine, expire_on_commit=False) as first:
+            before = await repo.get(first, w.id)
+            assert before is not None and before.user_id == old
+            async with AsyncSession(engine) as other:
+                await other.execute(
+                    text("UPDATE workflows SET user_id = :u WHERE id = :i"), {"u": new, "i": w.id}
+                )
+                await other.commit()
+            locked = await repo.get(first, w.id, for_update=True)
+            assert locked is not None and locked.user_id == new
+            await first.rollback()
+    finally:
+        async with AsyncSession(engine) as cleanup:
+            await cleanup.execute(text("DELETE FROM workflows WHERE id = :i"), {"i": w.id})
+            await cleanup.execute(
+                text("DELETE FROM users WHERE id IN (:a, :b)"), {"a": old, "b": new}
+            )
+            await cleanup.commit()
 
 
 async def test_get_by_slug(session: AsyncSession) -> None:

@@ -391,3 +391,62 @@ def test_slug_is_looked_up_in_a_short_session_closed_before_the_enqueue(
     assert events[read_at - 1 : read_at + 2] == ["session:enter", "read", "session:exit"]
     assert events.index("net:enqueue") > read_at + 1
     assert_no_network_inside_session(events)
+
+
+def test_sync_mode_starts_enqueues_and_polls_only_after_the_session_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.api import run as _run_module
+
+    events: list[str] = []
+    client = _build_client(monkeypatch, _wf(is_public=True))
+    client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
+
+    class _RecordingExec:
+        def __init__(self, *a: Any, **kw: Any) -> None:
+            pass
+
+        async def start_execution(self, **kw: Any) -> Any:
+            events.append("net:start_execution")
+            return _exec()
+
+    async def _enqueue(*_a: object, **_k: object) -> None:
+        events.append("net:enqueue")
+
+    async def _poll(**_k: object) -> Any:
+        events.append("net:poll")
+        return _exec(status="completed", output={"ok": True})
+
+    monkeypatch.setattr(_run_module, "LangGraphExecutor", _RecordingExec)
+    monkeypatch.setattr(_run_module, "enqueue_execution", _enqueue)
+    client.app.state.db.workflowexecution.find_unique = _poll  # type: ignore[attr-defined]
+
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {}, "sync": True, "timeoutSeconds": 5},
+    )
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["status"] == "completed"
+    nets = [e for e in events if e.startswith("net:")]
+    assert nets == ["net:start_execution", "net:enqueue", "net:poll"]
+    assert_no_network_inside_session(events)
+
+
+def test_run_without_a_database_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With no sessionmaker the request must never succeed or crash.
+
+    The API-key auth dependency resolves first and needs the database, so the
+    outcome is its 401 "authentication unavailable"; the route's own
+    ``require_sessionmaker`` (503) is the second guard behind it. Either is fail-closed.
+    """
+    client = _build_client(monkeypatch, _wf(is_public=True))
+    client.app.state.db_sessionmaker = None  # type: ignore[attr-defined]
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {}},
+    )
+    assert resp.status_code in (401, 503), resp.text
+    assert resp.json()["detail"] in ("authentication unavailable", "database unavailable")

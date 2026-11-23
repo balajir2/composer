@@ -125,8 +125,19 @@ def _visible(user_id: str) -> ColumnElement[bool]:
 async def get(
     session: AsyncSession, workflow_id: str, *, for_update: bool = False
 ) -> WorkflowRecord | None:
-    """One workflow by id. ``for_update`` takes the row lock until the transaction ends."""
-    row = await session.get(Workflow, workflow_id, with_for_update=for_update or None)
+    """One workflow by id.
+
+    ``for_update`` takes a FOR NO KEY UPDATE row lock until the transaction ends: it
+    serializes against an owner reassignment and a delete but not against inserts of
+    rows that reference the workflow (executions, assignments). It also refreshes an
+    instance already in the session, so the checks that follow see the locked row.
+    """
+    if for_update:
+        row = await session.get(
+            Workflow, workflow_id, with_for_update={"key_share": True}, populate_existing=True
+        )
+    else:
+        row = await session.get(Workflow, workflow_id)
     return _record(row) if row else None
 
 

@@ -6,7 +6,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 from src.api import builder as builder_mod
-from src.api.builder import _persist, router  # pyright: ignore[reportPrivateUsage]
+from src.api.builder import _persist, _to_engine_workflow, router  # pyright: ignore[reportPrivateUsage]
 from src.db.repos import workflows as workflows_repo
 from src.engine.workflow import JIRA_TOKEN_REDACTED, Workflow
 from tests.unit.db_fakes import (
@@ -149,6 +149,7 @@ def test_workflow_session_is_closed_before_the_llm_turn_and_persist_uses_a_fresh
         "session:exit",
         "net:llm_turn",
         "session:enter",
+        "read",
         "write",
         "session:exit",
     ]
@@ -156,6 +157,11 @@ def test_workflow_session_is_closed_before_the_llm_turn_and_persist_uses_a_fresh
 
 
 def test_builder_without_a_database_is_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Covers the route's ``require_sessionmaker`` check only.
+
+    The test overrides ``get_session``; in a real app with no database that dependency
+    raises first, so this pins the route's own fail-closed guard, not the whole path.
+    """
     client = _make_client(monkeypatch, make_workflow(user_id="dev"))
     client.app.state.db_sessionmaker = None  # type: ignore[attr-defined]
     resp = client.post("/builder/w1/message", json={"message": "hi"})
@@ -183,14 +189,30 @@ def _engine_workflow(**node_data: Any) -> Workflow:
     )
 
 
+@pytest.fixture
+def persist_repos(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """Repo mocks for the direct ``_persist`` tests: the workflow exists, owned by "user-42"."""
+    repos = patch_workflow_repos(monkeypatch)
+    repos.get.return_value = make_workflow()
+    return repos
+
+
 async def test_persist_updates_only_nodes_and_edges_and_commits(
     monkeypatch: pytest.MonkeyPatch,
+    persist_repos: Any,
 ) -> None:
     sessionmaker = FakeSessionmaker()
     update = AsyncMock(return_value=make_workflow())
     monkeypatch.setattr(workflows_repo, "update", update)
 
-    row = await _persist(sessionmaker, "w1", _engine_workflow(), make_workflow())  # type: ignore[arg-type]
+    row = await _persist(
+        sessionmaker,  # type: ignore[arg-type]
+        "w1",
+        _engine_workflow(),
+        make_workflow(),
+        "user-42",
+        "member",
+    )
 
     assert row.id == "w1"
     assert update.await_args is not None
@@ -201,12 +223,13 @@ async def test_persist_updates_only_nodes_and_edges_and_commits(
 
 async def test_persist_when_the_workflow_vanished_is_404_and_commits_nothing(
     monkeypatch: pytest.MonkeyPatch,
+    persist_repos: Any,
 ) -> None:
     sessionmaker = FakeSessionmaker()
     monkeypatch.setattr(workflows_repo, "update", AsyncMock(return_value=None))
 
     with pytest.raises(HTTPException) as info:
-        await _persist(sessionmaker, "w1", _engine_workflow(), make_workflow())  # type: ignore[arg-type]
+        await _persist(sessionmaker, "w1", _engine_workflow(), make_workflow(), "user-42", "member")  # type: ignore[arg-type]
 
     assert info.value.status_code == 404
     sessionmaker.session.commit.assert_not_awaited()
@@ -217,6 +240,7 @@ _JIRA = {"label": "Jira", "domain": "t.atlassian.net", "email": "t@example.com"}
 
 async def test_persist_keeps_the_stored_token_when_the_client_echoes_the_redacted_marker(
     monkeypatch: pytest.MonkeyPatch,
+    persist_repos: Any,
 ) -> None:
     update = AsyncMock(return_value=make_workflow())
     monkeypatch.setattr(workflows_repo, "update", update)
@@ -229,6 +253,8 @@ async def test_persist_keeps_the_stored_token_when_the_client_echoes_the_redacte
         "w1",
         _engine_workflow(**_JIRA, apiToken=JIRA_TOKEN_REDACTED),
         existing,
+        "user-42",
+        "member",
     )
 
     saved = update.await_args.args[2]["nodes"]  # type: ignore[union-attr]
@@ -238,6 +264,7 @@ async def test_persist_keeps_the_stored_token_when_the_client_echoes_the_redacte
 
 async def test_persist_stores_none_for_a_redacted_echo_of_an_unknown_node(
     monkeypatch: pytest.MonkeyPatch,
+    persist_repos: Any,
 ) -> None:
     update = AsyncMock(return_value=make_workflow())
     monkeypatch.setattr(workflows_repo, "update", update)
@@ -247,8 +274,65 @@ async def test_persist_stores_none_for_a_redacted_echo_of_an_unknown_node(
         "w1",
         _engine_workflow(**_JIRA, apiToken=JIRA_TOKEN_REDACTED),
         make_workflow(nodes=[]),
+        "user-42",
+        "member",
     )
 
     saved = update.await_args.args[2]["nodes"]  # type: ignore[union-attr]
     (jira,) = [n for n in saved if n["id"] == "j1"]
     assert jira["data"]["apiToken"] is None
+
+
+async def test_persist_rechecks_access_and_commits_nothing_when_the_assignment_was_revoked(
+    monkeypatch: pytest.MonkeyPatch, persist_repos: Any
+) -> None:
+    """Access held at load time may be gone after the LLM turn."""
+    sessionmaker = FakeSessionmaker()
+    update = AsyncMock(return_value=make_workflow())
+    monkeypatch.setattr(workflows_repo, "update", update)
+    persist_repos.get.return_value = make_workflow(user_id="other-owner")
+    persist_repos.exists.return_value = False  # the assignment was revoked meanwhile
+
+    with pytest.raises(HTTPException) as info:
+        await _persist(
+            sessionmaker,  # type: ignore[arg-type]
+            "w1",
+            _engine_workflow(),
+            make_workflow(user_id="other-owner"),
+            "me",
+            "member",
+        )
+
+    # Same status and detail as the load-time check: the workflow is not revealed.
+    assert info.value.status_code == 404
+    assert info.value.detail == "Workflow not found."
+    update.assert_not_awaited()
+    sessionmaker.session.commit.assert_not_awaited()
+    assert persist_repos.get.await_args.kwargs == {"for_update": True}
+
+
+async def test_persist_still_writes_for_an_assignee(
+    monkeypatch: pytest.MonkeyPatch, persist_repos: Any
+) -> None:
+    sessionmaker = FakeSessionmaker()
+    monkeypatch.setattr(workflows_repo, "update", AsyncMock(return_value=make_workflow()))
+    persist_repos.get.return_value = make_workflow(user_id="other-owner")
+    persist_repos.exists.return_value = True
+
+    await _persist(
+        sessionmaker,  # type: ignore[arg-type]
+        "w1",
+        _engine_workflow(),
+        make_workflow(user_id="other-owner"),
+        "me",
+        "member",
+    )
+
+    sessionmaker.session.commit.assert_awaited_once()
+
+
+def test_non_list_nodes_and_edges_open_as_an_empty_canvas() -> None:
+    """The JSONB columns are untyped, so a migrated row may hold a dict."""
+    wf = _to_engine_workflow(make_workflow(nodes={"unexpected": "dict"}, edges="oops"))  # type: ignore[arg-type]
+    assert wf.nodes == []
+    assert wf.edges == []

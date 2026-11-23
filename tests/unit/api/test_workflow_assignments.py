@@ -136,6 +136,24 @@ def test_grant_when_workflow_vanishes_concurrently_is_404(monkeypatch: pytest.Mo
     _commit(client).assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    "constraint", ["workflow_assignments_user_id_fkey", "workflow_assignments_assigned_by_id_fkey"]
+)
+def test_grant_when_a_user_vanishes_concurrently_is_404_naming_the_user(
+    monkeypatch: pytest.MonkeyPatch, constraint: str
+) -> None:
+    client = _client(monkeypatch)
+    repos = _repos(monkeypatch)
+    repos.create.side_effect = ReferencedRowMissing(constraint)
+    token = create_access_token("owner1")
+    resp = client.post(
+        "/workflows/w1/assignments/assignee1", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 404, resp.text
+    assert resp.json()["detail"] == "user 'assignee1' not found"
+    _commit(client).assert_not_awaited()
+
+
 def test_non_owner_non_admin_cannot_grant_assignment(monkeypatch: pytest.MonkeyPatch) -> None:
     client = _client(monkeypatch)
     repos = _repos(monkeypatch)

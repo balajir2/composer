@@ -15,7 +15,7 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
 from src.db.repos import workflows as workflows_repo
-from src.db.runtime import register_sessionmaker
+from src.db.runtime import get_registered_sessionmaker, register_sessionmaker
 from src.engine.events import ExecutionEvent
 from src.engine.execution_control import ExecutionStopped
 from src.engine.langgraph_executor import LangGraphExecutor
@@ -67,9 +67,10 @@ def _workflow_reads(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:  # pyrig
 
     _workflow_get.clear()
     monkeypatch.setattr(workflows_repo, "get", _get)
+    previous = get_registered_sessionmaker()
     register_sessionmaker(cast("Any", FakeSessionmaker()))
     yield
-    register_sessionmaker(None)
+    register_sessionmaker(previous)
     _workflow_get.clear()
 
 
