@@ -78,7 +78,7 @@ def test_workflow_validates_without_bootstrap_and_records_evidence() -> None:
     assert 'readiness.get("status") != "ready"' in source
     assert 'components.get("telemetry") != "ready"' in source
     assert 'trace.get("traceId") != expected_trace' in source
-    assert "not trace.get(\"spans\")" in source
+    assert 'not trace.get("spans")' in source
     assert "actions/upload-artifact@" in source
     assert "telemetry-staging-evidence" in source
 
@@ -88,9 +88,7 @@ def test_dry_run_cannot_push_images_or_deploy() -> None:
     steps = workflow["jobs"]["stage-telemetry"]["steps"]
 
     mutating_steps = [
-        step
-        for step in steps
-        if step.get("name", "").startswith(("Push ", "Deploy "))
+        step for step in steps if step.get("name", "").startswith(("Push ", "Deploy "))
     ]
     assert mutating_steps
     assert all("inputs.dry_run == false" in step["if"] for step in mutating_steps)
