@@ -96,6 +96,8 @@ def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     # 'running' once /internal/claim-and-run actually claims it.
     db.workflowexecution.create = AsyncMock(return_value=_execution_row(status="queued"))
     db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="completed"))
+    # Idempotency lookups go through find_first scoped to (workflow, user, key).
+    db.workflowexecution.find_first = AsyncMock(return_value=None)
     db.workflowexecution.update = AsyncMock(return_value=_execution_row(status="completed"))
     db.executionevent = MagicMock()
     db.executionevent.delete_many = AsyncMock()
@@ -279,7 +281,7 @@ def test_post_execution_with_idempotency_key_replays_existing_execution() -> Non
     email) would fire twice for one logical request (P1-3)."""
     client, db = _client_with_mock_db()
     existing = _execution_row(status="completed")
-    db.workflowexecution.find_unique = AsyncMock(return_value=existing)
+    db.workflowexecution.find_first = AsyncMock(return_value=existing)
     resp = client.post(
         "/executions",
         json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "retry-key-1"},
@@ -287,6 +289,10 @@ def test_post_execution_with_idempotency_key_replays_existing_execution() -> Non
     assert resp.status_code == 202
     assert resp.json()["id"] == existing.id
     db.workflowexecution.create.assert_not_awaited()
+    # The lookup is scoped to the caller: keys are unique per (workflow, user).
+    db.workflowexecution.find_first.assert_awaited_once_with(
+        where={"workflowId": "wf1", "userId": "dev", "idempotencyKey": "retry-key-1"}
+    )
 
 
 def test_post_execution_allows_an_assignee_of_a_private_workflow() -> None:
@@ -358,54 +364,60 @@ def test_assignment_is_read_in_the_same_short_session_as_the_workflow() -> None:
     assert_no_network_inside_session(events)
 
 
-def test_idempotency_key_used_by_another_user_is_409_and_leaks_nothing() -> None:
-    """On a public workflow a second user reusing the first user's key used to get the
-    first user's execution (input, output and all) back."""
+def test_same_key_from_another_user_starts_their_own_execution() -> None:
+    """Keys are unique per (workflow, user): another user's use of the key is invisible,
+    so this caller gets a fresh execution instead of a replay or a 409."""
     client, db = _client_with_mock_db()
     _repos().get.return_value = _workflow_row(user_id="someone-else", is_public=True)
-    other = _execution_row(status="completed")
-    other.id = "other-ex-id"
-    other.userId = "someone-else"
-    other.input = "SECRET-INPUT"
-    other.output = "SECRET-OUTPUT"
-    db.workflowexecution.find_unique = AsyncMock(return_value=other)
+    db.workflowexecution.find_first = AsyncMock(return_value=None)
     resp = client.post(
         "/executions",
         json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "shared-key"},
     )
-    assert resp.status_code == 409
-    assert resp.json()["detail"] == "idempotency key already used for this workflow"
-    for leaked in ("other-ex-id", "SECRET-INPUT", "SECRET-OUTPUT"):
-        assert leaked not in resp.text
-    db.workflowexecution.create.assert_not_awaited()
+    assert resp.status_code == 202
+    db.workflowexecution.create.assert_awaited_once()
+    _, kwargs = db.workflowexecution.create.call_args
+    assert kwargs["data"]["idempotencyKey"] == "shared-key"
+    where = db.workflowexecution.find_first.call_args.kwargs["where"]
+    assert where["userId"] == "dev"
 
 
-def test_idempotency_key_race_lost_to_another_user_is_409() -> None:
-    from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
+def test_require_same_caller_is_a_fail_closed_backstop() -> None:
+    """The lookup is already per-user, so a foreign row should never come back; if it
+    ever does (a regression in the lookup), refuse rather than replay it."""
+    from fastapi import HTTPException
 
-    client, db = _client_with_mock_db()
-    other = _execution_row(status="queued")
+    from src.api._idempotency import require_same_caller
+
+    other = _execution_row(status="completed")
     other.userId = "someone-else"
-    db.workflowexecution.find_unique = AsyncMock(side_effect=[None, other])
-    db.workflowexecution.create = AsyncMock(
-        side_effect=UniqueViolationError({"user_facing_error": {"meta": {}}})  # type: ignore[arg-type]
-    )
+    with pytest.raises(HTTPException) as exc:
+        require_same_caller(other, "dev")
+    assert exc.value.status_code == 409
+    require_same_caller(_execution_row(status="completed"), "dev")
+
+
+def test_foreign_row_from_the_lookup_is_still_refused_with_409() -> None:
+    client, db = _client_with_mock_db()
+    other = _execution_row(status="completed")
+    other.userId = "someone-else"
+    db.workflowexecution.find_first = AsyncMock(return_value=other)
     resp = client.post(
         "/executions",
         json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "k"},
     )
     assert resp.status_code == 409
-    assert "ex1" not in resp.text
+    db.workflowexecution.create.assert_not_awaited()
 
 
-def test_idempotency_key_race_lost_to_the_same_caller_replays_without_enqueue(
+def test_idempotency_key_race_lost_relooks_up_scoped_to_the_caller(
     _patch_enqueue_execution: AsyncMock,
 ) -> None:
     from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 
     client, db = _client_with_mock_db()
     mine = _execution_row(status="queued")
-    db.workflowexecution.find_unique = AsyncMock(side_effect=[None, mine])
+    db.workflowexecution.find_first = AsyncMock(side_effect=[None, mine])
     db.workflowexecution.create = AsyncMock(
         side_effect=UniqueViolationError({"user_facing_error": {"meta": {}}})  # type: ignore[arg-type]
     )
@@ -416,29 +428,13 @@ def test_idempotency_key_race_lost_to_the_same_caller_replays_without_enqueue(
     assert resp.status_code == 202
     assert resp.json()["id"] == mine.id
     _patch_enqueue_execution.assert_not_awaited()
-
-
-def test_idempotency_key_replay_by_admin_who_is_not_the_original_caller_is_409() -> None:
-    from src.security.auth import get_current_role
-
-    client, db = _client_with_mock_db()
-    other = _execution_row(status="completed")
-    other.userId = "someone-else"
-    db.workflowexecution.find_unique = AsyncMock(return_value=other)
-    client.app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")  # type: ignore[attr-defined]
-    try:
-        resp = client.post(
-            "/executions",
-            json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "k"},
-        )
-    finally:
-        client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
-    assert resp.status_code == 409
+    wheres = [c.kwargs["where"] for c in db.workflowexecution.find_first.await_args_list]
+    assert wheres == [{"workflowId": "wf1", "userId": "dev", "idempotencyKey": "k"}] * 2
 
 
 def test_post_execution_with_idempotency_key_creates_when_no_existing_match() -> None:
     client, db = _client_with_mock_db()
-    db.workflowexecution.find_unique = AsyncMock(return_value=None)
+    db.workflowexecution.find_first = AsyncMock(return_value=None)
     resp = client.post(
         "/executions",
         json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "fresh-key"},
@@ -450,22 +446,12 @@ def test_post_execution_with_idempotency_key_creates_when_no_existing_match() ->
 
 
 def test_post_execution_without_idempotency_key_skips_lookup() -> None:
-    """Assert no find_unique call keyed on the composite
-    workflowId_idempotencyKey lookup — not "never called at all", since
-    other find_unique calls unrelated to idempotency (e.g. workflow
-    lookups) are legitimate. As of P1-2, the row is no longer run
-    in-process (Cloud Tasks enqueueing replaces the BackgroundTask), so
-    there is no longer a background `executor.run()` call in this test
-    to also trigger a lookup by id."""
+    """No idempotency lookup (find_first) without a key. As of P1-2, the row is no
+    longer run in-process (Cloud Tasks enqueueing replaces the BackgroundTask)."""
     client, db = _client_with_mock_db()
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 202
-    lookup_calls = [
-        call
-        for call in db.workflowexecution.find_unique.await_args_list
-        if "workflowId_idempotencyKey" in call.kwargs.get("where", {})
-    ]
-    assert lookup_calls == []
+    db.workflowexecution.find_first.assert_not_awaited()
 
 
 def test_get_execution_returns_row() -> None:

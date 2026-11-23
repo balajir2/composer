@@ -1,5 +1,7 @@
 """Who may start a run, and whose execution an idempotency key replays (real database)."""
 
+from typing import Any
+
 import pytest
 from httpx import AsyncClient
 
@@ -15,76 +17,62 @@ from tests.integration.sqla_phase3.conftest import (
 
 pytestmark = [pytest.mark.integration, HTTPX_MARK]
 
-_KEY_TAKEN = "idempotency key already used for this workflow"
 
-
-async def test_idempotency_key_replays_only_for_the_original_caller(
+async def test_same_idempotency_key_is_scoped_per_user_on_executions(
     client: AsyncClient, member: Member, second_member: Member, wf_api: WorkflowApi, db: Db
 ) -> None:
     wf = await wf_api.create(member, isPublic=True)
     wid = wf["id"]
     key = unique("idem")
-    secret = "PRIVATE-INPUT-OF-FIRST-CALLER"
 
-    first = await client.post(
-        "/executions",
-        json={"workflowId": wid, "input": secret, "idempotencyKey": key},
-        headers=member.headers,
-    )
-    assert first.status_code == 202, first.text
-    first_id = jbody(first)["id"]
+    async def post(who: Member, text: str) -> dict[str, Any]:
+        resp = await client.post(
+            "/executions",
+            json={"workflowId": wid, "input": text, "idempotencyKey": key},
+            headers=who.headers,
+        )
+        assert resp.status_code == 202, resp.text
+        return jbody(resp)
 
-    # Same caller retrying gets the same execution back, nothing new started.
-    retry = await client.post(
-        "/executions",
-        json={"workflowId": wid, "input": secret, "idempotencyKey": key},
-        headers=member.headers,
-    )
-    assert retry.status_code == 202, retry.text
-    assert jbody(retry)["id"] == first_id
+    first = await post(member, "first-caller")
+    second = await post(second_member, "second-caller")
+    # Same key, different users: two distinct executions, no 409 and no cross-replay.
+    assert first["id"] != second["id"]
+    assert len(await db.executions_for(wid)) == 2
 
-    # Another user reusing the key gets a 409 that reveals nothing about the first run.
-    other = await client.post(
-        "/executions",
-        json={"workflowId": wid, "input": "mine", "idempotencyKey": key},
-        headers=second_member.headers,
-    )
-    assert other.status_code == 409, other.text
-    assert jbody(other)["detail"] == _KEY_TAKEN
-    assert first_id not in other.text
-    assert secret not in other.text
-    assert len(await db.executions_for(wid)) == 1
+    # Each caller's retry replays their own execution and starts nothing new.
+    assert (await post(member, "first-caller"))["id"] == first["id"]
+    assert (await post(second_member, "second-caller"))["id"] == second["id"]
+    assert len(await db.executions_for(wid)) == 2
 
 
-async def test_external_invoke_idempotency_key_is_not_replayed_to_another_user(
+async def test_same_idempotency_key_is_scoped_per_user_on_external_invoke(
     client: AsyncClient, member: Member, second_member: Member, wf_api: WorkflowApi, db: Db
 ) -> None:
     wf = await wf_api.create(member, isPublic=True)
     slug = unique("idem").lower()
     assert (await wf_api.publish(member, wf, slug)).status_code == 200
     key = unique("idem")
+    headers = {
+        "owner": await mint_api_key(client, member),
+        "other": await mint_api_key(client, second_member),
+    }
 
-    owner_key = await mint_api_key(client, member)
-    other_key = await mint_api_key(client, second_member)
-    first = await client.post(
-        f"/api/run/{slug}", json={"input": "secret-in", "idempotencyKey": key}, headers=owner_key
-    )
-    assert first.status_code == 200, first.text
-    first_id = jbody(first)["executionId"]
+    async def run(who: str) -> str:
+        resp = await client.post(
+            f"/api/run/{slug}", json={"input": who, "idempotencyKey": key}, headers=headers[who]
+        )
+        assert resp.status_code == 200, resp.text
+        return str(jbody(resp)["executionId"])
 
-    retry = await client.post(
-        f"/api/run/{slug}", json={"input": "secret-in", "idempotencyKey": key}, headers=owner_key
-    )
-    assert retry.status_code == 200, retry.text
-    assert jbody(retry)["executionId"] == first_id
+    first = await run("owner")
+    second = await run("other")
+    assert first != second
+    assert len(await db.executions_for(wf["id"])) == 2
 
-    other = await client.post(
-        f"/api/run/{slug}", json={"input": "x", "idempotencyKey": key}, headers=other_key
-    )
-    assert other.status_code == 409, other.text
-    assert jbody(other)["detail"] == _KEY_TAKEN
-    assert first_id not in other.text
-    assert len(await db.executions_for(wf["id"])) == 1
+    assert await run("owner") == first
+    assert await run("other") == second
+    assert len(await db.executions_for(wf["id"])) == 2
 
 
 async def test_an_assignee_can_start_a_run_and_a_bystander_cannot(

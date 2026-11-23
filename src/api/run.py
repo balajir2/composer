@@ -141,7 +141,7 @@ async def run_external(
     is_replay = False
     if payload.idempotency_key:
         execution = await find_execution_by_idempotency_key(
-            db, workflow.id, payload.idempotency_key
+            db, workflow.id, auth.user_id, payload.idempotency_key
         )
         is_replay = execution is not None
         if is_replay:
@@ -158,11 +158,11 @@ async def run_external(
         except UniqueViolationError:
             # Lost a race against a concurrent request carrying the same
             # key — the DB's unique constraint is the actual guarantee,
-            # the find_unique lookup above is just a fast path.
+            # the find_first lookup above is just a fast path.
             if payload.idempotency_key is None:
                 raise
             execution = await find_execution_by_idempotency_key(
-                db, workflow.id, payload.idempotency_key
+                db, workflow.id, auth.user_id, payload.idempotency_key
             )
             if execution is None:
                 raise

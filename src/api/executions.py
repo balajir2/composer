@@ -156,13 +156,13 @@ async def create_execution(
     # network timeout is the actual duplicate-execution vector in this
     # system — LangGraph doesn't auto-retry nodes, and the stuck-execution
     # sweeper only marks abandoned runs failed, it never re-runs them.
-    # A matching (workflowId, idempotencyKey) row means an earlier request
+    # A matching (workflowId, userId, idempotencyKey) row means an earlier request
     # already started (or finished) this logical operation; return it
     # instead of starting a second one that would fire side-effecting
     # nodes (Jira, email, HTTP mutations) a second time.
     if payload.idempotency_key:
         existing = await find_execution_by_idempotency_key(
-            db, payload.workflow_id, payload.idempotency_key
+            db, payload.workflow_id, user_id, payload.idempotency_key
         )
         if existing is not None:
             require_same_caller(existing, user_id)
@@ -178,12 +178,12 @@ async def create_execution(
         )
     except UniqueViolationError:
         # Lost a race against a concurrent request carrying the same key —
-        # the DB's unique constraint is the actual guarantee; the find_unique
+        # the DB's unique constraint is the actual guarantee; the find_first
         # lookup above is just a fast path that can't close the race alone.
         if payload.idempotency_key is None:
             raise
         existing = await find_execution_by_idempotency_key(
-            db, payload.workflow_id, payload.idempotency_key
+            db, payload.workflow_id, user_id, payload.idempotency_key
         )
         if existing is None:
             raise
