@@ -6,9 +6,9 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.api.workflows import (  # reuse existing secret helpers (additive import)
     _check_workflow_size_limits,  # pyright: ignore[reportPrivateUsage]
     _encrypt_confluence_tokens,  # pyright: ignore[reportPrivateUsage]
@@ -20,6 +20,10 @@ from src.api.workflows import (  # reuse existing secret helpers (additive impor
 from src.builder.builder_agent import BuildSession, run_builder_turn
 from src.builder.model_policy import ModelNotAllowedError, enabled_model_catalog, load_policy
 from src.config import get_settings
+from src.db.repos import workflow_assignments as assignments_repo
+from src.db.repos import workflows as workflows_repo
+from src.db.repos.workflows import WorkflowRecord
+from src.db.runtime import require_sessionmaker
 from src.db.session import get_session
 from src.engine.graph_builder import collect_workflow_violations
 from src.engine.workflow import Workflow
@@ -32,19 +36,6 @@ from src.security.rate_limit import (
     per_minute_config,
 )
 from src.storage.db import get_db
-
-
-async def _has_assignment(db: Prisma, workflow_id: str, user_id: str) -> bool:
-    """Prisma assignment check.
-
-    TODO(phase 3 task 4): the builder moves to SQLAlchemy; delete this and use
-    ``workflow_assignments.exists``.
-    """
-    row = await db.workflowassignment.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"workflowId_userId": {"workflowId": workflow_id, "userId": user_id}}
-    )
-    return row is not None
-
 
 router = APIRouter(tags=["builder"])
 
@@ -99,41 +90,71 @@ def _prune_sessions(sessions: dict[str, BuildSession]) -> None:
         del sessions[sid]
 
 
-async def _load_workflow(db: Prisma, workflow_id: str) -> Any:
-    row = await db.workflow.find_unique(where={"id": workflow_id})  # pyright: ignore[reportAttributeAccessIssue]
-    if row is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Workflow {workflow_id!r} not found.",
-        )
-    return row
+async def _load_workflow(
+    sessionmaker: async_sessionmaker[AsyncSession], workflow_id: str, user_id: str, role: str
+) -> WorkflowRecord:
+    """Read the workflow and check access in one short session, closed on return.
+
+    Callers hold no session afterwards, so the LLM loop never pins a connection.
+    """
+    async with sessionmaker() as session:
+        row = await workflows_repo.get(session, workflow_id)
+        if row is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Workflow {workflow_id!r} not found.",
+            )
+        if (
+            role != "admin"
+            and row.user_id != user_id
+            and not await assignments_repo.exists(session, workflow_id, user_id)
+        ):
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found.")
+        return row
 
 
-def _to_engine_workflow(row: Any) -> Workflow:
+def _to_engine_workflow(row: WorkflowRecord) -> Workflow:
     return Workflow.model_validate(
         {
             "id": row.id,
             "name": row.name,
             "description": row.description,
-            "nodes": row.nodes if isinstance(row.nodes, list) else [],
-            "edges": row.edges if isinstance(row.edges, list) else [],
+            "nodes": row.nodes,
+            "edges": row.edges,
         }
     )
 
 
-async def _persist(db: Prisma, workflow_id: str, workflow: Workflow, existing: Any) -> Any:
+async def _persist(
+    sessionmaker: async_sessionmaker[AsyncSession],
+    workflow_id: str,
+    workflow: Workflow,
+    existing: WorkflowRecord,
+) -> WorkflowRecord:
+    """Write nodes and edges in a fresh short session.
+
+    Secrets are encrypted, and a redacted echo keeps the stored value, against the
+    row read at load time (``existing``), as before the move to SQLAlchemy.
+    """
     nodes_json = [node.model_dump(by_alias=True) for node in workflow.nodes]
-    existing_nodes = existing.nodes if isinstance(existing.nodes, list) else []
+    existing_nodes = existing.nodes
     _encrypt_jira_tokens(nodes_json, existing_nodes=existing_nodes)
     _encrypt_vector_db_keys(nodes_json, existing_nodes=existing_nodes)
     _encrypt_http_headers(nodes_json, existing_nodes=existing_nodes)
     _encrypt_confluence_tokens(nodes_json, existing_nodes=existing_nodes)
     edges_json = [edge.model_dump(by_alias=True) for edge in workflow.edges]
     # Metadata ruling: update ONLY nodes + edges; never the metadata columns.
-    return await db.workflow.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": workflow_id},
-        data={"nodes": Json(nodes_json), "edges": Json(edges_json)},  # pyright: ignore[reportArgumentType]
-    )
+    async with sessionmaker() as session:
+        row = await workflows_repo.update(
+            session, workflow_id, {"nodes": nodes_json, "edges": edges_json}
+        )
+        if row is None:  # deleted while the builder turn ran
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Workflow {workflow_id!r} not found.",
+            )
+        await session.commit()
+    return row
 
 
 @router.get("/builder/models", response_model=BuilderModelsResponse)
@@ -182,13 +203,8 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
             validation_errors=[],
         )
 
-    existing = await _load_workflow(db, workflow_id)
-    if (
-        role != "admin"
-        and existing.userId != user_id
-        and not await _has_assignment(db, workflow_id, user_id)
-    ):
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Workflow not found.")
+    sessionmaker = require_sessionmaker(request)
+    existing = await _load_workflow(sessionmaker, workflow_id, user_id, role)
 
     if session is None:
         sid = secrets.token_hex(16)
@@ -221,7 +237,7 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
     )
 
     _check_workflow_size_limits(updated)
-    row = await _persist(db, workflow_id, updated, existing)
+    row = await _persist(sessionmaker, workflow_id, updated, existing)
     validation_errors = collect_workflow_violations(updated)
     return BuilderMessageResponse(
         sessionId=sid,

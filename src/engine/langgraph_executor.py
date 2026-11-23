@@ -18,6 +18,8 @@ from langgraph.types import Command  # pyright: ignore[reportUnknownVariableType
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.db.repos import workflows as workflows_repo
+from src.db.runtime import get_registered_sessionmaker
 from src.engine.approval_email import send_approval_email
 from src.engine.context import (
     LangSmithConfig,
@@ -159,9 +161,17 @@ class LangGraphExecutor:
 
         Returns (compiled_graph, state, langgraph_config).
         """
-        workflow_row = await self.db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"id": execution.workflowId}
-        )
+        # Short session: closed before the graph is built and the run starts. Without a
+        # registered sessionmaker (the app lifespan registers one) there is nothing to read
+        # the workflow with, so fail loudly, as the other executors' _require_db do.
+        sessionmaker = get_registered_sessionmaker()
+        if sessionmaker is None:
+            raise RuntimeError(
+                "no SQLAlchemy sessionmaker registered; is the app lifespan running? "
+                "LangGraphExecutor needs one to load the workflow."
+            )
+        async with sessionmaker() as session:
+            workflow_row = await workflows_repo.get(session, execution.workflowId)
         if workflow_row is None:
             raise RuntimeError(f"Workflow {execution.workflowId!r} not found")
 
@@ -191,7 +201,7 @@ class LangGraphExecutor:
             else None
         )
         set_current_langsmith(ls_config)
-        set_current_db(self.db)
+        set_current_db(self.db)  # TODO(phase 4): drop with the executions move
         set_current_execution_id(execution.id)
         set_current_event_bus(self.event_bus)
 

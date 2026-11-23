@@ -19,6 +19,8 @@ from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingI
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.config import get_settings
+from src.db.repos import workflows as workflows_repo
+from src.db.runtime import require_sessionmaker
 from src.engine.langgraph_executor import LangGraphExecutor
 from src.execution.cloud_tasks import enqueue_execution
 from src.security.api_key_auth import ApiKeyAuthResult, get_current_api_key_user
@@ -129,12 +131,14 @@ async def run_external(
         )
 
     # Look up by slug.  Non-production OR unknown = 404.
-    workflow = await db.workflow.find_unique(where={"externalSlug": slug})  # pyright: ignore[reportAttributeAccessIssue]
-    if workflow is None or not workflow.isProduction:
+    # Short session: closed before the execution starts, the enqueue and the sync wait.
+    async with require_sessionmaker(request)() as session:
+        workflow = await workflows_repo.get_by_slug(session, slug)
+    if workflow is None or not workflow.is_production:
         raise HTTPException(status_code=404, detail=f"production workflow {slug!r} not found")
 
     # Authz: public OR owner-key OR admin.
-    if not workflow.isPublic and workflow.userId != auth.user_id and auth.role != "admin":
+    if not workflow.is_public and workflow.user_id != auth.user_id and auth.role != "admin":
         raise HTTPException(status_code=404, detail=f"production workflow {slug!r} not found")
 
     executor = _get_executor(request, db, event_bus)

@@ -7,8 +7,19 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.repos import users as users_repo
+from src.db.repos.workflows import WorkflowRecord
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
+from tests.unit.db_fakes import (
+    FakeSessionmaker,
+    RecordingSessionmaker,
+    WorkflowRepoMocks,
+    assert_no_network_inside_session,
+    make_user,
+    make_workflow,
+    patch_workflow_repos,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -24,6 +35,21 @@ def _patch_enqueue_execution(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # p
     mock = AsyncMock()
     monkeypatch.setattr("src.api.executions.enqueue_execution", mock)
     return mock
+
+
+_repos_holder: list[WorkflowRepoMocks] = []
+
+
+def _repos() -> WorkflowRepoMocks:
+    return _repos_holder[0]
+
+
+@pytest.fixture(autouse=True)
+def _patch_workflow_reads(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
+    """The workflow read goes through a (fake) sessionmaker and the repo; no database here."""
+    _repos_holder[:] = [patch_workflow_repos(monkeypatch)]
+    _repos().get.return_value = _workflow_row()
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=make_user(id="dev")))
 
 
 def _execution_row(status: str = "running") -> SimpleNamespace:
@@ -44,26 +70,26 @@ def _execution_row(status: str = "running") -> SimpleNamespace:
     )
 
 
-def _workflow_row() -> SimpleNamespace:
+def _workflow_row(**overrides: Any) -> WorkflowRecord:
     """Minimal workflow row that satisfies LangGraphExecutor.run()."""
-    return SimpleNamespace(
-        id="wf1",
-        userId="dev",
-        isPublic=False,
-        name="Test Workflow",
-        nodes=[
+    base: dict[str, Any] = {
+        "id": "wf1",
+        "user_id": "dev",
+        "is_public": False,
+        "name": "Test Workflow",
+        "nodes": [
             {"id": "start", "type": "start", "data": {}},
             {"id": "end", "type": "end", "data": {}},
         ],
-        edges=[{"source": "start", "target": "end"}],
-    )
+        "edges": [{"source": "start", "target": "end"}],
+    }
+    base.update(overrides)
+    return make_workflow(**base)
 
 
 def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     app = create_app()
     db = MagicMock()
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(return_value=_workflow_row())
     db.workflowexecution = MagicMock()
     # P1-2: start_execution now creates rows with status='queued' — see
     # LangGraphExecutor.start_execution's docstring; the row only becomes
@@ -77,6 +103,7 @@ def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     db.user = MagicMock()
     db.user.find_unique = AsyncMock(return_value=None)
     app.state.db = db
+    app.state.db_sessionmaker = FakeSessionmaker()
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
     return TestClient(app), db
@@ -221,8 +248,8 @@ def test_post_execution_enqueue_failure_survives_nested_mark_failed_error(
 
 
 def test_post_execution_404_when_workflow_missing() -> None:
-    client, db = _client_with_mock_db()
-    db.workflow.find_unique = AsyncMock(return_value=None)
+    client, _db = _client_with_mock_db()
+    _repos().get.return_value = None
     resp = client.post("/executions", json={"workflowId": "ghost", "input": "hi"})
     assert resp.status_code == 404
 
@@ -230,9 +257,7 @@ def test_post_execution_404_when_workflow_missing() -> None:
 def test_post_execution_404_for_other_users_private_workflow() -> None:
     """A member cannot execute a private workflow they do not own."""
     client, db = _client_with_mock_db()
-    workflow = _workflow_row()
-    workflow.userId = "someone-else"
-    db.workflow.find_unique = AsyncMock(return_value=workflow)
+    _repos().get.return_value = _workflow_row(user_id="someone-else")
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 404
     db.workflowexecution.create.assert_not_awaited()
@@ -240,11 +265,8 @@ def test_post_execution_404_for_other_users_private_workflow() -> None:
 
 def test_post_execution_allows_other_users_public_workflow() -> None:
     """Public workflows remain executable by authenticated members."""
-    client, db = _client_with_mock_db()
-    workflow = _workflow_row()
-    workflow.userId = "someone-else"
-    workflow.isPublic = True
-    db.workflow.find_unique = AsyncMock(return_value=workflow)
+    client, _db = _client_with_mock_db()
+    _repos().get.return_value = _workflow_row(user_id="someone-else", is_public=True)
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 202
 
@@ -655,3 +677,36 @@ def test_detail_serializes_failure_code(failure_code: str | None) -> None:
     response = cast("Any", client).get("/executions/ex1")
     assert response.status_code == 200, response.text
     assert response.json()["failureCode"] == failure_code
+
+
+def test_workflow_is_read_in_a_short_session_closed_before_the_execution_is_created() -> None:
+    events: list[str] = []
+    client, db = _client_with_mock_db()
+    client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
+
+    async def _get(*_a: object, **_k: object) -> WorkflowRecord:
+        events.append("read")
+        return _workflow_row()
+
+    async def _create(**_k: object) -> SimpleNamespace:
+        events.append("net:create_execution")
+        return _execution_row(status="queued")
+
+    _repos().get.side_effect = _get
+    db.workflowexecution.create = AsyncMock(side_effect=_create)
+
+    resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
+
+    assert resp.status_code == 202
+    first_read = events.index("read")
+    assert events[first_read - 1 : first_read + 2] == ["session:enter", "read", "session:exit"]
+    assert events.index("net:create_execution") > first_read + 1
+    assert_no_network_inside_session(events)
+
+
+def test_post_execution_without_a_database_is_503() -> None:
+    client, _db = _client_with_mock_db()
+    client.app.state.db_sessionmaker = None  # type: ignore[attr-defined]
+    resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "database unavailable"

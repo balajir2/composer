@@ -12,28 +12,32 @@ from fastapi.testclient import TestClient
 from src.db.models import UserRole
 from src.db.repos import api_keys as keys_repo
 from src.db.repos import users as users_repo
+from src.db.repos import workflows as workflows_repo
 from src.db.repos.api_keys import ApiKeyRecord
+from src.db.repos.workflows import WorkflowRecord
 from src.engine.events import ExecutionEventBus
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
-from tests.unit.db_fakes import FakeSessionmaker, make_user
+from tests.unit.db_fakes import (
+    FakeSessionmaker,
+    RecordingSessionmaker,
+    assert_no_network_inside_session,
+    make_user,
+    make_workflow,
+)
 
 
-def _wf(**overrides: Any) -> SimpleNamespace:
+def _wf(**overrides: Any) -> WorkflowRecord:
     base: dict[str, Any] = {
         "id": "wf1",
-        "userId": "owner-u",
+        "user_id": "owner-u",
         "name": "External WF",
-        "nodes": [],
-        "edges": [],
-        "tags": [],
-        "isTemplate": False,
-        "isPublic": False,
-        "isProduction": True,
-        "externalSlug": "my-wf",
+        "is_public": False,
+        "is_production": True,
+        "external_slug": "my-wf",
     }
     base.update(overrides)
-    return SimpleNamespace(**base)
+    return make_workflow(**base)
 
 
 def _key(**overrides: Any) -> ApiKeyRecord:
@@ -113,9 +117,8 @@ def _build_client(
         ),
     )
     app.state.db_sessionmaker = FakeSessionmaker()
+    monkeypatch.setattr(workflows_repo, "get_by_slug", AsyncMock(return_value=wf))
     db = MagicMock()
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(return_value=wf)
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
         return_value=existing_execution if existing_execution is not None else start_result
@@ -166,7 +169,7 @@ def test_idempotency_key_replays_existing_execution(monkeypatch: pytest.MonkeyPa
     (e.g. an HTTP client timeout retry) must get the original execution
     back, not start a second one — otherwise a Jira/email node inside the
     workflow fires twice for one logical call (P1-3)."""
-    wf = _wf(isPublic=True)
+    wf = _wf(is_public=True)
     existing = _exec(id="prior-exec", status="completed")
     start_calls: list[dict[str, Any]] = []
     client = _build_client(monkeypatch, wf, existing_execution=existing, start_calls=start_calls)
@@ -183,7 +186,7 @@ def test_idempotency_key_replays_existing_execution(monkeypatch: pytest.MonkeyPa
 def test_idempotency_key_starts_new_execution_when_no_match(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    wf = _wf(isPublic=True)
+    wf = _wf(is_public=True)
     start_calls: list[dict[str, Any]] = []
     client = _build_client(monkeypatch, wf, start_calls=start_calls)
     resp = client.post(
@@ -204,7 +207,7 @@ def test_sync_mode_returns_immediately_on_waiting_approval(
     reporting a hard-coded 'running' status when the row is actually
     waiting_approval is misleading to a caller that can't tell whether the
     workflow is still executing or paused for a human decision (P1-6)."""
-    wf = _wf(isPublic=True)
+    wf = _wf(is_public=True)
     waiting_row = _exec(status="waiting_approval", output=None)
     client = _build_client(monkeypatch, wf, start_result=waiting_row)
     started = time.monotonic()
@@ -220,7 +223,7 @@ def test_sync_mode_returns_immediately_on_waiting_approval(
 
 
 def test_async_run_returns_200_with_stream_url(monkeypatch: pytest.MonkeyPatch) -> None:
-    wf = _wf(isPublic=True)
+    wf = _wf(is_public=True)
     client = _build_client(monkeypatch, wf)
     resp = client.post(
         "/api/run/my-wf",
@@ -243,7 +246,7 @@ def test_async_run_enqueues_cloud_task_instead_of_background_task(
     zero mid-run, which Cloud Tasks' HTTP-push delivery to
     /internal/claim-and-run is immune to (ADR-0033, same fix as Task 12's
     POST /executions replacement)."""
-    wf = _wf(isPublic=True)
+    wf = _wf(is_public=True)
     client = _build_client(monkeypatch, wf)
 
     enqueued: list[tuple[str, str]] = []
@@ -263,14 +266,14 @@ def test_async_run_enqueues_cloud_task_instead_of_background_task(
 
 
 def test_missing_bearer_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:
-    wf = _wf(isPublic=True)
+    wf = _wf(is_public=True)
     client = _build_client(monkeypatch, wf)
     resp = client.post("/api/run/my-wf", json={"input": {}})
     assert resp.status_code == 401
 
 
 def test_non_production_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
-    wf = _wf(isProduction=False)
+    wf = _wf(is_production=False)
     client = _build_client(monkeypatch, wf)
     resp = client.post(
         "/api/run/my-wf",
@@ -281,7 +284,7 @@ def test_non_production_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_private_non_owner_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
-    wf = _wf(isPublic=False, userId="owner-u")
+    wf = _wf(is_public=False, user_id="owner-u")
     # Key belongs to a different user:
     key = _key(user_id="someone-else")
     client = _build_client(monkeypatch, wf, key_row=key)
@@ -294,7 +297,7 @@ def test_private_non_owner_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_private_admin_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
-    wf = _wf(isPublic=False, userId="owner-u")
+    wf = _wf(is_public=False, user_id="owner-u")
     key = _key(user_id="admin-u")
     client = _build_client(monkeypatch, wf, key_row=key, key_owner_role="admin")
     resp = client.post(
@@ -306,7 +309,7 @@ def test_private_admin_allowed(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_revoked_key_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:
-    wf = _wf(isPublic=True)
+    wf = _wf(is_public=True)
     key = _key(revoked_at=datetime(2026, 4, 1, 0, 0, 0, tzinfo=UTC))
     client = _build_client(monkeypatch, wf, key_row=key)
     resp = client.post(
@@ -318,7 +321,7 @@ def test_revoked_key_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def test_inactive_key_owner_returns_401(monkeypatch: pytest.MonkeyPatch) -> None:
-    wf = _wf(isPublic=True)
+    wf = _wf(is_public=True)
     client = _build_client(monkeypatch, wf, key_owner_active=False)
     resp = client.post(
         "/api/run/my-wf",
@@ -329,7 +332,7 @@ def test_inactive_key_owner_returns_401(monkeypatch: pytest.MonkeyPatch) -> None
 
 
 def test_input_over_size_returns_413(monkeypatch: pytest.MonkeyPatch) -> None:
-    wf = _wf(isPublic=True)
+    wf = _wf(is_public=True)
     client = _build_client(monkeypatch, wf)
     huge = "x" * 1_500_000
     resp = client.post(
@@ -347,7 +350,7 @@ def test_input_non_ascii_measured_by_utf8_bytes_not_escaped_json_chars(
     (P1-6): a 300,000-char string of euro signs is 900,002 real UTF-8
     bytes (under the 1 MB cap) but 1,800,002 chars once json.dumps's
     default ensure_ascii=True escapes each '€' to `\\u20ac`."""
-    wf = _wf(isPublic=True)
+    wf = _wf(is_public=True)
     client = _build_client(monkeypatch, wf)
     non_ascii_input = "€" * 300_000
     resp = client.post(
@@ -356,3 +359,35 @@ def test_input_non_ascii_measured_by_utf8_bytes_not_escaped_json_chars(
         json={"input": non_ascii_input},
     )
     assert resp.status_code != 413
+
+
+def test_slug_is_looked_up_in_a_short_session_closed_before_the_enqueue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.api import run as _run_module
+
+    events: list[str] = []
+    client = _build_client(monkeypatch, _wf(is_public=True))
+    client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
+
+    async def _by_slug(*_a: object, **_k: object) -> WorkflowRecord:
+        events.append("read")
+        return _wf(is_public=True)
+
+    async def _enqueue(*_a: object, **_k: object) -> None:
+        events.append("net:enqueue")
+
+    monkeypatch.setattr(workflows_repo, "get_by_slug", _by_slug)
+    monkeypatch.setattr(_run_module, "enqueue_execution", _enqueue)
+
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {}},
+    )
+
+    assert resp.status_code == 200, resp.text
+    read_at = events.index("read")
+    assert events[read_at - 1 : read_at + 2] == ["session:enter", "read", "session:exit"]
+    assert events.index("net:enqueue") > read_at + 1
+    assert_no_network_inside_session(events)

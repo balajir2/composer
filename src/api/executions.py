@@ -16,6 +16,8 @@ from src.api.execution_status import (
     ACTIVE_EXECUTION_STATUSES_SORTED,
 )
 from src.config import get_settings
+from src.db.repos import workflows as workflows_repo
+from src.db.runtime import require_sessionmaker
 from src.engine.langgraph_executor import LangGraphExecutor
 from src.execution.cloud_tasks import enqueue_execution
 from src.security.auth import get_current_role
@@ -147,15 +149,15 @@ async def create_execution(
             detail=f"execution input exceeds max_bytes={max_bytes}; got {input_size}",
         )
 
-    workflow = await db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": payload.workflow_id}
-    )
+    # Short session: closed before the execution row is written and the task enqueued.
+    async with require_sessionmaker(request)() as session:
+        workflow = await workflows_repo.get(session, payload.workflow_id)
     if workflow is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow {payload.workflow_id!r} not found.",
         )
-    if role != "admin" and not workflow.isPublic and workflow.userId != user_id:
+    if role != "admin" and not workflow.is_public and workflow.user_id != user_id:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow {payload.workflow_id!r} not found.",

@@ -181,6 +181,8 @@ class WorkflowRepoMocks:
     list_page: AsyncMock
     search: AsyncMock
     exists: AsyncMock
+    get_by_slug: AsyncMock
+    list_production: AsyncMock
 
 
 def patch_workflow_repos(monkeypatch: pytest.MonkeyPatch) -> WorkflowRepoMocks:
@@ -193,8 +195,11 @@ def patch_workflow_repos(monkeypatch: pytest.MonkeyPatch) -> WorkflowRepoMocks:
         list_page=AsyncMock(return_value=([], 0)),
         search=AsyncMock(return_value=([], 0)),
         exists=AsyncMock(return_value=False),
+        get_by_slug=AsyncMock(return_value=None),
+        list_production=AsyncMock(return_value=[]),
     )
-    for name in ("get", "create", "update", "delete", "list_page", "search"):
+    for name in ("get", "create", "update", "delete", "list_page", "search", "get_by_slug"):
         monkeypatch.setattr(workflows_repo, name, getattr(mocks, name))
+    monkeypatch.setattr(workflows_repo, "list_production", mocks.list_production)
     monkeypatch.setattr(assignments_repo, "exists", mocks.exists)
     return mocks

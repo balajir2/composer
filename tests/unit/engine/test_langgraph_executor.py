@@ -6,16 +6,24 @@ right fields on completion/failure.
 """
 
 import asyncio
+from collections.abc import Iterator
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
+from src.db.repos import workflows as workflows_repo
+from src.db.runtime import register_sessionmaker
 from src.engine.events import ExecutionEvent
 from src.engine.execution_control import ExecutionStopped
 from src.engine.langgraph_executor import LangGraphExecutor
+from tests.unit.db_fakes import (
+    FakeSessionmaker,
+    RecordingSessionmaker,
+    assert_no_network_inside_session,
+)
 
 
 class _FakeEventStore:
@@ -40,6 +48,29 @@ def _patch_notify(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # pyright: ign
     mock = AsyncMock()
     monkeypatch.setattr("src.engine.langgraph_executor.notify_execution_event", mock)
     return mock
+
+
+_workflow_get: list[AsyncMock] = []
+
+
+def _set_workflow_get(mock: AsyncMock) -> None:
+    """Make the executor's workflow read (``workflows_repo.get``) return/raise what ``mock`` does."""
+    _workflow_get[:] = [mock]
+
+
+@pytest.fixture(autouse=True)
+def _workflow_reads(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
+    """The executor reads the workflow through the registered sessionmaker (no database here)."""
+
+    async def _get(_session: object, workflow_id: str) -> Any:
+        return await _workflow_get[0](workflow_id)
+
+    _workflow_get.clear()
+    monkeypatch.setattr(workflows_repo, "get", _get)
+    register_sessionmaker(cast("Any", FakeSessionmaker()))
+    yield
+    register_sessionmaker(None)
+    _workflow_get.clear()
 
 
 def _workflow_row(workflow_dict: dict[str, Any]) -> SimpleNamespace:
@@ -97,8 +128,7 @@ async def test_start_execution_creates_row_with_queued_status() -> None:
 async def test_run_completes_start_to_end() -> None:
     wf_dict = _start_to_end_workflow_dict()
     db = MagicMock()
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(return_value=_workflow_row(wf_dict))
+    _set_workflow_get(AsyncMock(return_value=_workflow_row(wf_dict)))
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
         return_value=SimpleNamespace(
@@ -123,6 +153,56 @@ async def test_run_completes_start_to_end() -> None:
     # passed to Prisma — unwrap via the .data attribute for assertion.
     assert update_kwargs["output"].data == "hello"  # start sets lastOutput to parsed input
     assert "completedAt" in update_kwargs
+
+
+async def test_workflow_is_read_in_a_short_session_closed_before_the_graph_is_built(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.engine import langgraph_executor as lge_mod
+
+    events: list[str] = []
+    register_sessionmaker(cast("Any", RecordingSessionmaker(events)))
+
+    async def _get(_session: object, _workflow_id: str) -> Any:
+        events.append("read")
+        return _workflow_row(_start_to_end_workflow_dict())
+
+    def _build(*_a: Any, **_k: Any) -> None:
+        events.append("net:build_graph")
+        raise RuntimeError("stop after build")
+
+    monkeypatch.setattr(workflows_repo, "get", _get)
+    monkeypatch.setattr(lge_mod, "build_graph", _build)
+    db = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            status="running", id="ex1", workflowId="wf1", threadId="t1", input="", userId=None
+        )
+    )
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
+
+    await LangGraphExecutor(db=db, checkpointer=MemorySaver()).run("ex1")
+
+    assert events == ["session:enter", "read", "session:exit", "net:build_graph"]
+    assert_no_network_inside_session(events)
+
+
+async def test_run_without_a_registered_sessionmaker_fails_the_execution_clearly() -> None:
+    register_sessionmaker(None)
+    db = MagicMock()
+    db.workflowexecution.find_unique = AsyncMock(
+        return_value=SimpleNamespace(
+            status="running", id="ex1", workflowId="wf1", threadId="t1", input="", userId=None
+        )
+    )
+    db.workflowexecution.update_many = AsyncMock(return_value=1)
+
+    await LangGraphExecutor(db=db, checkpointer=MemorySaver()).run("ex1")
+
+    assert db.workflowexecution.update_many.await_args is not None
+    data = db.workflowexecution.update_many.await_args.kwargs["data"]
+    assert data["status"] == "failed"
+    assert "no SQLAlchemy sessionmaker registered" in data["error"]
 
 
 async def test_mark_completed_preserves_falsy_final_output() -> None:
@@ -193,8 +273,7 @@ async def test_run_marks_failed_on_exception(monkeypatch: pytest.MonkeyPatch) ->
 
     wf_dict = _start_to_end_workflow_dict()
     db = MagicMock()
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(return_value=_workflow_row(wf_dict))
+    _set_workflow_get(AsyncMock(return_value=_workflow_row(wf_dict)))
     db.workflowexecution = MagicMock()
     db.workflowexecution.find_unique = AsyncMock(
         return_value=SimpleNamespace(
@@ -242,27 +321,43 @@ async def test_run_marks_waiting_approval_on_interrupt(
             input=None,
         )
     )
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            id="w1",
-            name="test",
-            nodes=[
-                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-                {
-                    "id": "ua",
-                    "type": "user-approval",
-                    "position": {"x": 0, "y": 0},
-                    "data": {"label": "UA", "approvalMessage": "Approve?"},
-                },
-                {"id": "a", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "A"}},
-                {"id": "b", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "B"}},
-            ],
-            edges=[
-                {"id": "e1", "source": "s", "target": "ua"},
-                {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
-                {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
-            ],
+    _set_workflow_get(
+        AsyncMock(
+            return_value=SimpleNamespace(
+                id="w1",
+                name="test",
+                nodes=[
+                    {
+                        "id": "s",
+                        "type": "start",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "S"},
+                    },
+                    {
+                        "id": "ua",
+                        "type": "user-approval",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "UA", "approvalMessage": "Approve?"},
+                    },
+                    {
+                        "id": "a",
+                        "type": "end",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "A"},
+                    },
+                    {
+                        "id": "b",
+                        "type": "end",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "B"},
+                    },
+                ],
+                edges=[
+                    {"id": "e1", "source": "s", "target": "ua"},
+                    {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
+                    {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
+                ],
+            )
         )
     )
     update_calls: list[dict[str, Any]] = []
@@ -324,16 +419,27 @@ async def test_resume_approved_continues_to_completion(
             input=None,
         )
     )
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            id="w1",
-            name="t",
-            nodes=[
-                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-                {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
-            ],
-            edges=[{"id": "e1", "source": "s", "target": "e"}],
+    _set_workflow_get(
+        AsyncMock(
+            return_value=SimpleNamespace(
+                id="w1",
+                name="t",
+                nodes=[
+                    {
+                        "id": "s",
+                        "type": "start",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "S"},
+                    },
+                    {
+                        "id": "e",
+                        "type": "end",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "E"},
+                    },
+                ],
+                edges=[{"id": "e1", "source": "s", "target": "e"}],
+            )
         )
     )
     update_calls: list[dict[str, Any]] = []
@@ -393,16 +499,27 @@ async def test_run_emits_status_change_on_start_and_complete(
             input=None,
         )
     )
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            id="w1",
-            name="t",
-            nodes=[
-                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-                {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
-            ],
-            edges=[{"id": "e1", "source": "s", "target": "e"}],
+    _set_workflow_get(
+        AsyncMock(
+            return_value=SimpleNamespace(
+                id="w1",
+                name="t",
+                nodes=[
+                    {
+                        "id": "s",
+                        "type": "start",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "S"},
+                    },
+                    {
+                        "id": "e",
+                        "type": "end",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "E"},
+                    },
+                ],
+                edges=[{"id": "e1", "source": "s", "target": "e"}],
+            )
         )
     )
     db.workflowexecution.update_many = AsyncMock(return_value=1)
@@ -464,27 +581,43 @@ async def test_run_emits_approval_pending_on_pause(
             input=None,
         )
     )
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            id="w1",
-            name="t",
-            nodes=[
-                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-                {
-                    "id": "ua",
-                    "type": "user-approval",
-                    "position": {"x": 0, "y": 0},
-                    "data": {"label": "UA", "approvalMessage": "Approve?"},
-                },
-                {"id": "a", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "A"}},
-                {"id": "b", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "B"}},
-            ],
-            edges=[
-                {"id": "e1", "source": "s", "target": "ua"},
-                {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
-                {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
-            ],
+    _set_workflow_get(
+        AsyncMock(
+            return_value=SimpleNamespace(
+                id="w1",
+                name="t",
+                nodes=[
+                    {
+                        "id": "s",
+                        "type": "start",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "S"},
+                    },
+                    {
+                        "id": "ua",
+                        "type": "user-approval",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "UA", "approvalMessage": "Approve?"},
+                    },
+                    {
+                        "id": "a",
+                        "type": "end",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "A"},
+                    },
+                    {
+                        "id": "b",
+                        "type": "end",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "B"},
+                    },
+                ],
+                edges=[
+                    {"id": "e1", "source": "s", "target": "ua"},
+                    {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
+                    {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
+                ],
+            )
         )
     )
     db.workflowexecution.update_many = AsyncMock(return_value=1)
@@ -544,8 +677,7 @@ async def test_run_emits_failed_on_exception(
             input=None,
         )
     )
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(side_effect=RuntimeError("boom"))
+    _set_workflow_get(AsyncMock(side_effect=RuntimeError("boom")))
     db.workflowexecution.update_many = AsyncMock(return_value=1)
 
     orch = LangGraphExecutor(db, MagicMock(), event_bus=store)  # pyright: ignore[reportArgumentType]
@@ -573,31 +705,47 @@ async def test_run_sends_approval_email_when_approver_email_set(
             status="running", id="e1", workflowId="w1", userId="dev", threadId="t1", input=None
         )
     )
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            id="w1",
-            name="t",
-            nodes=[
-                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-                {
-                    "id": "ua",
-                    "type": "user-approval",
-                    "position": {"x": 0, "y": 0},
-                    "data": {
-                        "label": "UA",
-                        "approvalMessage": "Approve?",
-                        "approverEmail": "reviewer@example.com",
+    _set_workflow_get(
+        AsyncMock(
+            return_value=SimpleNamespace(
+                id="w1",
+                name="t",
+                nodes=[
+                    {
+                        "id": "s",
+                        "type": "start",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "S"},
                     },
-                },
-                {"id": "a", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "A"}},
-                {"id": "b", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "B"}},
-            ],
-            edges=[
-                {"id": "e1", "source": "s", "target": "ua"},
-                {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
-                {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
-            ],
+                    {
+                        "id": "ua",
+                        "type": "user-approval",
+                        "position": {"x": 0, "y": 0},
+                        "data": {
+                            "label": "UA",
+                            "approvalMessage": "Approve?",
+                            "approverEmail": "reviewer@example.com",
+                        },
+                    },
+                    {
+                        "id": "a",
+                        "type": "end",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "A"},
+                    },
+                    {
+                        "id": "b",
+                        "type": "end",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "B"},
+                    },
+                ],
+                edges=[
+                    {"id": "e1", "source": "s", "target": "ua"},
+                    {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
+                    {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
+                ],
+            )
         )
     )
     db.workflowexecution.update_many = AsyncMock(return_value=1)
@@ -665,31 +813,47 @@ async def test_run_pending_since_matches_persisted_and_emailed(
             status="running", id="e1", workflowId="w1", userId="dev", threadId="t1", input=None
         )
     )
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            id="w1",
-            name="t",
-            nodes=[
-                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-                {
-                    "id": "ua",
-                    "type": "user-approval",
-                    "position": {"x": 0, "y": 0},
-                    "data": {
-                        "label": "UA",
-                        "approvalMessage": "Approve?",
-                        "approverEmail": "reviewer@example.com",
+    _set_workflow_get(
+        AsyncMock(
+            return_value=SimpleNamespace(
+                id="w1",
+                name="t",
+                nodes=[
+                    {
+                        "id": "s",
+                        "type": "start",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "S"},
                     },
-                },
-                {"id": "a", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "A"}},
-                {"id": "b", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "B"}},
-            ],
-            edges=[
-                {"id": "e1", "source": "s", "target": "ua"},
-                {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
-                {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
-            ],
+                    {
+                        "id": "ua",
+                        "type": "user-approval",
+                        "position": {"x": 0, "y": 0},
+                        "data": {
+                            "label": "UA",
+                            "approvalMessage": "Approve?",
+                            "approverEmail": "reviewer@example.com",
+                        },
+                    },
+                    {
+                        "id": "a",
+                        "type": "end",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "A"},
+                    },
+                    {
+                        "id": "b",
+                        "type": "end",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "B"},
+                    },
+                ],
+                edges=[
+                    {"id": "e1", "source": "s", "target": "ua"},
+                    {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
+                    {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
+                ],
+            )
         )
     )
 
@@ -774,31 +938,47 @@ async def test_resume_chained_pause_stamps_consistent_pending_since(
             input=None,
         )
     )
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            id="w1",
-            name="t",
-            nodes=[
-                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-                {
-                    "id": "ua",
-                    "type": "user-approval",
-                    "position": {"x": 0, "y": 0},
-                    "data": {
-                        "label": "UA",
-                        "approvalMessage": "Approve again?",
-                        "approverEmail": "reviewer@example.com",
+    _set_workflow_get(
+        AsyncMock(
+            return_value=SimpleNamespace(
+                id="w1",
+                name="t",
+                nodes=[
+                    {
+                        "id": "s",
+                        "type": "start",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "S"},
                     },
-                },
-                {"id": "a", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "A"}},
-                {"id": "b", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "B"}},
-            ],
-            edges=[
-                {"id": "e1", "source": "s", "target": "ua"},
-                {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
-                {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
-            ],
+                    {
+                        "id": "ua",
+                        "type": "user-approval",
+                        "position": {"x": 0, "y": 0},
+                        "data": {
+                            "label": "UA",
+                            "approvalMessage": "Approve again?",
+                            "approverEmail": "reviewer@example.com",
+                        },
+                    },
+                    {
+                        "id": "a",
+                        "type": "end",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "A"},
+                    },
+                    {
+                        "id": "b",
+                        "type": "end",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "B"},
+                    },
+                ],
+                edges=[
+                    {"id": "e1", "source": "s", "target": "ua"},
+                    {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
+                    {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
+                ],
+            )
         )
     )
 
@@ -892,16 +1072,27 @@ async def test_run_completed_status_survives_emit_failure(
             input=None,
         )
     )
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            id="w1",
-            name="t",
-            nodes=[
-                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-                {"id": "e", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "E"}},
-            ],
-            edges=[{"id": "e1", "source": "s", "target": "e"}],
+    _set_workflow_get(
+        AsyncMock(
+            return_value=SimpleNamespace(
+                id="w1",
+                name="t",
+                nodes=[
+                    {
+                        "id": "s",
+                        "type": "start",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "S"},
+                    },
+                    {
+                        "id": "e",
+                        "type": "end",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "E"},
+                    },
+                ],
+                edges=[{"id": "e1", "source": "s", "target": "e"}],
+            )
         )
     )
 
@@ -970,31 +1161,47 @@ async def test_resume_waiting_approval_status_survives_emit_failure(
             input=None,
         )
     )
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            id="w1",
-            name="t",
-            nodes=[
-                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-                {
-                    "id": "ua",
-                    "type": "user-approval",
-                    "position": {"x": 0, "y": 0},
-                    "data": {
-                        "label": "UA",
-                        "approvalMessage": "Approve again?",
-                        "approverEmail": "reviewer@example.com",
+    _set_workflow_get(
+        AsyncMock(
+            return_value=SimpleNamespace(
+                id="w1",
+                name="t",
+                nodes=[
+                    {
+                        "id": "s",
+                        "type": "start",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "S"},
                     },
-                },
-                {"id": "a", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "A"}},
-                {"id": "b", "type": "end", "position": {"x": 0, "y": 0}, "data": {"label": "B"}},
-            ],
-            edges=[
-                {"id": "e1", "source": "s", "target": "ua"},
-                {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
-                {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
-            ],
+                    {
+                        "id": "ua",
+                        "type": "user-approval",
+                        "position": {"x": 0, "y": 0},
+                        "data": {
+                            "label": "UA",
+                            "approvalMessage": "Approve again?",
+                            "approverEmail": "reviewer@example.com",
+                        },
+                    },
+                    {
+                        "id": "a",
+                        "type": "end",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "A"},
+                    },
+                    {
+                        "id": "b",
+                        "type": "end",
+                        "position": {"x": 0, "y": 0},
+                        "data": {"label": "B"},
+                    },
+                ],
+                edges=[
+                    {"id": "e1", "source": "s", "target": "ua"},
+                    {"id": "e2", "source": "ua", "target": "a", "branch": "approved"},
+                    {"id": "e3", "source": "ua", "target": "b", "branch": "rejected"},
+                ],
+            )
         )
     )
 
@@ -1266,7 +1473,7 @@ async def test_real_graph_cancellation_after_node_stops_downstream_progression(
         side_effect=[running, running, running, SimpleNamespace(status="canceled")]
     )
     db.workflowexecution.update_many = AsyncMock(return_value=1)
-    db.workflow.find_unique = AsyncMock(return_value=_workflow_row(_start_to_end_workflow_dict()))
+    _set_workflow_get(AsyncMock(return_value=_workflow_row(_start_to_end_workflow_dict())))
     store = _FakeEventStore()
     monkeypatch.setattr("src.engine.events_wrapper.notify_execution_event", AsyncMock())
     executor = LangGraphExecutor(db, MemorySaver(), event_bus=store)  # pyright: ignore[reportArgumentType]
