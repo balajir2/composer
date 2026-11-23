@@ -6,6 +6,22 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — SQLAlchemy migration phase 3: workflows (2026-11-23)
+
+- **Repositories:** `workflows` and `workflow_assignments` now go through `src/db/repos/workflows.py` and `workflow_assignments.py`. This covers the workflow routes, assignments and owner reassignment, the builder's load and save, external invoke, execution start, `poll_file_triggers`, the executor's workflow read, test cleanup, and the OAB migration writer, runner and reconcile. The Prisma import boundary test now also covers `src/api/workflows.py` and `src/api/test_cleanup.py`; nothing in `src` calls `db.workflow` or `db.workflowassignment` any more.
+- **Behaviour is proven:** the tests in `tests/integration/sqla_phase3/` were written first against the Prisma code and pass unchanged after the move.
+- **Deliberate behaviour changes:**
+  - Owner assignment and grant are one transaction each (user lookup, write, one commit).
+  - Grant and revoke take a row lock (FOR NO KEY UPDATE) for the owner check, so a concurrent owner change cannot slip between check and write.
+  - A grant that loses a race with a deletion gives 404 instead of 500; the detail names the user when a user constraint was hit.
+  - The builder re-checks access when saving: if the assignment was revoked during the LLM turn, the save gives 404 and commits nothing. A save after the workflow vanished also gives 404.
+  - No database session is open across the builder's LLM loop, external invoke's enqueue and sync wait, execution start, `poll_file_triggers`' Drive calls, or the executor's run. Unit tests pin the ordering.
+  - The executor fails the execution with a clear error when no sessionmaker is registered.
+  - The workflow routes, builder and external invoke answer 503 without a database.
+  - The migration writer is strict about its input and inserts per row with its own commit; logs carry only the exception class and row id.
+- **Kept as-is on purpose:** workflow search does not escape `_` and `%`, as before; concurrent edits stay last-write-wins; revoking a missing assignment is still 404; non-list `nodes` or `edges` in a migrated row open as an empty canvas.
+- **Follow-ups (not in this phase):** optimistic locking on update and builder save; `poll_file_triggers` still loads every production workflow; execution start does not allow assignees, unlike the workflow routes; a redacted secret echoed for a new node id stores `None` instead of a 422. `workflow_assignments.user_id` and `assigned_by_id` have no foreign key to `users`.
+
 ### Fixed — MCP custom headers sent; refresh tokens kept on re-grant; concurrent token refreshes serialized (2026-11-22)
 
 - **MCP custom headers are now sent.** Before, headers saved on an MCP server (a tenant or gateway header, say) were stored and shown redacted but never put on a request, so servers that needed them rejected calls. Now every MCP request (initialize, tools/list, tools/call) carries them, with sensitive values decrypted just before use. The client's own headers (Content-Type, Accept, session id, protocol version) and the auth header from the server's auth type always win over a custom header of the same name.

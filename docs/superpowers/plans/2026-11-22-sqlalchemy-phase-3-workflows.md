@@ -1,6 +1,6 @@
 # SQLAlchemy Migration Phase 3 — Workflows — Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** Move every read and write of `workflows` and `workflow_assignments` from Prisma to SQLAlchemy repository modules, with no change in behaviour except the deliberate fixes listed below.
 
@@ -68,9 +68,9 @@ Groups:
 13. **Executor workflow read** — through the adapter: running an execution loads its workflow; a deleted workflow gives today's error.
 14. **Cleanup** — the e2e cleanup endpoint removes the user's workflows and every assignment where they are assignee or assigner.
 
-- [ ] Write the tests; run twice on unchanged code; all pass; tables empty afterwards. Where today differs from the expectation above, fix the test to match today and list each case in the commit.
-- [ ] Commit: `test(db): pin phase 3 workflow behaviour on the Prisma code`.
-- [ ] **Review gate:** Opus oracle review, fix, re-review, before Task 2.
+- [x] Write the tests; run twice on unchanged code; all pass; tables empty afterwards. Where today differs from the expectation above, fix the test to match today and list each case in the commit.
+- [x] Commit: `test(db): pin phase 3 workflow behaviour on the Prisma code`.
+- [x] **Review gate:** Opus oracle review, fix, re-review, before Task 2.
 
 ---
 
@@ -105,10 +105,10 @@ async def claim_orphans_by_email(session, email: str, user_id: str) -> int
 async def insert_if_absent(session, values: WorkflowInsert) -> bool          # migration writer
 ```
 
-- [ ] Repo tests first (real Postgres): visibility predicates for list and search (incl. assignment via EXISTS, no duplicate rows when a workflow has several assignments), filters, pagination + count, ordering, ILIKE matching per the pinned wildcard behaviour, tags NULL → [], JSON round trip, update only changes given keys + deterministic `updated_at` + held-reference refresh, slug `AlreadyExists` with the constraint name and the session still usable, delete cascade (assignments and executions gone), `claim_orphans_by_email` idempotent.
-- [ ] Port the routes; keep the secret helpers' logic unchanged (they now read `existing.nodes` from a record); map `AlreadyExists` on slug to 409 with today's prefix.
-- [ ] Convert unit tests (`test_workflows_crud.py`, `test_workflows_{jira_tokens,vector_db_keys,confluence_tokens,http_headers}.py`, `test_workflows.py`, `tests/unit/security/test_hardening.py` workflow parts) to patched repo functions + `override_session`.
-- [ ] Verify: repo tests; unit tests; `tests/integration/sqla_phase3` (adapter-only edits) and the phase 1 and 2 behaviour suites; full unit suite; CI-parity pyright. Commit `feat(db): workflows on SQLAlchemy (phase 3)`.
+- [x] Repo tests first (real Postgres): visibility predicates for list and search (incl. assignment via EXISTS, no duplicate rows when a workflow has several assignments), filters, pagination + count, ordering, ILIKE matching per the pinned wildcard behaviour, tags NULL → [], JSON round trip, update only changes given keys + deterministic `updated_at` + held-reference refresh, slug `AlreadyExists` with the constraint name and the session still usable, delete cascade (assignments and executions gone), `claim_orphans_by_email` idempotent.
+- [x] Port the routes; keep the secret helpers' logic unchanged (they now read `existing.nodes` from a record); map `AlreadyExists` on slug to 409 with today's prefix.
+- [x] Convert unit tests (`test_workflows_crud.py`, `test_workflows_{jira_tokens,vector_db_keys,confluence_tokens,http_headers}.py`, `test_workflows.py`, `tests/unit/security/test_hardening.py` workflow parts) to patched repo functions + `override_session`.
+- [x] Verify: repo tests; unit tests; `tests/integration/sqla_phase3` (adapter-only edits) and the phase 1 and 2 behaviour suites; full unit suite; CI-parity pyright. Commit `feat(db): workflows on SQLAlchemy (phase 3)`.
 
 ---
 
@@ -127,10 +127,10 @@ async def delete(session, workflow_id: str, user_id: str) -> bool
 async def delete_involving_user(session, user_id: str) -> int                         # user_id = :u OR assigned_by_id = :u
 ```
 
-- [ ] Repo tests first (duplicate → `AlreadyExists` with the session usable; delete returns False for a missing row; `delete_involving_user` covers both columns).
-- [ ] Port: owner assignment and grant become **one transaction each** (user lookup + write + one commit); revoke missing keeps today's **404** (pinned); `test_cleanup` uses `delete_for_user` + `delete_involving_user` in the same session as the other repos (its Prisma use for workflows is gone; executions still cascade at the DB level).
-- [ ] Migration writer/runner: `insert_if_absent` per row with per-row commit (phase 2 pattern; exception class + row id only in logs); reconcile uses `claim_orphans_by_email` in its session (its execution update stays Prisma until phase 4).
-- [ ] Convert unit tests (`test_workflow_assignments.py`, `test_test_cleanup.py`, `test_runner_writer.py`, `test_reconcile.py`). Verify as in Task 2. Commit `feat(db): workflow assignments on SQLAlchemy (phase 3)`.
+- [x] Repo tests first (duplicate → `AlreadyExists` with the session usable; delete returns False for a missing row; `delete_involving_user` covers both columns).
+- [x] Port: owner assignment and grant become **one transaction each** (user lookup + write + one commit); revoke missing keeps today's **404** (pinned); `test_cleanup` uses `delete_for_user` + `delete_involving_user` in the same session as the other repos (its Prisma use for workflows is gone; executions still cascade at the DB level).
+- [x] Migration writer/runner: `insert_if_absent` per row with per-row commit (phase 2 pattern; exception class + row id only in logs); reconcile uses `claim_orphans_by_email` in its session (its execution update stays Prisma until phase 4).
+- [x] Convert unit tests (`test_workflow_assignments.py`, `test_test_cleanup.py`, `test_runner_writer.py`, `test_reconcile.py`). Verify as in Task 2. Commit `feat(db): workflow assignments on SQLAlchemy (phase 3)`.
 
 ---
 
@@ -138,21 +138,21 @@ async def delete_involving_user(session, user_id: str) -> int                   
 
 **Files:** Modify `src/api/builder.py` (`_load_workflow`, `_persist`), `src/api/executions.py` (workflow read), `src/api/run.py` (slug lookup), `src/api/internal.py` (`poll_file_triggers`' workflow list), `src/engine/langgraph_executor.py` (`_prepare_compiled`).
 
-- [ ] **Builder:** load the workflow in a short session and close it **before** `run_builder_turn` (the LLM loop); `_persist` writes nodes/edges in a fresh short session afterwards (same encrypt-with-preserve logic, against the row read at load time, as today). Ordering test.
-- [ ] **External invoke (`run.py`):** slug lookup in a short session closed before `enqueue_execution` and the sync polling wait. Ordering test.
-- [ ] **Execution start (`executions.py`):** workflow read in a short session; the execution create stays Prisma (phase 4).
-- [ ] **`poll_file_triggers`:** the production-workflow list read in a short session closed before Drive calls; its up-front 503 comment updated (only executions remain on Prisma).
-- [ ] **Executor:** `_prepare_compiled` reads the workflow through `get_registered_sessionmaker()` in a short session closed before `build_graph` and the run; keeps today's error when the workflow is missing; `self.db` remains for executions until phase 4 (mark with `# TODO(phase 4)`).
-- [ ] Convert unit tests (`test_builder_routes.py`, `test_builder_models_routes.py`, `test_executions*.py`, `test_run_external.py`, `test_internal_poll_file_triggers.py`, `tests/unit/engine/test_langgraph_executor.py`, `tests/unit/api/test_approval_email.py` if it reads workflows). Verify as in Task 2, plus `tests/integration/test_durable_execution.py` and `test_external_invoke.py`. Commit `feat(db): workflow readers on SQLAlchemy (phase 3)`.
+- [x] **Builder:** load the workflow in a short session and close it **before** `run_builder_turn` (the LLM loop); `_persist` writes nodes/edges in a fresh short session afterwards (same encrypt-with-preserve logic, against the row read at load time, as today). Ordering test.
+- [x] **External invoke (`run.py`):** slug lookup in a short session closed before `enqueue_execution` and the sync polling wait. Ordering test.
+- [x] **Execution start (`executions.py`):** workflow read in a short session; the execution create stays Prisma (phase 4).
+- [x] **`poll_file_triggers`:** the production-workflow list read in a short session closed before Drive calls; its up-front 503 comment updated (only executions remain on Prisma).
+- [x] **Executor:** `_prepare_compiled` reads the workflow through `get_registered_sessionmaker()` in a short session closed before `build_graph` and the run; keeps today's error when the workflow is missing; `self.db` remains for executions until phase 4 (mark with `# TODO(phase 4)`).
+- [x] Convert unit tests (`test_builder_routes.py`, `test_builder_models_routes.py`, `test_executions*.py`, `test_run_external.py`, `test_internal_poll_file_triggers.py`, `tests/unit/engine/test_langgraph_executor.py`, `tests/unit/api/test_approval_email.py` if it reads workflows). Verify as in Task 2, plus `tests/integration/test_durable_execution.py` and `test_external_invoke.py`. Commit `feat(db): workflow readers on SQLAlchemy (phase 3)`.
 
 ---
 
 ### Task 5: Lock, docs, CI, PR
 
-- [ ] Grow `MIGRATED_PATHS` with every file now free of `prisma`/`src.storage` imports (list exclusions with reasons). Done-criterion grep: `grep -rnE "\b(db|prisma|self\.db)\.(workflow|workflowassignment)\." src` → empty.
-- [ ] CHANGELOG (`[Unreleased]`, first entry): the two tables on SQLAlchemy; behaviour proven by `tests/integration/sqla_phase3`; deliberate changes (revoke-missing 404; atomic owner assignment and grant; short sessions around the builder's LLM loop, external invoke's wait and the executor's run; 503 without a database); kept-as-is items and follow-ups.
-- [ ] `docs/architecture.md` data-access section; spec §3.3 phase 2 "(done, PR #29)" and phase 3 "(done, PR pending)"; this plan's checkboxes and an Outcome section.
-- [ ] Run everything CI runs, with a throwaway Postgres 15 (`composer-p3-pg`); delete it when the phase is done.
+- [x] Grow `MIGRATED_PATHS` with every file now free of `prisma`/`src.storage` imports (list exclusions with reasons). Done-criterion grep: `grep -rnE "\b(db|prisma|self\.db)\.(workflow|workflowassignment)\." src` → empty.
+- [x] CHANGELOG (`[Unreleased]`, first entry): the two tables on SQLAlchemy; behaviour proven by `tests/integration/sqla_phase3`; deliberate changes (revoke-missing 404; atomic owner assignment and grant; short sessions around the builder's LLM loop, external invoke's wait and the executor's run; 503 without a database); kept-as-is items and follow-ups.
+- [x] `docs/architecture.md` data-access section; spec §3.3 phase 2 "(done, PR #29)" and phase 3 "(done, PR pending)"; this plan's checkboxes and an Outcome section.
+- [x] Run everything CI runs, with a throwaway Postgres 15 (`composer-p3-pg`); delete it when the phase is done.
 - [ ] Commit; push; open the PR; wait for all six checks; merge only with Balaji's go-ahead.
 
 ## Follow-ups (not in this phase)
@@ -160,3 +160,15 @@ async def delete_involving_user(session, user_id: str) -> int                   
 - `poll_file_triggers` loads every production workflow; filter to workflows that have a file-trigger node.
 - Execution start doesn't allow assignees, unlike the workflow routes; decide which is intended.
 - A redacted secret echoed for a new node id stores `None`; reject it with a 422 instead.
+
+## Outcome
+
+What changed while executing this plan:
+
+- **Review-gate fixes beyond the plan:** the owner check in grant and revoke runs under a row lock (`get(for_update=True)` takes FOR NO KEY UPDATE and refreshes an instance already in the session, so the check sees the locked row without blocking inserts of executions or assignments). A foreign-key race on grant gives 404 (`ReferencedRowMissing`; names the user when a user constraint is violated). The migration writer is strict about its input.
+- **`test_migration.py` commits after reconcile**, because reconcile now leaves its writes to the caller.
+- **The owner-assignment tests were converted** to the one-transaction behaviour (user lookup, write and a single commit) instead of kept as they were.
+- **The builder re-checks access at save** (owner, admin or still assigned, under a row lock); a save after access was lost or the workflow vanished gives 404, commits nothing, and uses the same detail as the load-time check. Non-list `nodes` and `edges` in a migrated row still open as an empty canvas.
+- **The executor raises a clear `RuntimeError`** (the execution is marked failed) when no sessionmaker is registered, instead of reading through Prisma.
+- **`MIGRATED_PATHS`** gained `src/api/workflows.py` and `src/api/test_cleanup.py`. `builder.py`, `run.py`, `executions.py`, `internal.py`, `langgraph_executor.py` and `src/migration/*` stay off the list: they still import Prisma for executions, approvals or the Convex-sourced rows.
+- **Found while reviewing:** `workflow_assignments` has a database foreign key only on `workflow_id`; `user_id` and `assigned_by_id` have none, so a grant to a user deleted mid-request succeeds rather than failing. The grant route still maps the user constraint names, should a later migration add them.
