@@ -158,7 +158,7 @@ async def delete_involving_user(session, user_id: str) -> int                   
 ## Follow-ups (not in this phase)
 - Concurrent edits are last-write-wins; consider an `updated_at` precondition (optimistic locking) for update and builder save.
 - `poll_file_triggers` loads every production workflow; filter to workflows that have a file-trigger node.
-- Execution start doesn't allow assignees, unlike the workflow routes; decide which is intended.
+- ~~Execution start doesn't allow assignees, unlike the workflow routes.~~ Done: assignees can start runs (2026-11-23).
 - A redacted secret echoed for a new node id stores `None`; reject it with a 422 instead.
 
 ## Outcome

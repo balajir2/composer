@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — assignees can start runs of workflows they're assigned to (2026-11-23)
+
+- `POST /executions` now accepts an assignee of the workflow, alongside the owner, an admin, and anyone for a public workflow. Before, an assignee could open and edit a workflow (and use the builder) but got 404 when they pressed Run. Anyone else still gets the same 404 as a missing workflow. The assignment is read in the same short session as the workflow, and only when the owner, public and admin checks fail.
+- External invoke (`POST /api/run/{slug}`) is unchanged: it still needs a production workflow and a public workflow, the owner's key, or an admin key; an assignee's key is refused.
+
+### Security — idempotency keys are scoped per user (2026-11-23)
+
+- **Before:** the idempotency key was unique per workflow, not per user. On a public workflow (or one shared with assignees) a second user who sent the same `idempotencyKey` as an earlier caller got that caller's execution back from `POST /executions` or `POST /api/run/{slug}`, including its input and output (and, with `sync`, the result). Even after that was closed with a 409, anyone able to start runs could still claim a key before the real caller (who then got 409) or probe whether a key had been used.
+- **Now:** keys are unique per `(workflow, user)`. Another user's use of a key is invisible: a second user sending the same key gets their own new execution (202 on `/executions`), and each caller's retry replays their own. The lookup includes the caller's id on the fast path and the lost-race path of both endpoints. `require_same_caller` stays as a fail-closed 409 backstop that should now be unreachable.
+- **Migration:** Alembic `0002_idempotency_per_user` creates the unique index `workflow_executions_workflow_id_user_id_idempotency_key_key` on `(workflow_id, user_id, idempotency_key)`, then drops `workflow_executions_workflow_id_idempotency_key_key`, in one transaction. It runs automatically on deploy (`alembic upgrade head`). The new index is strictly looser than the old, so it cannot fail on existing data. Downgrade fails if two users now share a key on a workflow, which is expected. Prisma's frozen schema still declares the old compound unique; the code no longer uses `workflowId_idempotencyKey` for lookups.
+- **Not `NULLS NOT DISTINCT`:** that option applies to every column of the index, so rows with a NULL `idempotency_key` (almost all of them) would collide. The index is a plain unique index; rows with a NULL `user_id` are not covered by it. If the code is deployed before the migration has run, a key that another user holds returns 409 "idempotency key already used for this workflow" rather than a 500.
+- **Lock safety:** the migration sets a 5 s `lock_timeout` and 60 s `statement_timeout` (`SET LOCAL`), in both directions, so a busy `workflow_executions` table fails the deploy fast instead of queueing every execution read and write behind its locks. Re-run the deploy when traffic is quieter.
+- **Rollback:** do not roll Cloud Run back to a revision before this release once two users share a key on a workflow; the old code would replay an arbitrary one of those executions. Roll code back only together with `alembic downgrade`, which fails in that case by design.
+
 ### Changed — SQLAlchemy migration phase 3: workflows (2026-11-23)
 
 - **Repositories:** `workflows` and `workflow_assignments` now go through `src/db/repos/workflows.py` and `workflow_assignments.py`. This covers the workflow routes, assignments and owner reassignment, the builder's load and save, external invoke, execution start, `poll_file_triggers`, the executor's workflow read, test cleanup, and the OAB migration writer, runner and reconcile. The Prisma import boundary test now also covers `src/api/workflows.py` and `src/api/test_cleanup.py`; nothing in `src` calls `db.workflow` or `db.workflowassignment` any more.
@@ -20,7 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - The workflow routes, builder and external invoke answer 503 without a database.
   - The migration writer is strict about its input and inserts per row with its own commit; logs carry only the exception class and row id.
 - **Kept as-is on purpose:** workflow search does not escape `_` and `%`, as before; concurrent edits stay last-write-wins; revoking a missing assignment is still 404; non-list `nodes` or `edges` in a migrated row open as an empty canvas.
-- **Follow-ups (not in this phase):** optimistic locking on update and builder save; `poll_file_triggers` still loads every production workflow; execution start does not allow assignees, unlike the workflow routes; a redacted secret echoed for a new node id stores `None` instead of a 422. `workflow_assignments.user_id` and `assigned_by_id` have no foreign key to `users`.
+- **Follow-ups (not in this phase):** optimistic locking on update and builder save; `poll_file_triggers` still loads every production workflow; a redacted secret echoed for a new node id stores `None` instead of a 422. `workflow_assignments.user_id` and `assigned_by_id` have no foreign key to `users`.
 
 ### Fixed — MCP custom headers sent; refresh tokens kept on re-grant; concurrent token refreshes serialized (2026-11-22)
 

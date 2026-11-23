@@ -120,9 +120,9 @@ def _build_client(
     monkeypatch.setattr(workflows_repo, "get_by_slug", AsyncMock(return_value=wf))
     db = MagicMock()
     db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=existing_execution if existing_execution is not None else start_result
-    )
+    looked_up = existing_execution if existing_execution is not None else start_result
+    db.workflowexecution.find_first = AsyncMock(return_value=looked_up)
+    db.workflowexecution.find_unique = AsyncMock(return_value=looked_up)
     app.state.db = db
     app.state.checkpointer = MagicMock()
     app.state.event_bus = ExecutionEventBus()
@@ -181,6 +181,128 @@ def test_idempotency_key_replays_existing_execution(monkeypatch: pytest.MonkeyPa
     assert resp.status_code == 200
     assert resp.json()["executionId"] == "prior-exec"
     assert start_calls == []
+
+
+def test_idempotency_lookup_is_scoped_to_the_caller(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Keys are unique per (workflow, user): the lookup carries the caller's id, so a key
+    another user used is invisible and this caller starts their own execution."""
+    wf = _wf(is_public=True)
+    start_calls: list[dict[str, Any]] = []
+    client = _build_client(monkeypatch, wf, start_calls=start_calls)
+    find_first = client.app.state.db.workflowexecution.find_first  # type: ignore[attr-defined]
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {"x": 1}, "idempotencyKey": "shared-key"},
+    )
+    assert resp.status_code == 200
+    assert start_calls == [{"workflow_id": "wf1", "idempotency_key": "shared-key"}]
+    find_first.assert_awaited_once_with(
+        where={"workflowId": "wf1", "userId": "owner-u", "idempotencyKey": "shared-key"}
+    )
+
+
+def test_foreign_row_from_the_lookup_is_still_refused_with_409(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Backstop: the lookup is per-user so this should be unreachable, but a foreign row
+    is never replayed."""
+    wf = _wf(is_public=True)
+    other = _exec(
+        id="other-ex-id", userId="someone-else", status="completed", output="SECRET-OUTPUT"
+    )
+    start_calls: list[dict[str, Any]] = []
+    client = _build_client(monkeypatch, wf, existing_execution=other, start_calls=start_calls)
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {"x": 1}, "idempotencyKey": "shared-key", "sync": True},
+    )
+    assert resp.status_code == 409
+    for leaked in ("other-ex-id", "SECRET-OUTPUT"):
+        assert leaked not in resp.text
+    assert start_calls == []
+
+
+def test_idempotency_key_race_lost_relooks_up_scoped_to_the_caller(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """start_execution loses the unique-key race against the caller's own concurrent
+    request; the re-lookup includes the caller's id and replays without enqueueing."""
+    from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
+
+    from src.api import run as _run_module
+
+    wf = _wf(is_public=True)
+    client = _build_client(monkeypatch, wf)
+    mine = _exec(id="exec1", userId="owner-u", status="queued")
+    find_first = AsyncMock(side_effect=[None, mine])
+    client.app.state.db.workflowexecution.find_first = find_first  # type: ignore[attr-defined]
+
+    async def _lose_race(self: Any, **kwargs: Any) -> Any:
+        raise UniqueViolationError({"user_facing_error": {"meta": {}}})  # type: ignore[arg-type]
+
+    monkeypatch.setattr(_run_module.LangGraphExecutor, "start_execution", _lose_race)
+    enqueue = AsyncMock()
+    monkeypatch.setattr(_run_module, "enqueue_execution", enqueue)
+
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {"x": 1}, "idempotencyKey": "raced-key"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["executionId"] == "exec1"
+    wheres = [c.kwargs["where"] for c in find_first.await_args_list]
+    assert wheres == [{"workflowId": "wf1", "userId": "owner-u", "idempotencyKey": "raced-key"}] * 2
+    enqueue.assert_not_awaited()
+
+
+def _lose_race_setup(monkeypatch: pytest.MonkeyPatch, lookups: list[Any]) -> tuple[Any, AsyncMock]:
+    from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
+
+    from src.api import run as _run_module
+
+    client = _build_client(monkeypatch, _wf(is_public=True))
+    client.app.state.db.workflowexecution.find_first = AsyncMock(side_effect=lookups)  # type: ignore[attr-defined]
+
+    async def _lose_race(self: Any, **kwargs: Any) -> Any:
+        raise UniqueViolationError({"user_facing_error": {"meta": {}}})  # type: ignore[arg-type]
+
+    monkeypatch.setattr(_run_module.LangGraphExecutor, "start_execution", _lose_race)
+    enqueue = AsyncMock()
+    monkeypatch.setattr(_run_module, "enqueue_execution", enqueue)
+    return client, enqueue
+
+
+def test_race_lost_to_a_foreign_row_is_409_and_not_enqueued(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    foreign = _exec(id="other-ex-id", userId="someone-else", status="completed")
+    client, enqueue = _lose_race_setup(monkeypatch, [None, foreign])
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {"x": 1}, "idempotencyKey": "k"},
+    )
+    assert resp.status_code == 409
+    assert "other-ex-id" not in resp.text
+    enqueue.assert_not_awaited()
+
+
+def test_unique_violation_with_no_row_for_the_caller_is_409_not_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only possible while the DB still has the old per-workflow index."""
+    client, enqueue = _lose_race_setup(monkeypatch, [None, None])
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {"x": 1}, "idempotencyKey": "k"},
+    )
+    assert resp.status_code == 409
+    assert "idempotency key already used for this workflow" in resp.text
+    enqueue.assert_not_awaited()
 
 
 def test_idempotency_key_starts_new_execution_when_no_match(

@@ -100,6 +100,8 @@ The first Alembic revision is empty and is *stamped* on existing databases (prod
 
 Total: about 2½–3 weeks.
 
+**Known schema divergence (phases 4 and 6).** `prisma/schema.prisma` intentionally still declares `@@unique([workflowId, idempotencyKey])` on `WorkflowExecution`, while the database (Alembic `0002_idempotency_per_user`) has the unique index `workflow_executions_workflow_id_user_id_idempotency_key_key` on `(workflow_id, user_id, idempotency_key)`. Prisma's schema is frozen, so it was not edited. Consequences: the phase 4 execution models and the phase 6 squashed base migration must be generated from Alembic (the live schema), never from `schema.prisma`; and `prisma db push` or `prisma migrate dev` must never be run against an Alembic-managed database, since they would try to restore the old index.
+
 ### 3.4 Checkpointer cutover (phase 5)
 
 - **What users see:** nothing. Run pages, history and the API read the executions table, not checkpoints. Only the executor reads checkpoints, to detect a pause and resume the same run (`src/engine/langgraph_executor.py`).

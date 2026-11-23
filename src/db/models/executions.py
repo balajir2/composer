@@ -21,8 +21,9 @@ class WorkflowExecution(Base):
         Index("workflow_executions_user_id_idx", "user_id"),
         Index("workflow_executions_thread_id_key", "thread_id", unique=True),
         Index(
-            "workflow_executions_workflow_id_idempotency_key_key",
+            "workflow_executions_workflow_id_user_id_idempotency_key_key",
             "workflow_id",
+            "user_id",
             "idempotency_key",
             unique=True,
         ),

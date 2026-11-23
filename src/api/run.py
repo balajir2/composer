@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.api._idempotency import find_execution_by_idempotency_key, require_same_caller
 from src.config import get_settings
 from src.db.repos import workflows as workflows_repo
 from src.db.runtime import require_sessionmaker
@@ -84,20 +85,6 @@ def _get_executor(request: Request, db: Any, event_bus: Any) -> LangGraphExecuto
     return LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
 
 
-async def _find_execution_by_idempotency_key(
-    db: Any, workflow_id: str, idempotency_key: str
-) -> Any:
-    where: dict[str, Any] = {
-        "workflowId_idempotencyKey": {
-            "workflowId": workflow_id,
-            "idempotencyKey": idempotency_key,
-        }
-    }
-    return await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where=where  # pyright: ignore[reportArgumentType]
-    )
-
-
 @router.post("/api/run/{slug}")
 async def run_external(
     slug: str,
@@ -147,16 +134,18 @@ async def run_external(
     # timeout is the actual duplicate-execution vector here — LangGraph
     # doesn't auto-retry nodes, and the stuck-execution sweeper only marks
     # abandoned runs failed, it never re-runs them. A matching
-    # (workflowId, idempotencyKey) row means an earlier request already
+    # (workflowId, userId, idempotencyKey) row means an earlier request already
     # started this logical operation; reuse it instead of firing
     # side-effecting nodes (Jira, email, HTTP mutations) a second time.
     execution: Any = None
     is_replay = False
     if payload.idempotency_key:
-        execution = await _find_execution_by_idempotency_key(
-            db, workflow.id, payload.idempotency_key
+        execution = await find_execution_by_idempotency_key(
+            db, workflow.id, auth.user_id, payload.idempotency_key
         )
         is_replay = execution is not None
+        if is_replay:
+            require_same_caller(execution, auth.user_id)
 
     if not is_replay:
         try:
@@ -169,14 +158,20 @@ async def run_external(
         except UniqueViolationError:
             # Lost a race against a concurrent request carrying the same
             # key — the DB's unique constraint is the actual guarantee,
-            # the find_unique lookup above is just a fast path.
+            # the find_first lookup above is just a fast path.
             if payload.idempotency_key is None:
                 raise
-            execution = await _find_execution_by_idempotency_key(
-                db, workflow.id, payload.idempotency_key
+            execution = await find_execution_by_idempotency_key(
+                db, workflow.id, auth.user_id, payload.idempotency_key
             )
             if execution is None:
-                raise
+                # Only reachable while the DB still has the old per-workflow
+                # unique index (code deployed before alembic 0002).
+                raise HTTPException(
+                    status_code=409,
+                    detail="idempotency key already used for this workflow",
+                ) from None
+            require_same_caller(execution, auth.user_id)
             is_replay = True
 
     base_url = str(request.base_url).rstrip("/")

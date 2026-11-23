@@ -60,7 +60,7 @@ def test_unique_keys_are_unique_indexes_named_like_prisma() -> None:
         "users_email_key",
         "workflow_assignments_workflow_id_user_id_key",
         "workflow_executions_thread_id_key",
-        "workflow_executions_workflow_id_idempotency_key_key",
+        "workflow_executions_workflow_id_user_id_idempotency_key_key",
         "workflows_external_slug_key",
     }
 

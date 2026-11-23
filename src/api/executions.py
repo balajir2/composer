@@ -11,11 +11,13 @@ from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingI
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from src.api._idempotency import find_execution_by_idempotency_key, require_same_caller
 from src.api.execution_status import (
     ACTIVE_EXECUTION_STATUSES,
     ACTIVE_EXECUTION_STATUSES_SORTED,
 )
 from src.config import get_settings
+from src.db.repos import workflow_assignments as workflow_assignments_repo
 from src.db.repos import workflows as workflows_repo
 from src.db.runtime import require_sessionmaker
 from src.engine.langgraph_executor import LangGraphExecutor
@@ -105,22 +107,6 @@ def _get_executor(request: Request, db: Prisma) -> LangGraphExecutor:  # pyright
     return LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
 
 
-async def _find_execution_by_idempotency_key(
-    db: Prisma,  # pyright: ignore[reportUnknownParameterType]
-    workflow_id: str,
-    idempotency_key: str,
-) -> Any:
-    where: dict[str, Any] = {
-        "workflowId_idempotencyKey": {
-            "workflowId": workflow_id,
-            "idempotencyKey": idempotency_key,
-        }
-    }
-    return await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where=where  # pyright: ignore[reportArgumentType]
-    )
-
-
 @router.post("/executions", response_model=ExecutionRead, status_code=status.HTTP_202_ACCEPTED)
 async def create_execution(
     payload: ExecutionCreate,
@@ -150,32 +136,36 @@ async def create_execution(
         )
 
     # Short session: closed before the execution row is written and the task enqueued.
+    # Access: admin, public, owner, or an assignee (the assignment is only read when the
+    # cheaper checks fail). Anyone else gets the same 404 as a missing workflow.
+    not_found = HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Workflow {payload.workflow_id!r} not found.",
+    )
     async with require_sessionmaker(request)() as session:
         workflow = await workflows_repo.get(session, payload.workflow_id)
-    if workflow is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Workflow {payload.workflow_id!r} not found.",
-        )
-    if role != "admin" and not workflow.is_public and workflow.user_id != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Workflow {payload.workflow_id!r} not found.",
-        )
+        if workflow is None:
+            raise not_found
+        allowed = role == "admin" or workflow.is_public or workflow.user_id == user_id
+        if not allowed:
+            allowed = await workflow_assignments_repo.exists(session, payload.workflow_id, user_id)
+    if not allowed:
+        raise not_found
 
     # Idempotent replay (P1-3): a caller that retries this POST after a
     # network timeout is the actual duplicate-execution vector in this
     # system — LangGraph doesn't auto-retry nodes, and the stuck-execution
     # sweeper only marks abandoned runs failed, it never re-runs them.
-    # A matching (workflowId, idempotencyKey) row means an earlier request
+    # A matching (workflowId, userId, idempotencyKey) row means an earlier request
     # already started (or finished) this logical operation; return it
     # instead of starting a second one that would fire side-effecting
     # nodes (Jira, email, HTTP mutations) a second time.
     if payload.idempotency_key:
-        existing = await _find_execution_by_idempotency_key(
-            db, payload.workflow_id, payload.idempotency_key
+        existing = await find_execution_by_idempotency_key(
+            db, payload.workflow_id, user_id, payload.idempotency_key
         )
         if existing is not None:
+            require_same_caller(existing, user_id)
             return ExecutionRead.model_validate(existing)
 
     executor = _get_executor(request, db)
@@ -188,15 +178,22 @@ async def create_execution(
         )
     except UniqueViolationError:
         # Lost a race against a concurrent request carrying the same key —
-        # the DB's unique constraint is the actual guarantee; the find_unique
+        # the DB's unique constraint is the actual guarantee; the find_first
         # lookup above is just a fast path that can't close the race alone.
         if payload.idempotency_key is None:
             raise
-        existing = await _find_execution_by_idempotency_key(
-            db, payload.workflow_id, payload.idempotency_key
+        existing = await find_execution_by_idempotency_key(
+            db, payload.workflow_id, user_id, payload.idempotency_key
         )
         if existing is None:
-            raise
+            # Only reachable while the DB still has the old per-workflow unique
+            # index (code deployed before alembic 0002): the key is another
+            # user's. Say so without leaking whose.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="idempotency key already used for this workflow",
+            ) from None
+        require_same_caller(existing, user_id)
         return ExecutionRead.model_validate(existing)
 
     # P1-2: enqueue a Cloud Task instead of a request-bound BackgroundTask —
