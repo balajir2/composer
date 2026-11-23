@@ -26,7 +26,7 @@ If production telemetry is disabled, complete the cost, configuration-drift, dep
 - [ ] Record Cloud Run CPU, memory, request, and active-instance cost for the Composer backend.
 - [ ] Record billed log bytes, OTLP metric samples or bytes, and trace spans ingested and scanned.
 - [ ] Confirm the billing budget and forecast alerts are enabled and reach an actively monitored recipient.
-- [ ] Investigate any telemetry-related cost increase greater than **20%** or **USD 25**, whichever is larger, unless the increase is explained by comparable growth in production traffic.
+- [ ] Investigate any telemetry-related cost increase greater than **20%** or **USD 5**, whichever is larger, unless the increase is explained by comparable growth in production traffic.
 - [ ] If telemetry exceeds its agreed monthly budget, reduce trace sampling or unnecessary log volume first. Do not remove error telemetry, bounded operational metrics, redaction, or audit records to reduce cost.
 
 When telemetry is enabled, keep normal successful-request traces sampled at the approved rate. Retain error traces at the highest practical rate. Any sampling change requires a short record of the old value, new value, reason, date, and approver.
