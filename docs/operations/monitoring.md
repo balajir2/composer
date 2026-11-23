@@ -27,6 +27,10 @@ Complete the [monthly telemetry maintenance checklist](telemetry-monthly-mainten
 cost, signal volume, SLOs, export health, cardinality, privacy, access, retention, and configuration
 drift.
 
+Before production activation, follow the [staging telemetry activation runbook](telemetry-staging.md)
+to validate the collector, 10% trace sampling, budget guardrail, no-traffic canary, and evidence
+collection.
+
 ---
 
 ## 1. LangSmith tracing
