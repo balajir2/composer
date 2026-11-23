@@ -1,0 +1,283 @@
+name: Stage Composer telemetry
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_id:
+        description: "Dedicated GCP staging project ID"
+        required: true
+        type: string
+      region:
+        description: "Cloud Run and Artifact Registry region"
+        required: true
+        type: string
+      backend_service:
+        description: "Existing staging backend service"
+        required: true
+        type: string
+      artifact_repo:
+        description: "Existing staging Artifact Registry repository"
+        required: true
+        type: string
+      billing_account_id:
+        description: "Billing account containing the staging-project budget"
+        required: true
+        type: string
+      monthly_budget_usd:
+        description: "Minimum configured monthly staging budget in USD"
+        required: true
+        type: string
+      confirmation:
+        description: "Enter DEPLOY-STAGING-TELEMETRY to permit a non-dry run"
+        required: true
+        type: string
+      dry_run:
+        description: "Validate only; do not push images or deploy"
+        required: true
+        default: true
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  stage-telemetry:
+    name: Validate or deploy staging telemetry
+    runs-on: ubuntu-latest
+    environment: telemetry-staging
+    env:
+      PROJECT_ID: ${{ inputs.project_id }}
+      REGION: ${{ inputs.region }}
+      BACKEND_SERVICE: ${{ inputs.backend_service }}
+      ARTIFACT_REPO: ${{ inputs.artifact_repo }}
+      BILLING_ACCOUNT_ID: ${{ inputs.billing_account_id }}
+      MONTHLY_BUDGET_USD: ${{ inputs.monthly_budget_usd }}
+      BACKEND_IMAGE: ${{ inputs.region }}-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.artifact_repo }}/backend:${{ github.sha }}
+      COLLECTOR_IMAGE: ${{ inputs.region }}-docker.pkg.dev/${{ inputs.project_id }}/${{ inputs.artifact_repo }}/otel-collector:${{ github.sha }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - name: Reject unsafe inputs
+        shell: bash
+        env:
+          PRODUCTION_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$PROJECT_ID" || -z "$REGION" || -z "$BACKEND_SERVICE" || -z "$ARTIFACT_REPO" ]]; then
+            echo "::error::All staging target inputs are required."
+            exit 1
+          fi
+          if [[ -n "$PRODUCTION_PROJECT_ID" && "$PROJECT_ID" == "$PRODUCTION_PROJECT_ID" ]]; then
+            echo "::error::The staging workflow refuses the production GCP project."
+            exit 1
+          fi
+          if [[ "$PROJECT_ID" != *staging* && "$PROJECT_ID" != *-stage* && "$PROJECT_ID" != *-stg* ]]; then
+            echo "::error::The project ID must visibly identify a staging environment."
+            exit 1
+          fi
+          if ! [[ "$MONTHLY_BUDGET_USD" =~ ^[0-9]+([.][0-9]{1,2})?$ ]] || [[ "$MONTHLY_BUDGET_USD" == "0" ]]; then
+            echo "::error::monthly_budget_usd must be a positive numeric amount."
+            exit 1
+          fi
+          if [[ "$DRY_RUN" == "false" && "$CONFIRMATION" != "DEPLOY-STAGING-TELEMETRY" ]]; then
+            echo "::error::A deployment requires the exact confirmation DEPLOY-STAGING-TELEMETRY."
+            exit 1
+          fi
+
+      - name: Authenticate to staging Google Cloud
+        uses: google-github-actions/auth@c200f3691d83b41bf9bbd8638997a462592937ed # v2
+        with:
+          credentials_json: ${{ secrets.GCP_STAGING_SA_KEY }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@e427ad8a34f8676edf47cf7d7925499adf3eb74f # v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Verify staging target and budget alert
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+          gcloud run services describe "$BACKEND_SERVICE" --region="$REGION" --project="$PROJECT_ID" >/dev/null
+          ACCESS_TOKEN="$(gcloud auth print-access-token)"
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer $ACCESS_TOKEN" \
+            "https://billingbudgets.googleapis.com/v1/billingAccounts/$BILLING_ACCOUNT_ID/budgets" \
+            > budget-response.json
+          python - "$PROJECT_NUMBER" "$MONTHLY_BUDGET_USD" <<'PY'
+          import json
+          import sys
+          from decimal import Decimal
+
+          project = f"projects/{sys.argv[1]}"
+          minimum = Decimal(sys.argv[2])
+          budgets = json.load(open("budget-response.json", encoding="utf-8")).get("budgets", [])
+          matches = []
+          for budget in budgets:
+              projects = budget.get("budgetFilter", {}).get("projects", [])
+              amount = budget.get("amount", {}).get("specifiedAmount", {})
+              value = Decimal(amount.get("units", "0")) + Decimal(amount.get("nanos", 0)) / Decimal(1_000_000_000)
+              rules = budget.get("thresholdRules", [])
+              if project in projects and value >= minimum and rules:
+                  matches.append({"displayName": budget.get("displayName"), "amount": str(value)})
+          if not matches:
+              raise SystemExit("No staging-project budget with a threshold alert meets monthly_budget_usd")
+          json.dump(matches, open("matched-budget.json", "w", encoding="utf-8"), indent=2)
+          PY
+
+      - name: Build application and collector locally
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --tag "$BACKEND_IMAGE" --file Dockerfile .
+          docker build --tag "$COLLECTOR_IMAGE" --file deploy/otel-collector/Dockerfile deploy/otel-collector
+
+      - name: Validate collector configuration
+        shell: bash
+        run: |
+          docker run --rm \
+            --env GOOGLE_CLOUD_PROJECT="$PROJECT_ID" \
+            --env ENVIRONMENT=staging \
+            "$COLLECTOR_IMAGE" validate --config=/etc/otelcol-contrib/config.yaml
+
+      - name: Configure Artifact Registry authentication
+        if: ${{ inputs.dry_run == false }}
+        run: gcloud auth configure-docker "${{ env.REGION }}-docker.pkg.dev" --quiet
+
+      - name: Push immutable staging images
+        if: ${{ inputs.dry_run == false }}
+        shell: bash
+        run: |
+          docker push "$BACKEND_IMAGE"
+          docker push "$COLLECTOR_IMAGE"
+
+      - name: Resolve immutable image digests
+        if: ${{ inputs.dry_run == false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BACKEND_DIGEST="$(gcloud artifacts docker images describe "$BACKEND_IMAGE" --format='value(image_summary.digest)')"
+          COLLECTOR_DIGEST="$(gcloud artifacts docker images describe "$COLLECTOR_IMAGE" --format='value(image_summary.digest)')"
+          test -n "$BACKEND_DIGEST"
+          test -n "$COLLECTOR_DIGEST"
+          echo "BACKEND_IMAGE_DIGEST=${BACKEND_IMAGE%:*}@$BACKEND_DIGEST" >> "$GITHUB_ENV"
+          echo "COLLECTOR_IMAGE_DIGEST=${COLLECTOR_IMAGE%:*}@$COLLECTOR_DIGEST" >> "$GITHUB_ENV"
+
+      - name: Deploy no-traffic telemetry canary
+        if: ${{ inputs.dry_run == false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gcloud run deploy "$BACKEND_SERVICE" \
+            --project="$PROJECT_ID" \
+            --region="$REGION" \
+            --platform=managed \
+            --no-traffic \
+            --tag=telemetry-staging \
+            --min-instances=0 \
+            --container=app \
+            --image="$BACKEND_IMAGE_DIGEST" \
+            --port=8080 \
+            --update-env-vars=ENVIRONMENT=staging,TELEMETRY_ENABLED=true,OTEL_EXPORTER_OTLP_ENDPOINT=http://127.0.0.1:4318,OTEL_TRACES_SAMPLER=parentbased_traceidratio,OTEL_TRACES_SAMPLER_ARG=0.10 \
+            --container=otel-collector \
+            --image="$COLLECTOR_IMAGE_DIGEST" \
+            --cpu=0.5 \
+            --memory=512Mi \
+            --update-env-vars=GOOGLE_CLOUD_PROJECT="$PROJECT_ID",ENVIRONMENT=staging \
+            --quiet
+
+      - name: Verify readiness and forced sampled trace
+        if: ${{ inputs.dry_run == false }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          BACKEND_URL="$(gcloud run services describe "$BACKEND_SERVICE" \
+            --project="$PROJECT_ID" --region="$REGION" \
+            --format="value(status.traffic[?tag='telemetry-staging'].url)")"
+          test -n "$BACKEND_URL"
+          TRACE_ID="$(openssl rand -hex 16)"
+          SPAN_ID="$(openssl rand -hex 8)"
+          ID_TOKEN="$(gcloud auth print-identity-token --audiences="$BACKEND_URL")"
+          curl --fail --silent --show-error \
+            --header "Authorization: Bearer $ID_TOKEN" \
+            --header "traceparent: 00-$TRACE_ID-$SPAN_ID-01" \
+            "$BACKEND_URL/ready" | tee readiness.json
+          python - <<'PY'
+          import json
+
+          readiness = json.load(open("readiness.json", encoding="utf-8"))
+          components = readiness.get("components", {})
+          if readiness.get("status") != "ready" or components.get("telemetry") != "ready":
+              raise SystemExit("Canary readiness or telemetry component is not ready")
+          PY
+          ACCESS_TOKEN="$(gcloud auth print-access-token)"
+          found=false
+          for _ in 1 2 3 4 5 6; do
+            if curl --fail --silent \
+              --header "Authorization: Bearer $ACCESS_TOKEN" \
+              "https://cloudtrace.googleapis.com/v1/projects/$PROJECT_ID/traces/$TRACE_ID" \
+              > trace-evidence.json; then
+              if python - "$TRACE_ID" <<'PY'
+          import json
+          import sys
+
+          expected_trace = sys.argv[1]
+          trace = json.load(open("trace-evidence.json", encoding="utf-8"))
+          if trace.get("traceId") != expected_trace or not trace.get("spans"):
+              raise SystemExit(1)
+          PY
+              then
+                found=true
+                break
+              fi
+            fi
+            sleep 10
+          done
+          if [[ "$found" != "true" ]]; then
+            echo "::error::The forced sampled readiness trace did not reach Cloud Trace."
+            exit 1
+          fi
+          printf '%s\n' "$BACKEND_URL" > canary-url.txt
+          printf '%s\n' "$TRACE_ID" > trace-id.txt
+
+      - name: Write staging evidence summary
+        if: ${{ always() }}
+        shell: bash
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          {
+            echo "# Telemetry staging evidence"
+            echo
+            echo "- Commit: $GITHUB_SHA"
+            echo "- Project: $PROJECT_ID"
+            echo "- Region: $REGION"
+            echo "- Service: $BACKEND_SERVICE"
+            echo "- Dry run: $DRY_RUN"
+            echo "- Sampling: parent-based 10% (forced sampled validation request on deployment)"
+            echo "- Minimum instances: 0"
+            echo "- Monthly budget input: USD $MONTHLY_BUDGET_USD"
+            echo "- Production traffic changed: no"
+            echo
+            echo "Review Cloud Billing after 24-48 hours before any production proposal."
+          } | tee telemetry-staging-evidence.md
+          cat telemetry-staging-evidence.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload telemetry-staging-evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: telemetry-staging-evidence-${{ github.run_id }}
+          path: |
+            telemetry-staging-evidence.md
+            matched-budget.json
+            readiness.json
+            trace-evidence.json
+            canary-url.txt
+            trace-id.txt
+          if-no-files-found: ignore
+          retention-days: 30
