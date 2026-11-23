@@ -4,13 +4,15 @@ import re
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.db.errors import AlreadyExists, ReferencedRowMissing
 from src.db.repos import users as users_repo
+from src.db.repos import workflow_assignments as assignments_repo
+from src.db.repos import workflows as workflows_repo
+from src.db.repos.workflows import WorkflowChanges, WorkflowRecord
 from src.db.session import get_session
 from src.engine.graph_builder import (
     WorkflowValidationError,
@@ -33,7 +35,6 @@ from src.security.encryption import (
     is_marked_encrypted,
     redact_sensitive_headers,
 )
-from src.storage.db import get_db
 from src.variable_validation import find_unknown_variable_references
 
 # P0-5: vector-db node fields carrying secret API keys, same class of gap
@@ -290,23 +291,6 @@ def _encrypt_http_headers(nodes_json: list[dict[str, Any]], existing_nodes: list
         )
 
 
-async def _has_assignment(
-    db: Prisma,  # pyright: ignore[reportUnknownParameterType]
-    workflow_id: str,
-    user_id: str,
-) -> bool:
-    """True when `user_id` has an active WorkflowAssignment on `workflow_id`.
-
-    Assignment grants full read+write (open, edit, run) but never delete or
-    ownership-transfer rights — those stay owner/admin-only (Account +
-    Workflow Sharing plan, Part B scope decision).
-    """
-    row = await db.workflowassignment.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"workflowId_userId": {"workflowId": workflow_id, "userId": user_id}}
-    )
-    return row is not None
-
-
 class WorkflowCreate(BaseModel):
     """Request body for POST /workflows."""
 
@@ -360,10 +344,29 @@ class WorkflowListResponse(BaseModel):
     offset: int
 
 
+async def _update_or_409(
+    session: AsyncSession, workflow_id: str, changes: WorkflowChanges
+) -> WorkflowRecord:
+    """Update a workflow; a slug clash is a 409 whose detail names only the constraint."""
+    try:
+        updated = await workflows_repo.update(session, workflow_id, changes)
+    except AlreadyExists as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"external_slug already in use: {exc}",
+        ) from exc
+    if updated is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Workflow {workflow_id!r} not found.",
+        )
+    return updated
+
+
 @router.post("/workflows", response_model=WorkflowRead, status_code=status.HTTP_201_CREATED)
 async def create_workflow(
     payload: WorkflowCreate,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     user_id: str = Depends(get_current_user_id),
 ) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
     # Re-validate as Workflow to run graph_builder's shape check.
@@ -386,22 +389,24 @@ async def create_workflow(
     _encrypt_http_headers(nodes_json, existing_nodes=[])
     _encrypt_confluence_tokens(nodes_json, existing_nodes=[])
     edges_json = [edge.model_dump(by_alias=True) for edge in workflow.edges]
-    row = await db.workflow.create(
-        data={  # pyright: ignore[reportArgumentType]
+    row = await workflows_repo.create(
+        session,
+        {
             "name": payload.name,
             "description": payload.description,
             "category": payload.category,
             "tags": payload.tags,
             "difficulty": payload.difficulty,
-            "estimatedTime": payload.estimated_time,
-            "nodes": Json(nodes_json),
-            "edges": Json(edges_json),
+            "estimated_time": payload.estimated_time,
+            "nodes": nodes_json,
+            "edges": edges_json,
             "version": payload.version,
-            "isTemplate": payload.is_template,
-            "isPublic": payload.is_public,
-            "userId": user_id,
-        }
+            "is_template": payload.is_template,
+            "is_public": payload.is_public,
+            "user_id": user_id,
+        },
     )
+    await session.commit()
     return _to_workflow_read(row)
 
 
@@ -409,34 +414,14 @@ async def create_workflow(
 # so that FastAPI does not swallow "search" as a path parameter.
 @router.get("/workflows/search", response_model=WorkflowListResponse)
 async def search_workflows(
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
     q: str = Query(..., min_length=1),
     limit: int = Query(default=50, ge=1, le=100),
 ) -> WorkflowListResponse:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
-    text_match: dict[str, Any] = {
-        "OR": [
-            {"name": {"contains": q, "mode": "insensitive"}},
-            {"description": {"contains": q, "mode": "insensitive"}},
-        ]
-    }
-    if role == "admin":
-        where: dict[str, Any] = text_match
-    else:
-        authz: dict[str, Any] = {
-            "OR": [
-                {"isPublic": True},
-                {"userId": user_id},
-                {"assignments": {"some": {"userId": user_id}}},
-            ]
-        }
-        where = {"AND": [authz, text_match]}
-    total = await db.workflow.count(where=where)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
-    rows = await db.workflow.find_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where=where,  # pyright: ignore[reportArgumentType]
-        take=limit,
-        order={"updatedAt": "desc"},
+    rows, total = await workflows_repo.search(
+        session, viewer={"user_id": user_id, "is_admin": role == "admin"}, q=q, limit=limit
     )
     items = [_to_workflow_read(row) for row in rows]
     return WorkflowListResponse(total=total, items=items, limit=limit, offset=0)
@@ -444,7 +429,7 @@ async def search_workflows(
 
 @router.get("/workflows", response_model=WorkflowListResponse)
 async def list_workflows(
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
@@ -455,42 +440,20 @@ async def list_workflows(
 ) -> WorkflowListResponse:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
     # Authz / scope:
-    #   mine=true (any role) → strictly "workflows I own".  Admins
+    #   mine=true (any role) -> strictly "workflows I own or am assigned".  Admins
     #     asking for their own workflows shouldn't get the global feed.
-    #   admin without mine → see all workflows (the original
+    #   admin without mine -> see all workflows (the original
     #     admin-sees-everything behaviour).
-    #   non-admin without mine → public + own (discovery feed).
-    assignment_clause: dict[str, Any] = {"assignments": {"some": {"userId": user_id}}}
-    authz_where: dict[str, Any] | None
-    if mine:
-        authz_where = {"OR": [{"userId": user_id}, assignment_clause]}
-    elif role == "admin":
-        authz_where = None
-    else:
-        authz_where = {"OR": [{"isPublic": True}, {"userId": user_id}, assignment_clause]}
-
-    filter_conditions: list[dict[str, Any]] = []
-    if is_template is not None:
-        filter_conditions.append({"isTemplate": is_template})
-    if is_public is not None:
-        filter_conditions.append({"isPublic": is_public})
-    if category is not None:
-        filter_conditions.append({"category": category})
-
-    where: dict[str, Any] | None
-    if authz_where is None:
-        where = {"AND": filter_conditions} if filter_conditions else None
-    elif filter_conditions:
-        where = {"AND": [authz_where, *filter_conditions]}
-    else:
-        where = authz_where
-
-    total = await db.workflow.count(where=where)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
-    rows = await db.workflow.find_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where=where,  # pyright: ignore[reportArgumentType]
-        take=limit,
-        skip=offset,
-        order={"updatedAt": "desc"},
+    #   non-admin without mine -> public + own + assigned (discovery feed).
+    rows, total = await workflows_repo.list_page(
+        session,
+        viewer={"user_id": user_id, "is_admin": role == "admin"},
+        mine=bool(mine),
+        is_template=is_template,
+        is_public=is_public,
+        category=category,
+        limit=limit,
+        offset=offset,
     )
     items = [_to_workflow_read(row) for row in rows]
     return WorkflowListResponse(total=total, items=items, limit=limit, offset=offset)
@@ -499,13 +462,11 @@ async def list_workflows(
 @router.get("/workflows/{workflow_id}", response_model=WorkflowRead)
 async def get_workflow(
     workflow_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
 ) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
-    row = await db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": workflow_id}
-    )
+    row = await workflows_repo.get(session, workflow_id)
     if row is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -513,9 +474,9 @@ async def get_workflow(
         )
     if role == "admin":
         return _to_workflow_read(row)
-    if row.isPublic or row.userId == user_id:
+    if row.is_public or row.user_id == user_id:
         return _to_workflow_read(row)
-    if await _has_assignment(db, workflow_id, user_id):
+    if await assignments_repo.exists(session, workflow_id, user_id):
         return _to_workflow_read(row)
     # 404 for private, not owner, not assignee — info-leak tight (ADR-0021)
     raise HTTPException(
@@ -528,13 +489,11 @@ async def get_workflow(
 async def update_workflow(
     workflow_id: str,
     payload: WorkflowCreate,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
-) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
+) -> WorkflowRead:
     user_id, role = _role
-    existing = await db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": workflow_id}
-    )
+    existing = await workflows_repo.get(session, workflow_id)
     if existing is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
@@ -542,8 +501,8 @@ async def update_workflow(
         )
     if (
         role != "admin"
-        and existing.userId != user_id
-        and not await _has_assignment(db, workflow_id, user_id)
+        and existing.user_id != user_id
+        and not await assignments_repo.exists(session, workflow_id, user_id)
     ):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -564,8 +523,7 @@ async def update_workflow(
         node.model_dump(by_alias=True)  # pyright: ignore[reportAttributeAccessIssue]
         for node in workflow.nodes
     ]
-    existing_nodes_raw = existing.nodes
-    existing_nodes: list[Any] = existing_nodes_raw if isinstance(existing_nodes_raw, list) else []
+    existing_nodes: list[Any] = existing.nodes
     _encrypt_jira_tokens(nodes_json, existing_nodes=existing_nodes)
     _encrypt_vector_db_keys(nodes_json, existing_nodes=existing_nodes)
     _encrypt_http_headers(nodes_json, existing_nodes=existing_nodes)
@@ -573,7 +531,7 @@ async def update_workflow(
     edges_json = [edge.model_dump(by_alias=True) for edge in workflow.edges]
 
     # Publish / unpublish handling
-    publish_data: dict[str, Any] = {}
+    publish_data: WorkflowChanges = {}
     if payload.is_production is True:
         if not payload.external_slug:
             raise HTTPException(
@@ -582,63 +540,52 @@ async def update_workflow(
             )
         _validate_slug(payload.external_slug)
         _reject_unknown_variable_references(workflow)
-        publish_data["isProduction"] = True
-        publish_data["externalSlug"] = payload.external_slug
+        publish_data["is_production"] = True
+        publish_data["external_slug"] = payload.external_slug
     elif payload.is_production is False:
-        publish_data["isProduction"] = False
-        publish_data["externalSlug"] = None
+        publish_data["is_production"] = False
+        publish_data["external_slug"] = None
 
-    update_data: dict[str, Any] = {
+    changes: WorkflowChanges = {
         "name": payload.name,
         "description": payload.description,
         "category": payload.category,
         "tags": payload.tags,
         "difficulty": payload.difficulty,
-        "estimatedTime": payload.estimated_time,
-        "nodes": Json(nodes_json),
-        "edges": Json(edges_json),
+        "estimated_time": payload.estimated_time,
+        "nodes": nodes_json,
+        "edges": edges_json,
         "version": payload.version,
-        "isTemplate": payload.is_template,
-        "isPublic": payload.is_public,
+        "is_template": payload.is_template,
+        "is_public": payload.is_public,
         **publish_data,
     }
 
-    try:
-        updated = await db.workflow.update(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"id": workflow_id},
-            data=update_data,  # pyright: ignore[reportArgumentType]
-        )
-    except UniqueViolationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"external_slug already in use: {exc}",
-        ) from exc
+    updated = await _update_or_409(session, workflow_id, changes)
+    await session.commit()
     return _to_workflow_read(updated)
 
 
 @router.delete("/workflows/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_workflow(
     workflow_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
 ) -> None:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
-    existing = await db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": workflow_id}
-    )
+    existing = await workflows_repo.get(session, workflow_id)
     if existing is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Workflow {workflow_id!r} not found.",
         )
-    if role != "admin" and existing.userId != user_id:
+    if role != "admin" and existing.user_id != user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Forbidden: not workflow owner.",
         )
-    await db.workflow.delete(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": workflow_id}
-    )
+    await workflows_repo.delete(session, workflow_id)
+    await session.commit()
 
 
 class OwnerAssignRequest(BaseModel):
@@ -674,18 +621,18 @@ class AdminFlagsRequest(BaseModel):
 async def admin_update_workflow_flags(
     workflow_id: str,
     payload: AdminFlagsRequest,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
-    existing = await db.workflow.find_unique(where={"id": workflow_id})  # pyright: ignore[reportAttributeAccessIssue]
+    existing = await workflows_repo.get(session, workflow_id)
     if existing is None:
         raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
 
-    data: dict[str, Any] = {}
+    data: WorkflowChanges = {}
     if payload.is_public is not None:
-        data["isPublic"] = payload.is_public
+        data["is_public"] = payload.is_public
     if payload.is_production is True:
-        slug = payload.external_slug or getattr(existing, "externalSlug", None)
+        slug = payload.external_slug or existing.external_slug
         if not slug:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -697,29 +644,21 @@ async def admin_update_workflow_flags(
                 {"name": existing.name, "nodes": existing.nodes, "edges": existing.edges}
             )
         )
-        data["isProduction"] = True
-        data["externalSlug"] = slug
+        data["is_production"] = True
+        data["external_slug"] = slug
     elif payload.is_production is False:
-        data["isProduction"] = False
-        data["externalSlug"] = None
+        data["is_production"] = False
+        data["external_slug"] = None
     elif payload.external_slug is not None:
         # Slug change without flipping isProduction
         _validate_slug(payload.external_slug)
-        data["externalSlug"] = payload.external_slug
+        data["external_slug"] = payload.external_slug
 
     if not data:
         return _to_workflow_read(existing)
 
-    try:
-        updated = await db.workflow.update(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"id": workflow_id},
-            data=data,  # pyright: ignore[reportArgumentType]
-        )
-    except UniqueViolationError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"external_slug already in use: {exc}",
-        ) from exc
+    updated = await _update_or_409(session, workflow_id, data)
+    await session.commit()
     return _to_workflow_read(updated)
 
 
@@ -727,51 +666,54 @@ async def admin_update_workflow_flags(
 async def assign_workflow_owner(
     workflow_id: str,
     payload: OwnerAssignRequest,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     session: AsyncSession = Depends(get_session),
     _admin: str = Depends(ensure_admin),
 ) -> WorkflowRead:  # pyright: ignore[reportUnusedFunction]
+    # One transaction: the user lookup, the workflow read and the write share this
+    # session and the single commit below.
     target_user_id = payload.user_id
     if target_user_id is None:
         if not payload.email:
             raise HTTPException(422, "must provide user_id or email")
         target_user = await users_repo.get_by_email(session, payload.email.lower())
-        await session.rollback()  # release the pooled connection; the rest uses Prisma
         if target_user is None:
             raise HTTPException(404, f"user with email {payload.email!r} not found")
         target_user_id = target_user.id
     else:
         target_user = await users_repo.get_by_id(session, target_user_id)
-        await session.rollback()  # release the pooled connection; the rest uses Prisma
         if target_user is None:
             raise HTTPException(404, f"user {target_user_id!r} not found")
 
-    existing = await db.workflow.find_unique(where={"id": workflow_id})  # pyright: ignore[reportAttributeAccessIssue]
+    existing = await workflows_repo.get(session, workflow_id)
     if existing is None:
         raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
 
-    updated = await db.workflow.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": workflow_id}, data={"userId": target_user_id}
-    )
+    updated = await workflows_repo.update(session, workflow_id, {"user_id": target_user_id})
+    if updated is None:
+        raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
+    await session.commit()
     return _to_workflow_read(updated)
 
 
 @router.get("/workflows/{workflow_id}/assignments", response_model=list[WorkflowAssignmentRead])
 async def list_workflow_assignments(
     workflow_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
 ) -> list[WorkflowAssignmentRead]:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
-    existing = await db.workflow.find_unique(where={"id": workflow_id})  # pyright: ignore[reportAttributeAccessIssue]
+    existing = await workflows_repo.get(session, workflow_id)
     if existing is None:
         raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
-    if role != "admin" and existing.userId != user_id:
+    if role != "admin" and existing.user_id != user_id:
         raise HTTPException(403, "Forbidden: not workflow owner.")
-    rows = await db.workflowassignment.find_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"workflowId": workflow_id}
-    )
+    rows = await assignments_repo.list_for_workflow(session, workflow_id)
     return [WorkflowAssignmentRead.model_validate(r) for r in rows]
+
+
+_ASSIGNMENT_USER_FKS = frozenset(
+    {"workflow_assignments_user_id_fkey", "workflow_assignments_assigned_by_id_fkey"}
+)
 
 
 @router.post(
@@ -782,33 +724,35 @@ async def list_workflow_assignments(
 async def grant_workflow_assignment(
     workflow_id: str,
     target_user_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
 ) -> WorkflowAssignmentRead:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
-    existing = await db.workflow.find_unique(where={"id": workflow_id})  # pyright: ignore[reportAttributeAccessIssue]
+    existing = await workflows_repo.get(session, workflow_id, for_update=True)
     if existing is None:
         raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
-    if role != "admin" and existing.userId != user_id:
+    if role != "admin" and existing.user_id != user_id:
         raise HTTPException(403, "Forbidden: not workflow owner.")
     target_user = await users_repo.get_by_id(session, target_user_id)
-    await session.rollback()  # release the pooled connection; the rest uses Prisma
     if target_user is None:
         raise HTTPException(404, f"user {target_user_id!r} not found")
     try:
-        row = await db.workflowassignment.create(  # pyright: ignore[reportAttributeAccessIssue]
-            data={
-                "workflowId": workflow_id,
-                "userId": target_user_id,
-                "assignedById": user_id,
-            }
+        row = await assignments_repo.create(
+            session, workflow_id=workflow_id, user_id=target_user_id, assigned_by_id=user_id
         )
-    except UniqueViolationError as exc:
+    except ReferencedRowMissing as exc:
+        # The workflow row is locked, so the reachable case is a user (the target or
+        # the grantor) deleted after the checks above; anything else is the workflow.
+        if exc.constraint in _ASSIGNMENT_USER_FKS:
+            raise HTTPException(404, f"user {target_user_id!r} not found") from exc
+        raise HTTPException(404, f"Workflow {workflow_id!r} not found.") from exc
+    except AlreadyExists as exc:
+        # str(exc) names the constraint only: no SQL, parameters or ciphertext.
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"assignment already exists for user {target_user_id!r}: {exc}",
         ) from exc
+    await session.commit()
     return WorkflowAssignmentRead.model_validate(row)
 
 
@@ -819,23 +763,21 @@ async def grant_workflow_assignment(
 async def revoke_workflow_assignment(
     workflow_id: str,
     target_user_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
 ) -> None:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
-    existing = await db.workflow.find_unique(where={"id": workflow_id})  # pyright: ignore[reportAttributeAccessIssue]
+    existing = await workflows_repo.get(session, workflow_id, for_update=True)
     if existing is None:
         raise HTTPException(404, f"Workflow {workflow_id!r} not found.")
-    if role != "admin" and existing.userId != user_id:
+    if role != "admin" and existing.user_id != user_id:
         raise HTTPException(403, "Forbidden: not workflow owner.")
-    deleted = await db.workflowassignment.delete(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"workflowId_userId": {"workflowId": workflow_id, "userId": target_user_id}}
-    )
-    if deleted is None:
+    if not await assignments_repo.delete(session, workflow_id, target_user_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"assignment not found for user {target_user_id!r}",
         )
+    await session.commit()
 
 
 __all__ = [

@@ -18,6 +18,13 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 # other not-yet-migrated tables: src/api/internal.py (workflow reads, executions),
 # src/api/test_cleanup.py (deletes workflows/executions via Prisma), src/migration/*
 # (reconcile, runner and writer work on Prisma-backed rows). They move in later phases.
+# Phase 3 (workflows) areas: the workflows routes and test cleanup. Still on Prisma for
+# executions, the checkpointer or the migration source, so NOT listed: src/api/builder.py
+# (agent/execution tooling via ``db``), src/api/run.py and src/api/executions.py
+# (execution rows), src/api/internal.py (executions, approvals),
+# src/engine/langgraph_executor.py (execution rows), src/migration/* (Convex-sourced
+# rows on the Prisma client). The workflow tables themselves are reached only through
+# ``src.db.repos`` from all of them.
 MIGRATED_PATHS = [
     "src/db",
     "src/api/admin_deployment_settings.py",
@@ -31,6 +38,8 @@ MIGRATED_PATHS = [
     "src/api/llm_models.py",
     "src/api/llm_models_live.py",
     "src/api/users.py",
+    "src/api/workflows.py",
+    "src/api/test_cleanup.py",
     "src/api/cloud_storage_oauth.py",
     "src/api/mcp_servers.py",
     "src/builder/model_policy.py",

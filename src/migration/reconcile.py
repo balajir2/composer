@@ -9,6 +9,7 @@ from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
 from src.db.repos import mcp_servers as mcp_servers_repo
 from src.db.repos import users as users_repo
+from src.db.repos import workflows as workflows_repo
 from src.db.runtime import one_shot_session
 
 if TYPE_CHECKING:
@@ -30,11 +31,7 @@ async def reconcile_by_email(db: Prisma, session: AsyncSession, email: str) -> d
 
     result: dict[str, int] = {}
 
-    wf_updated = await db.workflow.update_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"originalOwnerEmail": email_lc, "userId": None},
-        data={"userId": user.id},
-    )
-    result["workflows"] = wf_updated
+    result["workflows"] = await workflows_repo.claim_orphans_by_email(session, email_lc, user.id)
 
     exec_updated = await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
         where={"originalOwnerEmail": email_lc, "userId": None},

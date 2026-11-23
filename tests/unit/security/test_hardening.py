@@ -5,38 +5,24 @@ Invariants from spec §6 not already covered by per-feature tests:
 - Path-traversal in workflow_id → 404
 """
 
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.repos.workflows import WorkflowRecord
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
+from tests.unit.db_fakes import (
+    WorkflowRepoMocks,
+    make_workflow,
+    override_session,
+    patch_workflow_repos,
+)
 
 
-def _wf_row_from_create(name: str) -> SimpleNamespace:
-    return SimpleNamespace(
-        id="w-new",
-        userId="dev",
-        name=name,
-        description=None,
-        category=None,
-        tags=[],
-        difficulty=None,
-        estimatedTime=None,
-        nodes=[],
-        edges=[],
-        version=None,
-        isTemplate=False,
-        isPublic=False,
-        createdAt="2026-04-22T00:00:00Z",
-        updatedAt="2026-04-22T00:00:00Z",
-    )
-
-
-def _client_with_create(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MagicMock]:
+def _client_with_create(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, WorkflowRepoMocks]:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", "development")
     from src.config import get_settings
@@ -44,20 +30,20 @@ def _client_with_create(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, Ma
     get_settings.cache_clear()
     app = create_app()
 
-    db = MagicMock()
-    db.workflow = MagicMock()
+    app.state.db = MagicMock()
+    override_session(app)
+    repos = patch_workflow_repos(monkeypatch)
 
-    async def _create(*, data: dict[str, Any]) -> Any:
-        return _wf_row_from_create(data["name"])
+    async def _create(_session: Any, values: dict[str, Any]) -> WorkflowRecord:
+        return make_workflow(id="w-new", user_id="dev", name=values["name"])
 
-    db.workflow.create = _create
-    app.state.db = db
+    repos.create.side_effect = _create
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 
     app.state.event_bus = ExecutionEventBus()
     app.state.rate_limiter = RateLimiter()
-    return TestClient(app), db
+    return TestClient(app), repos
 
 
 def _client_with_find_none(monkeypatch: pytest.MonkeyPatch) -> TestClient:
@@ -68,10 +54,9 @@ def _client_with_find_none(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     get_settings.cache_clear()
     app = create_app()
 
-    db = MagicMock()
-    db.workflow = MagicMock()
-    db.workflow.find_unique = AsyncMock(return_value=None)
-    app.state.db = db
+    app.state.db = MagicMock()
+    override_session(app)
+    patch_workflow_repos(monkeypatch)  # get() answers None
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 

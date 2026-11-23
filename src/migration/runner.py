@@ -108,19 +108,25 @@ async def run_migration(*, export_dir: str, dry_run: bool) -> int:
     db = Prisma()
     await db.connect()
     try:
-        # Workflows
-        for row in tables.get("workflows", []):
-            try:
-                data = transformers.workflow_row(row, users)
-                inserted = await writer.upsert_workflow(db, data)
-                if inserted:
-                    report.bump_inserted("workflows")
-                else:
-                    report.bump_skipped("workflows")
-            except Exception as exc:
-                msg = f"workflows row {row.get('_id')!r}: {type(exc).__name__}"
-                report.errors.append(msg)
-                logger.warning("%s", msg)
+        # Workflows (SQLAlchemy; committed per row so one bad row can't undo the rest, and so
+        # the rows exist before the executions that reference them)
+        workflow_rows = tables.get("workflows", [])
+        if workflow_rows:
+            async with one_shot_session(get_settings()) as session:
+                for row in workflow_rows:
+                    try:
+                        data = transformers.workflow_row(row, users)
+                        inserted = await writer.upsert_workflow(session, data)
+                        await session.commit()
+                        if inserted:
+                            report.bump_inserted("workflows")
+                        else:
+                            report.bump_skipped("workflows")
+                    except Exception as exc:
+                        await session.rollback()
+                        msg = f"workflows row {row.get('_id')!r}: {type(exc).__name__}"
+                        report.errors.append(msg)
+                        logger.warning("%s", msg)
 
         # Executions
         for row in tables.get("executions", []):

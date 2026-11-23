@@ -50,6 +50,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.config import get_settings
 from src.db.repos import cloud_storage as cloud_storage_repo
+from src.db.repos import workflows as workflows_repo
 from src.db.runtime import require_sessionmaker
 from src.engine.langgraph_executor import LangGraphExecutor
 from src.engine.workflow import FileTriggerNode
@@ -557,9 +558,11 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
     isolate-failures-per-item contract.
     """
     settings = get_settings()
-    # Interim up-front 503: goes away once the workflow read moves to SQLAlchemy (phases 3/4).
+    # Up-front 503 without a database. Only executions are still on Prisma (phase 4).
     sessionmaker = require_sessionmaker(request)
-    workflows = await db.workflow.find_many(where={"isProduction": True})  # pyright: ignore[reportAttributeAccessIssue]
+    # Short session: closed before any Drive call below.
+    async with sessionmaker() as session:
+        workflows = await workflows_repo.list_production(session)
     checkpointer = get_checkpointer(request)
     event_bus = get_event_bus(request)
     executor = LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
@@ -643,7 +646,7 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
             # get_picker_token (src/api/cloud_storage_oauth.py) is the
             # 404-raising sibling of this same check for the interactive
             # (user-facing) path.
-            if connection.user_id != wf.userId:
+            if connection.user_id != wf.user_id:
                 logger.warning(
                     "poll_file_triggers: workflow %s node %s references connection %s "
                     "owned by %s, not the workflow's owner %s — skipping "
@@ -652,7 +655,7 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
                     node.id,
                     connection_id,
                     connection.user_id,
-                    wf.userId,
+                    wf.user_id,
                 )
                 continue
 

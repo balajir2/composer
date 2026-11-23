@@ -14,12 +14,14 @@ from typing import TYPE_CHECKING, Any, cast
 from prisma import Json  # pyright: ignore[reportAttributeAccessIssue]
 from src.db.repos import mcp_oauth as mcp_oauth_repo
 from src.db.repos import mcp_servers as mcp_servers_repo
+from src.db.repos import workflows as workflows_repo
 
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
     from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
     from src.db.repos.mcp_servers import McpServerCreate
+    from src.db.repos.workflows import WorkflowValues
 
 
 def _wrap_required(data: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
@@ -44,14 +46,33 @@ def _wrap_optional(data: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any
     return out
 
 
-async def upsert_workflow(db: Prisma, data: dict[str, Any]) -> bool:  # pyright: ignore[reportUnknownParameterType]
-    """Return True if inserted, False if already present."""
-    existing = await db.workflow.find_unique(where={"id": data["id"]})  # pyright: ignore[reportAttributeAccessIssue]
-    if existing is not None:
-        return False
-    wrapped = _wrap_required(data, ("nodes", "edges"))
-    await db.workflow.create(data=wrapped)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
-    return True
+_WORKFLOW_COLUMNS = {
+    "id": "id",
+    "userId": "user_id",
+    "originalOwnerEmail": "original_owner_email",
+    "name": "name",
+    "description": "description",
+    "category": "category",
+    "tags": "tags",
+    "difficulty": "difficulty",
+    "estimatedTime": "estimated_time",
+    "nodes": "nodes",
+    "edges": "edges",
+    "version": "version",
+    "isTemplate": "is_template",
+    "isPublic": "is_public",
+}
+
+
+async def upsert_workflow(session: AsyncSession, data: dict[str, Any]) -> bool:
+    """Insert unless a row with this id exists. The caller commits."""
+    unknown = sorted(set(data) - set(_WORKFLOW_COLUMNS))
+    if unknown:
+        raise ValueError(f"unknown workflow keys: {', '.join(unknown)}")
+    values: dict[str, Any] = {
+        column: data[key] for key, column in _WORKFLOW_COLUMNS.items() if key in data
+    }
+    return await workflows_repo.insert_if_absent(session, cast("WorkflowValues", values))
 
 
 async def upsert_execution(db: Prisma, data: dict[str, Any]) -> bool:  # pyright: ignore[reportUnknownParameterType]

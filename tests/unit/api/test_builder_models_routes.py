@@ -1,7 +1,6 @@
 """Routes that expose and enforce the admin-approved builder models."""
 
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -14,7 +13,13 @@ from src.db.repos import deployment_settings as settings_repo
 from src.db.repos import llm_models as models_repo
 from src.db.repos.deployment_settings import SettingRecord
 from src.db.repos.llm_models import LlmModelRecord
-from tests.unit.db_fakes import FakeSession, override_session
+from tests.unit.db_fakes import (
+    FakeSession,
+    FakeSessionmaker,
+    make_workflow,
+    override_session,
+    patch_workflow_repos,
+)
 
 
 class _Limiter:
@@ -64,31 +69,19 @@ def _fake_repos(monkeypatch: pytest.MonkeyPatch, values: dict[str, str]) -> None
     monkeypatch.setattr(models_repo, "list_models", list_models)
 
 
-class _One:
-    def __init__(self, row: Any) -> None:
-        self._row = row
-
-    async def find_unique(self, **_kwargs: Any) -> Any:
-        return self._row
-
-
-def _db() -> Any:
-    wf = SimpleNamespace(id="w1", userId="dev", name="n", description=None, nodes=[], edges=[])
-    return SimpleNamespace(workflow=_One(wf), workflowassignment=_One(None))
-
-
 def _client(
     monkeypatch: pytest.MonkeyPatch, settings: dict[str, str], role: str = "member"
 ) -> tuple[TestClient, FakeSession]:
     _fake_repos(monkeypatch, settings)
-    db = _db()
+    patch_workflow_repos(monkeypatch).get.return_value = make_workflow(user_id="dev")
     app = FastAPI()
     app.include_router(builder_mod.router)
     app.include_router(admin_mod.router)
     app.state.builder_sessions = {}
+    app.state.db_sessionmaker = FakeSessionmaker()
 
     async def fake_db() -> Any:
-        return db
+        return None
 
     async def fake_role() -> tuple[str, str]:
         return "dev", role
