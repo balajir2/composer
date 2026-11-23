@@ -85,3 +85,29 @@ async def test_external_invoke_idempotency_key_is_not_replayed_to_another_user(
     assert jbody(other)["detail"] == _KEY_TAKEN
     assert first_id not in other.text
     assert len(await db.executions_for(wf["id"])) == 1
+
+
+async def test_an_assignee_can_start_a_run_and_a_bystander_cannot(
+    client: AsyncClient,
+    member: Member,
+    second_member: Member,
+    third_member: Member,
+    wf_api: WorkflowApi,
+    db: Db,
+) -> None:
+    wf = await wf_api.create(member, isPublic=False)
+    wid = wf["id"]
+    await db.assign(wid, second_member.id, member.id)
+
+    ok = await client.post(
+        "/executions", json={"workflowId": wid, "input": "a"}, headers=second_member.headers
+    )
+    assert ok.status_code == 202, ok.text
+    assert jbody(ok)["userId"] == second_member.id
+
+    denied = await client.post(
+        "/executions", json={"workflowId": wid, "input": "b"}, headers=third_member.headers
+    )
+    assert denied.status_code == 404, denied.text
+    assert jbody(denied)["detail"] == f"Workflow {wid!r} not found."
+    assert [e.user_id for e in await db.executions_for(wid)] == [second_member.id]

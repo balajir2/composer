@@ -16,6 +16,7 @@ from src.api.execution_status import (
     ACTIVE_EXECUTION_STATUSES_SORTED,
 )
 from src.config import get_settings
+from src.db.repos import workflow_assignments as workflow_assignments_repo
 from src.db.repos import workflows as workflows_repo
 from src.db.runtime import require_sessionmaker
 from src.engine.langgraph_executor import LangGraphExecutor
@@ -161,18 +162,21 @@ async def create_execution(
         )
 
     # Short session: closed before the execution row is written and the task enqueued.
+    # Access: admin, public, owner, or an assignee (the assignment is only read when the
+    # cheaper checks fail). Anyone else gets the same 404 as a missing workflow.
+    not_found = HTTPException(
+        status_code=status.HTTP_404_NOT_FOUND,
+        detail=f"Workflow {payload.workflow_id!r} not found.",
+    )
     async with require_sessionmaker(request)() as session:
         workflow = await workflows_repo.get(session, payload.workflow_id)
-    if workflow is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Workflow {payload.workflow_id!r} not found.",
-        )
-    if role != "admin" and not workflow.is_public and workflow.user_id != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Workflow {payload.workflow_id!r} not found.",
-        )
+        if workflow is None:
+            raise not_found
+        allowed = role == "admin" or workflow.is_public or workflow.user_id == user_id
+        if not allowed:
+            allowed = await workflow_assignments_repo.exists(session, payload.workflow_id, user_id)
+    if not allowed:
+        raise not_found
 
     # Idempotent replay (P1-3): a caller that retries this POST after a
     # network timeout is the actual duplicate-execution vector in this

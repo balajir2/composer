@@ -337,7 +337,7 @@ async def test_run_external_sync_returns_the_output(
     assert body["workflowId"] == created["id"]
 
 
-async def test_execution_start_visibility_assignees_not_allowed(
+async def test_execution_start_visibility_owner_assignee_admin_public(
     client: AsyncClient,
     member: Member,
     second_member: Member,
@@ -345,13 +345,13 @@ async def test_execution_start_visibility_assignees_not_allowed(
     admin: Member,
     db: Db,
 ) -> None:
-    """POST /executions: owner, admin and anyone for a PUBLIC workflow may start a run; an
-    assignee of a private workflow may NOT (404), unlike the workflow read/edit routes."""
+    """POST /executions: owner, admin, an assignee, and anyone for a PUBLIC workflow may start a
+    run; a bystander on a private workflow gets 404."""
     private = await db.seed(member)
     public = await db.seed(member, is_public=True)
     await db.assign(private, second_member.id, member.id)
 
-    for who in (member, admin):
+    for who in (member, admin, second_member):
         r = await client.post(
             "/executions", json={"workflowId": private, "input": "go"}, headers=who.headers
         )
@@ -360,14 +360,17 @@ async def test_execution_start_visibility_assignees_not_allowed(
         assert body["workflowId"] == private and body["status"] == "queued"
         done = await _wait_done(client, who, body["id"])
         assert done["status"] == "completed" and done["output"] == "go"
-    assert {e.user_id for e in await db.executions_for(private)} == {member.id, admin.id}
+    assert {e.user_id for e in await db.executions_for(private)} == {
+        member.id,
+        admin.id,
+        second_member.id,
+    }
 
-    for who in (second_member, third_member):
-        r = await client.post(
-            "/executions", json={"workflowId": private, "input": "x"}, headers=who.headers
-        )
-        assert r.status_code == 404 and r.json()["detail"] == not_found(private)
-    assert len(await db.executions_for(private)) == 2  # the rejected calls created nothing
+    r = await client.post(
+        "/executions", json={"workflowId": private, "input": "x"}, headers=third_member.headers
+    )
+    assert r.status_code == 404 and r.json()["detail"] == not_found(private)
+    assert len(await db.executions_for(private)) == 3  # the rejected calls created nothing
 
     for who in (second_member, third_member):
         r = await client.post(

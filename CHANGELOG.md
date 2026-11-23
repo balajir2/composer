@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — assignees can start runs of workflows they're assigned to (2026-11-23)
+
+- `POST /executions` now accepts an assignee of the workflow, alongside the owner, an admin, and anyone for a public workflow. Before, an assignee could open and edit a workflow (and use the builder) but got 404 when they pressed Run. Anyone else still gets the same 404 as a missing workflow. The assignment is read in the same short session as the workflow, and only when the owner, public and admin checks fail.
+- External invoke (`POST /api/run/{slug}`) is unchanged: it still needs a production workflow and a public workflow, the owner's key, or an admin key; an assignee's key is refused.
+
 ### Security — idempotency-key replay no longer returns another user's execution (2026-11-23)
 
 - **Before:** the idempotency key is unique per workflow, not per user, so on a public workflow (or one shared with assignees) a second user who sent the same `idempotencyKey` as an earlier caller got that caller's execution back from `POST /executions` or `POST /api/run/{slug}`, including its input and output (and, with `sync`, the result).
@@ -25,7 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - The workflow routes, builder and external invoke answer 503 without a database.
   - The migration writer is strict about its input and inserts per row with its own commit; logs carry only the exception class and row id.
 - **Kept as-is on purpose:** workflow search does not escape `_` and `%`, as before; concurrent edits stay last-write-wins; revoking a missing assignment is still 404; non-list `nodes` or `edges` in a migrated row open as an empty canvas.
-- **Follow-ups (not in this phase):** optimistic locking on update and builder save; `poll_file_triggers` still loads every production workflow; execution start does not allow assignees, unlike the workflow routes; a redacted secret echoed for a new node id stores `None` instead of a 422. `workflow_assignments.user_id` and `assigned_by_id` have no foreign key to `users`.
+- **Follow-ups (not in this phase):** optimistic locking on update and builder save; `poll_file_triggers` still loads every production workflow; a redacted secret echoed for a new node id stores `None` instead of a 422. `workflow_assignments.user_id` and `assigned_by_id` have no foreign key to `users`.
 
 ### Fixed — MCP custom headers sent; refresh tokens kept on re-grant; concurrent token refreshes serialized (2026-11-22)
 

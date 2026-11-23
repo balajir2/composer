@@ -289,6 +289,75 @@ def test_post_execution_with_idempotency_key_replays_existing_execution() -> Non
     db.workflowexecution.create.assert_not_awaited()
 
 
+def test_post_execution_allows_an_assignee_of_a_private_workflow() -> None:
+    client, db = _client_with_mock_db()
+    _repos().get.return_value = _workflow_row(user_id="someone-else")
+    _repos().exists.return_value = True
+    resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
+    assert resp.status_code == 202
+    db.workflowexecution.create.assert_awaited_once()
+    assert _repos().exists.await_args.args[1:] == ("wf1", "dev")
+
+
+def test_post_execution_404_for_a_non_assignee_of_a_private_workflow() -> None:
+    client, db = _client_with_mock_db()
+    _repos().get.return_value = _workflow_row(user_id="someone-else")
+    _repos().exists.return_value = False
+    resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Workflow 'wf1' not found."
+    _repos().exists.assert_awaited_once()
+    db.workflowexecution.create.assert_not_awaited()
+
+
+def test_post_execution_admin_runs_without_an_assignment_lookup() -> None:
+    from src.security.auth import get_current_role
+
+    client, _db = _client_with_mock_db()
+    _repos().get.return_value = _workflow_row(user_id="someone-else")
+    client.app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")  # type: ignore[attr-defined]
+    try:
+        resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
+    finally:
+        client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
+    assert resp.status_code == 202
+    _repos().exists.assert_not_awaited()
+
+
+def test_post_execution_owner_and_public_runs_skip_the_assignment_lookup() -> None:
+    client, _db = _client_with_mock_db()
+    assert client.post("/executions", json={"workflowId": "wf1", "input": "x"}).status_code == 202
+    _repos().get.return_value = _workflow_row(user_id="someone-else", is_public=True)
+    assert client.post("/executions", json={"workflowId": "wf1", "input": "x"}).status_code == 202
+    _repos().exists.assert_not_awaited()
+
+
+def test_assignment_is_read_in_the_same_short_session_as_the_workflow() -> None:
+    events: list[str] = []
+    client, db = _client_with_mock_db()
+    client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
+    _repos().get.return_value = _workflow_row(user_id="someone-else")
+
+    async def _exists(*_a: object, **_k: object) -> bool:
+        events.append("assignment")
+        return True
+
+    async def _create(**_k: object) -> SimpleNamespace:
+        events.append("net:create_execution")
+        return _execution_row(status="queued")
+
+    _repos().exists.side_effect = _exists
+    db.workflowexecution.create = AsyncMock(side_effect=_create)
+
+    resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
+
+    assert resp.status_code == 202
+    at = events.index("assignment")
+    assert events[at + 1] == "session:exit"
+    assert events.index("net:create_execution") > at
+    assert_no_network_inside_session(events)
+
+
 def test_idempotency_key_used_by_another_user_is_409_and_leaks_nothing() -> None:
     """On a public workflow a second user reusing the first user's key used to get the
     first user's execution (input, output and all) back."""
