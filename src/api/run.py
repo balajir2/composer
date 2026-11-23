@@ -134,7 +134,7 @@ async def run_external(
     # timeout is the actual duplicate-execution vector here — LangGraph
     # doesn't auto-retry nodes, and the stuck-execution sweeper only marks
     # abandoned runs failed, it never re-runs them. A matching
-    # (workflowId, idempotencyKey) row means an earlier request already
+    # (workflowId, userId, idempotencyKey) row means an earlier request already
     # started this logical operation; reuse it instead of firing
     # side-effecting nodes (Jira, email, HTTP mutations) a second time.
     execution: Any = None
@@ -165,7 +165,12 @@ async def run_external(
                 db, workflow.id, auth.user_id, payload.idempotency_key
             )
             if execution is None:
-                raise
+                # Only reachable while the DB still has the old per-workflow
+                # unique index (code deployed before alembic 0002).
+                raise HTTPException(
+                    status_code=409,
+                    detail="idempotency key already used for this workflow",
+                ) from None
             require_same_caller(execution, auth.user_id)
             is_replay = True
 

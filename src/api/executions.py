@@ -186,7 +186,13 @@ async def create_execution(
             db, payload.workflow_id, user_id, payload.idempotency_key
         )
         if existing is None:
-            raise
+            # Only reachable while the DB still has the old per-workflow unique
+            # index (code deployed before alembic 0002): the key is another
+            # user's. Say so without leaking whose.
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="idempotency key already used for this workflow",
+            ) from None
         require_same_caller(existing, user_id)
         return ExecutionRead.model_validate(existing)
 

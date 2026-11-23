@@ -258,6 +258,53 @@ def test_idempotency_key_race_lost_relooks_up_scoped_to_the_caller(
     enqueue.assert_not_awaited()
 
 
+def _lose_race_setup(monkeypatch: pytest.MonkeyPatch, lookups: list[Any]) -> tuple[Any, AsyncMock]:
+    from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
+
+    from src.api import run as _run_module
+
+    client = _build_client(monkeypatch, _wf(is_public=True))
+    client.app.state.db.workflowexecution.find_first = AsyncMock(side_effect=lookups)  # type: ignore[attr-defined]
+
+    async def _lose_race(self: Any, **kwargs: Any) -> Any:
+        raise UniqueViolationError({"user_facing_error": {"meta": {}}})  # type: ignore[arg-type]
+
+    monkeypatch.setattr(_run_module.LangGraphExecutor, "start_execution", _lose_race)
+    enqueue = AsyncMock()
+    monkeypatch.setattr(_run_module, "enqueue_execution", enqueue)
+    return client, enqueue
+
+
+def test_race_lost_to_a_foreign_row_is_409_and_not_enqueued(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    foreign = _exec(id="other-ex-id", userId="someone-else", status="completed")
+    client, enqueue = _lose_race_setup(monkeypatch, [None, foreign])
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {"x": 1}, "idempotencyKey": "k"},
+    )
+    assert resp.status_code == 409
+    assert "other-ex-id" not in resp.text
+    enqueue.assert_not_awaited()
+
+
+def test_unique_violation_with_no_row_for_the_caller_is_409_not_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Only possible while the DB still has the old per-workflow index."""
+    client, enqueue = _lose_race_setup(monkeypatch, [None, None])
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {"x": 1}, "idempotencyKey": "k"},
+    )
+    assert resp.status_code == 409
+    assert "idempotency key already used for this workflow" in resp.text
+    enqueue.assert_not_awaited()
+
+
 def test_idempotency_key_starts_new_execution_when_no_match(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

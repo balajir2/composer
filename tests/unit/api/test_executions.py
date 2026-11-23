@@ -432,6 +432,49 @@ def test_idempotency_key_race_lost_relooks_up_scoped_to_the_caller(
     assert wheres == [{"workflowId": "wf1", "userId": "dev", "idempotencyKey": "k"}] * 2
 
 
+def _lost_race_client(
+    lookups: list[Any],
+) -> tuple[TestClient, MagicMock]:
+    from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
+
+    client, db = _client_with_mock_db()
+    db.workflowexecution.find_first = AsyncMock(side_effect=lookups)
+    db.workflowexecution.create = AsyncMock(
+        side_effect=UniqueViolationError({"user_facing_error": {"meta": {}}})  # type: ignore[arg-type]
+    )
+    return client, db
+
+
+def test_race_lost_to_a_foreign_row_is_409_and_not_enqueued(
+    _patch_enqueue_execution: AsyncMock,
+) -> None:
+    """Backstop on the race path: a row owned by someone else is never replayed."""
+    foreign = _execution_row(status="completed")
+    foreign.userId = "someone-else"
+    client, _ = _lost_race_client([None, foreign])
+    resp = client.post(
+        "/executions",
+        json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "k"},
+    )
+    assert resp.status_code == 409
+    _patch_enqueue_execution.assert_not_awaited()
+
+
+def test_unique_violation_with_no_row_for_the_caller_is_409_not_500(
+    _patch_enqueue_execution: AsyncMock,
+) -> None:
+    """Only possible while the DB still has the old per-workflow index (code deployed
+    before alembic 0002): the key belongs to another user, the caller has no row."""
+    client, _ = _lost_race_client([None, None])
+    resp = client.post(
+        "/executions",
+        json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "k"},
+    )
+    assert resp.status_code == 409
+    assert "idempotency key already used for this workflow" in resp.text
+    _patch_enqueue_execution.assert_not_awaited()
+
+
 def test_post_execution_with_idempotency_key_creates_when_no_existing_match() -> None:
     client, db = _client_with_mock_db()
     db.workflowexecution.find_first = AsyncMock(return_value=None)
