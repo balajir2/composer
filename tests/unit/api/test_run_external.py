@@ -183,6 +183,28 @@ def test_idempotency_key_replays_existing_execution(monkeypatch: pytest.MonkeyPa
     assert start_calls == []
 
 
+def test_idempotency_key_used_by_another_user_is_409_and_leaks_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """On a public workflow another user's key used to replay the first user's execution."""
+    wf = _wf(is_public=True)
+    other = _exec(
+        id="other-ex-id", userId="someone-else", status="completed", output="SECRET-OUTPUT"
+    )
+    start_calls: list[dict[str, Any]] = []
+    client = _build_client(monkeypatch, wf, existing_execution=other, start_calls=start_calls)
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {"x": 1}, "idempotencyKey": "shared-key", "sync": True},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "idempotency key already used for this workflow"
+    for leaked in ("other-ex-id", "SECRET-OUTPUT"):
+        assert leaked not in resp.text
+    assert start_calls == []
+
+
 def test_idempotency_key_starts_new_execution_when_no_match(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

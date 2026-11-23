@@ -121,6 +121,17 @@ async def _find_execution_by_idempotency_key(
     )
 
 
+def _require_same_caller(existing: Any, user_id: str) -> None:
+    """Replay is for the original caller retrying. The key is unique per workflow, not per
+    user, so on a shared workflow anyone else (admins included) gets a 409 that says
+    nothing about the other run."""
+    if getattr(existing, "userId", None) != user_id:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="idempotency key already used for this workflow",
+        )
+
+
 @router.post("/executions", response_model=ExecutionRead, status_code=status.HTTP_202_ACCEPTED)
 async def create_execution(
     payload: ExecutionCreate,
@@ -176,6 +187,7 @@ async def create_execution(
             db, payload.workflow_id, payload.idempotency_key
         )
         if existing is not None:
+            _require_same_caller(existing, user_id)
             return ExecutionRead.model_validate(existing)
 
     executor = _get_executor(request, db)
@@ -197,6 +209,7 @@ async def create_execution(
         )
         if existing is None:
             raise
+        _require_same_caller(existing, user_id)
         return ExecutionRead.model_validate(existing)
 
     # P1-2: enqueue a Cloud Task instead of a request-bound BackgroundTask —

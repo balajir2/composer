@@ -98,6 +98,15 @@ async def _find_execution_by_idempotency_key(
     )
 
 
+def _require_same_caller(existing: Any, user_id: str) -> None:
+    """Replay is for the original caller retrying; the key is unique per workflow, not per
+    user, so anyone else gets a 409 that says nothing about the other run."""
+    if getattr(existing, "userId", None) != user_id:
+        raise HTTPException(
+            status_code=409, detail="idempotency key already used for this workflow"
+        )
+
+
 @router.post("/api/run/{slug}")
 async def run_external(
     slug: str,
@@ -157,6 +166,8 @@ async def run_external(
             db, workflow.id, payload.idempotency_key
         )
         is_replay = execution is not None
+        if is_replay:
+            _require_same_caller(execution, auth.user_id)
 
     if not is_replay:
         try:
@@ -177,6 +188,7 @@ async def run_external(
             )
             if execution is None:
                 raise
+            _require_same_caller(execution, auth.user_id)
             is_replay = True
 
     base_url = str(request.base_url).rstrip("/")

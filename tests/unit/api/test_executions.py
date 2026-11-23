@@ -289,6 +289,64 @@ def test_post_execution_with_idempotency_key_replays_existing_execution() -> Non
     db.workflowexecution.create.assert_not_awaited()
 
 
+def test_idempotency_key_used_by_another_user_is_409_and_leaks_nothing() -> None:
+    """On a public workflow a second user reusing the first user's key used to get the
+    first user's execution (input, output and all) back."""
+    client, db = _client_with_mock_db()
+    _repos().get.return_value = _workflow_row(user_id="someone-else", is_public=True)
+    other = _execution_row(status="completed")
+    other.id = "other-ex-id"
+    other.userId = "someone-else"
+    other.input = "SECRET-INPUT"
+    other.output = "SECRET-OUTPUT"
+    db.workflowexecution.find_unique = AsyncMock(return_value=other)
+    resp = client.post(
+        "/executions",
+        json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "shared-key"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "idempotency key already used for this workflow"
+    for leaked in ("other-ex-id", "SECRET-INPUT", "SECRET-OUTPUT"):
+        assert leaked not in resp.text
+    db.workflowexecution.create.assert_not_awaited()
+
+
+def test_idempotency_key_race_lost_to_another_user_is_409() -> None:
+    from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
+
+    client, db = _client_with_mock_db()
+    other = _execution_row(status="queued")
+    other.userId = "someone-else"
+    db.workflowexecution.find_unique = AsyncMock(side_effect=[None, other])
+    db.workflowexecution.create = AsyncMock(
+        side_effect=UniqueViolationError({"user_facing_error": {"meta": {}}})  # type: ignore[arg-type]
+    )
+    resp = client.post(
+        "/executions",
+        json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "k"},
+    )
+    assert resp.status_code == 409
+    assert "ex1" not in resp.text
+
+
+def test_idempotency_key_replay_by_admin_who_is_not_the_original_caller_is_409() -> None:
+    from src.security.auth import get_current_role
+
+    client, db = _client_with_mock_db()
+    other = _execution_row(status="completed")
+    other.userId = "someone-else"
+    db.workflowexecution.find_unique = AsyncMock(return_value=other)
+    client.app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")  # type: ignore[attr-defined]
+    try:
+        resp = client.post(
+            "/executions",
+            json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "k"},
+        )
+    finally:
+        client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
+    assert resp.status_code == 409
+
+
 def test_post_execution_with_idempotency_key_creates_when_no_existing_match() -> None:
     client, db = _client_with_mock_db()
     db.workflowexecution.find_unique = AsyncMock(return_value=None)

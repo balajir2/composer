@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security — idempotency-key replay no longer returns another user's execution (2026-11-23)
+
+- **Before:** the idempotency key is unique per workflow, not per user, so on a public workflow (or one shared with assignees) a second user who sent the same `idempotencyKey` as an earlier caller got that caller's execution back from `POST /executions` or `POST /api/run/{slug}`, including its input and output (and, with `sync`, the result).
+- **Now:** only the original caller gets a replay. Anyone else, admins included, gets `409` with `idempotency key already used for this workflow`, which names nothing about the other run. The same caller retrying is unchanged. Covers the fast path and the lost-race path of both endpoints.
+
 ### Changed — SQLAlchemy migration phase 3: workflows (2026-11-23)
 
 - **Repositories:** `workflows` and `workflow_assignments` now go through `src/db/repos/workflows.py` and `workflow_assignments.py`. This covers the workflow routes, assignments and owner reassignment, the builder's load and save, external invoke, execution start, `poll_file_triggers`, the executor's workflow read, test cleanup, and the OAB migration writer, runner and reconcile. The Prisma import boundary test now also covers `src/api/workflows.py` and `src/api/test_cleanup.py`; nothing in `src` calls `db.workflow` or `db.workflowassignment` any more.
