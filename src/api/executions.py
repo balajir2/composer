@@ -11,6 +11,7 @@ from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingI
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from src.api._idempotency import find_execution_by_idempotency_key, require_same_caller
 from src.api.execution_status import (
     ACTIVE_EXECUTION_STATUSES,
     ACTIVE_EXECUTION_STATUSES_SORTED,
@@ -106,33 +107,6 @@ def _get_executor(request: Request, db: Prisma) -> LangGraphExecutor:  # pyright
     return LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
 
 
-async def _find_execution_by_idempotency_key(
-    db: Prisma,  # pyright: ignore[reportUnknownParameterType]
-    workflow_id: str,
-    idempotency_key: str,
-) -> Any:
-    where: dict[str, Any] = {
-        "workflowId_idempotencyKey": {
-            "workflowId": workflow_id,
-            "idempotencyKey": idempotency_key,
-        }
-    }
-    return await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where=where  # pyright: ignore[reportArgumentType]
-    )
-
-
-def _require_same_caller(existing: Any, user_id: str) -> None:
-    """Replay is for the original caller retrying. The key is unique per workflow, not per
-    user, so on a shared workflow anyone else (admins included) gets a 409 that says
-    nothing about the other run."""
-    if getattr(existing, "userId", None) != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail="idempotency key already used for this workflow",
-        )
-
-
 @router.post("/executions", response_model=ExecutionRead, status_code=status.HTTP_202_ACCEPTED)
 async def create_execution(
     payload: ExecutionCreate,
@@ -187,11 +161,11 @@ async def create_execution(
     # instead of starting a second one that would fire side-effecting
     # nodes (Jira, email, HTTP mutations) a second time.
     if payload.idempotency_key:
-        existing = await _find_execution_by_idempotency_key(
+        existing = await find_execution_by_idempotency_key(
             db, payload.workflow_id, payload.idempotency_key
         )
         if existing is not None:
-            _require_same_caller(existing, user_id)
+            require_same_caller(existing, user_id)
             return ExecutionRead.model_validate(existing)
 
     executor = _get_executor(request, db)
@@ -208,12 +182,12 @@ async def create_execution(
         # lookup above is just a fast path that can't close the race alone.
         if payload.idempotency_key is None:
             raise
-        existing = await _find_execution_by_idempotency_key(
+        existing = await find_execution_by_idempotency_key(
             db, payload.workflow_id, payload.idempotency_key
         )
         if existing is None:
             raise
-        _require_same_caller(existing, user_id)
+        require_same_caller(existing, user_id)
         return ExecutionRead.model_validate(existing)
 
     # P1-2: enqueue a Cloud Task instead of a request-bound BackgroundTask —

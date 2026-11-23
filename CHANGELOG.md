@@ -15,6 +15,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 - **Before:** the idempotency key is unique per workflow, not per user, so on a public workflow (or one shared with assignees) a second user who sent the same `idempotencyKey` as an earlier caller got that caller's execution back from `POST /executions` or `POST /api/run/{slug}`, including its input and output (and, with `sync`, the result).
 - **Now:** only the original caller gets a replay. Anyone else, admins included, gets `409` with `idempotency key already used for this workflow`, which names nothing about the other run. The same caller retrying is unchanged. Covers the fast path and the lost-race path of both endpoints.
+- **Follow-up (not in this change):** idempotency keys are unique per workflow, not per user: anyone who can start runs of a workflow can claim a key first (the real caller then gets 409) or probe whether a key was used. Moving the constraint to (workflow_id, user_id, idempotency_key) needs an Alembic revision and a decision.
 
 ### Changed — SQLAlchemy migration phase 3: workflows (2026-11-23)
 

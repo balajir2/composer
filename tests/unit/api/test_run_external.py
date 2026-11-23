@@ -205,6 +205,39 @@ def test_idempotency_key_used_by_another_user_is_409_and_leaks_nothing(
     assert start_calls == []
 
 
+def test_idempotency_key_race_lost_to_another_user_is_409_and_does_not_enqueue(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """start_execution loses the unique-key race; the winner belongs to someone else."""
+    from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
+
+    from src.api import run as _run_module
+
+    wf = _wf(is_public=True)
+    client = _build_client(monkeypatch, wf)
+    other = _exec(id="exec1", userId="someone-else", status="queued")
+    find_unique = AsyncMock(side_effect=[None, other])
+    client.app.state.db.workflowexecution.find_unique = find_unique  # type: ignore[attr-defined]
+
+    async def _lose_race(self: Any, **kwargs: Any) -> Any:
+        raise UniqueViolationError({"user_facing_error": {"meta": {}}})  # type: ignore[arg-type]
+
+    monkeypatch.setattr(_run_module.LangGraphExecutor, "start_execution", _lose_race)
+    enqueue = AsyncMock()
+    monkeypatch.setattr(_run_module, "enqueue_execution", enqueue)
+
+    resp = client.post(
+        "/api/run/my-wf",
+        headers={"Authorization": "Bearer ck_abc123456789"},
+        json={"input": {"x": 1}, "idempotencyKey": "raced-key"},
+    )
+    assert resp.status_code == 409
+    assert resp.json()["detail"] == "idempotency key already used for this workflow"
+    assert "exec1" not in resp.text
+    assert find_unique.await_count == 2
+    enqueue.assert_not_awaited()
+
+
 def test_idempotency_key_starts_new_execution_when_no_match(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

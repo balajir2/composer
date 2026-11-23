@@ -398,6 +398,26 @@ def test_idempotency_key_race_lost_to_another_user_is_409() -> None:
     assert "ex1" not in resp.text
 
 
+def test_idempotency_key_race_lost_to_the_same_caller_replays_without_enqueue(
+    _patch_enqueue_execution: AsyncMock,
+) -> None:
+    from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
+
+    client, db = _client_with_mock_db()
+    mine = _execution_row(status="queued")
+    db.workflowexecution.find_unique = AsyncMock(side_effect=[None, mine])
+    db.workflowexecution.create = AsyncMock(
+        side_effect=UniqueViolationError({"user_facing_error": {"meta": {}}})  # type: ignore[arg-type]
+    )
+    resp = client.post(
+        "/executions",
+        json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "k"},
+    )
+    assert resp.status_code == 202
+    assert resp.json()["id"] == mine.id
+    _patch_enqueue_execution.assert_not_awaited()
+
+
 def test_idempotency_key_replay_by_admin_who_is_not_the_original_caller_is_409() -> None:
     from src.security.auth import get_current_role
 

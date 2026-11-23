@@ -370,7 +370,7 @@ async def test_execution_start_visibility_owner_assignee_admin_public(
         "/executions", json={"workflowId": private, "input": "x"}, headers=third_member.headers
     )
     assert r.status_code == 404 and r.json()["detail"] == not_found(private)
-    assert len(await db.executions_for(private)) == 3  # the rejected calls created nothing
+    assert len(await db.executions_for(private)) == 3  # the rejected call created nothing
 
     for who in (second_member, third_member):
         r = await client.post(
