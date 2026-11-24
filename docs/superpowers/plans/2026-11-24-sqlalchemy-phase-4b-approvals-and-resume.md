@@ -34,7 +34,9 @@ Additionally, for this phase:
 - **Do not edit the 4a oracle** (`tests/integration/sqla_phase4a/**`), including its ADAPTER AREA. 4b's oracle imports helpers from it; it never changes it.
 - **`enqueue_execution(…, db=db)` keeps its `db` argument** (phase 5: it only feeds the dev-mode fallback's `PrismaCheckpointSaver`). So `resume_execution` and `confirm_approval_email` keep a `db = Depends(get_db)` parameter whose only use is that argument, annotated `Any` and marked `# TODO(phase 5): only for enqueue_execution's dev-mode checkpointer`.
 
-## Decisions to confirm with Balaji (recommendations in bold)
+## Decisions (confirmed by Balaji on 2026-11-24: all recommendations accepted)
+
+Fixed during the port, each with a test that fails on today's code first: **DB1, DB2, DB6**. Kept as-is, pinned, with follow-ups: **DB3, DB4, DB5**.
 
 | # | Topic | Today | Recommendation |
 |---|---|---|---|
