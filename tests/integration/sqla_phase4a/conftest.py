@@ -84,7 +84,7 @@ def api_dt(value: str) -> datetime:
     ISO-8601 string carrying an explicit UTC suffix (observed, see TS_SUFFIX)."""
     assert ISO.match(value), value
     assert value.endswith(TS_SUFFIX), value
-    assert re.search(r"(\.\d{6})?Z$", value), (
+    assert re.search(r":\d\d(\.\d{6})?Z$", value), (
         value
     )  # optional microsecond fraction (absent at 0 us)
     return datetime.fromisoformat(value.replace("Z", "+00:00"))

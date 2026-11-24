@@ -20,6 +20,7 @@ from src.api.execution_status import ACTIVE_EXECUTION_STATUSES_SORTED
 from src.db.errors import add_or_already_exists
 from src.db.models import ExecutionEvent, WorkflowExecution
 from src.db.repos import checkpoints as checkpoints_repo
+from src.db.repos._sql import in_array
 
 ACTIVE_STATUSES: tuple[str, ...] = tuple(ACTIVE_EXECUTION_STATUSES_SORTED)
 
@@ -201,7 +202,7 @@ async def list_refs(
     """Id, thread and status of executions (``ids`` None = all), optionally of one owner."""
     stmt = select(WorkflowExecution.id, WorkflowExecution.thread_id, WorkflowExecution.status)
     if ids is not None:
-        stmt = stmt.where(WorkflowExecution.id.in_(ids))
+        stmt = stmt.where(in_array(WorkflowExecution.id, ids))
     if owner_id is not None:
         stmt = stmt.where(WorkflowExecution.user_id == owner_id)
     return [ExecutionRef(r.id, r.thread_id, r.status) for r in await session.execute(stmt)]
@@ -218,7 +219,9 @@ async def delete_terminal(session: AsyncSession, ids: list[str]) -> list[Executi
         return []
     result = await session.execute(
         sa_delete(WorkflowExecution)
-        .where(WorkflowExecution.id.in_(ids), WorkflowExecution.status.not_in(ACTIVE_STATUSES))
+        .where(
+            in_array(WorkflowExecution.id, ids), WorkflowExecution.status.not_in(ACTIVE_STATUSES)
+        )
         .returning(WorkflowExecution.id, WorkflowExecution.thread_id, WorkflowExecution.status)
         .execution_options(synchronize_session=False)
     )
@@ -227,7 +230,7 @@ async def delete_terminal(session: AsyncSession, ids: list[str]) -> list[Executi
         await checkpoints_repo.delete_threads(session, [d.thread_id for d in deleted])
         await session.execute(
             sa_delete(ExecutionEvent)
-            .where(ExecutionEvent.execution_id.in_([d.id for d in deleted]))
+            .where(in_array(ExecutionEvent.execution_id, [d.id for d in deleted]))
             .execution_options(synchronize_session=False)
         )
     return deleted
@@ -250,7 +253,10 @@ async def claim(
     One statement: the row is locked with ``FOR UPDATE SKIP LOCKED`` in a subquery and the
     eligibility is re-checked by the outer ``UPDATE``, so exactly one concurrent caller wins
     and nobody waits. Must be the first statements of the caller's transaction (the
-    ``SET LOCAL`` timeouts last until it ends). The caller commits before running anything.
+    ``SET LOCAL`` timeouts last until it ends). The caller must wrap the transaction in
+    ``asyncio.timeout(10)``, commit before running anything, and know that
+    ``SET LOCAL statement_timeout`` (10 s) applies to every later statement of the same
+    transaction.
     """
     await session.execute(text("SET LOCAL lock_timeout = '5s'"))
     await session.execute(text("SET LOCAL statement_timeout = '10s'"))

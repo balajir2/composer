@@ -136,6 +136,8 @@ async def test_claim_skips_a_row_locked_by_another_transaction_without_waiting(
             await holder.execute(
                 select(WorkflowExecution.id).where(WorkflowExecution.id == eid).with_for_update()
             )
+            async with sm() as warm:  # open the pool connection before the timer starts
+                await warm.execute(select(1))
             started = time.monotonic()
             assert await _claim(sm, eid, "w") is None
             assert time.monotonic() - started < 1.0
@@ -285,7 +287,6 @@ async def test_pause_versus_cancel_never_pauses_a_canceled_row(
 ) -> None:
     """A pause then a cancel is legal (waiting_approval is cancellable); a pause AFTER a cancel
     must lose, so a cancel that wins first means no approval pause is recorded."""
-    outcomes: set[tuple[bool, bool]] = set()
     for i in range(REPEATS):
         eid = await _seed(sm, wid, "running", lease_owner="w", lease_expires_at=LEASE)
 
@@ -297,12 +298,10 @@ async def test_pause_versus_cancel_never_pauses_a_canceled_row(
             fns.reverse()
         results = await _race(sm, *fns)
         paused, canceled = (results[0], results[1]) if i % 2 == 0 else (results[1], results[0])
-        outcomes.add((paused, canceled))
         assert canceled  # cancel always lands: running and waiting_approval are both active
         rec = await _row(sm, eid)
         assert rec.status == "canceled"
         assert (rec.variables == {"p": 1}) == paused  # a lost pause wrote nothing
-    assert all(canceled for _, canceled in outcomes)
 
 
 async def test_failure_versus_cancel_has_exactly_one_winner(

@@ -4,6 +4,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import LangGraphCheckpoint, LangGraphCheckpointWrite
+from src.db.repos._sql import in_array
 
 
 async def delete_threads(session: AsyncSession, thread_ids: list[str]) -> None:
@@ -16,11 +17,11 @@ async def delete_threads(session: AsyncSession, thread_ids: list[str]) -> None:
         return
     await session.execute(
         sa_delete(LangGraphCheckpointWrite)
-        .where(LangGraphCheckpointWrite.thread_id.in_(thread_ids))
+        .where(in_array(LangGraphCheckpointWrite.thread_id, thread_ids))
         .execution_options(synchronize_session=False)
     )
     await session.execute(
         sa_delete(LangGraphCheckpoint)
-        .where(LangGraphCheckpoint.thread_id.in_(thread_ids))
+        .where(in_array(LangGraphCheckpoint.thread_id, thread_ids))
         .execution_options(synchronize_session=False)
     )

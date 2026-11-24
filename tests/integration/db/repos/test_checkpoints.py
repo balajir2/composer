@@ -65,3 +65,14 @@ async def test_delete_threads_with_no_threads_is_a_noop(session: AsyncSession) -
     await _seed(session, keep)
     await repo.delete_threads(session, [])
     assert await _counts(session, keep) == (1, 1)
+
+
+async def test_delete_threads_accepts_more_thread_ids_than_postgres_has_parameters(
+    session: AsyncSession,
+) -> None:
+    keep, gone = (f"t-{secrets.token_hex(4)}" for _ in range(2))
+    await _seed(session, keep)
+    await _seed(session, gone)
+    await repo.delete_threads(session, [f"absent-{i}" for i in range(70_000)] + [gone])
+    assert await _counts(session, gone) == (0, 0)
+    assert await _counts(session, keep) == (1, 1)

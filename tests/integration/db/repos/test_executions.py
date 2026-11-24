@@ -685,3 +685,78 @@ async def test_claim_orphans_by_email_is_idempotent_and_skips_owned_rows(
     assert await repo.claim_orphans_by_email(session, email, "new-user") == 0
     assert await _snap(session, owned) == owned_before
     assert await _snap(session, other) == other_before
+
+
+@pytest.mark.parametrize(
+    "half", [{"lease_expires_at": None}, {"lease_owner": None}], ids=["owner-only", "expiry-only"]
+)
+async def test_claim_ignores_a_half_leased_row(session: AsyncSession, half: dict[str, Any]) -> None:
+    wid = await _workflow(session)
+    eid = await _exec(session, wid, "queued", running_since=None, **half)
+    before = await _snap(session, eid)
+    assert (
+        await repo.claim(session, eid, kind="run", worker_id="w", now=NOW, lease_expires_at=NOW)
+        is None
+    )
+    assert await _snap(session, eid) == before
+
+
+async def test_fail_orphaned_at_exactly_the_cutoff_is_not_failed(session: AsyncSession) -> None:
+    wid = await _workflow(session)
+    eid = await _exec(session, wid, "running", lease_expires_at=None)
+    before = await _snap(session, eid)
+    assert not await repo.fail_orphaned_if_unchanged(
+        session, eid, cutoff=RUNNING_SINCE, error="x", now=NOW
+    )
+    assert await _snap(session, eid) == before
+    assert eid not in {
+        r.id for r in await repo.list_orphaned_running(session, cutoff=RUNNING_SINCE)
+    }
+
+
+async def test_list_expired_leases_at_exactly_now_is_not_expired(session: AsyncSession) -> None:
+    """The sweeper's Prisma filter is ``leaseExpiresAt < now`` (strict)."""
+    wid = await _workflow(session)
+    eid = await _exec(session, wid, "running", lease_expires_at=LEASE)
+    assert eid not in {r.id for r in await repo.list_expired_leases(session, now=LEASE)}
+    assert eid in {
+        r.id for r in await repo.list_expired_leases(session, now=LEASE + timedelta(milliseconds=1))
+    }
+
+
+async def test_insert_if_absent_with_explicit_none_input_output_is_sql_null(
+    session: AsyncSession,
+) -> None:
+    wid = await _workflow(session)
+    eid = _id("mig")
+    values: repo.ExecutionInsert = {
+        "id": eid,
+        "workflow_id": wid,
+        "status": "completed",
+        "thread_id": _id("th"),
+        "node_results": {},
+        "variables": {},
+        "input": None,
+        "output": None,
+    }
+    assert await repo.insert_if_absent(session, values) is True
+    assert await _jtype(session, eid, "input") == (True, None)
+    assert await _jtype(session, eid, "output") == (True, None)
+
+
+async def test_id_lists_beyond_the_postgres_parameter_limit_are_bound_as_one_array(
+    session: AsyncSession,
+) -> None:
+    wid = await _workflow(session)
+    terminal = await _exec(session, wid, "completed")
+    active = await _exec(session, wid, "running")
+    tid = (await _snap(session, terminal))["thread_id"]
+    await _artifacts(session, terminal, tid)
+    ids = [f"absent-{i}" for i in range(70_000)] + [terminal, active]
+
+    refs = await repo.list_refs(session, ids=ids, owner_id=None)
+    assert {r.id for r in refs} == {terminal, active}
+    deleted = await repo.delete_terminal(session, ids)
+    assert [d.id for d in deleted] == [terminal]
+    assert await _artifact_counts(session, terminal, tid) == [0, 0, 0, 0]
+    assert await repo.get_status(session, active) == "running"
