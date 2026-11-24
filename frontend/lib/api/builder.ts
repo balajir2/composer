@@ -21,6 +21,12 @@ export type BuilderMessageRequest = {
   executionId?: string;
   /** "provider/modelId"; must be one the admin allowed. Omit for the default. */
   model?: string;
+  /**
+   * The workflow's `updatedAt` as this client last saw it. The server answers 409
+   * (and writes nothing) when someone else changed the workflow since. Omit to
+   * overwrite regardless.
+   */
+  expectedUpdatedAt?: string;
 };
 
 export type BuilderModelOption = { id: string; label: string };

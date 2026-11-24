@@ -69,5 +69,14 @@ export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
     await runSave();
   }
 
-  return { status, markDirty, saveNow };
+  /** Drop pending work and return to idle, e.g. after the user discards their edits. */
+  function reset() {
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    setStatus("idle");
+  }
+
+  return { status, markDirty, saveNow, reset };
 }

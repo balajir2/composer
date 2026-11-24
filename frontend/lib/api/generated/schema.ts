@@ -3287,6 +3287,52 @@ export interface components {
             /** Updatedat */
             updatedAt: unknown;
         };
+        /**
+         * WorkflowUpdate
+         * @description Request body for PUT /workflows/{id}.
+         *
+         *     ``expectedUpdatedAt`` is the ``updatedAt`` the client last saw. When sent, the save is
+         *     rejected with 409 if the workflow changed since; omitted, the last save wins.
+         */
+        WorkflowUpdate: {
+            /** Name */
+            name: string;
+            /** Description */
+            description?: string | null;
+            /** Category */
+            category?: string | null;
+            /** Tags */
+            tags?: string[];
+            /** Difficulty */
+            difficulty?: string | null;
+            /** Estimatedtime */
+            estimatedTime?: string | null;
+            /** Nodes */
+            nodes: (components["schemas"]["StartNode"] | components["schemas"]["EndNode"] | components["schemas"]["NoteNode"] | components["schemas"]["FileTriggerNode"] | components["schemas"]["FileWriteNode"] | components["schemas"]["AgentNode"] | components["schemas"]["McpNode"] | components["schemas"]["IfElseNode"] | components["schemas"]["WhileNode"] | components["schemas"]["UserApprovalNode"] | components["schemas"]["TransformNode"] | components["schemas"]["DataTransformNode"] | components["schemas"]["SetStateNode"] | components["schemas"]["ExtractNode"] | components["schemas"]["HttpNode"] | components["schemas"]["GuardrailsNode"] | components["schemas"]["VectorDbNode"] | components["schemas"]["GammaAiNode"] | components["schemas"]["EmailNode"] | components["schemas"]["ArcadeNode"] | components["schemas"]["JoinChunksNode"] | components["schemas"]["ConfluenceNode"] | components["schemas"]["JiraNode"] | components["schemas"]["DownloadPdfNode"] | components["schemas"]["JoinNode"])[];
+            /** Edges */
+            edges: components["schemas"]["WorkflowEdge"][];
+            /** Version */
+            version?: string | null;
+            /**
+             * Istemplate
+             * @default false
+             */
+            isTemplate: boolean;
+            /**
+             * Ispublic
+             * @default false
+             */
+            isPublic: boolean;
+            /** Isproduction */
+            isProduction?: boolean | null;
+            /** Externalslug */
+            externalSlug?: string | null;
+            /**
+             * Expectedupdatedat
+             * Format: date-time
+             */
+            expectedUpdatedAt?: string | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -4371,7 +4417,7 @@ export interface operations {
         };
         requestBody: {
             content: {
-                "application/json": components["schemas"]["WorkflowCreate"];
+                "application/json": components["schemas"]["WorkflowUpdate"];
             };
         };
         responses: {

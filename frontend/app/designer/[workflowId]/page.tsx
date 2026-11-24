@@ -13,6 +13,9 @@ import {
   exportWorkflowAsMarkdown,
 } from "@/lib/workflow-import-export";
 import { WorkflowCanvas } from "@/components/composer/canvas/workflow-canvas";
+import { toast } from "sonner";
+import { WorkflowChangedDialog } from "@/components/composer/workflow-changed-dialog";
+import { workflowChanged } from "@/lib/workflow-conflict";
 import { BuilderPanel } from "@/components/composer/builder-chat/builder-panel";
 import { SaveControls } from "@/components/composer/canvas/save-controls";
 import { PublishedEndpoint } from "@/components/composer/published-endpoint";
@@ -122,6 +125,20 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
   const initialEdgesRef = useRef<RFEdge[] | null>(null);
 
   const [isSaving, setIsSaving] = useState(false);
+
+  // The `updatedAt` this page last saw: from the first load, then from each save and
+  // builder response it made itself. Sent with every save so the server refuses to
+  // overwrite a change someone else made since. Deliberately NOT refreshed from
+  // background refetches of the workflow query: the canvas does not show those, so
+  // adopting their timestamp would let a save silently overwrite what they carry.
+  const seenUpdatedAtRef = useRef<string | undefined>(undefined);
+  // Set by the dialog's Overwrite so the next save goes out without the precondition.
+  const overwriteNextSaveRef = useRef(false);
+  // Set when a save was refused because the workflow changed under us.
+  const [saveConflict, setSaveConflict] = useState<{ currentUpdatedAt: string | null } | null>(
+    null
+  );
+  const [resolvingConflict, setResolvingConflict] = useState(false);
   // The draft-run currently in flight (if any).  Set when Run Draft
   // successfully starts an execution; cleared when the user closes the
   // execution panel.  The run stays in-canvas — we do NOT navigate away.
@@ -157,7 +174,10 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
     mutationFn: async () => {
       if (!workflow) throw new Error("Workflow not loaded.");
       const { nodes, edges } = fromReactFlow(nodesRef.current, edgesRef.current);
+      const overwrite = overwriteNextSaveRef.current;
+      overwriteNextSaveRef.current = false;
       return updateWorkflow(workflowId, {
+        expectedUpdatedAt: overwrite ? undefined : seenUpdatedAtRef.current,
         name: workflow.name,
         description: workflow.description ?? null,
         category: workflow.category ?? null,
@@ -173,8 +193,13 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
         externalSlug: workflow.externalSlug ?? null,
       });
     },
-    onSuccess: () => {
+    onSuccess: (saved) => {
+      if (typeof saved.updatedAt === "string") seenUpdatedAtRef.current = saved.updatedAt;
       void queryClient.invalidateQueries({ queryKey: ["workflow", workflowId] });
+    },
+    onError: (err) => {
+      const changed = workflowChanged(err);
+      if (changed) setSaveConflict(changed);
     },
   });
 
@@ -210,7 +235,14 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
   // as the new "as-loaded" baseline (so autosave does not immediately flag the
   // freshly generated graph as an unsaved edit), and remount the canvas so it
   // renders the new nodes/edges.
-  function applyBuilderWorkflow(next: { nodes: unknown[]; edges: unknown[] }) {
+  function applyBuilderWorkflow(next: { nodes: unknown[]; edges: unknown[]; updatedAt?: unknown }) {
+    if (typeof next.updatedAt === "string") seenUpdatedAtRef.current = next.updatedAt;
+    showGraph(next);
+    void queryClient.invalidateQueries({ queryKey: ["workflow", workflowId] });
+  }
+
+  // Replace the canvas with `next` and take it as the as-loaded baseline.
+  function showGraph(next: { nodes: unknown[]; edges: unknown[] }) {
     const { rfNodes, rfEdges } = toReactFlow(
       next.nodes as unknown as ComposerNode[],
       next.edges as unknown as ComposerEdge[]
@@ -221,7 +253,41 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
     initialEdgesRef.current = rfEdges;
     setCanvasSeed({ nodes: rfNodes, edges: rfEdges });
     setCanvasKey((k) => k + 1);
-    void queryClient.invalidateQueries({ queryKey: ["workflow", workflowId] });
+  }
+
+  // The conflict dialog's Reload: drop local edits and show what is stored now.
+  async function reloadFromServer() {
+    const fresh = await queryClient.fetchQuery({
+      queryKey: ["workflow", workflowId],
+      queryFn: () => getWorkflow(workflowId),
+      staleTime: 0,
+    });
+    seenUpdatedAtRef.current = typeof fresh.updatedAt === "string" ? fresh.updatedAt : undefined;
+    autosave.reset();
+    showGraph(fresh);
+  }
+
+  async function handleConflictReload() {
+    setResolvingConflict(true);
+    try {
+      await reloadFromServer();
+      setSaveConflict(null);
+    } catch {
+      toast.error("Could not reload the workflow. Please try again.");
+    } finally {
+      setResolvingConflict(false);
+    }
+  }
+
+  async function handleConflictOverwrite() {
+    setSaveConflict(null);
+    overwriteNextSaveRef.current = true;
+    try {
+      await autosave.saveNow();
+      toast.success("Workflow saved.");
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to save workflow.");
+    }
   }
 
   useEffect(() => {
@@ -267,6 +333,10 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
     edgesRef.current = rfEdges;
   }
 
+  if (seenUpdatedAtRef.current === undefined && typeof workflow.updatedAt === "string") {
+    seenUpdatedAtRef.current = workflow.updatedAt;
+  }
+
   // Capture the as-loaded baseline exactly once per mount (unlike the
   // seed above, this deliberately does NOT gate on length>0 — an empty
   // brand-new workflow's `[]` is a valid, meaningful baseline to compare
@@ -286,6 +356,13 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
 
   return (
     <div className="flex h-[calc(100vh-8rem)] flex-col">
+      <WorkflowChangedDialog
+        open={saveConflict !== null}
+        currentUpdatedAt={saveConflict?.currentUpdatedAt ?? null}
+        busy={resolvingConflict}
+        onReload={() => void handleConflictReload()}
+        onOverwrite={() => void handleConflictOverwrite()}
+      />
       {/* Slim canvas top bar */}
       <div className="flex items-center justify-between border-b bg-background px-4 py-2">
         <div className="flex items-center gap-3">
@@ -400,6 +477,8 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
           workflowId={workflowId}
           onWorkflowUpdated={applyBuilderWorkflow}
           beforeSend={flushCanvasEdits}
+          getExpectedUpdatedAt={() => seenUpdatedAtRef.current}
+          onReload={reloadFromServer}
           executionId={failedExecutionId}
         />
         {draftExecutionId && (
