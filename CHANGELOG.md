@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — `/ready` tolerates a Neon cold start (2026-11-24)
+
+- **Before:** the readiness database check made one 1.0 s attempt. On 2026-11-23 at 16:55:53Z, after about 10 minutes idle, one `/ready` returned 503 `database: unavailable` after 1.25 s while Neon woke from scale-to-zero; the next request 7 s later returned 200 in 0.4 s.
+- **Now:** if the first attempt finds the database unreachable, `/ready` waits 0.1 s and tries once more with a 0.8 s timeout. The worst case is 1.9 s, under Cloud Run's planned 2 s startup-probe timeout. A reachable database with a schema mismatch is not retried. The response still carries only the bounded component states, never exception text.
+
 ### Changed — production deploys queue instead of running in parallel (2026-11-24)
 
 - `.github/workflows/deploy-gcp.yml` now has a `concurrency` group (`deploy-gcp-production`, `cancel-in-progress: false`). Before, two merges close together ran two production deploys at once: two `alembic upgrade head` and two `gcloud run deploy` racing. Now the second waits for the first. A running deploy is never cancelled, since stopping one mid-migration is worse than waiting. GitHub keeps one pending run per group, so a third queued run replaces the second; that is fine because the newest pending run deploys the newest `main`.
