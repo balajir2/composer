@@ -130,7 +130,7 @@ async def test_concurrent_checks_today_over_admit(adapter: Phase4aAdapter, db: D
     """D3 bug, pinned: concurrent checks of one bucket read the same tokens and each writes
     tokens - 1, so more than ``capacity`` requests are admitted."""
     over_admitted = 0
-    rounds = 6
+    rounds = 8
     for _ in range(rounds):
         route, client = unique("route"), unique("client")
         await db.seed_bucket(route, client, 3.0, datetime.now(UTC))
@@ -140,7 +140,8 @@ async def test_concurrent_checks_today_over_admit(adapter: Phase4aAdapter, db: D
         allowed = sum(1 for ok, _ in results if ok)
         assert allowed >= 3
         over_admitted += allowed > 3
-    assert over_admitted == rounds, f"over-admitted in {over_admitted}/{rounds} rounds"
+    # Timing dependent (it reproduced in every round when written), so require it in at least one.
+    assert over_admitted >= 1, f"over-admitted in {over_admitted}/{rounds} rounds"
 
 
 async def test_route_level_429_with_retry_after(

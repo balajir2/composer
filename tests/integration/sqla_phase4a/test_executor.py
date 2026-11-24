@@ -1,5 +1,7 @@
 """Group 7: LangGraphExecutor run/resume with real graphs (via the adapter)."""
 
+import asyncio
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -20,6 +22,8 @@ from tests.integration.sqla_phase4a.conftest import (
 )
 
 pytestmark = [pytest.mark.integration, HTTPX_MARK]
+
+FAR_PAST = datetime(2001, 1, 1, tzinfo=UTC)
 
 
 async def _running_row(
@@ -115,7 +119,7 @@ async def test_failing_node_marks_failed_with_execution_error(
         "running_since",
     }, changed
     assert row.status == "failed" and row.failure_code == "execution_error"
-    assert row.error is not None and ": " in row.error
+    assert row.error == "ZeroDivisionError: division by zero", row.error
     assert row.output is None
     assert row.completed_at is not None
     assert row.lease_owner is None and row.lease_expires_at is None and row.running_since is None
@@ -335,9 +339,9 @@ async def test_completion_vs_lease_sweep_sweep_wins_no_completed_event(
 
     async def _hook(kind: str) -> None:
         assert kind == "completed"
-        await db.set_execution(eid, lease_expires_at=ago(seconds=30))
-        _scanned, marked, errored = await adapter.sweep_leases(now=ago(seconds=0))
-        assert marked >= 1 and errored == 0
+        # A fixed far-past clock: only the row seeded here can match, whatever other suites left.
+        await db.set_execution(eid, lease_expires_at=FAR_PAST - timedelta(seconds=30))
+        assert await adapter.sweep_leases(now=FAR_PAST) == (1, 1, 0)
         state["swept"] = db.snapshot(await db.must(eid))
 
     await adapter.executor_run(eid, before_transition=_hook)
@@ -365,3 +369,106 @@ async def test_event_row_is_committed_before_its_notify_is_sent(
     assert [n[1] for n in notified] == [1, 2, 3, 4, 5, 6]
     for _eid, seq, visible in notified:
         assert _eid == eid and seq in visible, (seq, visible)
+
+
+async def test_runtime_budget_exceeded_marks_execution_timeout(
+    adapter: Phase4aAdapter,
+    member: Member,
+    db: Db,
+    httpx_mock: HTTPXMock,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.config import get_settings
+
+    monkeypatch.setenv("EXECUTION_MAX_RUNTIME_SECONDS", "1")
+    get_settings.cache_clear()
+    nodes, edges = chain(node("h", "http", httpUrl="https://93.184.216.34/slow", httpMethod="GET"))
+    wid = await db.seed_workflow(member, nodes=nodes, edges=edges)
+    eid = await _running_row(adapter, db, wid, member)
+    before = db.snapshot(await db.must(eid))
+
+    async def _slow(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(3)
+        return httpx.Response(200, json={"ok": True})
+
+    httpx_mock.add_callback(_slow, url="https://93.184.216.34/slow")
+    await adapter.executor_run(eid)
+
+    row = await db.must(eid)
+    changed = {k for k, v in before.items() if v != db.snapshot(row)[k]}
+    assert changed == {
+        "status",
+        "error",
+        "failure_code",
+        "completed_at",
+        "lease_owner",
+        "lease_expires_at",
+        "running_since",
+    }, changed
+    assert row.status == "failed" and row.failure_code == "execution_timeout"
+    assert row.error == (
+        "_ExecutionDeadlineExceeded: Execution exceeded its 1-second processing budget"
+    ), row.error
+    assert row.output is None and row.completed_at is not None
+    assert row.lease_owner is None and row.lease_expires_at is None and row.running_since is None
+    events = await db.events(eid)
+    assert events[-1].type == "workflow_completed" and events[-1].payload == {"status": "failed"}
+    assert [e.type for e in events].count("workflow_completed") == 1
+    assert [e.seq for e in events] == list(range(1, len(events) + 1))
+
+
+# --------------------------------------------------------------------------- completion storage
+
+
+async def _output_storage(db: Db, eid: str) -> tuple[bool, str | None, Any]:
+    rows = await db.raw(
+        "SELECT output IS NULL, jsonb_typeof(output), output FROM workflow_executions WHERE id = :i",
+        i=eid,
+    )
+    return rows[0][0], rows[0][1], rows[0][2]
+
+
+async def test_completion_with_no_output_stores_json_null_not_sql_null(
+    adapter: Phase4aAdapter, member: Member, db: Db
+) -> None:
+    """Pins how an absent output is stored on completion (Task 2's `_json` helper must match)."""
+    wid = await db.seed_workflow(member)
+    eid = await _running_row(adapter, db, wid, member)
+    assert await adapter.mark_completed(
+        eid, {"variables": {}, "node_results": {}, "final_outputs": {}}
+    )
+    assert await _output_storage(db, eid) == (False, "null", None)
+    row = await db.must(eid)
+    assert row.status == "completed" and row.variables == {} and row.node_results == {}
+
+
+async def test_completion_stores_falsy_and_multi_end_outputs_faithfully(
+    adapter: Phase4aAdapter, member: Member, db: Db
+) -> None:
+    wid = await db.seed_workflow(member)
+    cases: list[tuple[dict[str, Any], str, Any]] = [
+        ({"e": 0}, "number", 0),
+        ({"e": False}, "boolean", False),
+        ({"e": ""}, "string", ""),
+        ({"e": []}, "array", []),
+        ({"e": {}}, "object", {}),
+        ({"e1": "a", "e2": "b"}, "object", {"e1": "a", "e2": "b"}),
+    ]
+    for final_outputs, jtype, expected in cases:
+        eid = await _running_row(adapter, db, wid, member)
+        assert await adapter.mark_completed(
+            eid,
+            {
+                "variables": {"lastOutput": "ignored"},
+                "node_results": {},
+                "final_outputs": final_outputs,
+            },
+        )
+        is_null, got_type, got = await _output_storage(db, eid)
+        assert (is_null, got_type, got) == (False, jtype, expected), final_outputs
+    # no End output at all: falls back to variables.lastOutput
+    eid = await _running_row(adapter, db, wid, member)
+    assert await adapter.mark_completed(
+        eid, {"variables": {"lastOutput": 0}, "node_results": {}, "final_outputs": {}}
+    )
+    assert await _output_storage(db, eid) == (False, "number", 0)

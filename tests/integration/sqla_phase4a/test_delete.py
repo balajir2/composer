@@ -201,7 +201,11 @@ async def test_bulk_admin_explicit_ids_cross_user(
 async def test_bulk_admin_all_in_scope_deletes_terminal_rows_only(
     client: AsyncClient, member: Member, second_member: Member, admin: Member, db: Db
 ) -> None:
-    """Deletes every terminal execution in the (throwaway) test database."""
+    """WARNING: an admin `allInScope` delete removes EVERY terminal execution in the database
+    (and their events and checkpoints), not only the rows seeded here. Run it only against the
+    throwaway test Postgres. The assertions are on the seeded rows alone (deleted: the terminal
+    ones; kept and byte-identical: the active ones) plus `deletedCount >= 3`, `skippedCount == 0`,
+    so rows left by other suites change nothing."""
     wid = await db.seed_workflow(member, is_public=True)
     gone = [
         await _with_artifacts(db, wid, member, "completed"),

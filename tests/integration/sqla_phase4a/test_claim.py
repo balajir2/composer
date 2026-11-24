@@ -12,6 +12,7 @@ from tests.integration.sqla_phase4a.conftest import (
     Db,
     ExecApi,
     Member,
+    Phase4aAdapter,
     ago,
     install_fake_executor,
     jbody,
@@ -259,6 +260,19 @@ async def test_executor_crash_marks_row_failed_with_generic_response(
     assert row.completed_at is not None and row.completed_at > ago(minutes=1)
     assert row.lease_owner is None and row.lease_expires_at is None and row.running_since is None
     assert row.delivery_attempts == 1
+    # exactly the crash handler's SET list, measured from the claimed row the fake saw
+    (claimed,) = log.seen
+    assert claimed["status"] == "running" and claimed["lease_owner"] is not None
+    after = db.snapshot(row)
+    assert {k for k in claimed if claimed[k] != after[k]} == {
+        "status",
+        "error",
+        "failure_code",
+        "completed_at",
+        "lease_owner",
+        "lease_expires_at",
+        "running_since",
+    }
     assert db.snapshot(await db.must(bystander)) == before_bystander
     # a redelivery of the same task is a harmless no-op
     again = await exec_api.claim(eid, kind)
@@ -292,3 +306,34 @@ async def test_crash_after_concurrent_cancel_is_already_terminal(
     row = await db.must(eid)
     assert row.status == "canceled"
     assert db.snapshot(row) == state["canceled"]
+
+
+async def test_crash_handler_write_failure_leaves_the_lease_for_the_sweeper(
+    exec_api: ExecApi,
+    adapter: Phase4aAdapter,
+    member: Member,
+    db: Db,
+    sessionmaker_: Any,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If persisting `failed` itself raises, the original crash still answers 500 (generic
+    detail) and the freshly committed lease stays for the lease sweeper."""
+    log = install_fake_executor(monkeypatch, sessionmaker_)
+
+    async def _crash(_eid: str) -> None:
+        adapter.break_guarded_failure_write()
+        raise RuntimeError("original crash")
+
+    log.on_run = _crash
+    wid = await db.seed_workflow(member)
+    eid = await _seed(db, wid, member, "queued")
+    r = await exec_api.claim(eid, "run")
+    assert r.status_code == 500
+    assert jbody(r) == {
+        "detail": f"execution {eid} crashed during run; see application logs for details"
+    }
+    row = await db.must(eid)
+    assert row.status == "running" and row.error is None and row.failure_code is None
+    assert row.completed_at is None and row.delivery_attempts == 1
+    assert WORKER_ID.match(row.lease_owner or "") and row.lease_expires_at is not None
+    assert row.running_since is not None

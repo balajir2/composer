@@ -79,6 +79,8 @@ async def test_migration_and_reconciliation_cycle(
             "nodeResults": {},
             "variables": {},
             "threadId": "oab-thread-x",
+            "input": None,
+            "output": None,
         }
     ]
     export_dir = _write_export(tmp_path, oab_users, oab_wfs, oab_execs)
@@ -131,6 +133,14 @@ async def test_migration_and_reconciliation_cycle(
         again = await db.workflowexecution.find_unique(where={"id": exec_id})
         assert again is not None and again.error == "local edit" and again.userId is None
         assert await db.workflowexecution.count(where={"id": exec_id}) == 1
+
+        # Phase 4a oracle: an absent input/output stays SQL NULL (not JSON null) when migrated,
+        # unlike an execution started through the API, whose absent input is stored as JSON null.
+        nulls = await db.query_raw(
+            "SELECT input IS NULL AS i, output IS NULL AS o FROM workflow_executions WHERE id = $1",
+            exec_id,
+        )
+        assert nulls == [{"i": True, "o": True}]
 
         # Register a Composer user with the same email
         reg = await client.post(

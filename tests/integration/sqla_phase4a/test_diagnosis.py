@@ -10,8 +10,15 @@ user's execution is diagnosed.
 from typing import Any
 
 import pytest
+from httpx import AsyncClient
 
-from tests.integration.sqla_phase4a.conftest import HTTPX_MARK, Db, Member, Phase4aAdapter
+from tests.integration.sqla_phase4a.conftest import (
+    HTTPX_MARK,
+    Db,
+    Member,
+    Phase4aAdapter,
+    builder_diagnosis_via_route,
+)
 
 pytestmark = [pytest.mark.integration, HTTPX_MARK]
 
@@ -187,3 +194,30 @@ async def test_admin_diagnoses_any_users_run_of_this_workflow_only(
         await adapter.diagnose("no-such-execution", workflow_id=wid, user_id=admin.id, role="admin")
         is None
     )
+
+
+async def test_route_level_admin_sees_other_users_run_member_does_not(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    member: Member,
+    second_member: Member,
+    admin: Member,
+    db: Db,
+) -> None:
+    """Through POST /builder/{id}/message: the route must pass the caller's ROLE, so a port that
+    drops ``role=`` (treating everyone as a member) loses the admin case, and a port that drops
+    the owner filter leaks the member case."""
+    wid = await db.seed_workflow(member, is_public=True)
+    mine = await db.seed_execution(wid, member, status="failed", error="mine-err")
+    theirs = await db.seed_execution(wid, second_member, status="failed", error="theirs-err")
+    other_wid = await db.seed_workflow(member)
+    elsewhere = await db.seed_execution(other_wid, member, status="failed", error="else-err")
+
+    own = await builder_diagnosis_via_route(client, monkeypatch, member, wid, mine)
+    assert own is not None and "mine-err" in own and f"execution {mine}:" in own
+    assert await builder_diagnosis_via_route(client, monkeypatch, member, wid, theirs) is None
+    assert await builder_diagnosis_via_route(client, monkeypatch, member, wid, elsewhere) is None
+    seen = await builder_diagnosis_via_route(client, monkeypatch, admin, wid, theirs)
+    assert seen is not None and "theirs-err" in seen
+    # an admin still only gets runs of THIS workflow
+    assert await builder_diagnosis_via_route(client, monkeypatch, admin, wid, elsewhere) is None

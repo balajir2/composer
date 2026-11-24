@@ -1,5 +1,6 @@
 """Group 3: GET /executions and GET /executions/{id}."""
 
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -8,11 +9,12 @@ from httpx import AsyncClient
 from tests.integration.sqla_phase4a.conftest import (
     EXECUTION_KEYS,
     HTTPX_MARK,
-    ISO,
     Db,
     Member,
     ago,
+    api_dt,
     jbody,
+    ms,
     not_found,
 )
 
@@ -31,6 +33,10 @@ async def _seed_five(
             wid, owner, status=status_by_offset.get(h, "completed"), started_at=ago(hours=h)
         )
     return ids
+
+
+async def _started(db: Db, eid: str) -> datetime:
+    return (await db.must(eid)).started_at
 
 
 async def test_list_member_sees_own_only_ordered_desc_with_exact_shape(
@@ -52,7 +58,8 @@ async def test_list_member_sees_own_only_ordered_desc_with_exact_shape(
     assert nobody not in {i["id"] for i in body["items"]}
     first = body["items"][0]
     assert first["status"] == "running" and first["userId"] == member.id
-    assert ISO.match(first["startedAt"]) and first["workflowId"] == wid
+    assert api_dt(first["startedAt"]) == ms(await _started(db, mine[1]))
+    assert first["workflowId"] == wid
 
 
 async def test_list_admin_sees_all_users_rows_of_a_workflow(
@@ -151,7 +158,10 @@ async def test_get_owner_admin_other_and_missing(
         assert body["failureCode"] == "execution_error" and body["currentNodeId"] == "n1"
         assert body["nodeResults"] == {"a": {"b": 1}} and body["variables"] == {"k": "v"}
         assert body["input"] == {"i": 1} and body["output"] == [1, 2]
-        assert ISO.match(body["startedAt"]) and ISO.match(body["completedAt"])
+        row = await db.must(eid)
+        assert api_dt(body["startedAt"]) == ms(row.started_at)
+        assert api_dt(body["completedAt"]) == ms(completed)
+        assert row.completed_at == ms(completed)
     for who in (second_member,):
         r = await client.get(f"/executions/{eid}", headers=who.headers)
         assert r.status_code == 404 and jbody(r) == {"detail": not_found(eid)}

@@ -219,3 +219,31 @@ def test_authorization_close_codes(ws: WsEnv) -> None:
         assert _msg(sock)["type"] == "workflow_completed"
     with ws.connect(eid, owner_token) as sock:
         assert _msg(sock)["executionId"] == eid
+
+
+def test_ownerless_execution_is_forbidden_to_non_admins_but_open_to_admins(ws: WsEnv) -> None:
+    user_id, token = ws.user()
+    _, admin_token = ws.user(admin=True)
+
+    async def _make() -> str:
+        wid = await ws.db.seed_workflow(user_id)
+        return await ws.db.seed_execution(wid, None, status="completed")
+
+    eid = ws.run(_make)
+    with pytest.raises(WebSocketDisconnect) as exc, ws.connect(eid, token) as sock:
+        sock.receive_text()
+    assert exc.value.code == 4403
+    with ws.connect(eid, admin_token) as sock:
+        assert _msg(sock)["type"] == "workflow_completed"
+
+
+def test_closes_4500_when_the_app_has_no_database(ws: WsEnv) -> None:
+    user_id, token = ws.user()
+    eid = ws.execution(user_id, "completed")
+    restore = ws.adapter.detach_database()
+    try:
+        with pytest.raises(WebSocketDisconnect) as exc, ws.connect(eid, token) as sock:
+            sock.receive_text()
+        assert exc.value.code == 4500 and exc.value.reason == "server error"
+    finally:
+        restore()

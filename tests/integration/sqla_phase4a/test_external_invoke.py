@@ -1,5 +1,6 @@
 """Group 11: POST /api/run/{slug} (external invoke), async and sync modes."""
 
+import asyncio
 import time
 from typing import Any
 
@@ -130,3 +131,68 @@ async def test_enqueue_failure_is_not_marked_failed_on_the_external_route(
         await client.post(f"/api/run/{slug}", json={"input": "x"}, headers=headers)
     (row,) = await db.executions_of(wid)
     assert row.status == "queued" and row.error is None and row.completed_at is None
+
+
+async def _transitions(
+    db: Db, eid: str, steps: list[tuple[float, dict[str, Any]]]
+) -> asyncio.Task[None]:
+    async def _run() -> None:
+        started = time.monotonic()
+        for at, values in steps:
+            await asyncio.sleep(max(0.0, at - (time.monotonic() - started)))
+            await db.set_execution(eid, **values)
+
+    return asyncio.create_task(_run())
+
+
+async def test_sync_poll_observes_later_transitions(
+    client: AsyncClient, member: Member, db: Db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The enqueue is a no-op that schedules background transitions, so the first poll sees a
+    non-terminal row and the loop must keep polling until it turns terminal."""
+    tasks: list[asyncio.Task[None]] = []
+
+    async def _schedule(eid: str) -> None:
+        tasks.append(
+            await _transitions(
+                db,
+                eid,
+                [
+                    (0.4, {"status": "running"}),
+                    (0.9, {"status": "completed", "output": "late"}),
+                ],
+            )
+        )
+
+    install_enqueue(monkeypatch, EnqueueRecorder(before=_schedule))
+    wid, slug = await _published(db, member)
+    headers = await mint_api_key(client, member)
+    r = await client.post(
+        f"/api/run/{slug}", json={"input": "x", "sync": True, "timeoutSeconds": 30}, headers=headers
+    )
+    await asyncio.gather(*tasks)
+    assert r.status_code == 200, r.text
+    body = jbody(r)
+    assert set(body) == {"executionId", "workflowId", "status", "output"}
+    assert body["status"] == "completed" and body["output"] == "late" and body["workflowId"] == wid
+
+
+async def test_sync_timeout_reports_last_observed_status_running(
+    client: AsyncClient, member: Member, db: Db, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    tasks: list[asyncio.Task[None]] = []
+
+    async def _schedule(eid: str) -> None:
+        tasks.append(await _transitions(db, eid, [(0.3, {"status": "running"})]))
+
+    install_enqueue(monkeypatch, EnqueueRecorder(before=_schedule))
+    _wid, slug = await _published(db, member)
+    headers = await mint_api_key(client, member)
+    r = await client.post(
+        f"/api/run/{slug}", json={"input": "x", "sync": True, "timeoutSeconds": 1}, headers=headers
+    )
+    await asyncio.gather(*tasks)
+    assert r.status_code == 200, r.text
+    body = jbody(r)
+    assert set(body) == {"executionId", "workflowId", "status", "streamUrl"}
+    assert body["status"] == "running"

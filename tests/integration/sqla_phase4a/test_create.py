@@ -1,5 +1,6 @@
 """Group 1: POST /executions."""
 
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -8,15 +9,16 @@ from httpx import AsyncClient
 from tests.integration.sqla_phase4a.conftest import (
     EXECUTION_KEYS,
     HTTPX_MARK,
-    ISO,
     UUID_RE,
     Db,
     EnqueueRecorder,
     ExecApi,
     Member,
     ago,
+    api_dt,
     install_enqueue,
     jbody,
+    ms,
 )
 
 pytestmark = [pytest.mark.integration, HTTPX_MARK]
@@ -37,13 +39,15 @@ async def test_create_202_exact_shape_and_row(
     assert set(body) == EXECUTION_KEYS
     assert body["workflowId"] == wid and body["userId"] == member.id
     assert body["status"] == "queued"
-    assert ISO.match(body["startedAt"]) and UUID_RE.match(body["threadId"])
+    assert UUID_RE.match(body["threadId"])
     assert body["completedAt"] is None and body["currentNodeId"] is None
     assert body["output"] is None and body["error"] is None and body["failureCode"] is None
     assert body["nodeResults"] == {} and body["variables"] == {}
     assert body["input"] == {"a": [1, 2], "b": "x"}
 
     row = await db.must(body["id"])
+    assert api_dt(body["startedAt"]) == ms(row.started_at)  # by value, ms precision
+    assert abs((row.started_at - datetime.now(UTC)).total_seconds()) < 60
     assert row.status == "queued" and row.workflow_id == wid and row.user_id == member.id
     assert row.node_results == {} and row.variables == {}
     assert row.delivery_attempts == 0
@@ -180,7 +184,12 @@ async def test_create_allowed_for_owner_public_assignee_and_admin(
 async def test_create_enqueue_failure_marks_row_failed_and_returns_500(
     member: Member, exec_api: ExecApi, db: Db, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    install_enqueue(monkeypatch, EnqueueRecorder(raises=RuntimeError("boom")))
+    queued_at_enqueue: dict[str, Any] = {}
+
+    async def _snapshot(execution_id: str) -> None:
+        queued_at_enqueue.update(db.snapshot(await db.must(execution_id)))
+
+    install_enqueue(monkeypatch, EnqueueRecorder(before=_snapshot, raises=RuntimeError("boom")))
     wid = await db.seed_workflow(member)
     bystander = await db.seed_execution(wid, member, status="queued")
     before_bystander = db.snapshot(await db.must(bystander))
@@ -191,6 +200,13 @@ async def test_create_enqueue_failure_marks_row_failed_and_returns_500(
     assert len(created) == 1
     row = created[0]
     assert jbody(r) == {"detail": f"Execution {row.id!r} could not be enqueued for processing."}
+    after = db.snapshot(row)
+    assert queued_at_enqueue["status"] == "queued"
+    assert {k for k in after if after[k] != queued_at_enqueue[k]} == {
+        "status",
+        "error",
+        "completed_at",
+    }
     assert row.status == "failed"
     assert row.error == "failed to enqueue execution for durable processing: boom"
     assert row.completed_at is not None and row.completed_at > ago(minutes=1)
