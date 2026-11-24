@@ -32,7 +32,9 @@ Additionally, for this phase:
 - **Executions models come from the live schema (Alembic), not `schema.prisma`.** The unique index is `workflow_executions_workflow_id_user_id_idempotency_key_key` on `(workflow_id, user_id, idempotency_key)` (Alembic `0002`). Never `find_unique` on the old pair; never run `prisma db push`/`migrate dev`.
 - **Two ORMs, same rows.** In 4a the resume route and the email confirm still write `status`, `running_since`, lease columns and `variables` through Prisma, and `claim`, the sweeper and the executor read them through SQLAlchemy. Each side commits each statement before the other side can act, so no transaction spans both ORMs. Keep `ExecutionRead` accepting both Prisma rows (camelCase attributes, via its aliases) and records (explicit `_to_execution_read`), until 4b.
 
-## Decisions made while planning (2026-11-24) — confirm with Balaji
+## Decisions made while planning (2026-11-24)
+
+**Confirmed by Balaji on 2026-11-24:** D2 and D3 are fixed in 4a. D1 and D5–D11 are accepted as recommended. **D4 was split out** into the security hotfix PR #37 (`fix(builder): only diagnose the caller's own runs of the workflow being built`), which is cherry-picked onto this branch. Oracle group 13 therefore pins the **fixed** behaviour: no `test_diagnosis_today_ignores_owner`. Task 6 ports `build_diagnosis` like-for-like, keeping the filter.
 
 | # | Topic | Recommendation |
 |---|---|---|
