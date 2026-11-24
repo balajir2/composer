@@ -361,7 +361,7 @@ describe("BuilderPanel optimistic locking", () => {
       />
     );
     send("build it");
-    await screen.findByText("This workflow changed");
+    await screen.findByText("This workflow was saved elsewhere");
 
     fireEvent.click(screen.getByRole("button", { name: "Overwrite" }));
 
@@ -383,12 +383,33 @@ describe("BuilderPanel optimistic locking", () => {
       />
     );
     send("build it");
-    await screen.findByText("This workflow changed");
+    await screen.findByText("This workflow was saved elsewhere");
 
     fireEvent.click(screen.getByRole("button", { name: "Reload" }));
 
     await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.queryByText("This workflow changed")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("This workflow was saved elsewhere")).toBeNull());
     expect(sendBuilderMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the dialog open when Reload fails, so the user can retry", async () => {
+    sendBuilderMessage.mockRejectedValueOnce(changed);
+    const onReload = vi.fn().mockRejectedValue(new Error("network"));
+    render(
+      <BuilderPanel
+        workflowId="wf-1"
+        onWorkflowUpdated={vi.fn()}
+        getExpectedUpdatedAt={() => SEEN}
+        onReload={onReload}
+      />
+    );
+    send("build it");
+    await screen.findByText("This workflow was saved elsewhere");
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+
+    await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("This workflow was saved elsewhere")).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy());
   });
 });

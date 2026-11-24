@@ -8,6 +8,7 @@ import {
   type BuilderEvent,
   type BuilderModels,
 } from "@/lib/api/builder";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { workflowChanged } from "@/lib/workflow-conflict";
 import { WorkflowChangedDialog } from "@/components/composer/workflow-changed-dialog";
@@ -240,8 +241,11 @@ export function BuilderPanel({
     setResolving(true);
     try {
       await onReload?.();
-    } finally {
       setConflict(null);
+    } catch {
+      // Keep the dialog open so the user can retry or choose Overwrite.
+      toast.error("Could not reload the workflow. Please try again.");
+    } finally {
       setResolving(false);
     }
   }

@@ -40,11 +40,11 @@ export function WorkflowChangedDialog({
     <Dialog open={open} onOpenChange={() => undefined}>
       <DialogContent showCloseButton={false}>
         <DialogHeader>
-          <DialogTitle>This workflow changed</DialogTitle>
+          <DialogTitle>This workflow was saved elsewhere</DialogTitle>
           <DialogDescription>
-            Someone else saved changes to this workflow {whenText(currentUpdatedAt)}. Reload to
-            discard your unsaved changes and see theirs, or overwrite to keep yours and replace
-            theirs.
+            It was saved from another tab or by someone else {whenText(currentUpdatedAt)}. Reload to
+            discard your unsaved changes and see the latest, or overwrite to keep yours and replace
+            it.
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>

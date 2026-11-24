@@ -93,4 +93,100 @@ describe("useAutosave", () => {
 
     expect(save).toHaveBeenCalledTimes(1);
   });
+
+  describe("serialized saves", () => {
+    function deferred() {
+      let resolve!: () => void;
+      const promise = new Promise<void>((r) => {
+        resolve = r;
+      });
+      return { promise, resolve };
+    }
+
+    it("sends a save requested mid-flight only after the first one resolves", async () => {
+      const first = deferred();
+      const save = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue(undefined);
+      const { result } = renderHook(() => useAutosave(save, 3000));
+
+      let second!: Promise<void>;
+      act(() => {
+        void result.current.saveNow();
+      });
+      act(() => {
+        second = result.current.saveNow();
+      });
+      expect(save).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        first.resolve();
+        await second;
+      });
+      expect(save).toHaveBeenCalledTimes(2);
+    });
+
+    it("coalesces several requests made while one save is in flight into one", async () => {
+      const first = deferred();
+      const save = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue(undefined);
+      const { result } = renderHook(() => useAutosave(save, 3000));
+
+      let waiting: Promise<void>[] = [];
+      act(() => {
+        void result.current.saveNow();
+      });
+      act(() => {
+        waiting = [result.current.saveNow(), result.current.saveNow(), result.current.saveNow()];
+      });
+      await act(async () => {
+        first.resolve();
+        await Promise.all(waiting);
+      });
+      expect(save).toHaveBeenCalledTimes(2);
+    });
+
+    it("holds a debounced save that fires while another is in flight", async () => {
+      const first = deferred();
+      const save = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue(undefined);
+      const { result } = renderHook(() => useAutosave(save, 1000));
+
+      act(() => {
+        void result.current.saveNow();
+      });
+      act(() => result.current.markDirty());
+      await act(async () => {
+        vi.advanceTimersByTime(1000);
+      });
+      expect(save).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        first.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+      expect(save).toHaveBeenCalledTimes(2);
+    });
+
+    it("flush waits for an in-flight save, then saves again only if still unsaved", async () => {
+      const first = deferred();
+      const save = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue(undefined);
+      const { result } = renderHook(() => useAutosave(save, 3000));
+
+      act(() => {
+        void result.current.saveNow();
+      });
+      let flushed = false;
+      let flushing!: Promise<void>;
+      act(() => {
+        flushing = result.current.flush().then(() => {
+          flushed = true;
+        });
+      });
+      expect(flushed).toBe(false);
+      await act(async () => {
+        first.resolve();
+        await flushing;
+      });
+      expect(save).toHaveBeenCalledTimes(1); // nothing was dirtied meanwhile
+    });
+  });
 });

@@ -85,7 +85,10 @@ export default function WorkflowSettingsPage() {
         externalSlug: workflow.externalSlug ?? null,
       });
     },
-    onSuccess: () => {
+    onSuccess: (saved) => {
+      // Take the response as the loaded copy now, so the next save sends its new
+      // `updatedAt` instead of the pre-save one while the refetch is still on its way.
+      queryClient.setQueryData(["workflow", workflowId], saved);
       void queryClient.invalidateQueries({ queryKey: ["workflow", workflowId] });
       // Templates list pulled by /designer/templates is keyed separately,
       // so make sure flipping the toggle takes effect there too.
@@ -119,7 +122,10 @@ export default function WorkflowSettingsPage() {
         externalSlug: workflow.externalSlug ?? null,
       });
     },
-    onSuccess: () => {
+    onSuccess: (saved) => {
+      // Take the response as the loaded copy now, so the next save sends its new
+      // `updatedAt` instead of the pre-save one while the refetch is still on its way.
+      queryClient.setQueryData(["workflow", workflowId], saved);
       void queryClient.invalidateQueries({ queryKey: ["workflow", workflowId] });
       toast.success("Workflow unpublished.");
     },

@@ -283,8 +283,8 @@ describe("DesignerCanvasPage optimistic locking", () => {
 
     fireEvent.click(screen.getByText("save-now"));
 
-    expect(await screen.findByText("This workflow changed")).toBeTruthy();
-    expect(screen.getByText(/Someone else saved changes to this workflow at /)).toBeTruthy();
+    expect(await screen.findByText("This workflow was saved elsewhere")).toBeTruthy();
+    expect(screen.getByText(/saved from another tab or by someone else at /)).toBeTruthy();
   });
 
   it("Reload refetches the workflow and the next save uses its updatedAt", async () => {
@@ -292,13 +292,13 @@ describe("DesignerCanvasPage optimistic locking", () => {
     renderPage("wf-a");
     await screen.findByTestId("save-status");
     fireEvent.click(screen.getByText("save-now"));
-    await screen.findByText("This workflow changed");
+    await screen.findByText("This workflow was saved elsewhere");
 
     getWorkflow.mockResolvedValueOnce({ ...workflowFixture("wf-a"), updatedAt: THEIRS });
     fireEvent.click(screen.getByRole("button", { name: "Reload" }));
 
     await waitFor(() => expect(getWorkflow).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(screen.queryByText("This workflow changed")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("This workflow was saved elsewhere")).toBeNull());
     expect(updateWorkflow).toHaveBeenCalledTimes(1); // reloading saves nothing
     expect(screen.getByTestId("save-status").textContent).toBe("idle");
 
@@ -314,17 +314,56 @@ describe("DesignerCanvasPage optimistic locking", () => {
     renderPage("wf-a");
     await screen.findByTestId("save-status");
     fireEvent.click(screen.getByText("save-now"));
-    await screen.findByText("This workflow changed");
+    await screen.findByText("This workflow was saved elsewhere");
 
     fireEvent.click(screen.getByRole("button", { name: "Overwrite" }));
 
     await waitFor(() => expect(updateWorkflow).toHaveBeenCalledTimes(2));
     expect(bodyOfCall(1).expectedUpdatedAt).toBeUndefined();
-    await waitFor(() => expect(screen.queryByText("This workflow changed")).toBeNull());
+    await waitFor(() => expect(screen.queryByText("This workflow was saved elsewhere")).toBeNull());
 
     // Later saves are guarded again, from what the overwrite returned.
     fireEvent.click(screen.getByText("save-now"));
     await waitFor(() => expect(updateWorkflow).toHaveBeenCalledTimes(3));
     expect(bodyOfCall(2).expectedUpdatedAt).toBe(AFTER_SAVE);
+  });
+
+  it("sends a save made during an in-flight save only after it resolves, with its stamp", async () => {
+    let finishFirst!: (v: unknown) => void;
+    updateWorkflow
+      .mockReturnValueOnce(new Promise((r) => (finishFirst = r)))
+      .mockResolvedValue({ updatedAt: "2026-11-24T10:02:00.000000Z" });
+    renderPage("wf-a");
+    await screen.findByTestId("save-status");
+
+    fireEvent.click(screen.getByText("save-now"));
+    await waitFor(() => expect(updateWorkflow).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByText("save-now"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(updateWorkflow).toHaveBeenCalledTimes(1); // held back, not racing the first
+
+    finishFirst({ updatedAt: AFTER_SAVE });
+    await waitFor(() => expect(updateWorkflow).toHaveBeenCalledTimes(2));
+    expect(bodyOfCall(0).expectedUpdatedAt).toBe(SEEN);
+    expect(bodyOfCall(1).expectedUpdatedAt).toBe(AFTER_SAVE);
+    expect(screen.queryByText("This workflow was saved elsewhere")).toBeNull();
+  });
+
+  it("applies Overwrite to its own save, not to one already in flight", async () => {
+    updateWorkflow
+      .mockRejectedValueOnce(changedError())
+      .mockResolvedValue({ updatedAt: AFTER_SAVE });
+    renderPage("wf-a");
+    await screen.findByTestId("save-status");
+    fireEvent.click(screen.getByText("save-now"));
+    await screen.findByText("This workflow was saved elsewhere");
+
+    // A save is requested, and Overwrite is clicked before it has even started.
+    fireEvent.click(screen.getByText("save-now"));
+    fireEvent.click(screen.getByRole("button", { name: "Overwrite" }));
+
+    await waitFor(() => expect(updateWorkflow).toHaveBeenCalledTimes(3));
+    expect(bodyOfCall(1).expectedUpdatedAt).toBe(SEEN); // the ordinary save keeps its guard
+    expect(bodyOfCall(2).expectedUpdatedAt).toBeUndefined(); // the overwrite is the one without
   });
 });

@@ -11,10 +11,22 @@ export type SaveStatus = "idle" | "dirty" | "saving" | "saved" | "error";
  */
 export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
   const [status, setStatus] = useState<SaveStatus>("idle");
+  const statusRef = useRef<SaveStatus>("idle");
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveRef = useRef(save);
   saveRef.current = save;
   const isMountedRef = useRef(true);
+  // At most one save runs at a time, and at most one more waits behind it. Saves
+  // carry a version stamp that the previous save's response advances, so a second
+  // save sent while the first is in flight would reuse the old stamp and be refused
+  // as a conflict with ourselves.
+  const runningRef = useRef<Promise<void> | null>(null);
+  const queuedRef = useRef<Promise<void> | null>(null);
+
+  function updateStatus(next: SaveStatus) {
+    statusRef.current = next;
+    setStatus(next);
+  }
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -26,28 +38,54 @@ export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
       // edit is silently discarded and the next screen shows stale data
       // — exactly the "lost my flow" reports this was added to fix.
       // Fire-and-forget: nothing can display the result after unmount,
-      // but the write itself still lands.
+      // but the write itself still lands. If the workflow was saved
+      // elsewhere meanwhile, the server refuses it with a 409 and the edit
+      // is dropped rather than overwriting the other save; there is no page
+      // left to ask the user what to do.
       if (timerRef.current) {
         clearTimeout(timerRef.current);
         timerRef.current = null;
-        saveRef.current().catch(() => {});
+        runSave().catch(() => {});
       }
     };
   }, []);
 
-  async function runSave() {
-    setStatus("saving");
-    try {
-      await saveRef.current();
-      if (isMountedRef.current) setStatus("saved");
-    } catch (err) {
-      if (isMountedRef.current) setStatus("error");
-      throw err;
-    }
+  function start(): Promise<void> {
+    if (isMountedRef.current) updateStatus("saving");
+    const p = (async () => {
+      try {
+        await saveRef.current();
+        if (isMountedRef.current) updateStatus("saved");
+      } catch (err) {
+        if (isMountedRef.current) updateStatus("error");
+        throw err;
+      }
+    })();
+    runningRef.current = p;
+    const clear = () => {
+      if (runningRef.current === p) runningRef.current = null;
+    };
+    p.then(clear, clear);
+    return p;
+  }
+
+  /** Save now, or right after the save in flight; callers that wait share one queued save. */
+  function runSave(): Promise<void> {
+    const running = runningRef.current;
+    if (!running) return start();
+    if (queuedRef.current) return queuedRef.current;
+    const queued = running
+      .catch(() => {})
+      .then(() => {
+        queuedRef.current = null;
+        return start();
+      });
+    queuedRef.current = queued;
+    return queued;
   }
 
   function markDirty() {
-    setStatus("dirty");
+    updateStatus("dirty");
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
       // The timer already fired, so it no longer represents pending work —
@@ -69,14 +107,32 @@ export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
     await runSave();
   }
 
+  /** Resolves once no save is running or queued; failures are not rethrown. */
+  async function settled(): Promise<void> {
+    while (runningRef.current) {
+      await runningRef.current.catch(() => {});
+      await Promise.resolve();
+    }
+  }
+
+  /**
+   * Make sure the latest edits are stored before something that reads the stored
+   * workflow (the AI builder): wait for a save in flight, then save again if the
+   * edits are still unsaved or the last save failed.
+   */
+  async function flush() {
+    await settled();
+    if (statusRef.current === "dirty" || statusRef.current === "error") await saveNow();
+  }
+
   /** Drop pending work and return to idle, e.g. after the user discards their edits. */
   function reset() {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
       timerRef.current = null;
     }
-    setStatus("idle");
+    updateStatus("idle");
   }
 
-  return { status, markDirty, saveNow, reset };
+  return { status, markDirty, saveNow, flush, settled, reset };
 }

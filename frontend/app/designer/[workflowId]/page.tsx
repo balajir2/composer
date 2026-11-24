@@ -219,15 +219,10 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
   // The builder reads the stored workflow, not the live canvas, and saves its
   // result over it. Edits still inside the autosave debounce (or whose save
   // failed) must land first, or the builder undoes them — e.g. deleted edges
-  // reappearing. A save already in flight is re-sent; the PUT is idempotent.
+  // reappearing. A save already in flight is waited for, not re-sent: saves are
+  // serialized so each one carries the stamp the previous response returned.
   async function flushCanvasEdits() {
-    if (
-      autosave.status === "dirty" ||
-      autosave.status === "saving" ||
-      autosave.status === "error"
-    ) {
-      await autosave.saveNow();
-    }
+    await autosave.flush();
   }
 
   // Apply a builder turn's output to the canvas. The backend persists the
@@ -281,8 +276,11 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
 
   async function handleConflictOverwrite() {
     setSaveConflict(null);
-    overwriteNextSaveRef.current = true;
     try {
+      // Let any save already in flight start (and read the flag) first, so the flag
+      // applies to this save and not to one that was merely queued around the click.
+      await autosave.settled();
+      overwriteNextSaveRef.current = true;
       await autosave.saveNow();
       toast.success("Workflow saved.");
     } catch (err) {
