@@ -272,6 +272,9 @@ async def race_behind_lock(
             await holder.commit()
             return list(await asyncio.gather(*tasks))
         finally:
+            # Release the row lock before cancelling, so a parked request's own cleanup can't
+            # wait forever on the lock (a no-op when the commit above already ran).
+            await holder.rollback()
             for t in tasks:
                 if not t.done():
                     t.cancel()

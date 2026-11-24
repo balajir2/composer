@@ -5,6 +5,7 @@ token. Tests named ``..._today_...`` pin behaviour that the plan's decisions DB2
 Task 3; Task 3 may change exactly those.
 """
 
+import contextlib
 import logging
 import time
 from datetime import UTC, datetime, timedelta
@@ -324,6 +325,9 @@ async def test_token_never_logged(
     garbage = "garbage.token.value"
     secrets_ = [t for tok in (token, token_fail, token_bad) for t in (tok, tok.rsplit(".", 1)[1])]
     caplog.set_level(logging.DEBUG)
+    # Positive control that does not depend on which ORM the routes use: a Composer logger's
+    # DEBUG record must reach caplog, or the leak check below would prove nothing.
+    logging.getLogger("src.api.approval_email").debug("token-log-canary")
 
     rec = install_resume_enqueue(monkeypatch, EnqueueRecorder())
     await open_link(client, token)
@@ -334,11 +338,16 @@ async def test_token_never_logged(
     rec.raises = RuntimeError("enqueue boom")
     with pytest.raises(RuntimeError, match="enqueue boom"):
         await confirm(client, token_fail)
-    with pytest.raises(Exception):  # noqa: B017 - the Prisma enum error for the bad decision
+    # Today the malformed decision errors (DB6); after phase 4b it redirects to `invalid`.
+    # Either way, nothing it logs may carry the token.
+    with contextlib.suppress(Exception):
         await confirm(client, token_bad)
 
+    assert any(
+        r.name == "src.api.approval_email" and r.getMessage() == "token-log-canary"
+        for r in caplog.records
+    ), "positive control: Composer DEBUG records must reach caplog"
     inspected = [r for r in caplog.records if not _is_client_request_line(r)]
-    assert inspected, "positive control: at least one non-client log record must be inspected"
     assert not any(_leaks(r, secrets_) for r in inspected), "an approval token appeared in a log"
     out, err = capfd.readouterr()
     assert not any(secret in out or secret in err for secret in secrets_)
