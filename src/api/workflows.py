@@ -15,7 +15,7 @@ from src.db.repos import workflow_assignments as assignments_repo
 from src.db.repos import workflows as workflows_repo
 from src.db.repos.workflows import WorkflowChanges, WorkflowRecord
 from src.db.session import get_session
-from src.db.types import ensure_utc
+from src.db.types import ensure_utc, truncate_to_millis
 from src.engine.graph_builder import (
     WorkflowValidationError,
     dedupe_edges,
@@ -599,7 +599,11 @@ async def update_workflow(
         **publish_data,
     }
 
-    expected = ensure_utc(payload.expected_updated_at) if payload.expected_updated_at else None
+    expected = (
+        truncate_to_millis(ensure_utc(payload.expected_updated_at))
+        if payload.expected_updated_at
+        else None
+    )
     updated = await _update_or_409(session, workflow_id, changes, expected_updated_at=expected)
     await session.commit()
     return _to_workflow_read(updated)

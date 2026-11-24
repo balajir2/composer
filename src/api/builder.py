@@ -28,7 +28,7 @@ from src.db.repos import workflows as workflows_repo
 from src.db.repos.workflows import WorkflowRecord
 from src.db.runtime import require_sessionmaker
 from src.db.session import get_session
-from src.db.types import ensure_utc
+from src.db.types import ensure_utc, truncate_to_millis
 from src.engine.graph_builder import collect_workflow_violations
 from src.engine.workflow import Workflow
 from src.llm.providers import build_chat_model
@@ -237,7 +237,11 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
 
     sessionmaker = require_sessionmaker(request)
     existing = await _load_workflow(sessionmaker, workflow_id, user_id, role)
-    expected = ensure_utc(payload.expected_updated_at) if payload.expected_updated_at else None
+    expected = (
+        truncate_to_millis(ensure_utc(payload.expected_updated_at))
+        if payload.expected_updated_at
+        else None
+    )
     if expected is not None and existing.updated_at != expected:
         # Already stale: refuse before spending an LLM turn on an outdated canvas.
         raise workflow_changed_409(existing.updated_at)

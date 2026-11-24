@@ -5,6 +5,7 @@ describe the no-precondition behaviour, which these tests re-pin only where it m
 """
 
 import asyncio
+from datetime import UTC, datetime
 from typing import Any
 
 import pytest
@@ -222,3 +223,38 @@ async def test_builder_save_without_a_precondition_is_unchanged(
     nodes, edges = chain(node("t", "transform"))
     r = await builder_post(client, monkeypatch, member, created["id"], nodes, edges, expected=None)
     assert r.status_code == 200, r.text
+
+
+async def test_a_sub_millisecond_precondition_matches_over_http(
+    member: Member, wf_api: WorkflowApi, db: Db
+) -> None:
+    created = await wf_api.create(member)
+    await db.set_workflow(
+        created["id"], updated_at=datetime(2026, 11, 24, 10, 0, 0, 123000, tzinfo=UTC)
+    )
+    r = await wf_api.put(
+        member, created["id"], edit(created, expectedUpdatedAt="2026-11-24T10:00:00.123789Z")
+    )
+    assert r.status_code == 200, r.text
+
+
+async def test_a_stranger_with_a_stale_precondition_is_refused_without_a_conflict_body(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    member: Member,
+    second_member: Member,
+    wf_api: WorkflowApi,
+    db: Db,
+) -> None:
+    created = await wf_api.create(member)
+    _, seen = await seen_version(wf_api, db, member, created["id"])
+    await wf_api.put(member, created["id"], edit(created, name="moved on"))
+
+    put = await wf_api.put(second_member, created["id"], edit(created, expectedUpdatedAt=seen))
+    assert put.status_code == 403 and "currentUpdatedAt" not in put.text
+
+    nodes, edges = chain(node("t", "transform"))
+    built = await builder_post(
+        client, monkeypatch, second_member, created["id"], nodes, edges, expected=seen
+    )
+    assert built.status_code == 404 and "currentUpdatedAt" not in built.text

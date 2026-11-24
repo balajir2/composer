@@ -63,3 +63,12 @@ def ensure_utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         return value.replace(tzinfo=UTC)
     return value.astimezone(UTC)
+
+
+def truncate_to_millis(value: datetime) -> datetime:
+    """Drop sub-millisecond digits, as ``utcnow`` does for stored values.
+
+    Columns keep milliseconds, so a client-echoed ``.123456`` must be compared as
+    ``.123``. Truncation (not rounding) matches how the stored value was made.
+    """
+    return value.replace(microsecond=value.microsecond // 1000 * 1000)

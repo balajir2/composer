@@ -284,6 +284,34 @@ async def test_persist_with_a_stale_precondition_is_409_and_commits_nothing(
     sessionmaker.session.commit.assert_not_awaited()
 
 
+def test_a_sub_millisecond_precondition_matches_the_stored_millisecond_value(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def _policy(_session: Any) -> Any:
+        raise HTTPException(status_code=418, detail="reached the policy load")
+
+    monkeypatch.setattr(builder_mod, "load_policy", _policy)
+    client = _make_client(monkeypatch, make_workflow(user_id="dev", updated_at=_SEEN))
+    resp = client.post(
+        "/builder/w1/message",
+        json={"message": "hi", "expectedUpdatedAt": "2026-11-24T10:00:00.123789Z"},
+    )
+    assert resp.status_code == 418  # past the pre-check, not a 409
+
+
+def test_a_stranger_with_a_stale_precondition_gets_404_not_409(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wf = make_workflow(user_id="other-owner", updated_at=datetime(2026, 11, 24, 10, 5, tzinfo=UTC))
+    client = _make_client(monkeypatch, wf, role=("me", "member"))
+    resp = client.post(
+        "/builder/w1/message",
+        json={"message": "hi", "expectedUpdatedAt": "2026-11-24T10:00:00Z"},
+    )
+    assert resp.status_code == 404
+    assert "currentUpdatedAt" not in resp.text
+
+
 def test_a_stale_precondition_is_rejected_before_the_llm_turn_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

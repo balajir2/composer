@@ -251,10 +251,22 @@ async def test_precondition_compares_at_stored_millisecond_precision(
 ) -> None:
     ms = datetime(2026, 11, 24, 10, 0, 0, 123000, tzinfo=UTC)
     w = await repo.create(session, _values(updated_at=ms))
-    # A client echoing the value with sub-millisecond noise or a non-UTC offset still matches.
+    # A non-UTC offset still matches the same instant.
     echoed = datetime.fromisoformat("2026-11-24T11:00:00.123+01:00")
     updated = await repo.update(session, w.id, {"name": "New"}, expected_updated_at=echoed)
     assert updated is not None
+
+
+async def test_sub_millisecond_precondition_is_the_callers_to_truncate(
+    session: AsyncSession,
+) -> None:
+    """The bind rounds (``.123789`` becomes ``.124``), so the API must truncate first."""
+    ms = datetime(2026, 11, 24, 10, 0, 0, 123000, tzinfo=UTC)
+    w = await repo.create(session, _values(updated_at=ms))
+    with pytest.raises(StalePrecondition):
+        await repo.update(
+            session, w.id, {"name": "x"}, expected_updated_at=ms.replace(microsecond=123789)
+        )
 
 
 async def test_update_refreshes_row_already_loaded_in_session(session: AsyncSession) -> None:
