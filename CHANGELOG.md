@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — production deploys queue instead of running in parallel (2026-11-24)
+
+- `.github/workflows/deploy-gcp.yml` now has a `concurrency` group (`deploy-gcp-production`, `cancel-in-progress: false`). Before, two merges close together ran two production deploys at once: two `alembic upgrade head` and two `gcloud run deploy` racing. Now the second waits for the first. A running deploy is never cancelled, since stopping one mid-migration is worse than waiting. GitHub keeps one pending run per group, so a third queued run replaces the second; that is fine because the newest pending run deploys the newest `main`.
+- `tests/unit/test_deploy_workflow.py` asserts the group and `cancel-in-progress: false`.
+
 ### Changed — assignees can start runs of workflows they're assigned to (2026-11-23)
 
 - `POST /executions` now accepts an assignee of the workflow, alongside the owner, an admin, and anyone for a public workflow. Before, an assignee could open and edit a workflow (and use the builder) but got 404 when they pressed Run. Anyone else still gets the same 404 as a missing workflow. The assignment is read in the same short session as the workflow, and only when the owner, public and admin checks fail.
