@@ -10,14 +10,12 @@ user's execution is diagnosed.
 from typing import Any
 
 import pytest
-from httpx import AsyncClient
 
 from tests.integration.sqla_phase4a.conftest import (
     HTTPX_MARK,
     Db,
     Member,
     Phase4aAdapter,
-    builder_diagnosis_via_route,
 )
 
 pytestmark = [pytest.mark.integration, HTTPX_MARK]
@@ -197,8 +195,7 @@ async def test_admin_diagnoses_any_users_run_of_this_workflow_only(
 
 
 async def test_route_level_admin_sees_other_users_run_member_does_not(
-    client: AsyncClient,
-    monkeypatch: pytest.MonkeyPatch,
+    adapter: Phase4aAdapter,
     member: Member,
     second_member: Member,
     admin: Member,
@@ -213,11 +210,11 @@ async def test_route_level_admin_sees_other_users_run_member_does_not(
     other_wid = await db.seed_workflow(member)
     elsewhere = await db.seed_execution(other_wid, member, status="failed", error="else-err")
 
-    own = await builder_diagnosis_via_route(client, monkeypatch, member, wid, mine)
+    own = await adapter.builder_diagnosis_via_route(member, wid, mine)
     assert own is not None and "mine-err" in own and f"execution {mine}:" in own
-    assert await builder_diagnosis_via_route(client, monkeypatch, member, wid, theirs) is None
-    assert await builder_diagnosis_via_route(client, monkeypatch, member, wid, elsewhere) is None
-    seen = await builder_diagnosis_via_route(client, monkeypatch, admin, wid, theirs)
+    assert await adapter.builder_diagnosis_via_route(member, wid, theirs) is None
+    assert await adapter.builder_diagnosis_via_route(member, wid, elsewhere) is None
+    seen = await adapter.builder_diagnosis_via_route(admin, wid, theirs)
     assert seen is not None and "theirs-err" in seen
     # an admin still only gets runs of THIS workflow
-    assert await builder_diagnosis_via_route(client, monkeypatch, admin, wid, elsewhere) is None
+    assert await adapter.builder_diagnosis_via_route(admin, wid, elsewhere) is None

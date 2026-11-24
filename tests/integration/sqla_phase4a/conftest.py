@@ -84,7 +84,9 @@ def api_dt(value: str) -> datetime:
     ISO-8601 string carrying an explicit UTC suffix (observed, see TS_SUFFIX)."""
     assert ISO.match(value), value
     assert value.endswith(TS_SUFFIX), value
-    assert re.search(r"\.\d{6}Z$", value), value  # microsecond fraction, "Z" suffix (today)
+    assert re.search(r"(\.\d{6})?Z$", value), (
+        value
+    )  # optional microsecond fraction (absent at 0 us)
     return datetime.fromisoformat(value.replace("Z", "+00:00"))
 
 
@@ -1061,44 +1063,45 @@ class Phase4aAdapter:
         )
         return None if result is None else asdict(result)
 
+    # ---- builder diagnosis via route -------------------------------------------------------
+
+    async def builder_diagnosis_via_route(
+        self,
+        who: Member,
+        workflow_id: str,
+        execution_id: str,
+    ) -> str | None:
+        """POST /builder/{id}/message with an ``executionId`` through the REAL route and the REAL
+        ``run_builder_turn``/``build_diagnosis``; only the LLM (model construction and the tool
+        loop) is replaced. Returns the diagnosis system message the turn put in the LLM context, or
+        None when no diagnosis was produced."""
+        import src.api.builder as builder_module
+        import src.builder.builder_agent as agent_module
+
+        captured: list[str] = []
+
+        async def _fake_loop(model: Any, ctx: Any, session: Any, *args: Any, **kwargs: Any) -> str:
+            captured.extend(
+                str(m.content) for m in session.messages if m.__class__.__name__ == "SystemMessage"
+            )
+            return "scripted"
+
+        def _fake_model(*_args: Any, **_kwargs: Any) -> object:
+            return object()
+
+        self._monkeypatch.setattr(agent_module, "_tool_loop", _fake_loop)
+        self._monkeypatch.setattr(builder_module, "build_chat_model", _fake_model)
+        assert self._client is not None
+        r = await self._client.post(
+            f"/builder/{workflow_id}/message",
+            json={"message": "why did it fail?", "executionId": execution_id},
+            headers=who.headers,
+        )
+        assert r.status_code == 200, r.text
+        diagnoses = [c for c in captured if c.startswith("Diagnosis of failed execution")]
+        return diagnoses[0] if diagnoses else None
+
 
 @pytest.fixture
 def adapter(app: FastAPI, client: AsyncClient, monkeypatch: pytest.MonkeyPatch) -> Phase4aAdapter:
     return Phase4aAdapter(app, client, monkeypatch)
-
-
-async def builder_diagnosis_via_route(
-    client: AsyncClient,
-    monkeypatch: pytest.MonkeyPatch,
-    who: Member,
-    workflow_id: str,
-    execution_id: str,
-) -> str | None:
-    """POST /builder/{id}/message with an ``executionId`` through the REAL route and the REAL
-    ``run_builder_turn``/``build_diagnosis``; only the LLM (model construction and the tool
-    loop) is replaced. Returns the diagnosis system message the turn put in the LLM context, or
-    None when no diagnosis was produced."""
-    import src.api.builder as builder_module
-    import src.builder.builder_agent as agent_module
-
-    captured: list[str] = []
-
-    async def _fake_loop(model: Any, ctx: Any, session: Any, *args: Any, **kwargs: Any) -> str:
-        captured.extend(
-            str(m.content) for m in session.messages if m.__class__.__name__ == "SystemMessage"
-        )
-        return "scripted"
-
-    def _fake_model(*_args: Any, **_kwargs: Any) -> object:
-        return object()
-
-    monkeypatch.setattr(agent_module, "_tool_loop", _fake_loop)
-    monkeypatch.setattr(builder_module, "build_chat_model", _fake_model)
-    r = await client.post(
-        f"/builder/{workflow_id}/message",
-        json={"message": "why did it fail?", "executionId": execution_id},
-        headers=who.headers,
-    )
-    assert r.status_code == 200, r.text
-    diagnoses = [c for c in captured if c.startswith("Diagnosis of failed execution")]
-    return diagnoses[0] if diagnoses else None
