@@ -3168,7 +3168,7 @@ export interface components {
             /** Userid */
             userId: string;
             /** Assignedbyid */
-            assignedById: string;
+            assignedById: string | null;
             /** Assignedat */
             assignedAt: unknown;
         };

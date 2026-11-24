@@ -49,7 +49,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
   - The workflow routes, builder and external invoke answer 503 without a database.
   - The migration writer is strict about its input and inserts per row with its own commit; logs carry only the exception class and row id.
 - **Kept as-is on purpose:** workflow search does not escape `_` and `%`, as before; concurrent edits stay last-write-wins; revoking a missing assignment is still 404; non-list `nodes` or `edges` in a migrated row open as an empty canvas.
-- **Follow-ups (not in this phase):** optimistic locking on update and builder save; `poll_file_triggers` still loads every production workflow; a redacted secret echoed for a new node id stores `None` instead of a 422. `workflow_assignments.user_id` and `assigned_by_id` have no foreign key to `users`.
+- **Follow-ups (not in this phase):** optimistic locking on update and builder save; `poll_file_triggers` still loads every production workflow; a redacted secret echoed for a new node id stores `None` instead of a 422. (The missing `workflow_assignments` user foreign keys were added in Alembic `0003`, below.)
 
 ### Fixed — MCP custom headers sent; refresh tokens kept on re-grant; concurrent token refreshes serialized (2026-11-22)
 

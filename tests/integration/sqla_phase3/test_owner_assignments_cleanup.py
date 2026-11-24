@@ -1,10 +1,14 @@
 """Groups 9, 10, 14: owner assignment, assignments, e2e cleanup."""
 
 import secrets
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.db.repos import users as users_repo
 from tests.integration.sqla_phase3.conftest import (
     HTTPX_MARK,
     ISO,
@@ -396,3 +400,27 @@ async def test_cleanup_refuses_non_test_accounts_and_removes_nothing(
     assert db.snapshot(await db.must(wid)) == frozen
     assert len(await db.assignments(wid)) == 1
     assert await db.user_exists(member.id)
+
+
+async def test_grant_to_a_user_deleted_after_the_lookup_is_a_404_from_the_real_foreign_key(
+    client: AsyncClient,
+    member: Member,
+    db: Db,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The user passes the existence check, then is gone when the row is inserted: the
+    database's user foreign key rejects it and the route reports it as not found."""
+    wid = await db.seed(member)
+    ghost = f"deleted-{secrets.token_hex(5)}"
+
+    real_get_by_id = users_repo.get_by_id
+
+    async def _still_there(session: AsyncSession, user_id: str) -> Any:
+        if user_id == ghost:
+            return SimpleNamespace(id=ghost)  # the lookup ran before the concurrent delete
+        return await real_get_by_id(session, user_id)
+
+    monkeypatch.setattr("src.api.workflows.users_repo.get_by_id", _still_there)
+    r = await client.post(f"/workflows/{wid}/assignments/{ghost}", headers=member.headers)
+    assert r.status_code == 404 and r.json()["detail"] == f"user '{ghost}' not found"
+    assert await db.assignments(wid) == []

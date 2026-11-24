@@ -37,7 +37,14 @@ def _unique(prefix: str) -> str:
 
 async def test_workflow_execution_approval_and_event_round_trip(session: AsyncSession) -> None:
     workflow = Workflow(name="round trip", tags=["a", "b"], nodes=[{"id": "start"}], edges=[])
-    session.add(workflow)
+    u1, u2 = _unique("u"), _unique("u")
+    session.add_all(
+        [
+            workflow,
+            User(id=u1, email=f"{u1}@example.com", role=UserRole.MEMBER),
+            User(id=u2, email=f"{u2}@example.com", role=UserRole.MEMBER),
+        ]
+    )
     await session.flush()
     execution = WorkflowExecution(
         workflow_id=workflow.id,
@@ -54,7 +61,7 @@ async def test_workflow_execution_approval_and_event_round_trip(session: AsyncSe
                 execution_id=execution.id, node_id="approve", decision=ApprovalDecision.APPROVED
             ),
             ExecutionEvent(execution_id=execution.id, seq=1, type="started", payload={"n": 1}),
-            WorkflowAssignment(workflow_id=workflow.id, user_id="u1", assigned_by_id="u2"),
+            WorkflowAssignment(workflow_id=workflow.id, user_id=u1, assigned_by_id=u2),
         ]
     )
     await session.flush()

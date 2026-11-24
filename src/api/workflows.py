@@ -603,7 +603,7 @@ class WorkflowAssignmentRead(BaseModel):
     id: str
     workflow_id: str = Field(alias="workflowId")
     user_id: str = Field(alias="userId")
-    assigned_by_id: str = Field(alias="assignedById")
+    assigned_by_id: str | None = Field(alias="assignedById")
     assigned_at: Any = Field(alias="assignedAt")
 
 

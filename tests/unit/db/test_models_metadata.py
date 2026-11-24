@@ -37,6 +37,9 @@ def test_foreign_keys_cascade_like_prisma_created_them() -> None:
         ("api_keys", "user_id", "users", "CASCADE", "CASCADE"),
         ("approvals", "execution_id", "workflow_executions", "CASCADE", "CASCADE"),
         ("workflow_assignments", "workflow_id", "workflows", "CASCADE", "CASCADE"),
+        # Added by alembic 0003 (Prisma's frozen schema has no foreign keys to users).
+        ("workflow_assignments", "user_id", "users", "CASCADE", None),
+        ("workflow_assignments", "assigned_by_id", "users", "SET NULL", None),
         ("workflow_executions", "workflow_id", "workflows", "CASCADE", "CASCADE"),
     }
 
