@@ -12,6 +12,7 @@ from src.db.repos import executions as executions_repo
 from src.db.repos import users as users_repo
 from src.db.repos.executions import ExecutionRecord, ExecutionRef
 from src.db.repos.workflows import WorkflowRecord
+from src.engine.langgraph_executor import LangGraphExecutor
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
 from tests.unit.db_fakes import (
@@ -348,6 +349,20 @@ def test_post_execution_404_for_a_non_assignee_of_a_private_workflow() -> None:
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Workflow 'wf1' not found."
     _repos().exists.assert_awaited_once()
+
+
+def test_post_execution_404_with_an_idempotency_key_never_looks_the_key_up() -> None:
+    """A caller who may not see the workflow must not probe its executions via the key."""
+    client, _db = _client_with_mock_db()
+    _repos().get.return_value = _workflow_row(user_id="someone-else")
+    _repos().exists.return_value = False
+    resp = client.post(
+        "/executions",
+        json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "probe"},
+    )
+    assert resp.status_code == 404
+    _exec_repo().find_key.assert_not_awaited()
+    _create_mock().assert_not_awaited()
     _create_mock().assert_not_awaited()
 
 
@@ -864,6 +879,13 @@ def test_create_enqueues_outside_any_session_and_marks_failure_in_its_own(
         events.append("net:enqueue")
         raise RuntimeError("boom")
 
+    async def _start(*_a: object, **_k: object) -> ExecutionRecord:
+        # The executor opens its own short session; the route must not hold one around it.
+        events.append("net:start_execution")
+        return _execution_record(status="queued")
+
+    monkeypatch.setattr(LangGraphExecutor, "start_execution", _start)
+
     async def _mark(*_a: object, **_k: object) -> bool:
         events.append("db:mark_failed")
         return True
@@ -873,8 +895,11 @@ def test_create_enqueues_outside_any_session_and_marks_failure_in_its_own(
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
 
     assert resp.status_code == 500
+    start = events.index("net:start_execution")
+    assert events[start - 1] == "session:exit"
+    assert events[start + 1] == "net:enqueue"
     at = events.index("net:enqueue")
-    assert events[at - 1] == "session:exit"
+    assert events[at - 1] == "net:start_execution"  # the route's own session closed before it
     assert events[at + 1 :] == ["session:enter", "db:mark_failed", "session:exit"]
     assert_no_network_inside_session(events)
 

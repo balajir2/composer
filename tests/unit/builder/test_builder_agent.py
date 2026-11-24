@@ -18,6 +18,7 @@ from src.builder.builder_agent import (
     BuildSession,
     run_builder_turn,
 )
+from src.db.repos import executions as executions_repo
 from src.engine.graph_builder import collect_workflow_violations
 from src.engine.workflow import (
     AgentNode,
@@ -31,8 +32,10 @@ from src.engine.workflow import (
     WorkflowEdge,
     WorkflowNode,
 )
+from tests.unit.db_fakes import RecordingSessionmaker, assert_no_network_inside_session
 
 if TYPE_CHECKING:
+    import pytest
     from langchain_core.language_models import BaseChatModel
 
 
@@ -168,6 +171,49 @@ async def test_diagnose_turn_proposes_without_applying() -> None:
     assert any(e.get("type") == "patch_proposal" for e in events)
     assert session.pending_patch is not None
     assert wf is not None
+
+
+async def test_diagnose_turn_closes_its_read_session_before_the_model_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class _RecordingModel(_ScriptedModel):
+        async def ainvoke(self, messages: Any, **kwargs: Any) -> AIMessage:
+            events.append("net:model")
+            return await super().ainvoke(messages, **kwargs)
+
+    async def _get(_session: Any, execution_id: str) -> Any:
+        events.append("db:read")
+        return type(
+            "Row",
+            (),
+            {
+                "id": execution_id,
+                "workflow_id": "w1",
+                "user_id": "u1",
+                "status": "failed",
+                "error": "boom",
+                "node_results": {},
+                "variables": {},
+            },
+        )()
+
+    monkeypatch.setattr(executions_repo, "get", _get)
+    session = BuildSession(workflow_id="w1")
+    session.pending_plan = {"stages": []}
+    await run_builder_turn(
+        model=cast("BaseChatModel", _RecordingModel("bad URL")),
+        workflow_id="w1",
+        workflow=_empty_workflow(),
+        session=session,
+        message="why did it fail?",
+        execution_id="x",
+        sessionmaker=cast("Any", RecordingSessionmaker(events)),
+        user_id="u1",
+    )
+    assert "db:read" in events and "net:model" in events
+    assert_no_network_inside_session(events)
 
 
 async def test_build_turn_applies_layout_to_generated_nodes() -> None:

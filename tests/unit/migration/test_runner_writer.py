@@ -15,6 +15,7 @@ from unittest.mock import AsyncMock
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from src.db.models import WorkflowExecution
 from src.db.repos import executions as executions_repo
 from src.db.repos import mcp_oauth as mcp_oauth_repo
 from src.db.repos import mcp_servers as mcp_servers_repo
@@ -232,6 +233,9 @@ def test_execution_transformer_keys_are_all_known_to_the_writer_column_map() -> 
         {"_id": "e1", "workflowId": "wf1", "userId": "clerk_a", "status": "completed"}, _users()
     )
     assert set(out) <= set(writer._EXECUTION_COLUMNS)  # pyright: ignore[reportPrivateUsage]
+    # The mapped column names must exist on the table, or the insert fails only at run time.
+    mapped = set(writer._EXECUTION_COLUMNS.values())  # pyright: ignore[reportPrivateUsage]
+    assert mapped <= {c.key for c in WorkflowExecution.__table__.columns}
 
 
 async def test_upsert_mcp_server_maps_columns_and_passes_plain_json(
@@ -372,8 +376,17 @@ async def test_dry_run_returns_0_and_never_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _workflow_insert: AsyncMock
 ) -> None:
     _write_jsonl(tmp_path, "workflows", [_workflow(1)])
+    opened: list[str] = []
+
+    @asynccontextmanager
+    async def _sentinel(*_a: object, **_k: object) -> AsyncGenerator[FakeSession]:
+        opened.append("one_shot_session")
+        yield FakeSession()
+
+    monkeypatch.setattr(runner, "one_shot_session", _sentinel)
     assert await runner.run_migration(export_dir=str(tmp_path), dry_run=True) == 0
     _workflow_insert.assert_not_awaited()
+    assert opened == []  # a dry run never opens a database session
 
 
 async def test_run_migration_inserts_rows(
