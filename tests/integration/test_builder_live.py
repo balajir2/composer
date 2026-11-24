@@ -75,6 +75,7 @@ async def test_builder_produces_a_complete_workflow(request_text: str) -> None:
             message=message,
             execution_id=None,
             db=None,
+            user_id="u1",
             model_catalog=CATALOG,
         )
         events.extend(turn_events)

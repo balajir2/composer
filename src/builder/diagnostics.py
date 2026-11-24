@@ -31,8 +31,23 @@ def _redact_dict(mapping: Any) -> dict[str, Any]:
     return {str(k): _redact_value(str(k), v) for k, v in mapping.items()}
 
 
-async def build_diagnosis(db: Any, execution_id: str) -> Diagnosis | None:
-    row = await db.workflowexecution.find_unique(where={"id": execution_id})
+async def build_diagnosis(
+    db: Any,
+    execution_id: str,
+    *,
+    workflow_id: str,
+    user_id: str,
+    role: str = "user",
+) -> Diagnosis | None:
+    """Diagnose an execution of ``workflow_id`` that the caller may see.
+
+    Same visibility rule as ``GET /executions/{id}`` (owner or admin), plus the run must belong
+    to the workflow being built. Anything else is indistinguishable from "no such execution".
+    """
+    where: dict[str, Any] = {"id": execution_id, "workflowId": workflow_id}
+    if role != "admin":
+        where["userId"] = user_id
+    row = await db.workflowexecution.find_first(where=where)
     if row is None:
         return None
     variables: Any = getattr(row, "variables", None) or {}
