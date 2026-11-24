@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — executions, events and rate limits move to SQLAlchemy (SQLAlchemy migration phase 4a) (2026-11-24)
+
+- **What moved:** every read and write of `workflow_executions` except the approval-resume paths, plus `execution_events` and `rate_limit_buckets`, now go through repository modules in `src/db/repos/` (`executions.py`, `events.py`, `rate_limits.py`, `checkpoints.py`). That covers the execution routes (create, list, get, delete, bulk delete, cancel), external invoke, the executor and cooperative stop, the work claim, the stuck-execution and lease sweepers, the event WebSocket, the builder's failed-run diagnosis, and the migration CLI and reconcile. `POST /executions/{id}/resume`, the emailed approval link and the `approvals` table stay on Prisma until phase 4b; the checkpointer and LISTEN/NOTIFY stay as they are until phase 5. No Alembic migration.
+- **Proof:** the behaviour was pinned first, on the unchanged Prisma code, by `tests/integration/sqla_phase4a` (a behaviour oracle), then the same tests passed on the ported code. Three oracle tests that pinned bugs were deliberately flipped (below).
+- **Event sequence numbers (both bugs fixed):** sequence numbers used to be `count(*) + 1`. (a) Parallel graph branches appended at once, one insert hit the unique `(execution_id, seq)` index and the event was silently dropped. (b) After the retention sweep deleted an execution's oldest events, `count + 1` equalled an existing number, so every later event of that run was dropped. An append now takes a per-execution advisory lock and inserts `MAX(seq) + 1`, committed before the NOTIFY is sent.
+- **Rate limiter is atomic:** same algorithm, but the bucket is read `FOR UPDATE`, so concurrent requests can no longer over-admit; N concurrent checks on a bucket with k tokens admit exactly k.
+- **Work claim is one statement:** `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING`, with a lock timeout, a statement timeout and an overall 10 s bound, committed before any graph run starts. The resume decision comes from the row the claim returned instead of a second read.
+- **Guarded status changes:** each (cancel, fail, complete, wait for approval, the three sweeper writes) is one `UPDATE ... WHERE <guard> RETURNING id`, so there is exactly one winner when writers race.
+- **Delete is atomic:** deleting one or many executions removes the rows, their checkpoints and their events in one transaction (previously four separate statements). A single delete that loses a race against another delete now answers 204, as the bulk delete does, instead of 500.
+- **Short sessions:** no database session is held across a graph run, an LLM call, the Cloud Tasks enqueue, an approval email, the sync-invoke poll (each poll is its own read) or a WebSocket wait.
+- **Bulk deletes of more than 65,535 ids** no longer fail: id lists are bound as one array parameter rather than one parameter per id.
+- **Reconcile is atomic** across workflows, executions and MCP servers (one transaction, committed by the caller).
+- **Small behaviour notes:** `_to_execution_read` maps a null `node_results` or `variables` to `{}`. `/internal/sweep` and `/internal/claim-and-run` answer 503 `database unavailable` when the app has no sessionmaker (only in database-less test apps; production always has one). The event WebSocket closes with 4500 before authenticating when there is no sessionmaker.
+- **Builder diagnosis scoping** (reading only your own run of the workflow being built) shipped separately as the security fix in PR #37 and is ported here unchanged.
+- **Kept as-is (pinned by the oracle, listed as follow-ups):** cancel's response carries the pre-update row, so `completedAt` is `null` in it; a resume-kind claim without a stored decision answers 422 and leaves its lease for the sweeper; `POST /api/run/{slug}` leaves a row `queued` when the enqueue raises; `list_executions` has no tiebreak; `sweep_expired_approvals` filters in Python and compares the whole `variables` document.
+- **Follow-ups:** rate-limit bucket row locks hold a pool connection while waiting, so add `SET LOCAL lock_timeout` to the limiter transaction if pool waits ever show up (see the plan's Outcome for the measurements); pool size stays at the defaults (`db_pool_size=2`, `db_max_overflow=3`) and is revisited in 4b or phase 6.
+
 ### Added — warn before overwriting someone else's workflow changes (2026-11-24)
 
 - **Before:** two people editing the same workflow meant the last save silently won, including a builder (Build with AI) message that finished after someone else had saved.

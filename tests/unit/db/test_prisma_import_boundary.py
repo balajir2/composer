@@ -25,6 +25,14 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 # src/engine/langgraph_executor.py (execution rows), src/migration/* (Convex-sourced
 # rows on the Prisma client). The workflow tables themselves are reached only through
 # ``src.db.repos`` from all of them.
+# (The exclusions above for src/api/builder.py, src/engine and src/migration were lifted in 4a.)
+# Phase 4a (executions and events) areas: the execution engine, events and rate limits,
+# the sweeper, the builder and the migration CLI. Still on Prisma, so NOT listed:
+# src/api/executions.py and src/api/approval_email.py (approval resume paths, phase 4b),
+# src/api/run.py and src/api/internal.py (``get_db``/``get_checkpointer`` for the enqueue
+# fallback and the checkpointer, phase 5), src/execution/cloud_tasks.py
+# (``PrismaCheckpointSaver``, phase 5), src/storage (checkpointer and Prisma client,
+# phases 5 and 6).
 MIGRATED_PATHS = [
     "src/db",
     "src/api/admin_deployment_settings.py",
@@ -39,18 +47,25 @@ MIGRATED_PATHS = [
     "src/api/llm_models_live.py",
     "src/api/users.py",
     "src/api/workflows.py",
+    "src/api/_idempotency.py",
+    "src/api/events_ws.py",
+    "src/api/builder.py",
     "src/api/test_cleanup.py",
     "src/api/cloud_storage_oauth.py",
     "src/api/mcp_servers.py",
-    "src/builder/model_policy.py",
+    "src/builder",
     "src/cli/keys.py",
     "src/executors/download_pdf.py",
     "src/executors/mcp.py",
+    "src/engine",
     "src/integrations/google_drive",
+    "src/maintenance",
     "src/mcp",
+    "src/migration",
     "src/security/api_key_auth.py",
     "src/security/auth.py",
     "src/security/key_sync.py",
+    "src/security/rate_limit_pg.py",
     "src/tools/registry.py",
 ]
 FORBIDDEN_ROOTS = ("prisma", "src.storage")
