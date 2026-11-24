@@ -136,21 +136,37 @@ def test_grant_when_workflow_vanishes_concurrently_is_404(monkeypatch: pytest.Mo
     _commit(client).assert_not_awaited()
 
 
-@pytest.mark.parametrize(
-    "constraint", ["workflow_assignments_user_id_fkey", "workflow_assignments_assigned_by_id_fkey"]
-)
-def test_grant_when_a_user_vanishes_concurrently_is_404_naming_the_user(
-    monkeypatch: pytest.MonkeyPatch, constraint: str
+def test_grant_when_the_target_user_vanishes_concurrently_is_404_naming_the_user(
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     client = _client(monkeypatch)
     repos = _repos(monkeypatch)
-    repos.create.side_effect = ReferencedRowMissing(constraint)
+    repos.create.side_effect = ReferencedRowMissing("workflow_assignments_user_id_fkey")
     token = create_access_token("owner1")
     resp = client.post(
         "/workflows/w1/assignments/assignee1", headers={"Authorization": f"Bearer {token}"}
     )
     assert resp.status_code == 404, resp.text
     assert resp.json()["detail"] == "user 'assignee1' not found"
+    _commit(client).assert_not_awaited()
+
+
+def test_grant_by_an_account_with_no_user_record_is_409_and_does_not_name_the_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The granter (dev identity, or an embedded-mode JWT subject) has no users row, so the
+    assigned_by foreign key fails; blaming the target with a 404 would mislead."""
+    client = _client(monkeypatch)
+    repos = _repos(monkeypatch)
+    repos.create.side_effect = ReferencedRowMissing("workflow_assignments_assigned_by_id_fkey")
+    token = create_access_token("owner1")
+    resp = client.post(
+        "/workflows/w1/assignments/assignee1", headers={"Authorization": f"Bearer {token}"}
+    )
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert detail == "your account has no user record; sign in through SSO before granting access"
+    assert "assignee1" not in detail
     _commit(client).assert_not_awaited()
 
 

@@ -7,9 +7,11 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import LiteralString
 
 import psycopg
 import pytest
+from psycopg import sql
 
 pytestmark = pytest.mark.integration
 
@@ -194,13 +196,28 @@ def test_downgrade_fails_honestly_when_a_granter_is_null() -> None:
         _alembic("upgrade", "head")
 
 
-def test_upgrade_fails_fast_when_the_table_is_locked_then_succeeds_once_free() -> None:
-    """A busy workflow_assignments must fail the deploy quickly (lock_timeout)."""
+@pytest.mark.parametrize(
+    ("table", "mode"),
+    [
+        ("workflow_assignments", "ROW EXCLUSIVE"),  # a writer on the assignments table
+        (
+            "workflow_assignments",
+            "ACCESS SHARE",
+        ),  # even a reader: the migration needs ACCESS EXCLUSIVE
+        ("users", "ROW EXCLUSIVE"),  # a user write conflicts with the lock on users
+    ],
+)
+def test_upgrade_fails_fast_when_a_table_is_locked_then_succeeds_once_free(
+    table: str, mode: LiteralString
+) -> None:
+    """A busy workflow_assignments or users must fail the deploy quickly (lock_timeout)."""
     blocker = psycopg.connect(os.environ["TEST_DATABASE_URL"])
     try:
         _alembic("upgrade", "head")
         _alembic("downgrade", PREV)
-        blocker.execute("LOCK TABLE workflow_assignments IN ROW EXCLUSIVE MODE")
+        blocker.execute(
+            sql.SQL("LOCK TABLE {} IN {} MODE").format(sql.Identifier(table), sql.SQL(mode))
+        )
         started = time.monotonic()
         blocked = _run_alembic("upgrade", "head")
         elapsed = time.monotonic() - started
@@ -211,6 +228,20 @@ def test_upgrade_fails_fast_when_the_table_is_locked_then_succeeds_once_free() -
 
         blocker.rollback()
         _alembic("upgrade", "head")
+        assert {USER_FK, BY_FK} <= _constraints().keys()
+    finally:
+        blocker.close()
+        _alembic("upgrade", "head")
+
+
+def test_downgrade_fails_fast_when_users_is_locked() -> None:
+    blocker = psycopg.connect(os.environ["TEST_DATABASE_URL"])
+    try:
+        _alembic("upgrade", "head")
+        blocker.execute("LOCK TABLE users IN ROW EXCLUSIVE MODE")
+        blocked = _run_alembic("downgrade", "-1")
+        assert blocked.returncode != 0
+        assert "lock timeout" in (blocked.stdout + blocked.stderr).lower()
         assert {USER_FK, BY_FK} <= _constraints().keys()
     finally:
         blocker.close()

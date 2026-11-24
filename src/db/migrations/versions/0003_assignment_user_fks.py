@@ -18,15 +18,26 @@ them: assignments whose assignee no longer exists are deleted, and a granter tha
 longer exists is set to NULL. Only the counts are logged, never user ids.
 
 This runs on every deploy (``alembic upgrade head``). The table is small and the
-whole migration is one transaction, so the table is locked up front in SHARE ROW
-EXCLUSIVE mode (reads continue, writes wait) and the cleanup and the constraints are
-atomic: no orphan can be inserted between the DELETE and the constraint check. The
-constraints are added plainly rather than ``NOT VALID`` then ``VALIDATE``: inside one
-transaction the stronger lock is held until commit either way, so the two-step form
-would shorten nothing. Adding a foreign key also locks ``users`` (SHARE ROW
-EXCLUSIVE), so both directions set a 5 s ``lock_timeout`` (and a 60 s
-``statement_timeout``) with ``SET LOCAL``: a busy table fails the deploy fast and it
-can be retried, instead of stalling the application.
+whole migration is one transaction. Dropping NOT NULL needs ACCESS EXCLUSIVE on
+``workflow_assignments`` and adding a foreign key needs SHARE ROW EXCLUSIVE on
+``users``, so both locks are taken up front, in that fixed order, before anything
+else runs: no statement waits for a second lock halfway through (which could
+deadlock with an application transaction that writes ``users`` then assignments),
+and no orphan can be inserted between the cleanup and the constraint check. While it
+runs, every read and write of ``workflow_assignments`` waits, and so do writes to
+``users`` (reads of ``users`` continue). Both directions set a 5 s ``lock_timeout``
+(and a 60 s ``statement_timeout``) with ``SET LOCAL``: a busy table fails the deploy
+fast and it can be retried, instead of stalling the application. The constraints are
+added plainly rather than ``NOT VALID`` then ``VALIDATE``: inside one transaction
+the stronger lock is held until commit either way, so the two-step form would
+shorten nothing.
+
+``env.py`` runs all pending revisions in one transaction, so a deploy that applies
+0002 and 0003 together holds 0002's locks (on ``workflow_executions``) until 0003
+commits.
+
+The new foreign keys have no ON UPDATE CASCADE (unlike the ``workflow_id`` one) on
+purpose: ``users.id`` never changes.
 
 Downgrade drops the constraints and index and restores NOT NULL on
 ``assigned_by_id``. That FAILS (and rolls back) once any assignment has a NULL
@@ -61,9 +72,14 @@ def _bound_locks() -> None:
     op.execute("SET LOCAL statement_timeout = '60s'")
 
 
+def _lock_both_tables() -> None:
+    op.execute(f"LOCK TABLE {TABLE} IN ACCESS EXCLUSIVE MODE")
+    op.execute("LOCK TABLE users IN SHARE ROW EXCLUSIVE MODE")
+
+
 def upgrade() -> None:
     _bound_locks()
-    op.execute(f"LOCK TABLE {TABLE} IN SHARE ROW EXCLUSIVE MODE")
+    _lock_both_tables()
     op.alter_column(TABLE, "assigned_by_id", existing_type=sa.Text(), nullable=True)
     bind = op.get_bind()
     removed = bind.execute(
@@ -89,6 +105,7 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     _bound_locks()
+    _lock_both_tables()
     op.drop_index(BY_INDEX, table_name=TABLE)
     op.drop_constraint(BY_FK, TABLE, type_="foreignkey")
     op.drop_constraint(USER_FK, TABLE, type_="foreignkey")

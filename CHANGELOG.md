@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — workflow assignments now have foreign keys to users (2026-11-24)
+
+- **Before:** `workflow_assignments.user_id` and `assigned_by_id` were plain text with no foreign key, so an assignment could point at a deleted user, and a grant to a user deleted mid-request succeeded.
+- **Now:** `user_id` references `users.id` ON DELETE CASCADE (deleting the assignee deletes their assignments); `assigned_by_id` references `users.id` ON DELETE SET NULL (deleting the granter keeps the assignment, with no granter).
+- **API contract change:** `assignedById` in the assignments responses is now nullable (`string | null`); the frontend type is updated (nothing in the UI reads it).
+- **Grant errors:** a grant that loses a race with the target user's deletion returns 404 "user ... not found". A granter who has no `users` row (the dev-mode identity `dev`, or an embedded-mode JWT subject, which nothing provisions) now gets 409 "your account has no user record; sign in through SSO before granting access" instead of a misleading 404 naming the target. Dev mode no longer seeds a `dev` row, so grants made as `dev` fail until a row exists.
+- **Migration (runs on deploy):** Alembic `0003_assignment_user_fks` first cleans existing orphans, deleting assignments whose assignee no longer exists and setting `assigned_by_id` to NULL where the granter no longer exists, and logs only the counts. It then drops NOT NULL on `assigned_by_id`, adds `workflow_assignments_user_id_fkey` and `workflow_assignments_assigned_by_id_fkey`, and adds an index on `assigned_by_id` (so the SET NULL cascade does not scan the table when a user is deleted).
+- **Locks during deploy:** it locks `workflow_assignments` (ACCESS EXCLUSIVE: all reads and writes of assignments wait) and `users` (SHARE ROW EXCLUSIVE: user writes wait, reads continue) up front in that fixed order, briefly, bounded by a 5 s `lock_timeout` (and 60 s `statement_timeout`) in both directions; a busy table fails the deploy fast and it can be retried.
+- **Rollback:** `alembic downgrade` drops the constraints and index and restores NOT NULL, which FAILS (and changes nothing) once any assignment has a NULL granter. Reassign or delete those rows first; the migration does not invent a granter.
+- **Cleanup code:** `DELETE /internal/test-users/me` still deletes the test user's assignments explicitly, including ones it granted to other users (throwaway data), though the database would now keep those with a NULL granter.
+
 ### Security - builder diagnosis only reads your own runs of the workflow being built (2026-11-24)
 
 - **Before:** a user with access to any workflow could send a builder message naming another user's execution id (on any workflow) and have that run's status, error, node results and some variables (only secret-looking keys were redacted) added to their builder chat, where the model could repeat them.
