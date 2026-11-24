@@ -10,10 +10,10 @@ readme = "README.md"
 requires-python = ">=3.11,<3.13"
 dependencies = [
     # Web framework
-    "fastapi>=0.163.1",
+    "fastapi>=0.165.0",
     "uvicorn[standard]>=0.54.0",
     # Validation
-    "pydantic>=2.14.3",
+    "pydantic>=2.14.4",
     "pydantic-settings>=2.16.3",
     # Database (Prisma Python)
     "prisma>=0.15.0",
@@ -27,17 +27,17 @@ dependencies = [
     # Cloud Tasks (P1-2 durable execution)
     "google-cloud-tasks>=2.26.0",
     # Orchestration
-    "langgraph>=1.2.22",
-    "langchain>=1.5.0",
-    "langchain-core>=0.3.0",
+    "langgraph>=1.2.24",
+    "langchain>=1.5.2",
+    "langchain-core>=1.8.4",
     # Capped below 1.7: 1.7+ pulls the anthropic SDK 2.x, which switches every
     # Claude call to API version 2026-10-21, where temperature/top_p/top_k
     # return 400. Lifting this cap is the deliberate API-version migration
     # (guardrails, decision and agent nodes send temperature today).
-    "langchain-anthropic>=1.6.1,<1.7",
-    "langchain-openai>=1.8.0",
-    "langchain-google-genai>=4.5.0",
-    "langchain-groq>=1.2.0",
+    "langchain-anthropic>=1.7.12,<1.8",
+    "langchain-openai>=1.8.5",
+    "langchain-google-genai>=4.5.2",
+    "langchain-groq>=1.2.1",
     # MCP / HTTP
     "httpx>=0.28.0",
     # Security
@@ -53,7 +53,7 @@ dependencies = [
     "python-dotenv>=1.2.4",
     "python-multipart>=0.0.34",
     # LangSmith tracing
-    "langsmith>=0.2.0",
+    "langsmith>=0.16.0",
     # Sandboxed code execution
     "e2b-code-interpreter>=2.11.10",
     # Document parsing (for Start node file uploads)
@@ -76,7 +76,7 @@ dev = [
     "pytest-asyncio>=1.5.0",
     "pytest-cov>=6.0.0",
     "pytest-httpx>=0.30.0",
-    "ruff>=0.17.5",
+    "ruff>=0.17.6",
     "pyright>=1.1.414",
     "asyncpg-stubs>=0.31.0",
 ]
