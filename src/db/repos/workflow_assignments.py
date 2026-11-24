@@ -16,7 +16,7 @@ class AssignmentRecord:
     id: str
     workflow_id: str
     user_id: str
-    assigned_by_id: str
+    assigned_by_id: str | None  # None once the granting user has been deleted
     assigned_at: datetime
 
 

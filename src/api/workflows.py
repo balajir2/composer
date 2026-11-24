@@ -603,7 +603,7 @@ class WorkflowAssignmentRead(BaseModel):
     id: str
     workflow_id: str = Field(alias="workflowId")
     user_id: str = Field(alias="userId")
-    assigned_by_id: str = Field(alias="assignedById")
+    assigned_by_id: str | None = Field(alias="assignedById")
     assigned_at: Any = Field(alias="assignedAt")
 
 
@@ -711,9 +711,8 @@ async def list_workflow_assignments(
     return [WorkflowAssignmentRead.model_validate(r) for r in rows]
 
 
-_ASSIGNMENT_USER_FKS = frozenset(
-    {"workflow_assignments_user_id_fkey", "workflow_assignments_assigned_by_id_fkey"}
-)
+_ASSIGNMENT_TARGET_USER_FK = "workflow_assignments_user_id_fkey"
+_ASSIGNMENT_GRANTER_FK = "workflow_assignments_assigned_by_id_fkey"
 
 
 @router.post(
@@ -741,10 +740,18 @@ async def grant_workflow_assignment(
             session, workflow_id=workflow_id, user_id=target_user_id, assigned_by_id=user_id
         )
     except ReferencedRowMissing as exc:
-        # The workflow row is locked, so the reachable case is a user (the target or
-        # the grantor) deleted after the checks above; anything else is the workflow.
-        if exc.constraint in _ASSIGNMENT_USER_FKS:
+        # The workflow row is locked, so the reachable cases are a user deleted after the
+        # checks above, or a granter who never had a users row (the dev identity, or an
+        # embedded-mode JWT subject); anything else is the workflow.
+        if exc.constraint == _ASSIGNMENT_TARGET_USER_FK:
             raise HTTPException(404, f"user {target_user_id!r} not found") from exc
+        if exc.constraint == _ASSIGNMENT_GRANTER_FK:
+            # 409, not 404/403: the caller is authenticated and allowed, but their account
+            # is in a state the grant cannot record. Never names the target.
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "your account has no user record; sign in through SSO before granting access",
+            ) from exc
         raise HTTPException(404, f"Workflow {workflow_id!r} not found.") from exc
     except AlreadyExists as exc:
         # str(exc) names the constraint only: no SQL, parameters or ciphertext.

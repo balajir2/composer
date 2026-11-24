@@ -52,7 +52,7 @@ def test_upgrade_and_downgrade_swap_the_unique_index() -> None:
         assert "NULLS NOT DISTINCT" not in at_head[NEW]  # NULL keys must not collide
         assert OLD not in at_head
 
-        _alembic("downgrade", "-1")
+        _alembic("downgrade", "0001_baseline")
         reverted = _unique_indexes()
         assert OLD in reverted
         assert "(workflow_id, idempotency_key)" in reverted[OLD]

@@ -47,6 +47,7 @@ class WorkflowAssignment(Base):
     __table_args__ = (
         Index("workflow_assignments_workflow_id_idx", "workflow_id"),
         Index("workflow_assignments_user_id_idx", "user_id"),
+        Index("workflow_assignments_assigned_by_id_idx", "assigned_by_id"),
         Index(
             "workflow_assignments_workflow_id_user_id_key", "workflow_id", "user_id", unique=True
         ),
@@ -62,6 +63,16 @@ class WorkflowAssignment(Base):
             onupdate="CASCADE",
         ),
     )
-    user_id: Mapped[str] = mapped_column(Text)
-    assigned_by_id: Mapped[str] = mapped_column(Text)
+    # Foreign keys added by alembic 0003 (Prisma's frozen schema has none): deleting the
+    # assignee deletes the assignment; deleting the granter leaves it with no granter.
+    user_id: Mapped[str] = mapped_column(
+        Text,
+        ForeignKey("users.id", name="workflow_assignments_user_id_fkey", ondelete="CASCADE"),
+    )
+    assigned_by_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "users.id", name="workflow_assignments_assigned_by_id_fkey", ondelete="SET NULL"
+        ),
+    )
     assigned_at: Mapped[datetime] = created_at_column()  # the row's creation time

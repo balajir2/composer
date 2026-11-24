@@ -1,9 +1,11 @@
 """Integration — workflow assignment grant/revoke against real Neon."""
 
 import contextlib
+import os
 import secrets
 from typing import Any
 
+import psycopg
 import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
@@ -37,6 +39,19 @@ async def test_grant_and_revoke_assignment_cycle(client: AsyncClient, app: FastA
     assert reg.status_code == 201, reg.text
     target_user_id = reg.json()["id"]
 
+    # The dev-mode identity ('dev') is the granter, and assigned_by_id now has a foreign key
+    # to users, so it needs a row (production granters always have one).
+    created_dev = False
+    with psycopg.connect(os.environ["TEST_DATABASE_URL"], autocommit=True) as conn:
+        created_dev = (
+            conn.execute(
+                "INSERT INTO users (id, email, updated_at) VALUES ('dev', %s, now()) "
+                "ON CONFLICT DO NOTHING",
+                (f"dev-{secrets.token_hex(4)}@example.com",),
+            ).rowcount
+            == 1
+        )
+
     wf_id: str | None = None
     try:
         r = await client.post("/workflows", json=_MINIMAL_BODY)
@@ -62,3 +77,6 @@ async def test_grant_and_revoke_assignment_cycle(client: AsyncClient, app: FastA
                 await client.delete(f"/workflows/{wf_id}")
         with contextlib.suppress(Exception):
             await db.user.delete(where={"id": target_user_id})
+        if created_dev:
+            with psycopg.connect(os.environ["TEST_DATABASE_URL"], autocommit=True) as conn:
+                conn.execute("DELETE FROM users WHERE id = 'dev'")

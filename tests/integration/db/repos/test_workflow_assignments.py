@@ -1,6 +1,7 @@
 import secrets
 
 import pytest
+from sqlalchemy import delete as sa_delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.errors import AlreadyExists, ReferencedRowMissing
@@ -31,11 +32,19 @@ async def _wf(session: AsyncSession) -> str:
     return w.id
 
 
+async def _user(session: AsyncSession) -> str:
+    uid = "u" + secrets.token_hex(4)
+    session.add(User(id=uid, email=f"{uid}@example.com", password_hash="x", role=UserRole.MEMBER))
+    await session.flush()
+    return uid
+
+
 async def test_create_and_list_for_workflow(session: AsyncSession) -> None:
     wid, other = await _wf(session), await _wf(session)
-    rec = await repo.create(session, workflow_id=wid, user_id="a", assigned_by_id="o")
-    await repo.create(session, workflow_id=other, user_id="a", assigned_by_id="o")
-    assert rec.workflow_id == wid and rec.user_id == "a" and rec.assigned_by_id == "o"
+    a, o = await _user(session), await _user(session)
+    rec = await repo.create(session, workflow_id=wid, user_id=a, assigned_by_id=o)
+    await repo.create(session, workflow_id=other, user_id=a, assigned_by_id=o)
+    assert rec.workflow_id == wid and rec.user_id == a and rec.assigned_by_id == o
     assert rec.id and rec.assigned_at is not None
     listed = await repo.list_for_workflow(session, wid)
     assert [r.id for r in listed] == [rec.id]
@@ -44,38 +53,74 @@ async def test_create_and_list_for_workflow(session: AsyncSession) -> None:
 
 async def test_create_duplicate_raises_and_session_stays_usable(session: AsyncSession) -> None:
     wid = await _wf(session)
-    await repo.create(session, workflow_id=wid, user_id="a", assigned_by_id="o")
+    a, b, o = await _user(session), await _user(session), await _user(session)
+    await repo.create(session, workflow_id=wid, user_id=a, assigned_by_id=o)
     with pytest.raises(AlreadyExists) as exc:
-        await repo.create(session, workflow_id=wid, user_id="a", assigned_by_id="o")
+        await repo.create(session, workflow_id=wid, user_id=a, assigned_by_id=o)
     assert exc.value.constraint == "workflow_assignments_workflow_id_user_id_key"
-    await repo.create(session, workflow_id=wid, user_id="b", assigned_by_id="o")
+    await repo.create(session, workflow_id=wid, user_id=b, assigned_by_id=o)
     assert len(await repo.list_for_workflow(session, wid)) == 2
 
 
 async def test_create_for_a_missing_workflow_raises_and_session_stays_usable(
     session: AsyncSession,
 ) -> None:
+    a, o = await _user(session), await _user(session)
     with pytest.raises(ReferencedRowMissing) as exc:
-        await repo.create(session, workflow_id="gone", user_id="a", assigned_by_id="o")
+        await repo.create(session, workflow_id="gone", user_id=a, assigned_by_id=o)
     assert exc.value.constraint == "workflow_assignments_workflow_id_fkey"
     wid = await _wf(session)
-    await repo.create(session, workflow_id=wid, user_id="a", assigned_by_id="o")
-    assert await repo.exists(session, wid, "a") is True
+    await repo.create(session, workflow_id=wid, user_id=a, assigned_by_id=o)
+    assert await repo.exists(session, wid, a) is True
+
+
+async def test_create_for_a_missing_user_raises_and_session_stays_usable(
+    session: AsyncSession,
+) -> None:
+    """A real foreign-key violation: the assignee (or granter) no longer exists."""
+    wid = await _wf(session)
+    a, o = await _user(session), await _user(session)
+    with pytest.raises(ReferencedRowMissing) as exc:
+        await repo.create(session, workflow_id=wid, user_id="deleted-user", assigned_by_id=o)
+    assert exc.value.constraint == "workflow_assignments_user_id_fkey"
+    with pytest.raises(ReferencedRowMissing) as exc:
+        await repo.create(session, workflow_id=wid, user_id=a, assigned_by_id="deleted-granter")
+    assert exc.value.constraint == "workflow_assignments_assigned_by_id_fkey"
+    await repo.create(session, workflow_id=wid, user_id=a, assigned_by_id=o)
+    assert await repo.exists(session, wid, a) is True
+
+
+async def test_deleting_users_cascades_to_assignee_and_nulls_granter(
+    session: AsyncSession,
+) -> None:
+    w1, w2 = await _wf(session), await _wf(session)
+    assignee, granter = await _user(session), await _user(session)
+    await repo.create(session, workflow_id=w1, user_id=assignee, assigned_by_id=granter)
+    await repo.create(session, workflow_id=w2, user_id=granter, assigned_by_id=granter)
+    await session.execute(sa_delete(User).where(User.id == granter))
+    session.expire_all()
+    kept = await repo.list_for_workflow(session, w1)
+    assert [(r.user_id, r.assigned_by_id) for r in kept] == [(assignee, None)]
+    assert await repo.list_for_workflow(session, w2) == []  # granter was also the assignee
+    await session.execute(sa_delete(User).where(User.id == assignee))
+    assert await repo.list_for_workflow(session, w1) == []
 
 
 async def test_delete(session: AsyncSession) -> None:
     wid = await _wf(session)
-    await repo.create(session, workflow_id=wid, user_id="a", assigned_by_id="o")
-    assert await repo.delete(session, wid, "a") is True
-    assert await repo.delete(session, wid, "a") is False
-    assert await repo.exists(session, wid, "a") is False
+    a, o = await _user(session), await _user(session)
+    await repo.create(session, workflow_id=wid, user_id=a, assigned_by_id=o)
+    assert await repo.delete(session, wid, a) is True
+    assert await repo.delete(session, wid, a) is False
+    assert await repo.exists(session, wid, a) is False
 
 
 async def test_delete_involving_user_covers_both_columns(session: AsyncSession) -> None:
     w1, w2, w3 = await _wf(session), await _wf(session), await _wf(session)
-    await repo.create(session, workflow_id=w1, user_id="x", assigned_by_id="o")
-    await repo.create(session, workflow_id=w2, user_id="y", assigned_by_id="x")
-    await repo.create(session, workflow_id=w3, user_id="y", assigned_by_id="o")
-    assert await repo.delete_involving_user(session, "x") == 2
-    assert await repo.delete_involving_user(session, "x") == 0
-    assert [r.user_id for r in await repo.list_for_workflow(session, w3)] == ["y"]
+    x, y, o = await _user(session), await _user(session), await _user(session)
+    await repo.create(session, workflow_id=w1, user_id=x, assigned_by_id=o)
+    await repo.create(session, workflow_id=w2, user_id=y, assigned_by_id=x)
+    await repo.create(session, workflow_id=w3, user_id=y, assigned_by_id=o)
+    assert await repo.delete_involving_user(session, x) == 2
+    assert await repo.delete_involving_user(session, x) == 0
+    assert [r.user_id for r in await repo.list_for_workflow(session, w3)] == [y]
