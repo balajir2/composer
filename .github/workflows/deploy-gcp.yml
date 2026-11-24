@@ -24,6 +24,16 @@
 
 name: Deploy to GCP Cloud Run
 
+# Production deploys run one at a time.  Two merges close together would
+# otherwise run two `alembic upgrade head` and two `gcloud run deploy` against
+# production in parallel.  cancel-in-progress is false on purpose: cancelling a
+# deploy mid-migration is worse than queueing.  GitHub keeps only one *pending*
+# run per group, so a third queued run replaces the second; that is fine because
+# the latest pending run deploys the latest main.
+concurrency:
+  group: deploy-gcp-production
+  cancel-in-progress: false
+
 on:
   push:
     branches: [main]
