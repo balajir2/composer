@@ -13,8 +13,10 @@ autouse driver from tests/integration/conftest.py runs claim-and-run inline over
 Approval tokens are bearer credentials: nothing here prints or logs one.
 """
 
+import asyncio
 import contextlib
-from collections.abc import AsyncIterator
+import time
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable, Coroutine, Sequence
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlencode
@@ -23,7 +25,8 @@ import pytest
 import pytest_asyncio
 from httpx import AsyncClient, Response
 from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
 from src.db.models import Approval
@@ -62,6 +65,8 @@ __all__ = [
 APPROVER = "approver@example.com"
 
 
+# The three autouse fixtures below are copied from tests/integration/sqla_phase4a/conftest.py
+# (lines ~252-277); keep them identical. Autouse fixtures of another conftest do not apply here.
 @pytest.fixture(autouse=True)
 def _network_lock(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnusedFunction]
     del httpx_mock
@@ -193,6 +198,84 @@ def same_except(before: dict[str, Any], after: dict[str, Any], *changed: str) ->
     a = {k: v for k, v in before.items() if k not in changed}
     b = {k: v for k, v in after.items() if k not in changed}
     assert a == b
+
+
+# --------------------------------------------------------------------------- lock-and-hold seam
+#
+# Every route first runs ``enforce`` (a ``SELECT ... FOR UPDATE`` on the rate-limit bucket), which
+# serialises same-user / same-IP requests, so plain ``asyncio.gather`` races mostly end on the
+# read-side status check and never reach the guarded write. The seam below parks requests exactly
+# between their read and their guarded write: a separate session holds ``FOR UPDATE`` on the
+# execution row; each request reads the row (plain SELECT, not blocked), then blocks on the guarded
+# UPDATE. ``wait_blocked`` proves they are all parked, then the holder (optionally changing the row)
+# commits and they race for real.
+
+
+@contextlib.asynccontextmanager
+async def hold_row(db: Db, execution_id: str) -> AsyncGenerator[tuple[AsyncSession, int]]:
+    """Lock the execution row FOR UPDATE in a separate session. Yields (session, backend pid);
+    the lock is released (rolled back unless the caller committed) on exit."""
+    async with db.sm() as session:
+        try:
+            pid = (await session.execute(text("SELECT pg_backend_pid()"))).scalar_one()
+            await session.execute(
+                text("SELECT id FROM workflow_executions WHERE id = :e FOR UPDATE"),
+                {"e": execution_id},
+            )
+            yield session, int(pid)
+        finally:
+            await session.rollback()
+
+
+async def wait_blocked(db: Db, pid: int, n: int, timeout: float = 10.0) -> None:
+    """Wait until at least ``n`` backends are blocked behind backend ``pid`` (directly, or queued
+    behind another waiter: Postgres lists earlier waiters as blockers too)."""
+    deadline = time.monotonic() + timeout
+    while True:
+        async with db.sm() as s:
+            count = (
+                await s.execute(
+                    text(
+                        "WITH RECURSIVE chain(pid) AS ("
+                        " SELECT pid FROM pg_stat_activity WHERE :pid = ANY(pg_blocking_pids(pid))"
+                        " UNION"
+                        " SELECT a.pid FROM pg_stat_activity a JOIN chain c"
+                        " ON c.pid = ANY(pg_blocking_pids(a.pid))"
+                        ") SELECT count(*) FROM chain"
+                    ),
+                    {"pid": pid},
+                )
+            ).scalar_one()
+        if count >= n:
+            return
+        if time.monotonic() > deadline:
+            raise AssertionError(f"only {count} of {n} requests blocked behind the row lock")
+        await asyncio.sleep(0.05)
+
+
+async def race_behind_lock(
+    db: Db,
+    execution_id: str,
+    requests: Sequence[Coroutine[Any, Any, Response]],
+    *,
+    holder_action: Callable[[AsyncSession], Awaitable[None]] | None = None,
+    timeout: float = 30.0,
+) -> list[Response]:
+    """Park every request behind the row lock, let ``holder_action`` change the row (optional),
+    commit, and return the responses in request order."""
+    async with hold_row(db, execution_id) as (holder, pid):
+        tasks = [asyncio.ensure_future(asyncio.wait_for(r, timeout)) for r in requests]
+        try:
+            await wait_blocked(db, pid, len(tasks))
+            if holder_action is not None:
+                await holder_action(holder)
+            await holder.commit()
+            return list(await asyncio.gather(*tasks))
+        finally:
+            for t in tasks:
+                if not t.done():
+                    t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
 
 
 __all__ += ["Db", "EnqueueRecorder", "Member"]

@@ -1,16 +1,12 @@
 """Pins POST /executions/{id}/resume as it behaves today (post-4a, Prisma)."""
 
-from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import pytest
-from fastapi import FastAPI
 from httpx import AsyncClient
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import get_settings
-from src.storage.db import get_db
 from tests.integration.sqla_phase4a.conftest import (
     EXECUTION_KEYS,
     HTTPX_MARK,
@@ -51,7 +47,17 @@ async def test_resume_approved_and_rejected_success(
     decision: str,
     note: str | None,
 ) -> None:
-    rec = install_resume_enqueue(monkeypatch, EnqueueRecorder())
+    checked: list[str] = []
+
+    async def _committed_before_enqueue(execution_id: str) -> None:
+        # a separate session: everything the route did is already committed when enqueue runs
+        row = await snap(db, execution_id)
+        assert row["status"] == "running"
+        assert row["variables"]["_resume_decision"] == decision
+        assert len(await approvals_of(db, execution_id)) == 1
+        checked.append(execution_id)
+
+    rec = install_resume_enqueue(monkeypatch, EnqueueRecorder(before=_committed_before_enqueue))
     eid, since = await seed_paused(
         db, member, lease_owner="old-worker", lease_expires_at=ago(minutes=1)
     )
@@ -75,6 +81,7 @@ async def test_resume_approved_and_rejected_success(
         k: v for k, v in got_before.items() if k != "status"
     }
     assert rec.calls == [(eid, "resume")]
+    assert checked == [eid]
 
     after = await snap(db, eid)
     assert after["status"] == "running"
@@ -267,94 +274,38 @@ async def test_resumed_row_is_claimable_by_a_resume_task(
     assert jbody(second) == {"status": "already_claimed"}
 
 
-# --------------------------------------------------------------------------- DB1 today pins
-
-
-class _ApprovalHook:
-    """Wraps ``db.approval`` so a hook runs right before the audit row is created (i.e. between the
-    guarded transition and the unguarded ``_resume_decision`` stamp)."""
-
-    def __init__(self, real: Any, hook: Callable[[], Awaitable[None]]) -> None:
-        self._real = real
-        self._hook = hook
-
-    async def create(self, *args: Any, **kwargs: Any) -> Any:
-        await self._hook()
-        return await self._real.create(*args, **kwargs)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._real, name)
-
-
-class _DbProxy:
-    def __init__(self, real: Any, hook: Callable[[], Awaitable[None]]) -> None:
-        self._real = real
-        self.approval = _ApprovalHook(real.approval, hook)
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._real, name)
-
-
-def _hook_between_transition_and_stamp(app: FastAPI, hook: Callable[[], Awaitable[None]]) -> None:
-    real = app.state.db
-    app.dependency_overrides[get_db] = lambda: _DbProxy(real, hook)
-
-
-async def test_resume_stamp_lands_on_canceled_row_today_db1(
-    app: FastAPI,
+async def test_rate_limit_is_keyed_by_user(
     client: AsyncClient,
     db: Db,
     member: Member,
-    exec_api: ExecApi,
+    second_member: Member,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """DB1 reproduced: the transition, the approval insert and the stamp are three autocommitted
-    statements. A cancel landing between them leaves a canceled row that still gets the resume
-    decision stamped, the resume answers 200 and a resume task is enqueued for it. After Task 3
-    (stamp inside the guarded UPDATE, approval in the same transaction) the stamp can no longer
-    land after a cancel; Task 3 may change this test."""
     rec = install_resume_enqueue(monkeypatch, EnqueueRecorder())
-    eid, since = await seed_paused(db, member)
+    monkeypatch.setenv("RATE_LIMIT_RESUME_PER_MINUTE", "1")
+    get_settings.cache_clear()
+    a, _ = await seed_paused(db, member)
+    b, _ = await seed_paused(db, member)
+    c, _ = await seed_paused(db, second_member)
 
-    async def _cancel() -> None:
-        assert (await exec_api.cancel(member, eid)).status_code == 200
-
-    _hook_between_transition_and_stamp(app, _cancel)
-    try:
-        resp = await resume(client, member, eid, "approved")
-    finally:
-        app.dependency_overrides.pop(get_db, None)
+    assert (await resume(client, member, a, "approved")).status_code == 200
+    assert (await resume(client, member, b, "approved")).status_code == 429
+    resp = await resume(client, second_member, c, "approved")
     assert resp.status_code == 200, resp.text
-    row = await snap(db, eid)
-    assert row["status"] == "canceled"
-    assert row["error"] == "Execution canceled by user request."
-    assert row["variables"] == {**paused_variables(since), "_resume_decision": "approved"}
-    assert len(await approvals_of(db, eid)) == 1
-    assert rec.calls == [(eid, "resume")]
+    assert rec.calls == [(a, "resume"), (c, "resume")]
 
 
-async def test_resume_stamp_overwrites_concurrent_variables_today_db1(
-    app: FastAPI,
-    client: AsyncClient,
-    db: Db,
-    member: Member,
-    monkeypatch: pytest.MonkeyPatch,
+async def test_resume_with_non_default_node_id(
+    client: AsyncClient, db: Db, member: Member, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """DB1 reproduced: the stamp rewrites ``variables`` from the snapshot read BEFORE the
-    transition, so a concurrent change to ``variables`` is lost. After Task 3 the stamp is a JSONB
-    merge against the current value; Task 3 flips this test."""
-    install_resume_enqueue(monkeypatch, EnqueueRecorder())
-    eid, since = await seed_paused(db, member)
-
-    async def _write_late() -> None:
-        await db.set_execution(eid, variables={**paused_variables(since), "late": "write"})
-
-    _hook_between_transition_and_stamp(app, _write_late)
-    try:
-        resp = await resume(client, member, eid, "approved")
-    finally:
-        app.dependency_overrides.pop(get_db, None)
+    rec = install_resume_enqueue(monkeypatch, EnqueueRecorder())
+    eid, since = await seed_paused(db, member, node_id="approve-7")
+    resp = await resume(client, member, eid, "approved")
     assert resp.status_code == 200, resp.text
-    row = await snap(db, eid)
-    assert row["variables"] == {**paused_variables(since), "_resume_decision": "approved"}
-    assert "late" not in row["variables"]
+    rows = await approvals_of(db, eid)
+    assert [r["node_id"] for r in rows] == ["approve-7"]
+    assert (await snap(db, eid))["variables"] == {
+        **paused_variables(since, "approve-7"),
+        "_resume_decision": "approved",
+    }
+    assert rec.calls == [(eid, "resume")]

@@ -8,7 +8,6 @@ Task 3; Task 3 may change exactly those.
 import logging
 import time
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import pytest
 from httpx import AsyncClient
@@ -151,7 +150,17 @@ async def test_confirm_success(
     monkeypatch: pytest.MonkeyPatch,
     decision: str,
 ) -> None:
-    rec = install_resume_enqueue(monkeypatch, EnqueueRecorder())
+    checked: list[str] = []
+
+    async def _committed_before_enqueue(execution_id: str) -> None:
+        # a separate session: everything the route did is already committed when enqueue runs
+        row = await snap(db, execution_id)
+        assert row["status"] == "running"
+        assert row["variables"]["_resume_decision"] == decision
+        assert len(await approvals_of(db, execution_id)) == 1
+        checked.append(execution_id)
+
+    rec = install_resume_enqueue(monkeypatch, EnqueueRecorder(before=_committed_before_enqueue))
     eid, since = await seed_paused(
         db, member, lease_owner="old-worker", lease_expires_at=ago(minutes=1)
     )
@@ -168,6 +177,7 @@ async def test_confirm_success(
     assert resp.status_code == 303
     assert location(resp) == result_location(decision)
     assert rec.calls == [(eid, "resume")]
+    assert checked == [eid]
     after = await snap(db, eid)
     assert after["status"] == "running"
     assert after["running_since"] is not None
@@ -278,99 +288,74 @@ async def test_confirm_enqueue_failure(
     assert len(await approvals_of(db, eid)) == 1
 
 
+def _is_client_request_line(record: logging.LogRecord) -> bool:
+    """The TEST client's own ``HTTP Request: GET <url>`` line (httpx), which is not Composer output."""
+    return record.name == "httpx" and record.getMessage().startswith("HTTP Request:")
+
+
+def _leaks(record: logging.LogRecord, secrets_: list[str]) -> bool:
+    haystack = [
+        record.getMessage(),
+        str(record.args),
+        record.exc_text or "",
+        *(str(v) for v in record.__dict__.values()),
+    ]
+    return any(secret in h for secret in secrets_ for h in haystack)
+
+
 async def test_token_never_logged(
     client: AsyncClient,
     db: Db,
     member: Member,
     monkeypatch: pytest.MonkeyPatch,
     caplog: pytest.LogCaptureFixture,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
-    """DB3 (kept as-is): no Composer log record contains the token or its signature."""
-    install_resume_enqueue(monkeypatch, EnqueueRecorder())
+    """DB3 (kept as-is): no Composer log record (nor stdout/stderr) contains an approval token or
+    its signature, on the happy path, on invalid links, on an enqueue failure after the resume and
+    on a malformed-decision confirm that errors."""
     eid, since = await seed_paused(db, member)
     token = email_token(eid, "approved", since)
-    signature = token.rsplit(".", 1)[1]
+    # a second pause whose enqueue fails, a third whose token carries an unknown decision
+    eid_fail, since_fail = await seed_paused(db, member)
+    token_fail = email_token(eid_fail, "approved", since_fail)
+    eid_bad, since_bad = await seed_paused(db, member)
+    token_bad = email_token(eid_bad, "maybe", since_bad)
     garbage = "garbage.token.value"
+    secrets_ = [t for tok in (token, token_fail, token_bad) for t in (tok, tok.rsplit(".", 1)[1])]
     caplog.set_level(logging.DEBUG)
 
+    rec = install_resume_enqueue(monkeypatch, EnqueueRecorder())
     await open_link(client, token)
     await confirm(client, token)
     await confirm(client, token)
     await open_link(client, garbage)
 
-    assert caplog.records, "expected some log output to inspect"
-    leaked = False
-    for record in caplog.records:
-        if record.name.split(".")[0] in {"httpx", "httpcore"}:
-            continue  # the TEST client's own request line (HTTP Request: GET <url>), not Composer
-        haystack = [
-            record.getMessage(),
-            str(record.args),
-            record.exc_text or "",
-            *(str(v) for v in record.__dict__.values()),
-        ]
-        if any(token in h or signature in h for h in haystack):
-            leaked = True
-    assert not leaked, "an approval token appeared in a log record"
+    rec.raises = RuntimeError("enqueue boom")
+    with pytest.raises(RuntimeError, match="enqueue boom"):
+        await confirm(client, token_fail)
+    with pytest.raises(Exception):  # noqa: B017 - the Prisma enum error for the bad decision
+        await confirm(client, token_bad)
+
+    inspected = [r for r in caplog.records if not _is_client_request_line(r)]
+    assert inspected, "positive control: at least one non-client log record must be inspected"
+    assert not any(_leaks(r, secrets_) for r in inspected), "an approval token appeared in a log"
+    out, err = capfd.readouterr()
+    assert not any(secret in out or secret in err for secret in secrets_)
 
 
-# --------------------------------------------------------------------------- today-only pins
-
-
-async def test_confirm_stale_instance_resolves_new_pause_today_db2(
-    client: AsyncClient,
-    db: Db,
-    member: Member,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """DB2 reproduced: validation passes, then the row re-pauses (new pending_since) before the
-    guarded transition. Today the status-only guard lets the stale link resolve the NEW pause.
-    After Task 3 (pause instance inside the guard) the confirm must be ``invalid`` and the row
-    untouched; Task 3 flips this test."""
-    rec = install_resume_enqueue(monkeypatch, EnqueueRecorder())
-    eid, since = await seed_paused(db, member)
-    token = email_token(eid, "approved", since)
-    new_since = (datetime.now(UTC) + timedelta(seconds=1)).isoformat()
-
-    import src.api.approval_email as module
-
-    original: Any = module._validate_token_and_execution  # pyright: ignore[reportPrivateUsage]
-
-    async def _validate_then_repause(*args: Any, **kwargs: Any) -> Any:
-        result = await original(*args, **kwargs)
-        await db.set_execution(eid, variables=paused_variables(new_since))
-        return result
-
-    monkeypatch.setattr(module, "_validate_token_and_execution", _validate_then_repause)
-
-    resp = await confirm(client, token)
-    assert resp.status_code == 303
-    assert location(resp) == result_location("approved")  # TODAY: stale link wins
-    assert rec.calls == [(eid, "resume")]
-    row = await snap(db, eid)
-    assert row["status"] == "running"
-    # the unguarded stamp merges onto the PRE-re-pause snapshot, clobbering the new pause markers
-    assert row["variables"] == {**paused_variables(since), "_resume_decision": "approved"}
-    assert len(await approvals_of(db, eid)) == 1
-
-
-async def test_confirm_malformed_decision_claim_500s_today_db6(
+async def test_confirm_with_non_default_node_id(
     client: AsyncClient, db: Db, member: Member, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """DB6 reproduced: a validly signed token with an unknown decision passes the guard, then the
-    approval insert fails: the request errors and the row is stuck ``running`` with no approval row
-    and no enqueue. After Task 3 this must be an ``invalid`` redirect before any write; Task 3
-    flips this test."""
     rec = install_resume_enqueue(monkeypatch, EnqueueRecorder())
-    eid, since = await seed_paused(db, member)
-    before = await snap(db, eid)
-    token = email_token(eid, "maybe", since)
-
-    with pytest.raises(Exception):  # noqa: B017 - the exact class is the Prisma enum error
-        await confirm(client, token)
-
-    after = await snap(db, eid)
-    assert after["status"] == "running"
-    same_except(before, after, "status", "running_since", "lease_owner", "lease_expires_at")
-    assert await approvals_of(db, eid) == []
-    assert rec.calls == []
+    eid, since = await seed_paused(db, member, node_id="approve-7")
+    token = email_token(eid, "rejected", since, node_id="approve-7")
+    resp = await confirm(client, token)
+    assert location(resp) == result_location("rejected")
+    rows = await approvals_of(db, eid)
+    assert [(r["node_id"], r["decision"].value) for r in rows] == [("approve-7", "rejected")]
+    assert (await snap(db, eid))["variables"] == {
+        **paused_variables(since, "approve-7"),
+        "_resume_decision": "rejected",
+    }
+    assert rec.calls == [(eid, "resume")]

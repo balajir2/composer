@@ -8,6 +8,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from httpx import AsyncClient, Response
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from tests._rate_limit_reset import reset_rate_limit_buckets
 from tests.integration.sqla_phase4a.conftest import (
@@ -27,6 +29,7 @@ from tests.integration.sqla_phase4b.conftest import (
     location,
     lost_race,
     not_waiting,
+    race_behind_lock,
     result_location,
     resume,
     seed_paused,
@@ -265,23 +268,23 @@ async def test_resume_vs_approval_expiry_sweep(
     assert await snap(db, eid) == running
     assert running["status"] == "running"
 
-    # gathered
-    for _ in range(ROUNDS):
-        await reset_rate_limit_buckets()
-        eid, _ = await _expired_row(db, member)
-        r, _sweep = await asyncio.gather(
-            resume(client, member, eid, "approved"),
-            adapter.sweep_approvals(timeout_hours=1, now=datetime.now(UTC)),
-        )
-        row = await snap(db, eid)
-        if r.status_code == 200:
-            assert row["status"] == "running"
-            assert len(await approvals_of(db, eid)) == 1
-        else:
-            assert r.status_code == 409
-            assert row["status"] == "failed"
-            assert row["error"] == EXPIRY_ERROR
-            assert await approvals_of(db, eid) == []
+    # resume lands between the scan of the sweep and its guarded fail: the sweep loses
+    eid, _ = await _expired_row(db, member)
+    fired: list[Response] = []
+
+    async def _resume_after_scan() -> None:
+        if not fired:
+            fired.append(await resume(client, member, eid, "approved"))
+
+    await adapter.sweep_approvals(
+        timeout_hours=1, now=datetime.now(UTC), after_scan=_resume_after_scan
+    )
+    assert [r.status_code for r in fired] == [200]
+    row = await snap(db, eid)
+    assert row["status"] == "running"
+    assert row["error"] is None
+    assert row["variables"]["_resume_decision"] == "approved"
+    assert len(await approvals_of(db, eid)) == 1
 
 
 async def test_confirm_vs_approval_expiry_sweep(
@@ -310,19 +313,135 @@ async def test_confirm_vs_approval_expiry_sweep(
     await adapter.sweep_approvals(timeout_hours=1, now=datetime.now(UTC))
     assert await snap(db, eid) == running
 
+    eid, since = await _expired_row(db, member)
+    token = email_token(eid, "approved", since)
+    fired: list[Response] = []
+
+    async def _confirm_after_scan() -> None:
+        if not fired:
+            fired.append(await confirm(client, token))
+
+    await adapter.sweep_approvals(
+        timeout_hours=1, now=datetime.now(UTC), after_scan=_confirm_after_scan
+    )
+    assert [location(r) for r in fired] == [result_location("approved")]
+    row = await snap(db, eid)
+    assert row["status"] == "running"
+    assert row["error"] is None
+    assert row["variables"]["_resume_decision"] == "approved"
+    assert len(await approvals_of(db, eid)) == 1
+
+
+# --------------------------------------------------------------------------- behind the row lock
+# Requests are parked between their read and their guarded write (see conftest.hold_row), so a
+# port that guards only on the read, or reads then writes, lets two of them through.
+
+
+async def _cancel_row(holder: AsyncSession, execution_id: str) -> None:
+    await holder.execute(
+        text("UPDATE workflow_executions SET status = 'canceled' WHERE id = :e"),
+        {"e": execution_id},
+    )
+
+
+async def test_two_resumes_past_read_one_winner(
+    client: AsyncClient, db: Db, member: Member, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = install_resume_enqueue(monkeypatch, EnqueueRecorder())
     for _ in range(ROUNDS):
         await reset_rate_limit_buckets()
-        eid, since = await _expired_row(db, member)
-        token = email_token(eid, "approved", since)
-        r, _sweep = await asyncio.gather(
-            confirm(client, token),
-            adapter.sweep_approvals(timeout_hours=1, now=datetime.now(UTC)),
+        eid, _ = await seed_paused(db, member)
+        results = await race_behind_lock(
+            db, eid, [resume(client, member, eid, "approved") for _ in range(2)]
         )
-        row = await snap(db, eid)
-        if won(r):
-            assert row["status"] == "running"
-            assert len(await approvals_of(db, eid)) == 1
-        else:
-            assert row["status"] == "failed"
-            assert row["error"] == EXPIRY_ERROR
-            assert await approvals_of(db, eid) == []
+        assert sorted(r.status_code for r in results) == [200, 409]
+        loser = next(r for r in results if r.status_code == 409)
+        assert jbody(loser) == {"detail": lost_race(eid)}  # past the read: the guard said no
+        assert len(await approvals_of(db, eid)) == 1
+        assert [c for c in rec.calls if c[0] == eid] == [(eid, "resume")]
+        assert (await snap(db, eid))["variables"]["_resume_decision"] == "approved"
+
+
+async def test_two_confirms_past_read_one_winner(
+    client: AsyncClient, db: Db, member: Member, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = install_resume_enqueue(monkeypatch, EnqueueRecorder())
+    for _ in range(ROUNDS):
+        await reset_rate_limit_buckets()
+        eid, since = await seed_paused(db, member)
+        token = email_token(eid, "approved", since)
+        results = await race_behind_lock(db, eid, [confirm(client, token) for _ in range(2)])
+        assert sorted(location(r) for r in results) == sorted(
+            [result_location("approved"), result_location("invalid")]
+        )
+        assert len(await approvals_of(db, eid)) == 1
+        assert [c for c in rec.calls if c[0] == eid] == [(eid, "resume")]
+
+        eid, since = await seed_paused(db, member)
+        approve = email_token(eid, "approved", since)
+        reject = email_token(eid, "rejected", since)
+        results = await race_behind_lock(
+            db, eid, [confirm(client, approve), confirm(client, reject)]
+        )
+        locations = sorted(location(r) for r in results)
+        assert result_location("invalid") in locations
+        decision_redirects = [x for x in locations if x != result_location("invalid")]
+        assert len(decision_redirects) == 1
+        rows = await approvals_of(db, eid)
+        assert len(rows) == 1
+        assert decision_redirects == [result_location(rows[0]["decision"].value)]
+        assert (await snap(db, eid))["variables"]["_resume_decision"] == rows[0]["decision"].value
+        assert [c for c in rec.calls if c[0] == eid] == [(eid, "resume")]
+
+
+async def test_resume_and_confirm_past_read_one_winner(
+    client: AsyncClient, db: Db, member: Member, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = install_resume_enqueue(monkeypatch, EnqueueRecorder())
+    for _ in range(ROUNDS):
+        await reset_rate_limit_buckets()
+        eid, since = await seed_paused(db, member)
+        token = email_token(eid, "approved", since)
+        in_app, email = await race_behind_lock(
+            db, eid, [resume(client, member, eid, "rejected"), confirm(client, token)]
+        )
+        assert int(won(in_app)) + int(won(email)) == 1
+        rows = await approvals_of(db, eid)
+        assert len(rows) == 1
+        assert rows[0]["via_email_link"] is won(email)
+        assert (await snap(db, eid))["variables"]["_resume_decision"] == rows[0]["decision"].value
+        assert [c for c in rec.calls if c[0] == eid] == [(eid, "resume")]
+
+
+@pytest.mark.parametrize("variant", ["resume", "confirm"])
+async def test_cancel_after_read_beats_resume(
+    client: AsyncClient,
+    db: Db,
+    member: Member,
+    monkeypatch: pytest.MonkeyPatch,
+    variant: str,
+) -> None:
+    """A cancel committed after the request read the row but before its guarded write wins: no
+    transition, no approval row, no enqueue, no stamp."""
+    rec = install_resume_enqueue(monkeypatch, EnqueueRecorder())
+    eid, since = await seed_paused(db, member)
+
+    async def _cancel(holder: AsyncSession) -> None:
+        await _cancel_row(holder, eid)
+
+    if variant == "resume":
+        (resp,) = await race_behind_lock(
+            db, eid, [resume(client, member, eid, "approved")], holder_action=_cancel
+        )
+        assert resp.status_code == 409
+        assert jbody(resp) == {"detail": lost_race(eid)}
+    else:
+        token = email_token(eid, "approved", since)
+        (resp,) = await race_behind_lock(db, eid, [confirm(client, token)], holder_action=_cancel)
+        assert location(resp) == result_location("invalid")
+    row = await snap(db, eid)
+    assert row["status"] == "canceled"
+    assert "_resume_decision" not in row["variables"]
+    assert row["running_since"] is None
+    assert await approvals_of(db, eid) == []
+    assert [c for c in rec.calls if c[0] == eid] == []
