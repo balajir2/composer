@@ -22,6 +22,7 @@ export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
   // as a conflict with ourselves.
   const runningRef = useRef<Promise<void> | null>(null);
   const queuedRef = useRef<Promise<void> | null>(null);
+  const runSaveRef = useRef<() => Promise<void>>(() => Promise.resolve());
   // Bumped by every markDirty. A save that finishes after the counter moved did not
   // include the newer edit, so it must not report "saved".
   const dirtyGenerationRef = useRef(0);
@@ -48,7 +49,7 @@ export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
       if (timerRef.current) {
         clearTimeout(timerRef.current);
         timerRef.current = null;
-        runSave().catch(() => {});
+        runSaveRef.current().catch(() => {});
       }
     };
   }, []);
@@ -89,6 +90,8 @@ export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
     queuedRef.current = queued;
     return queued;
   }
+
+  runSaveRef.current = runSave;
 
   function markDirty() {
     dirtyGenerationRef.current += 1;

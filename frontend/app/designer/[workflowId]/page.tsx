@@ -288,16 +288,19 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
     }
   }
 
+  // Read through a ref so the listener, registered once, always asks the current hook.
+  const hasPendingWorkRef = useRef(autosave.hasPendingWork);
+  hasPendingWorkRef.current = autosave.hasPendingWork;
   useEffect(() => {
     function handleBeforeUnload(e: BeforeUnloadEvent) {
-      if (autosave.hasPendingWork()) {
+      if (hasPendingWorkRef.current()) {
         e.preventDefault();
         e.returnValue = "";
       }
     }
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
-  }, [autosave.status]);
+  }, []);
 
   if (isLoading) {
     return (
