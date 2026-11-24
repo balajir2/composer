@@ -57,7 +57,7 @@ dependencies = [
     # Sandboxed code execution
     "e2b-code-interpreter>=2.11.10",
     # Document parsing (for Start node file uploads)
-    "pypdf>=5.0.0",
+    "pypdf>=7.1.1",
     "python-docx>=1.1.0",
     # Document generation (file-write node — Markdown -> DOCX/PDF)
     "markdown-it-py>=4.3.0",
