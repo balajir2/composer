@@ -6,12 +6,13 @@ import asyncio
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from typing import TYPE_CHECKING, Any
+from unittest.mock import AsyncMock
 
 import pytest
 
-from prisma import Json
+from src.db.repos import events as events_repo
+from src.db.repos import executions as executions_repo
 from src.maintenance import execution_sweeper as sweeper
 
 if TYPE_CHECKING:
@@ -36,63 +37,166 @@ class _Row:
     failureCode: str | None = None
     completedAt: datetime | None = None
 
-
-def _matches(row: _Row, where: dict[str, Any]) -> bool:
-    for key, expected in where.items():
-        actual = getattr(row, key)
-        if isinstance(expected, dict) and "lt" in expected:
-            if actual is None or not actual < expected["lt"]:
-                return False
-        elif isinstance(expected, dict) and "equals" in expected:
-            value = cast("dict[str, Any]", expected)["equals"]
-            if actual != (value.data if isinstance(value, Json) else value):
-                return False
-        elif actual != expected:
-            return False
-    return True
+    @property
+    def lease_expires_at(self) -> datetime | None:
+        return self.leaseExpiresAt
 
 
 @dataclass
 class _ExecutionTable:
+    """In-memory stand-in for the executions repo's scan and guarded-write functions.
+
+    The SQL guards themselves are proven against Postgres by tests/integration/sqla_phase4a;
+    this fake pins the sweeper's policy: which guard it hands the repo, per-row isolation and
+    the counts.
+    """
+
     rows: list[_Row] = field(default_factory=list[_Row])
-    queries: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
+    queries: list[str] = field(default_factory=list[str])
     writes: list[dict[str, Any]] = field(default_factory=list[dict[str, Any]])
     before_update: Callable[[_Row], None] | None = None
     fail_update_for_ids: set[str] = field(default_factory=set[str])
+    commits: int = 0
 
-    async def find_many(self, *, where: dict[str, Any]) -> list[_Row]:
-        self.queries.append(where)
-        return [deepcopy(row) for row in self.rows if _matches(row, where)]
+    def scan(self, kind: str, predicate: Callable[[_Row], bool]) -> list[_Row]:
+        self.queries.append(kind)
+        return [deepcopy(row) for row in self.rows if predicate(row)]
 
-    async def update_many(self, *, where: dict[str, Any], data: dict[str, Any]) -> int:
-        self.writes.append(where)
+    def write(
+        self,
+        guard: dict[str, Any],
+        predicate: Callable[[_Row], bool],
+        data: dict[str, Any],
+    ) -> bool:
+        self.writes.append(guard)
         for row in self.rows:
             if self.before_update is not None:
                 self.before_update(row)
-        if where["id"] in self.fail_update_for_ids:
+        if guard["id"] in self.fail_update_for_ids:
             raise RuntimeError("simulated db failure")
-        count = 0
+        won = False
         for row in self.rows:
-            if _matches(row, where):
+            if row.id == guard["id"] and predicate(row):
                 for key, value in data.items():
                     setattr(row, key, value)
-                count += 1
-        return count
+                won = True
+        return won
 
-    async def update(self, *, where: dict[str, Any], data: dict[str, Any]) -> _Row:
-        # Retain the unconditional API so a regression to update(id=...)
-        # changes state in the race tests instead of raising on the stub.
-        await self.update_many(where=where, data=data)
-        return next(row for row in self.rows if row.id == where["id"])
+
+class _FakeSession:
+    def __init__(self, table: _ExecutionTable) -> None:
+        self.table = table
+
+    async def __aenter__(self) -> _FakeSession:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        return None
+
+    async def commit(self) -> None:
+        self.table.commits += 1
 
 
 @dataclass
 class _DbStub:
+    """Callable like an ``async_sessionmaker``; every call opens a fresh fake session."""
+
     workflowexecution: _ExecutionTable = field(default_factory=_ExecutionTable)
 
+    def __call__(self) -> _FakeSession:
+        return _FakeSession(self.workflowexecution)
 
-def _db(*rows: _Row) -> _DbStub:
+
+def _db(*rows: _Row) -> Any:
     return _DbStub(_ExecutionTable(list(rows)))
+
+
+_CLEARED = {"leaseOwner": None, "leaseExpiresAt": None, "runningSince": None}
+
+
+def _orphan_ok(row: _Row, cutoff: datetime) -> bool:
+    return (
+        row.status == "running"
+        and row.leaseExpiresAt is None
+        and row.runningSince is not None
+        and row.runningSince < cutoff
+    )
+
+
+@pytest.fixture(autouse=True)
+def _fake_repo(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
+    async def list_orphaned_running(session: _FakeSession, *, cutoff: datetime) -> list[_Row]:
+        return session.table.scan("orphaned", lambda r: _orphan_ok(r, cutoff))
+
+    async def fail_orphaned_if_unchanged(
+        session: _FakeSession, execution_id: str, *, cutoff: datetime, error: str, now: datetime
+    ) -> bool:
+        return session.table.write(
+            {"id": execution_id, "kind": "orphaned", "cutoff": cutoff},
+            lambda r: _orphan_ok(r, cutoff),
+            {
+                "status": "failed",
+                "failureCode": "orphaned_running",
+                "error": error,
+                "completedAt": now,
+                **_CLEARED,
+            },
+        )
+
+    async def list_waiting_approval(session: _FakeSession) -> list[_Row]:
+        return session.table.scan("approval", lambda r: r.status == "waiting_approval")
+
+    async def fail_expired_approval_if_unchanged(
+        session: _FakeSession,
+        execution_id: str,
+        *,
+        variables_snapshot: Any,
+        error: str,
+        now: datetime,
+    ) -> bool:
+        return session.table.write(
+            {"id": execution_id, "kind": "approval", "variables": variables_snapshot},
+            lambda r: r.status == "waiting_approval" and r.variables == variables_snapshot,
+            {"status": "failed", "error": error, "completedAt": now},
+        )
+
+    async def list_expired_leases(session: _FakeSession, *, now: datetime) -> list[_Row]:
+        return session.table.scan(
+            "lease",
+            lambda r: (
+                r.status == "running" and r.leaseExpiresAt is not None and r.leaseExpiresAt < now
+            ),
+        )
+
+    async def fail_expired_lease_if_unchanged(
+        session: _FakeSession,
+        execution_id: str,
+        *,
+        lease_expires_at: datetime,
+        error: str,
+        now: datetime,
+    ) -> bool:
+        return session.table.write(
+            {"id": execution_id, "kind": "lease", "leaseExpiresAt": lease_expires_at},
+            lambda r: r.status == "running" and r.leaseExpiresAt == lease_expires_at,
+            {
+                "status": "failed",
+                "failureCode": "lease_expired",
+                "error": error,
+                "completedAt": now,
+                **_CLEARED,
+            },
+        )
+
+    for fn in (
+        list_orphaned_running,
+        fail_orphaned_if_unchanged,
+        list_waiting_approval,
+        fail_expired_approval_if_unchanged,
+        list_expired_leases,
+        fail_expired_lease_if_unchanged,
+    ):
+        monkeypatch.setattr(executions_repo, fn.__name__, fn)
 
 
 @pytest.mark.parametrize("variables", [{}, {"_resume_decision": "approved"}])
@@ -116,17 +220,20 @@ async def test_expired_lease_fails_without_replaying(
     assert row.runningSince is None
     enqueue.assert_not_called()
     assert db.workflowexecution.writes == [
-        {"id": row.id, "status": "running", "leaseExpiresAt": _now() - timedelta(seconds=1)}
+        {"id": row.id, "kind": "lease", "leaseExpiresAt": _now() - timedelta(seconds=1)}
     ]
+    assert db.workflowexecution.commits == 1
 
 
 async def test_renewed_lease_wins_against_expiry_sweep() -> None:
     row = _Row(leaseExpiresAt=_now() - timedelta(seconds=1))
     db = _db(row)
     renewed_until = _now() + timedelta(minutes=30)
-    db.workflowexecution.before_update = lambda current: setattr(
-        current, "leaseExpiresAt", renewed_until
-    )
+
+    def _renew(current: _Row) -> None:
+        current.leaseExpiresAt = renewed_until
+
+    db.workflowexecution.before_update = _renew
 
     result = await sweeper.sweep_expired_leases(db, now=_now())
 
@@ -166,12 +273,7 @@ async def test_orphaned_running_fails_and_clears_attempt_fields() -> None:
     assert row.leaseExpiresAt is None
     assert row.leaseOwner is None
     assert db.workflowexecution.writes == [
-        {
-            "id": row.id,
-            "status": "running",
-            "leaseExpiresAt": None,
-            "runningSince": {"lt": _now() - timedelta(seconds=120)},
-        }
+        {"id": row.id, "kind": "orphaned", "cutoff": _now() - timedelta(seconds=120)}
     ]
 
 
@@ -240,7 +342,11 @@ async def test_running_sweeps_never_select_other_statuses(status: str) -> None:
 async def test_lease_sweep_preserves_concurrent_status_transition(status: str) -> None:
     row = _Row(leaseExpiresAt=_now() - timedelta(seconds=1))
     db = _db(row)
-    db.workflowexecution.before_update = lambda current: setattr(current, "status", status)
+
+    def _transition(current: _Row) -> None:
+        current.status = status
+
+    db.workflowexecution.before_update = _transition
 
     result = await sweeper.sweep_expired_leases(db, now=_now())
 
@@ -303,10 +409,12 @@ async def test_positive_approval_timeout_fails_old_pause_with_conditional_write(
     assert row.status == "failed"
     assert row.completedAt == _now()
     assert row.error and "expired waiting for approval" in row.error.lower()
-    [where] = db.workflowexecution.writes
-    assert where["id"] == row.id
-    assert where["status"] == "waiting_approval"
-    assert where["variables"]["equals"].data == row.variables
+    [guard] = db.workflowexecution.writes
+    assert guard["id"] == row.id
+    assert guard["kind"] == "approval"
+    assert guard["variables"] == {
+        "_pending_approval_since": (_now() - timedelta(hours=200)).isoformat()
+    }
 
 
 @pytest.mark.parametrize("change", ["new_pause", "resume", "cancel"])
@@ -418,13 +526,23 @@ async def test_background_loop_runs_orphan_sweep_and_optional_approvals(
         approvals.assert_not_awaited()
 
 
-async def test_sweep_old_execution_events_deletes_past_retention() -> None:
-    db = MagicMock()
-    db.executionevent.delete_many = AsyncMock(return_value=42)
+async def test_sweep_old_execution_events_deletes_past_retention(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db = _db()
+    delete = AsyncMock(return_value=42)
+    monkeypatch.setattr(events_repo, "delete_older_than", delete)
 
     deleted = await sweeper.sweep_old_execution_events(db, retention_days=30, now=_now())
 
     assert deleted == 42
-    db.executionevent.delete_many.assert_awaited_once_with(
-        where={"createdAt": {"lt": _now() - timedelta(days=30)}}
-    )
+    delete.assert_awaited_once()
+    assert delete.await_args is not None
+    assert delete.await_args.args[1] == _now() - timedelta(days=30)
+    assert db.workflowexecution.commits == 1
+
+
+@pytest.mark.parametrize("days", [0, -1])
+async def test_sweep_old_execution_events_rejects_non_positive_retention(days: int) -> None:
+    with pytest.raises(ValueError, match="must be > 0"):
+        await sweeper.sweep_old_execution_events(_db(), retention_days=days)

@@ -10,11 +10,12 @@ import os
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
+from src.db.repos import executions as executions_repo
 from src.db.repos import mcp_oauth as mcp_oauth_repo
 from src.db.repos import mcp_servers as mcp_servers_repo
 from src.db.repos import workflows as workflows_repo
@@ -48,30 +49,6 @@ def _oab_encrypt(plaintext: str) -> str:
     return base64.b64encode(nonce + ct).decode()
 
 
-def _fake_db(existing_ids: dict[str, set[str]] | None = None) -> MagicMock:
-    """Fake Prisma client: find_unique answers from `existing_ids` per table."""
-    existing_ids = existing_ids or {}
-    db = MagicMock()
-    for table in ("workflowexecution",):
-        ids = existing_ids.get(table, set())
-
-        async def _find(*, where: dict[str, str], _ids: set[str] = ids) -> object | None:
-            return object() if where["id"] in _ids else None
-
-        getattr(db, table).find_unique = AsyncMock(side_effect=_find)
-        getattr(db, table).create = AsyncMock()
-    return db
-
-
-class _FakePrismaClass:
-    """Drop-in for `runner.Prisma`; the instance is shared so tests can inspect it."""
-
-    db: MagicMock
-
-    def __new__(cls) -> MagicMock:  # type: ignore[misc]
-        return cls.db
-
-
 @pytest.fixture(autouse=True)
 def _mcp_server_session(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # pyright: ignore[reportUnusedFunction]
     """MCP servers go through SQLAlchemy: stub the one-shot session and the repo insert."""
@@ -96,18 +73,19 @@ def _workflow_insert(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # pyright: 
 
 
 @pytest.fixture(autouse=True)
+def _execution_insert(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # pyright: ignore[reportUnusedFunction]
+    """Executions go through SQLAlchemy as well: stub the repo insert."""
+    insert = AsyncMock(return_value=True)
+    monkeypatch.setattr(executions_repo, "insert_if_absent", insert)
+    return insert
+
+
+@pytest.fixture(autouse=True)
 def _token_insert_stub(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # pyright: ignore[reportUnusedFunction]
     """MCP OAuth tokens go through SQLAlchemy too: stub the repo insert."""
     insert = AsyncMock(return_value=True)
     monkeypatch.setattr(mcp_oauth_repo, "insert_token_if_absent", insert)
     return insert
-
-
-def _install_db(monkeypatch: pytest.MonkeyPatch, db: MagicMock) -> None:
-    db.connect = AsyncMock()
-    db.disconnect = AsyncMock()
-    _FakePrismaClass.db = db
-    monkeypatch.setattr(runner, "Prisma", _FakePrismaClass)
 
 
 def _users() -> list[dict[str, Any]]:
@@ -206,25 +184,54 @@ def test_workflow_transformer_keys_are_all_known_to_the_writer_column_map() -> N
     assert set(out) <= set(writer._WORKFLOW_COLUMNS)  # pyright: ignore[reportPrivateUsage]
 
 
-async def test_upsert_execution_drops_null_optional_json_and_wraps_present_ones() -> None:
-    db = _fake_db()
+async def test_upsert_execution_maps_columns_and_leaves_null_optional_json_absent(
+    _execution_insert: AsyncMock,
+) -> None:
+    session = FakeSession()
     data = {
         "id": "e1",
+        "workflowId": "wf1",
+        "originalOwnerEmail": "a@example.com",
+        "currentNodeId": "n1",
         "nodeResults": {},
         "variables": {},
         "input": None,
         "output": {"x": 1},
+        "threadId": "migrated-1",
     }
-    assert await writer.upsert_execution(db, data) is True
-    created = db.workflowexecution.create.await_args.kwargs["data"]
-    assert "input" not in created  # Prisma Python rejects None for Json?
-    assert type(created["output"]).__name__ == "Json"
+    assert await writer.upsert_execution(cast("AsyncSession", session), data) is True
+    assert _execution_insert.await_args is not None
+    assert _execution_insert.await_args.args[0] is session
+    values = _execution_insert.await_args.args[1]
+    assert "input" not in values  # absent, so the column stays SQL NULL
+    assert values["output"] == {"x": 1}  # plain, no Json wrapper
+    assert values["workflow_id"] == "wf1" and values["thread_id"] == "migrated-1"
+    assert values["original_owner_email"] == "a@example.com"
+    assert values["current_node_id"] == "n1"
+    assert "workflowId" not in values and "threadId" not in values
 
 
-async def test_upsert_execution_skips_existing() -> None:
-    db = _fake_db({"workflowexecution": {"e1"}})
-    assert await writer.upsert_execution(db, {"id": "e1"}) is False
-    db.workflowexecution.create.assert_not_called()
+async def test_upsert_execution_reports_the_repo_answer(_execution_insert: AsyncMock) -> None:
+    _execution_insert.return_value = False
+    session = cast("AsyncSession", FakeSession())
+    assert await writer.upsert_execution(session, {"id": "e1"}) is False
+
+
+async def test_upsert_execution_rejects_unknown_keys_naming_them_not_values(
+    _execution_insert: AsyncMock,
+) -> None:
+    session = cast("AsyncSession", FakeSession())
+    with pytest.raises(ValueError, match="zeta") as info:
+        await writer.upsert_execution(session, {"id": "e1", "zeta": "SECRET"})
+    assert "SECRET" not in str(info.value)
+    _execution_insert.assert_not_awaited()
+
+
+def test_execution_transformer_keys_are_all_known_to_the_writer_column_map() -> None:
+    out = transformers.execution_row(
+        {"_id": "e1", "workflowId": "wf1", "userId": "clerk_a", "status": "completed"}, _users()
+    )
+    assert set(out) <= set(writer._EXECUTION_COLUMNS)  # pyright: ignore[reportPrivateUsage]
 
 
 async def test_upsert_mcp_server_maps_columns_and_passes_plain_json(
@@ -361,22 +368,20 @@ async def test_run_migration_missing_export_dir_returns_1(tmp_path: Path) -> Non
     assert await runner.run_migration(export_dir=str(tmp_path / "gone"), dry_run=False) == 1
 
 
-async def test_dry_run_returns_0_and_never_connects_to_the_database(
+async def test_dry_run_returns_0_and_never_writes(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, _workflow_insert: AsyncMock
 ) -> None:
     _write_jsonl(tmp_path, "workflows", [_workflow(1)])
-    db = _fake_db()
-    _install_db(monkeypatch, db)
     assert await runner.run_migration(export_dir=str(tmp_path), dry_run=True) == 0
-    db.connect.assert_not_called()
     _workflow_insert.assert_not_awaited()
 
 
-async def test_run_migration_inserts_rows_and_disconnects(
+async def test_run_migration_inserts_rows(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     _mcp_server_session: AsyncMock,
     _workflow_insert: AsyncMock,
+    _execution_insert: AsyncMock,
 ) -> None:
     _write_jsonl(tmp_path, "users", _users())
     _write_jsonl(tmp_path, "workflows", [_workflow(1), _workflow(2)])
@@ -390,18 +395,16 @@ async def test_run_migration_inserts_rows_and_disconnects(
         "mcpServers",
         [{"_id": "s1", "name": "S", "url": "https://m.example.com", "authType": "none"}],
     )
-    db = _fake_db()
-    _install_db(monkeypatch, db)
     assert await runner.run_migration(export_dir=str(tmp_path), dry_run=False) == 0
     assert _workflow_insert.await_count == 2
     first = _workflow_insert.await_args_list[0].args[1]
     assert first["user_id"] is None
     assert first["original_owner_email"] == "a@example.com"
-    exec_data = db.workflowexecution.create.await_args.kwargs["data"]
+    exec_data = _execution_insert.await_args.args[1]  # type: ignore[union-attr]
     assert exec_data["status"] == "failed"  # in-flight state is not recoverable
-    assert exec_data["threadId"].startswith("migrated-")
+    assert exec_data["thread_id"].startswith("migrated-")
+    assert "input" not in exec_data and "output" not in exec_data  # SQL NULL
     _mcp_server_session.assert_awaited_once()
-    db.disconnect.assert_awaited_once()
 
 
 async def test_run_migration_is_idempotent_when_rows_already_exist(
@@ -409,7 +412,6 @@ async def test_run_migration_is_idempotent_when_rows_already_exist(
 ) -> None:
     _write_jsonl(tmp_path, "workflows", [_workflow(1), _workflow(2)])
     _workflow_insert.return_value = False
-    _install_db(monkeypatch, _fake_db())
     assert await runner.run_migration(export_dir=str(tmp_path), dry_run=False) == 0
     assert _workflow_insert.await_count == 2  # skipped, not failed
 
@@ -419,7 +421,6 @@ async def test_run_migration_one_bad_row_does_not_abort_the_remaining_rows(
 ) -> None:
     bad = {"_id": "wf-bad", "userId": "clerk_a"}  # missing required `name`
     _write_jsonl(tmp_path, "workflows", [bad, _workflow(2)])
-    _install_db(monkeypatch, _fake_db())
     assert await runner.run_migration(export_dir=str(tmp_path), dry_run=False) == 0
     assert _workflow_insert.await_count == 1
     assert _workflow_insert.await_args.args[1]["id"] == "wf2"  # type: ignore[union-attr]
@@ -447,8 +448,6 @@ async def test_run_migration_database_write_failure_commits_per_row_and_logs_cla
 
     _workflow_insert.side_effect = _insert
     monkeypatch.setattr(runner, "one_shot_session", _scope)
-    db = _fake_db()
-    _install_db(monkeypatch, db)
     with caplog.at_level("WARNING"):
         assert await runner.run_migration(export_dir=str(tmp_path), dry_run=False) == 0
     assert calls == ["wf1", "wf2"]
@@ -456,7 +455,38 @@ async def test_run_migration_database_write_failure_commits_per_row_and_logs_cla
     session.commit.assert_awaited_once()  # only wf2 committed
     assert "workflows row 'wf1': RuntimeError" in caplog.text
     assert "FAKE-SECRET" not in caplog.text
-    db.disconnect.assert_awaited_once()
+
+
+async def test_run_migration_execution_failure_rolls_back_and_logs_class_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+    _execution_insert: AsyncMock,
+) -> None:
+    rows = [
+        {"_id": "e1", "workflowId": "wf1", "userId": "clerk_a", "status": "completed"},
+        {"_id": "e2", "workflowId": "wf1", "userId": "clerk_a", "status": "completed"},
+    ]
+    _write_jsonl(tmp_path, "executions", rows)
+    session = FakeSession()
+
+    @asynccontextmanager
+    async def _scope(_settings: object) -> AsyncGenerator[FakeSession]:
+        yield session
+
+    async def _insert(_session: object, values: dict[str, Any]) -> bool:
+        if values["id"] == "e1":
+            raise RuntimeError("INSERT failed [parameters: (FAKE-SECRET,)]")
+        return True
+
+    _execution_insert.side_effect = _insert
+    monkeypatch.setattr(runner, "one_shot_session", _scope)
+    with caplog.at_level("WARNING"):
+        assert await runner.run_migration(export_dir=str(tmp_path), dry_run=False) == 0
+    session.rollback.assert_awaited_once()
+    session.commit.assert_awaited_once()  # only e2 committed
+    assert "executions row 'e1': RuntimeError" in caplog.text
+    assert "FAKE-SECRET" not in caplog.text
 
 
 async def test_run_migration_reencrypts_oauth_tokens_before_storing(
@@ -480,8 +510,6 @@ async def test_run_migration_reencrypts_oauth_tokens_before_storing(
             }
         ],
     )
-    db = _fake_db()
-    _install_db(monkeypatch, db)
     assert await runner.run_migration(export_dir=str(tmp_path), dry_run=False) == 0
     assert _token_insert_stub.await_args is not None
     stored = _token_insert_stub.await_args.args[1]
@@ -516,7 +544,6 @@ async def test_run_migration_logs_only_the_class_of_a_token_insert_failure(
     _token_insert_stub.side_effect = RuntimeError(
         "INSERT failed [parameters: (FAKE-SECRET-CIPHERTEXT,)]"
     )
-    _install_db(monkeypatch, _fake_db())
     with caplog.at_level("WARNING"):
         assert await runner.run_migration(export_dir=str(tmp_path), dry_run=False) == 0
     assert "mcpOAuthTokens row 't1': RuntimeError" in caplog.text
@@ -543,7 +570,6 @@ async def test_run_migration_without_oab_key_fails_fast_before_any_write(
             }
         ],
     )
-    _install_db(monkeypatch, _fake_db())
     assert await runner.run_migration(export_dir=str(tmp_path), dry_run=False) == 1
     _workflow_insert.assert_not_awaited()
 

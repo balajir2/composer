@@ -3,6 +3,10 @@
 from dataclasses import dataclass, field
 from typing import Any, cast
 
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from src.db.repos import executions as executions_repo
+
 REDACT_MARKER = "••••••••"
 _SECRET_HINTS = ("key", "token", "secret", "password", "authorization", "api_key", "credential")
 _MAX_TAIL = 30
@@ -32,7 +36,7 @@ def _redact_dict(mapping: Any) -> dict[str, Any]:
 
 
 async def build_diagnosis(
-    db: Any,
+    sessionmaker: async_sessionmaker[AsyncSession],
     execution_id: str,
     *,
     workflow_id: str,
@@ -43,18 +47,19 @@ async def build_diagnosis(
 
     Same visibility rule as ``GET /executions/{id}`` (owner or admin), plus the run must belong
     to the workflow being built. Anything else is indistinguishable from "no such execution".
+    Reads in one short session that is closed before returning.
     """
-    where: dict[str, Any] = {"id": execution_id, "workflowId": workflow_id}
-    if role != "admin":
-        where["userId"] = user_id
-    row = await db.workflowexecution.find_first(where=where)
-    if row is None:
+    async with sessionmaker() as session:
+        row = await executions_repo.get(session, execution_id)
+    if row is None or row.workflow_id != workflow_id:
         return None
-    variables: Any = getattr(row, "variables", None) or {}
+    if role != "admin" and row.user_id != user_id:
+        return None
+    variables: Any = row.variables or {}
     variables_tail = _redact_dict(dict(list(variables.items())[-_MAX_TAIL:]))
     return Diagnosis(
-        status=str(getattr(row, "status", "")),
-        error=getattr(row, "error", None),
-        node_results=_redact_dict(getattr(row, "nodeResults", None)),
+        status=row.status,
+        error=row.error,
+        node_results=_redact_dict(row.node_results),
         variables_tail=variables_tail,
     )

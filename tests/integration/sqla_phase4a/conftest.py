@@ -31,7 +31,6 @@ import secrets
 from collections.abc import AsyncIterator, Awaitable, Callable, Iterator
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from typing import Any, cast
 
 import httpx
@@ -968,20 +967,21 @@ class Phase4aAdapter:
 
     # ---- sweeps -----------------------------------------------------------------------------
 
-    def _hooked_db(self, after_scan: Callable[[], Awaitable[None]] | None) -> Any:
-        """Prisma facade whose candidate query runs the hook after the real query and before the
-        guarded writes (the seam test_durable_execution.py already uses)."""
-        real = self._db.workflowexecution
+    def _hook_scans(self, after_scan: Callable[[], Awaitable[None]] | None) -> None:
+        """Run the hook after the real candidate query and before the guarded writes."""
+        if after_scan is None:
+            return
+        from src.db.repos import executions as executions_repo
 
-        async def _find_many(**kwargs: Any) -> list[Any]:
-            rows = await real.find_many(**kwargs)
-            if after_scan is not None:
+        for name in ("list_orphaned_running", "list_waiting_approval", "list_expired_leases"):
+            real = getattr(executions_repo, name)
+
+            async def _scan(*args: Any, _real: Any = real, **kwargs: Any) -> Any:
+                rows = await _real(*args, **kwargs)
                 await after_scan()
-            return cast("list[Any]", rows)
+                return rows
 
-        return SimpleNamespace(
-            workflowexecution=SimpleNamespace(find_many=_find_many, update_many=real.update_many)
-        )
+            self._monkeypatch.setattr(executions_repo, name, _scan)
 
     async def sweep_orphaned(
         self,
@@ -992,9 +992,8 @@ class Phase4aAdapter:
     ) -> tuple[int, int, int]:
         from src.maintenance.execution_sweeper import sweep_orphaned_running
 
-        r = await sweep_orphaned_running(
-            self._hooked_db(after_scan), grace_seconds=grace_seconds, now=now
-        )
+        self._hook_scans(after_scan)
+        r = await sweep_orphaned_running(self._sm, grace_seconds=grace_seconds, now=now)
         return r.scanned, r.marked_failed, r.errored
 
     async def sweep_approvals(
@@ -1006,9 +1005,8 @@ class Phase4aAdapter:
     ) -> tuple[int, int, int]:
         from src.maintenance.execution_sweeper import sweep_expired_approvals
 
-        r = await sweep_expired_approvals(
-            self._hooked_db(after_scan), timeout_hours=timeout_hours, now=now
-        )
+        self._hook_scans(after_scan)
+        r = await sweep_expired_approvals(self._sm, timeout_hours=timeout_hours, now=now)
         return r.scanned, r.marked_failed, r.errored
 
     async def sweep_leases(
@@ -1019,13 +1017,14 @@ class Phase4aAdapter:
     ) -> tuple[int, int, int]:
         from src.maintenance.execution_sweeper import sweep_expired_leases
 
-        r = await sweep_expired_leases(self._hooked_db(after_scan), now=now)
+        self._hook_scans(after_scan)
+        r = await sweep_expired_leases(self._sm, now=now)
         return r.scanned, r.marked_failed, r.errored
 
     async def sweep_events(self, *, retention_days: int, now: datetime) -> int:
         from src.maintenance.execution_sweeper import sweep_old_execution_events
 
-        return await sweep_old_execution_events(self._db, retention_days=retention_days, now=now)
+        return await sweep_old_execution_events(self._sm, retention_days=retention_days, now=now)
 
     # ---- rate limiter -----------------------------------------------------------------------
 
@@ -1049,7 +1048,7 @@ class Phase4aAdapter:
         from src.builder.diagnostics import build_diagnosis
 
         result = await build_diagnosis(
-            self._db, execution_id, workflow_id=workflow_id, user_id=user_id, role=role
+            self._sm, execution_id, workflow_id=workflow_id, user_id=user_id, role=role
         )
         return None if result is None else asdict(result)
 

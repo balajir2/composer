@@ -20,7 +20,6 @@ if TYPE_CHECKING:
 
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
 from src.db.runtime import one_shot_session
 from src.migration import convex_loader, transformers, writer
@@ -105,81 +104,81 @@ async def run_migration(*, export_dir: str, dry_run: bool) -> int:
             logger.error("%s", exc)
             return 1
 
-    db = Prisma()
-    await db.connect()
-    try:
-        # Workflows (SQLAlchemy; committed per row so one bad row can't undo the rest, and so
-        # the rows exist before the executions that reference them)
-        workflow_rows = tables.get("workflows", [])
-        if workflow_rows:
-            async with one_shot_session(get_settings()) as session:
-                for row in workflow_rows:
-                    try:
-                        data = transformers.workflow_row(row, users)
-                        inserted = await writer.upsert_workflow(session, data)
-                        await session.commit()
-                        if inserted:
-                            report.bump_inserted("workflows")
-                        else:
-                            report.bump_skipped("workflows")
-                    except Exception as exc:
-                        await session.rollback()
-                        msg = f"workflows row {row.get('_id')!r}: {type(exc).__name__}"
-                        report.errors.append(msg)
-                        logger.warning("%s", msg)
+    # Workflows (SQLAlchemy; committed per row so one bad row can't undo the rest, and so
+    # the rows exist before the executions that reference them)
+    workflow_rows = tables.get("workflows", [])
+    if workflow_rows:
+        async with one_shot_session(get_settings()) as session:
+            for row in workflow_rows:
+                try:
+                    data = transformers.workflow_row(row, users)
+                    inserted = await writer.upsert_workflow(session, data)
+                    await session.commit()
+                    if inserted:
+                        report.bump_inserted("workflows")
+                    else:
+                        report.bump_skipped("workflows")
+                except Exception as exc:
+                    await session.rollback()
+                    msg = f"workflows row {row.get('_id')!r}: {type(exc).__name__}"
+                    report.errors.append(msg)
+                    logger.warning("%s", msg)
 
-        # Executions
-        for row in tables.get("executions", []):
-            try:
-                data = transformers.execution_row(row, users)
-                inserted = await writer.upsert_execution(db, data)
-                if inserted:
-                    report.bump_inserted("executions")
-                else:
-                    report.bump_skipped("executions")
-            except Exception as exc:
-                msg = f"executions row {row.get('_id')!r}: {type(exc).__name__}"
-                report.errors.append(msg)
-                logger.warning("%s", msg)
+    # Executions (committed per row, like the other tables)
+    execution_rows = tables.get("executions", [])
+    if execution_rows:
+        async with one_shot_session(get_settings()) as session:
+            for row in execution_rows:
+                try:
+                    data = transformers.execution_row(row, users)
+                    inserted = await writer.upsert_execution(session, data)
+                    await session.commit()
+                    if inserted:
+                        report.bump_inserted("executions")
+                    else:
+                        report.bump_skipped("executions")
+                except Exception as exc:
+                    await session.rollback()
+                    msg = f"executions row {row.get('_id')!r}: {type(exc).__name__}"
+                    report.errors.append(msg)
+                    logger.warning("%s", msg)
 
-        # MCP servers (SQLAlchemy; one session, committed per row so one bad row can't undo the rest)
-        mcp_rows = tables.get("mcpServers", [])
-        if mcp_rows:
-            async with one_shot_session(get_settings()) as session:
-                for row in mcp_rows:
-                    try:
-                        data = transformers.mcp_server_row(row, users)
-                        inserted = await writer.upsert_mcp_server(session, data)
-                        await session.commit()
-                        if inserted:
-                            report.bump_inserted("mcpServers")
-                        else:
-                            report.bump_skipped("mcpServers")
-                    except Exception as exc:
-                        await session.rollback()
-                        msg = f"mcpServers row {row.get('_id')!r}: {type(exc).__name__}"
-                        report.errors.append(msg)
-                        logger.warning("%s", msg)
+    # MCP servers (SQLAlchemy; one session, committed per row so one bad row can't undo the rest)
+    mcp_rows = tables.get("mcpServers", [])
+    if mcp_rows:
+        async with one_shot_session(get_settings()) as session:
+            for row in mcp_rows:
+                try:
+                    data = transformers.mcp_server_row(row, users)
+                    inserted = await writer.upsert_mcp_server(session, data)
+                    await session.commit()
+                    if inserted:
+                        report.bump_inserted("mcpServers")
+                    else:
+                        report.bump_skipped("mcpServers")
+                except Exception as exc:
+                    await session.rollback()
+                    msg = f"mcpServers row {row.get('_id')!r}: {type(exc).__name__}"
+                    report.errors.append(msg)
+                    logger.warning("%s", msg)
 
-        # MCP OAuth tokens (requires re-encrypt)
-        if reencrypt is not None:
-            async with one_shot_session(get_settings()) as session:
-                for row in tables["mcpOAuthTokens"]:
-                    try:
-                        data = transformers.mcp_oauth_token_row(row, reencrypt)
-                        inserted = await writer.upsert_mcp_oauth_token(session, data)
-                        await session.commit()
-                        if inserted:
-                            report.bump_inserted("mcpOAuthTokens")
-                        else:
-                            report.bump_skipped("mcpOAuthTokens")
-                    except Exception as exc:
-                        await session.rollback()
-                        msg = f"mcpOAuthTokens row {row.get('_id')!r}: {type(exc).__name__}"
-                        report.errors.append(msg)
-                        logger.warning("%s", msg)
-    finally:
-        await db.disconnect()
+    # MCP OAuth tokens (requires re-encrypt)
+    if reencrypt is not None:
+        async with one_shot_session(get_settings()) as session:
+            for row in tables["mcpOAuthTokens"]:
+                try:
+                    data = transformers.mcp_oauth_token_row(row, reencrypt)
+                    inserted = await writer.upsert_mcp_oauth_token(session, data)
+                    await session.commit()
+                    if inserted:
+                        report.bump_inserted("mcpOAuthTokens")
+                    else:
+                        report.bump_skipped("mcpOAuthTokens")
+                except Exception as exc:
+                    await session.rollback()
+                    msg = f"mcpOAuthTokens row {row.get('_id')!r}: {type(exc).__name__}"
+                    report.errors.append(msg)
+                    logger.warning("%s", msg)
 
     # Summary
     logger.info("migration complete")

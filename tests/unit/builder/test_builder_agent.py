@@ -85,7 +85,7 @@ async def test_planning_turn_emits_plan_event() -> None:
         session=session,
         message="build me a RAG pipeline",
         execution_id=None,
-        db=None,
+        sessionmaker=None,
         user_id="u1",
     )
     assert any(e.get("type") == "plan" for e in events)
@@ -106,7 +106,7 @@ async def test_approve_patch_applies_pending_patch() -> None:
         session=session,
         message="__APPROVE_PATCH__",
         execution_id=None,
-        db=None,
+        sessionmaker=None,
         user_id="u1",
     )
     assert any(e.get("type") == "stage_applied" for e in events)
@@ -129,7 +129,7 @@ async def test_approved_patch_collapses_duplicate_edges() -> None:
         session=session,
         message="__APPROVE_PATCH__",
         execution_id=None,
-        db=None,
+        sessionmaker=None,
         user_id="u1",
     )
     assert [e.id for e in wf.edges] == ["e1"]
@@ -145,7 +145,7 @@ async def test_reject_patch_discards_pending_patch() -> None:
         session=session,
         message="__REJECT_PATCH__",
         execution_id=None,
-        db=None,
+        sessionmaker=None,
         user_id="u1",
     )
     assert session.pending_patch is None
@@ -162,7 +162,7 @@ async def test_diagnose_turn_proposes_without_applying() -> None:
         session=session,
         message="why did it fail?",
         execution_id="x",
-        db=None,
+        sessionmaker=None,
         user_id="u1",
     )
     assert any(e.get("type") == "patch_proposal" for e in events)
@@ -180,7 +180,7 @@ async def test_build_turn_applies_layout_to_generated_nodes() -> None:
         session=session,
         message="build it",
         execution_id=None,
-        db=None,
+        sessionmaker=None,
         user_id="u1",
     )
     positions = {n.id: n.position for n in wf.nodes}
@@ -200,7 +200,7 @@ async def test_plan_wrapped_in_code_fence_still_becomes_a_plan_card() -> None:
         session=session,
         message="search the web",
         execution_id=None,
-        db=None,
+        sessionmaker=None,
         user_id="u1",
     )
     assert [e for e in events if e.get("type") == "plan"] == [
@@ -266,7 +266,7 @@ async def test_build_turn_repairs_a_second_start_and_disconnected_end() -> None:
         session=session,
         message="approve the plan",
         execution_id=None,
-        db=None,
+        sessionmaker=None,
         user_id="u1",
     )
 
@@ -289,7 +289,7 @@ async def _build(
         session=session,
         message="approve the plan",
         execution_id=None,
-        db=None,
+        sessionmaker=None,
         user_id="u1",
         **kw,
     )

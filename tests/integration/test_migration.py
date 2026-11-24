@@ -152,7 +152,7 @@ async def test_migration_and_reconciliation_cycle(
 
         # Reconcile
         async with app.state.db_sessionmaker() as session:
-            result = await reconcile_by_email(db, session, email_a)
+            result = await reconcile_by_email(session, email_a)
             await session.commit()  # run_reconcile commits; reconcile_by_email does not
         assert result["workflows"] == 2
         assert result["executions"] == 1
@@ -172,7 +172,7 @@ async def test_migration_and_reconciliation_cycle(
 
         # Re-running reconcile is a no-op (user_id no longer NULL)
         async with app.state.db_sessionmaker() as session:
-            result2 = await reconcile_by_email(db, session, email_a)
+            result2 = await reconcile_by_email(session, email_a)
             await session.commit()
         assert result2 == {"workflows": 0, "executions": 0, "mcpServers": 0}
     finally:

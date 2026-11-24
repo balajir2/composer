@@ -62,7 +62,7 @@ async def _service_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # src/config_validation.py for what this catches and why.
     validate_production_config(settings)
 
-    async with prisma_lifespan(app) as db, sqlalchemy_lifespan(app):
+    async with prisma_lifespan(app), sqlalchemy_lifespan(app):
         sessionmaker = app.state.db_sessionmaker
         app.state.event_bus = PostgresEventStore(sessionmaker)
         app.state.rate_limiter = PostgresRateLimiter(sessionmaker)
@@ -75,7 +75,7 @@ async def _service_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         sweeper_task = start_sweeper(
             app,
-            db,
+            sessionmaker,
             interval_seconds=settings.execution_sweeper_interval_seconds,
             orphaned_running_grace_seconds=settings.orphaned_running_grace_seconds,
             approval_timeout_hours=settings.approval_wait_timeout_hours,

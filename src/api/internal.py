@@ -428,7 +428,7 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
 
 @router.post("/internal/sweep", status_code=status.HTTP_200_OK)
 async def sweep(  # pyright: ignore[reportUnusedFunction]
-    db: Any = Depends(get_db),
+    request: Request,
     _oidc: None = Depends(_verify_internal_oidc),
 ) -> dict[str, int | None]:
     """Cloud-Scheduler-triggered maintenance sweep (P1-2/P1-4).
@@ -451,11 +451,12 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
     real work done this invocation.
     """
     settings = get_settings()
+    sessionmaker = require_sessionmaker(request)
 
     orphaned_running: int | None
     try:
         orphaned_result = await sweep_orphaned_running(
-            db, grace_seconds=settings.orphaned_running_grace_seconds
+            sessionmaker, grace_seconds=settings.orphaned_running_grace_seconds
         )
         orphaned_running = orphaned_result.marked_failed
     except Exception:
@@ -466,7 +467,7 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
     if settings.approval_wait_timeout_hours > 0:
         try:
             approvals_result = await sweep_expired_approvals(
-                db, timeout_hours=settings.approval_wait_timeout_hours
+                sessionmaker, timeout_hours=settings.approval_wait_timeout_hours
             )
             approvals_expired = approvals_result.marked_failed
         except Exception:
@@ -475,7 +476,7 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
 
     leases_expired: int | None
     try:
-        leases_result = await sweep_expired_leases(db)
+        leases_result = await sweep_expired_leases(sessionmaker)
         leases_expired = leases_result.marked_failed
     except Exception:
         logger.exception("internal: sweep_expired_leases failed")
@@ -484,7 +485,7 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
     events_deleted: int | None
     try:
         events_deleted = await sweep_old_execution_events(
-            db, retention_days=settings.execution_events_retention_days
+            sessionmaker, retention_days=settings.execution_events_retention_days
         )
     except Exception:
         logger.exception("internal: sweep_old_execution_events failed")

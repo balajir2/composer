@@ -12,7 +12,7 @@ from src.maintenance.execution_sweeper import SweepResult
 def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     app = create_app()
     db = MagicMock()
-    app.state.db = db
+    app.state.db_sessionmaker = db  # the sweeps now take the sessionmaker
     return TestClient(app), db
 
 
