@@ -1,8 +1,7 @@
 """Group 10: the Postgres-backed token-bucket rate limiter.
 
-``test_concurrent_checks_today_over_admit`` pins TODAY'S BUG (plan decision D3: read, compute,
-write without a lock). Task 3 changes it to "N concurrent checks on a bucket with k tokens admit
-exactly k". Every other test here is the serial behaviour, which must not change.
+``test_concurrent_checks_admit_exactly_the_available_tokens`` replaced the test that pinned the
+old over-admission bug (plan decision D3). Every other test here is the serial behaviour.
 """
 
 import asyncio
@@ -126,22 +125,17 @@ async def test_two_concurrent_first_checks_both_allowed_one_row(
         assert float(rows[0][0]) == pytest.approx(0.0, abs=1e-6)
 
 
-async def test_concurrent_checks_today_over_admit(adapter: Phase4aAdapter, db: Db) -> None:
-    """D3 bug, pinned: concurrent checks of one bucket read the same tokens and each writes
-    tokens - 1, so more than ``capacity`` requests are admitted."""
-    over_admitted = 0
-    rounds = 8
-    for _ in range(rounds):
+async def test_concurrent_checks_admit_exactly_the_available_tokens(
+    adapter: Phase4aAdapter, db: Db
+) -> None:
+    """N concurrent checks on a bucket with k tokens allow exactly k (D3 fix)."""
+    for _ in range(8):
         route, client = unique("route"), unique("client")
         await db.seed_bucket(route, client, 3.0, datetime.now(UTC))
         results = await asyncio.gather(
             *(adapter.rate_check(route, client, 3, TINY) for _ in range(12))
         )
-        allowed = sum(1 for ok, _ in results if ok)
-        assert allowed >= 3
-        over_admitted += allowed > 3
-    # Timing dependent (it reproduced in every round when written), so require it in at least one.
-    assert over_admitted >= 1, f"over-admitted in {over_admitted}/{rounds} rounds"
+        assert sum(1 for ok, _ in results if ok) == 3
 
 
 async def test_route_level_429_with_retry_after(

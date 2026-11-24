@@ -16,6 +16,7 @@ from src.execution.cloud_tasks import (
     close_cloud_tasks_client,
     enqueue_execution,
 )
+from tests.unit.db_fakes import FakeSessionmaker
 
 
 @pytest.fixture(autouse=True)
@@ -149,6 +150,7 @@ async def test_enqueue_execution_dispatches_in_process_when_service_account_unse
     instead (fire-and-forget, matching Cloud Tasks' own "enqueue returns
     immediately" semantics -- the caller must not block on the execution
     actually finishing)."""
+    monkeypatch.setattr("src.db.runtime.get_registered_sessionmaker", lambda: FakeSessionmaker())
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
     from src.config import get_settings
 
@@ -211,6 +213,7 @@ async def test_enqueue_execution_in_process_fallback_logs_but_does_not_raise(
     a failure inside the dispatched claim-and-run must be logged, not left
     to surface as an "asyncio: Task exception was never retrieved" warning
     with no caller able to observe or handle it."""
+    monkeypatch.setattr("src.db.runtime.get_registered_sessionmaker", lambda: FakeSessionmaker())
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
     from src.config import get_settings
 

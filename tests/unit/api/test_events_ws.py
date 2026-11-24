@@ -14,13 +14,15 @@ from opentelemetry.sdk.metrics.export import InMemoryMetricReader
 from starlette.websockets import WebSocketDisconnect
 
 from src.db.models import UserRole
+from src.db.repos import events as events_repo
+from src.db.repos import executions as executions_repo
 from src.db.repos import users as users_repo
 from src.engine.events_pg import PostgresEventStore
 from src.main import create_app
 from src.security.jwt import create_access_token, create_refresh_token
 from src.security.rate_limit import RateLimiter
 from src.telemetry.providers import configure_provider_metrics
-from tests.unit.db_fakes import FakeSessionmaker, make_user
+from tests.unit.db_fakes import FakeSessionmaker, RecordingSessionmaker, make_user
 
 
 def _execution_row(**overrides: Any) -> SimpleNamespace:
@@ -38,10 +40,12 @@ def _execution_row(**overrides: Any) -> SimpleNamespace:
         "threadId": "thread-1",
     }
     base.update(overrides)
+    base["user_id"] = base["userId"]  # the repository record is snake_case
     return SimpleNamespace(**base)
 
 
 _ROLE = {"value": UserRole.MEMBER}
+_EXECUTION: dict[str, Any] = {"value": None}
 
 
 @pytest.fixture
@@ -65,20 +69,28 @@ def _fake_users(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(users_repo, "get_by_id", _get_by_id)
 
 
+@pytest.fixture(autouse=True)
+def _fake_execution_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The WS handler reads the execution through the executions repository."""
+    _EXECUTION["value"] = None
+
+    async def _get(_session: object, _execution_id: str) -> Any:
+        return _EXECUTION["value"]
+
+    monkeypatch.setattr(executions_repo, "get", _get)
+    # No persisted events by default.
+    monkeypatch.setattr(events_repo, "list_since", AsyncMock(return_value=[]))
+
+
 def _build_app(execution: SimpleNamespace, user_role: str = "member") -> tuple[TestClient, Any]:
     app = create_app()
-    db = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(return_value=execution)
+    _EXECUTION["value"] = execution
     _ROLE["value"] = UserRole(user_role)
-    # No persisted events by default — matches production wiring
-    # (app.state.event_bus is a PostgresEventStore, not the old in-process
-    # ExecutionEventBus) so the WS handler's replay-from-store logic has a
-    # real (mocked-at-the-db-layer) list_since to call.
-    db.executionevent.find_many = AsyncMock(return_value=[])
-    app.state.db = db
+    app.state.db = MagicMock()
     app.state.db_sessionmaker = FakeSessionmaker()
     app.state.checkpointer = MagicMock()
-    app.state.event_bus = PostgresEventStore(db)
+    # Production wiring: app.state.event_bus is a PostgresEventStore over the sessionmaker.
+    app.state.event_bus = PostgresEventStore(app.state.db_sessionmaker)  # pyright: ignore[reportArgumentType]
     app.state.rate_limiter = RateLimiter()
     return TestClient(app), app
 
@@ -337,15 +349,8 @@ async def test_ws_keepalive_send_failure_closes_loop(
     assert cast("Any", next(iter(send_failure.data.data_points))).value == 1
 
 
-@pytest.mark.parametrize("environment", ["production", "staging", "Production"])
-def test_ws_closes_4401_outside_development_without_a_live_user_check(
-    monkeypatch: pytest.MonkeyPatch, environment: str
-) -> None:
-    """No sessionmaker (e.g. during shutdown) must not let a valid JWT through."""
-    monkeypatch.setenv("ENVIRONMENT", environment)
-    from src.config import get_settings
-
-    get_settings.cache_clear()
+def test_ws_closes_4500_without_a_sessionmaker() -> None:
+    """No database (e.g. during shutdown) must not let a valid JWT through."""
     execution = _execution_row(status="running", userId="u1")
     client, app = _build_app(execution)
     app.state.db_sessionmaker = None
@@ -355,4 +360,65 @@ def test_ws_closes_4401_outside_development_without_a_live_user_check(
         client.websocket_connect("/executions/exec-1/ws", subprotocols=["bearer", token]),
     ):
         pass
-    assert info.value.code == 4401
+    assert info.value.code == 4500
+
+
+def test_ws_holds_no_session_during_the_wait_or_a_send(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Short session per read: none is open while the socket waits or sends."""
+    from src.engine.events import ExecutionEvent
+
+    events: list[str] = []
+    execution = _execution_row(status="running", userId="u1")
+    client, app = _build_app(execution)
+    app.state.db_sessionmaker = RecordingSessionmaker(events)
+
+    terminal = ExecutionEvent(
+        type="workflow_completed", execution_id="exec-1", seq=1, payload={"status": "completed"}
+    )
+
+    class _Store:
+        calls = 0
+
+        async def list_since(self, execution_id: str, *, after_seq: int) -> list[Any]:
+            events.append("store:list")
+            _Store.calls += 1
+            return [] if _Store.calls == 1 else [terminal]
+
+    app.state.event_bus = _Store()
+
+    fake_conn = MagicMock()
+    fake_conn.add_listener = AsyncMock()
+    fake_conn.remove_listener = AsyncMock()
+    fake_conn.close = AsyncMock()
+    monkeypatch.setattr("src.api.events_ws.asyncpg.connect", AsyncMock(return_value=fake_conn))
+
+    async def _wait(coro: Any, *_a: Any, **_k: Any) -> None:
+        coro.close()
+        events.append("ws:wait")
+        raise TimeoutError
+
+    monkeypatch.setattr("src.api.events_ws.asyncio.wait_for", _wait)
+
+    real_send = FastAPIWebSocket.send_text
+
+    async def _send(self: Any, text: str) -> None:
+        events.append("ws:send")
+        await real_send(self, text)
+
+    monkeypatch.setattr(FastAPIWebSocket, "send_text", _send)
+
+    token = _token_for("u1")
+    with client.websocket_connect("/executions/exec-1/ws", subprotocols=["bearer", token]) as ws:
+        json.loads(ws.receive_text())
+        json.loads(ws.receive_text())
+
+    assert "ws:wait" in events and "ws:send" in events
+    open_sessions = 0
+    for event in events:
+        if event == "session:enter":
+            open_sessions += 1
+        elif event == "session:exit":
+            open_sessions -= 1
+        elif event.startswith("ws:"):
+            assert open_sessions == 0, f"{event} ran inside an open session: {events}"
+    assert open_sessions == 0

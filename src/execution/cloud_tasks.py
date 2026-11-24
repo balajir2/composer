@@ -111,11 +111,15 @@ async def _run_in_process(execution_id: str, kind: _TaskKind, db: Any) -> None:
     FastAPI `Request`/`app` reference it otherwise has no use for.
     """
     from src.api.internal import claim_and_run_execution
+    from src.db.runtime import get_registered_sessionmaker
     from src.engine.events_pg import PostgresEventStore
     from src.storage.checkpointer import PrismaCheckpointSaver
 
     checkpointer = PrismaCheckpointSaver(db)
-    event_bus = PostgresEventStore(db)
+    sessionmaker = get_registered_sessionmaker()
+    if sessionmaker is None:
+        raise RuntimeError("no SQLAlchemy sessionmaker registered; is the app lifespan running?")
+    event_bus = PostgresEventStore(sessionmaker)
     try:
         await claim_and_run_execution(
             execution_id,

@@ -1,84 +1,81 @@
 """Tests for the Postgres-backed atomic rate limiter (P1-4)."""
 
 from datetime import UTC, datetime, timedelta
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
-from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 
+from src.db.errors import AlreadyExists
+from src.db.repos import rate_limits as repo
 from src.security.rate_limit import BucketConfig, enforce
 from src.security.rate_limit_pg import PostgresRateLimiter
+from tests.unit.db_fakes import FakeSessionmaker
 
 
-def _mock_db() -> MagicMock:
-    db = MagicMock()
-    db.ratelimitbucket = MagicMock()
-    return db
+class _Repo:
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.lock = AsyncMock(return_value=None)
+        self.insert = AsyncMock()
+        self.save = AsyncMock()
+        monkeypatch.setattr(repo, "lock_bucket", self.lock)
+        monkeypatch.setattr(repo, "insert_bucket", self.insert)
+        monkeypatch.setattr(repo, "save_bucket", self.save)
 
 
-async def test_first_request_creates_bucket_and_allows() -> None:
-    db = _mock_db()
-    db.ratelimitbucket.find_unique = AsyncMock(return_value=None)
-    db.ratelimitbucket.create = AsyncMock()
-    limiter = PostgresRateLimiter(db)
+@pytest.fixture
+def r(monkeypatch: pytest.MonkeyPatch) -> _Repo:
+    return _Repo(monkeypatch)
+
+
+def _limiter() -> tuple[PostgresRateLimiter, FakeSessionmaker]:
+    sm = FakeSessionmaker()
+    return PostgresRateLimiter(sm), sm  # pyright: ignore[reportArgumentType]
+
+
+async def test_first_request_creates_bucket_and_allows(r: _Repo) -> None:
+    limiter, sm = _limiter()
     allowed, retry_after = await limiter.check(
         "executions", "user1", BucketConfig(capacity=5, refill_per_second=0.5)
     )
-    assert allowed is True
-    assert retry_after == 0.0
-    db.ratelimitbucket.create.assert_awaited_once()
-    assert db.ratelimitbucket.create.await_args is not None
-    created = db.ratelimitbucket.create.await_args.kwargs["data"]
-    assert created["tokens"] == 4.0  # capacity(5) - 1 consumed
+    assert (allowed, retry_after) == (True, 0.0)
+    r.insert.assert_awaited_once()
+    assert r.insert.await_args is not None
+    assert r.insert.await_args.kwargs["tokens"] == 4.0  # capacity(5) - 1 consumed
+    sm.session.commit.assert_awaited_once()
 
 
-async def test_exhausted_bucket_denies_with_retry_after() -> None:
-    db = _mock_db()
-    now = datetime.now(UTC)
-    db.ratelimitbucket.find_unique = AsyncMock(return_value=MagicMock(tokens=0.0, lastRefill=now))
-    limiter = PostgresRateLimiter(db)
+async def test_exhausted_bucket_denies_with_retry_after_and_writes_nothing(r: _Repo) -> None:
+    limiter, sm = _limiter()
+    r.lock.return_value = repo.BucketRecord(0.0, datetime.now(UTC))
     allowed, retry_after = await limiter.check(
         "executions", "user1", BucketConfig(capacity=5, refill_per_second=1.0)
     )
     assert allowed is False
     assert retry_after > 0
+    r.save.assert_not_awaited()
+    sm.session.commit.assert_not_awaited()
+    sm.session.rollback.assert_awaited_once()
 
 
-async def test_refill_over_elapsed_time_allows_again() -> None:
-    db = _mock_db()
-    stale = datetime.now(UTC) - timedelta(seconds=10)
-    db.ratelimitbucket.find_unique = AsyncMock(return_value=MagicMock(tokens=0.0, lastRefill=stale))
-    db.ratelimitbucket.update = AsyncMock()
-    limiter = PostgresRateLimiter(db)
-    # refill_per_second=1.0, 10s elapsed -> 10 tokens refilled, capped at capacity
+async def test_refill_over_elapsed_time_allows_again(r: _Repo) -> None:
+    limiter, sm = _limiter()
+    r.lock.return_value = repo.BucketRecord(0.0, datetime.now(UTC) - timedelta(seconds=10))
     allowed, _ = await limiter.check(
         "executions", "user1", BucketConfig(capacity=5, refill_per_second=1.0)
     )
     assert allowed is True
-    assert db.ratelimitbucket.update.await_args is not None
-    updated = db.ratelimitbucket.update.await_args.kwargs["data"]
-    assert updated["tokens"] == 4.0  # capped at capacity(5), minus 1 consumed
+    assert r.save.await_args is not None
+    assert r.save.await_args.kwargs["tokens"] == 4.0  # capped at capacity(5), minus 1 consumed
+    sm.session.commit.assert_awaited_once()
 
 
-async def test_concurrent_first_requests_race_on_create_falls_back_to_refill() -> None:
-    """Two concurrent first requests for the same key both see row=None; the
-    loser's create() hits the (routeKey, clientKey) unique constraint. The
-    loser must recover by re-reading the winner's row and running the normal
-    refill/consume logic instead of raising or blindly returning allowed."""
-    db = _mock_db()
-    now = datetime.now(UTC)
-    # Winner's row already consumed its one token (capacity=1), so the
-    # loser must correctly be denied rather than assuming it still gets one.
-    winner_row = MagicMock(tokens=0.0, lastRefill=now)
-    db.ratelimitbucket.find_unique = AsyncMock(side_effect=[None, winner_row])
-    db.ratelimitbucket.create = AsyncMock(
-        side_effect=UniqueViolationError(
-            {"user_facing_error": {"message": "Unique constraint failed"}}
-        )
-    )
-    db.ratelimitbucket.update = AsyncMock()
-    limiter = PostgresRateLimiter(db)
+async def test_lost_first_insert_race_consumes_from_the_winners_row(r: _Repo) -> None:
+    """The loser must re-lock the winner's row and run the normal consume logic
+    (here: the winner took the only token, so the loser is denied)."""
+    limiter, _ = _limiter()
+    r.lock.side_effect = [None, repo.BucketRecord(0.0, datetime.now(UTC))]
+    r.insert.side_effect = AlreadyExists("rate_limit_buckets_route_key_client_key_key")
 
     allowed, retry_after = await limiter.check(
         "executions", "user1", BucketConfig(capacity=1, refill_per_second=1.0)
@@ -86,18 +83,13 @@ async def test_concurrent_first_requests_race_on_create_falls_back_to_refill() -
 
     assert allowed is False
     assert retry_after > 0
-    assert db.ratelimitbucket.find_unique.await_count == 2
-    db.ratelimitbucket.create.assert_awaited_once()
-    db.ratelimitbucket.update.assert_not_awaited()
+    assert r.lock.await_count == 2
+    r.save.assert_not_awaited()
 
 
-async def test_enforce_raises_429_when_denied() -> None:
-    db = _mock_db()
-    db.ratelimitbucket.find_unique = AsyncMock(
-        return_value=MagicMock(tokens=0.0, lastRefill=datetime.now(UTC))
-    )
-    db.ratelimitbucket.update = AsyncMock()
-    limiter = PostgresRateLimiter(db)
+async def test_enforce_raises_429_when_denied(r: _Repo) -> None:
+    limiter, _ = _limiter()
+    r.lock.return_value = repo.BucketRecord(0.0, datetime.now(UTC))
     with pytest.raises(HTTPException) as exc_info:
         await enforce(
             limiter,

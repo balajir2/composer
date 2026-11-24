@@ -947,11 +947,11 @@ class Phase4aAdapter:
         """Run the app without its database handle (today ``app.state.db``; after the port
         ``app.state.db_sessionmaker``); returns the function that puts it back."""
         state = self._app.state
-        original = state.db
-        state.db = None
+        original = state.db_sessionmaker
+        state.db_sessionmaker = None
 
         def _restore() -> None:
-            state.db = original
+            state.db_sessionmaker = original
 
         return _restore
 

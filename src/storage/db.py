@@ -83,12 +83,6 @@ async def prisma_lifespan(  # pyright: ignore[reportUnknownParameterType]
     await _connect_with_retry(db)
     app.state.db = db
     app.state.checkpointer = PrismaCheckpointSaver(db)
-    from src.engine.events_pg import PostgresEventStore
-
-    app.state.event_bus = PostgresEventStore(db)
-    from src.security.rate_limit_pg import PostgresRateLimiter
-
-    app.state.rate_limiter = PostgresRateLimiter(db)
     try:
         yield db
     finally:

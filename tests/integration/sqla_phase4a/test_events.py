@@ -1,10 +1,8 @@
 """Group 8: persisted execution events (``execution_events``) through the event store.
 
-Two tests pin TODAY'S BUGS (plan decision D2) and are the ones Task 3 changes:
-* ``test_append_after_retention_gap_today_collides`` becomes
-  ``test_append_after_retention_gap_continues_from_max`` (the returned seq is max + 1).
-* ``test_concurrent_appends_today_lose_events`` becomes "N concurrent appends yield seqs exactly
-  1..N, no error".
+Two tests pinned the old bugs (plan decision D2) and now assert the fix:
+``test_append_after_retention_gap_continues_from_max`` (the returned seq is max + 1) and
+``test_concurrent_appends_yield_seqs_one_to_n_none_lost``.
 The WebSocket half of this group lives in ``test_events_ws.py``.
 """
 
@@ -13,10 +11,8 @@ import asyncio
 import pytest
 
 from tests.integration.sqla_phase4a.conftest import (
-    DUPLICATE_KEY_ERRORS,
     HTTPX_MARK,
     Db,
-    DuplicateKey,
     Member,
     Phase4aAdapter,
 )
@@ -85,11 +81,10 @@ async def test_list_since_returns_seq_after_cursor_ascending(
     assert [e["seq"] for e in await adapter.list_events_since(other, 0)] == [9]
 
 
-async def test_append_after_retention_gap_today_collides(
+async def test_append_after_retention_gap_continues_from_max(
     adapter: Phase4aAdapter, member: Member, db: Db
 ) -> None:
-    """D2 bug (b), pinned: today seq = count + 1, so after the retention sweep deleted the two
-    oldest events the next seq equals an existing one and EVERY later append is lost."""
+    """After the retention sweep deleted the two oldest events the next seq is max + 1 (D2 fix)."""
     eid = await _execution(db, member)
     for i in range(4):
         assert await adapter.append_event(eid, "node_started", {"i": i}) == i + 1
@@ -102,30 +97,21 @@ async def test_append_after_retention_gap_today_collides(
         await s.commit()
     assert await db.event_seqs(eid) == [3, 4]
 
-    for _ in range(2):  # not a one-off: it keeps failing
-        with pytest.raises(DUPLICATE_KEY_ERRORS):
-            await adapter.append_event(eid, "node_completed", {"late": True})
-    assert await db.event_seqs(eid) == [3, 4]
-    assert [e.payload for e in await db.events(eid)] == [{"i": 2}, {"i": 3}]
+    assert await adapter.append_event(eid, "node_completed", {"late": True}) == 5
+    assert await adapter.append_event(eid, "node_completed", {"late": 2}) == 6
+    assert await db.event_seqs(eid) == [3, 4, 5, 6]
 
 
-async def test_concurrent_appends_today_lose_events(
+async def test_concurrent_appends_yield_seqs_one_to_n_none_lost(
     adapter: Phase4aAdapter, member: Member, db: Db
 ) -> None:
-    """D2 bug (a), pinned: parallel appends to one execution race on count + 1; the losers hit
-    the (execution_id, seq) unique index and their events are lost."""
+    """N concurrent appends to one execution produce seqs exactly 1..N, none lost (D2 fix)."""
     eid = await _execution(db, member)
-    attempts = 0
-    failures = 0
+    total = 0
     for _ in range(6):
         results = await asyncio.gather(
-            *(adapter.append_event(eid, "node_started", {"n": i}) for i in range(8)),
-            return_exceptions=True,
+            *(adapter.append_event(eid, "node_started", {"n": i}) for i in range(8))
         )
-        attempts += len(results)
-        failures += sum(isinstance(r, DuplicateKey) for r in results)
-        assert all(isinstance(r, (int, DuplicateKey)) for r in results), results
-    seqs = await db.event_seqs(eid)
-    assert failures >= 1, "expected at least one lost append today (D2)"
-    assert len(seqs) == attempts - failures
-    assert len(set(seqs)) == len(seqs)  # unique, but with gaps/losses
+        total += len(results)
+        assert sorted(results) == list(range(total - 7, total + 1))
+    assert await db.event_seqs(eid) == list(range(1, total + 1))
