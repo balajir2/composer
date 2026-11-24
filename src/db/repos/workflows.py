@@ -9,7 +9,12 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.errors import AlreadyExists, add_or_already_exists, unique_violation_as_already_exists
+from src.db.errors import (
+    AlreadyExists,
+    StalePrecondition,
+    add_or_already_exists,
+    unique_violation_as_already_exists,
+)
 from src.db.models import Workflow, WorkflowAssignment
 from src.db.types import utcnow
 
@@ -217,21 +222,39 @@ async def insert_if_absent(session: AsyncSession, values: WorkflowValues) -> boo
 
 
 async def update(
-    session: AsyncSession, workflow_id: str, changes: WorkflowChanges
+    session: AsyncSession,
+    workflow_id: str,
+    changes: WorkflowChanges,
+    *,
+    expected_updated_at: datetime | None = None,
 ) -> WorkflowRecord | None:
     """Apply ``changes`` and bump ``updated_at``; ``AlreadyExists`` on a slug clash.
 
+    With ``expected_updated_at`` the write happens only if the row still carries that
+    ``updated_at`` (compared at the column's millisecond precision, in the same statement,
+    so there is no read-then-write window); otherwise ``StalePrecondition`` is raised and
+    nothing is written. ``None`` is returned when the row does not exist.
+
     Runs in a savepoint, so a clash leaves the caller's transaction usable.
     """
+    where = [Workflow.id == workflow_id]
+    if expected_updated_at is not None:
+        where.append(Workflow.updated_at == expected_updated_at)
     stmt = (
         sa_update(Workflow)
-        .where(Workflow.id == workflow_id)
+        .where(*where)
         .values(**changes, updated_at=utcnow())
         .returning(Workflow)
         .execution_options(populate_existing=True)
     )
     async with unique_violation_as_already_exists(session):
         row = (await session.scalars(stmt)).one_or_none()
+    if row is None and expected_updated_at is not None:
+        current = await session.scalar(
+            select(Workflow.updated_at).where(Workflow.id == workflow_id)
+        )
+        if current is not None:
+            raise StalePrecondition(current)
     return _record(row) if row else None
 
 

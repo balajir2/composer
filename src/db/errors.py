@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from datetime import datetime
 
 import psycopg.errors
 from sqlalchemy.exc import IntegrityError
@@ -22,6 +23,17 @@ class ReferencedRowMissing(Exception):
     def __init__(self, constraint: str | None) -> None:
         super().__init__(f"referenced row missing: {constraint or 'unknown'}")
         self.constraint = constraint
+
+
+class StalePrecondition(Exception):
+    """An update carried an ``expected_updated_at`` that no longer matches the row.
+
+    ``current_updated_at`` is the row's present value, so the caller can say when it changed.
+    """
+
+    def __init__(self, current_updated_at: datetime) -> None:
+        super().__init__(f"row changed since {current_updated_at.isoformat()}")
+        self.current_updated_at = current_updated_at
 
 
 @asynccontextmanager

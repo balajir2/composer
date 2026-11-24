@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from typing import Any, ClassVar
 from unittest.mock import AsyncMock
 
@@ -7,6 +8,7 @@ from fastapi.testclient import TestClient
 
 from src.api import builder as builder_mod
 from src.api.builder import _persist, _to_engine_workflow, router  # pyright: ignore[reportPrivateUsage]
+from src.db.errors import StalePrecondition
 from src.db.repos import workflows as workflows_repo
 from src.engine.workflow import JIRA_TOKEN_REDACTED, Workflow
 from tests.unit.db_fakes import (
@@ -233,6 +235,71 @@ async def test_persist_when_the_workflow_vanished_is_404_and_commits_nothing(
 
     assert info.value.status_code == 404
     sessionmaker.session.commit.assert_not_awaited()
+
+
+_SEEN = datetime(2026, 11, 24, 10, 0, 0, 123000, tzinfo=UTC)
+
+
+async def test_persist_hands_the_precondition_to_the_repo(
+    monkeypatch: pytest.MonkeyPatch, persist_repos: Any
+) -> None:
+    update = AsyncMock(return_value=make_workflow())
+    monkeypatch.setattr(workflows_repo, "update", update)
+
+    await _persist(
+        FakeSessionmaker(),  # type: ignore[arg-type]
+        "w1",
+        _engine_workflow(),
+        make_workflow(),
+        "user-42",
+        "member",
+        expected_updated_at=_SEEN,
+    )
+
+    assert update.await_args.kwargs["expected_updated_at"] == _SEEN  # type: ignore[union-attr]
+
+
+async def test_persist_with_a_stale_precondition_is_409_and_commits_nothing(
+    monkeypatch: pytest.MonkeyPatch, persist_repos: Any
+) -> None:
+    """Someone saved while the LLM turn ran: their work is not overwritten."""
+    sessionmaker = FakeSessionmaker()
+    current = datetime(2026, 11, 24, 10, 1, tzinfo=UTC)
+    monkeypatch.setattr(workflows_repo, "update", AsyncMock(side_effect=StalePrecondition(current)))
+
+    with pytest.raises(HTTPException) as info:
+        await _persist(
+            sessionmaker,  # type: ignore[arg-type]
+            "w1",
+            _engine_workflow(),
+            make_workflow(),
+            "user-42",
+            "member",
+            expected_updated_at=_SEEN,
+        )
+
+    assert info.value.status_code == 409
+    assert info.value.detail["message"] == "workflow changed since you loaded it"  # type: ignore[index]
+    assert info.value.detail["currentUpdatedAt"] == "2026-11-24T10:01:00Z"  # type: ignore[index]
+    sessionmaker.session.commit.assert_not_awaited()
+
+
+def test_a_stale_precondition_is_rejected_before_the_llm_turn_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    wf = make_workflow(user_id="dev", updated_at=datetime(2026, 11, 24, 10, 5, tzinfo=UTC))
+    client = _make_client(monkeypatch, wf)
+    turn = AsyncMock()
+    monkeypatch.setattr(builder_mod, "run_builder_turn", turn)
+
+    resp = client.post(
+        "/builder/w1/message",
+        json={"message": "hi", "expectedUpdatedAt": "2026-11-24T10:00:00.123Z"},
+    )
+
+    assert resp.status_code == 409
+    assert resp.json()["detail"]["code"] == "workflow_changed"
+    turn.assert_not_awaited()
 
 
 _JIRA = {"label": "Jira", "domain": "t.atlassian.net", "email": "t@example.com"}

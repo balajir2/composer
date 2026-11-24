@@ -52,6 +52,18 @@ DELETE /workflows/{id}/assignments/{userId}              revoke access (owner or
 
 The `nodes` and `edges` arrays are validated against the discriminated union of node types defined in `src/engine/workflow.py`. Validation errors come back as `422` with FastAPI's standard `{detail: [{loc, msg, type}, ...]}` shape.
 
+**Edit conflicts (optional precondition).** `PUT /workflows/{id}` and `POST /builder/{id}/message` accept an optional `expectedUpdatedAt`: the `updatedAt` the client last saw (ISO 8601; the value from any workflow response can be echoed back as is). When it is sent and the workflow has changed since, nothing is written and the response is `409`:
+
+```json
+{"detail": {"code": "workflow_changed", "message": "workflow changed since you loaded it", "currentUpdatedAt": "2026-11-24T10:05:00.500000Z"}}
+```
+
+`currentUpdatedAt` is when the workflow last changed, so a client can say when. The check is atomic with the write (`UPDATE ... WHERE updated_at = :expected`). A workflow deleted in the meantime is still `404`. Without `expectedUpdatedAt` the last save wins, as before, so existing scripts keep working. Other `409`s on this route (an `externalSlug` clash) keep their string `detail`; tell them apart by `detail.code`.
+
+- `updatedAt` is stored to the millisecond (`timestamp(3)`), and the comparison is at that precision. Two saves in the same millisecond share a timestamp, so a precondition cannot tell them apart; in practice a human edit cycle is far slower.
+- The builder checks twice: before the model turn (a stale client is refused without spending a turn) and again under the row lock when it saves, because the turn can take a while and someone else may save meanwhile. A successful builder message returns the new `workflow.updatedAt`; send that with the next message.
+- The Designer always sends it; on a `409` it offers **Reload** (discard local changes, fetch the latest) or **Overwrite** (resend without `expectedUpdatedAt`).
+
 **Assignment** grants full read+write access (open, edit, run) to the target workflow — there's no view-vs-edit split. It's independent of the single `userId` owner field, which continues to govern `DELETE` and `PATCH .../owner`. Only the owner or an admin can grant/revoke.
 
 ## Executions
