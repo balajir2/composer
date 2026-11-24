@@ -10,6 +10,7 @@ import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
 
+from prisma import Json  # pyright: ignore[reportAttributeAccessIssue]
 from src.migration.reconcile import reconcile_by_email
 from src.migration.runner import run_migration
 
@@ -100,6 +101,37 @@ async def test_migration_and_reconciliation_cycle(
             assert row.userId is None
             assert row.originalOwnerEmail == email_a.lower()
 
+        # Phase 4a oracle: the migration writer inserts an execution only if it is absent. A
+        # second run must not overwrite it, and reconcile must claim only unowned rows whose
+        # original owner is this email.
+        exec_id = oab_execs[0]["_id"]
+        await db.workflowexecution.update(where={"id": exec_id}, data={"error": "local edit"})
+        owned = await db.workflowexecution.create(
+            data={
+                "workflowId": oab_wfs[0]["_id"],
+                "userId": "someone-else",
+                "status": "completed",
+                "threadId": f"p4a-owned-{secrets.token_hex(4)}",
+                "originalOwnerEmail": email_a.lower(),
+                "nodeResults": Json({}),
+                "variables": Json({}),
+            }
+        )
+        stranger = await db.workflowexecution.create(
+            data={
+                "workflowId": oab_wfs[0]["_id"],
+                "status": "completed",
+                "threadId": f"p4a-stranger-{secrets.token_hex(4)}",
+                "originalOwnerEmail": f"other-{secrets.token_hex(4)}@example.com",
+                "nodeResults": Json({}),
+                "variables": Json({}),
+            }
+        )
+        assert await run_migration(export_dir=str(export_dir), dry_run=False) == 0
+        again = await db.workflowexecution.find_unique(where={"id": exec_id})
+        assert again is not None and again.error == "local edit" and again.userId is None
+        assert await db.workflowexecution.count(where={"id": exec_id}) == 1
+
         # Register a Composer user with the same email
         reg = await client.post(
             "/auth/register",
@@ -114,6 +146,12 @@ async def test_migration_and_reconciliation_cycle(
             await session.commit()  # run_reconcile commits; reconcile_by_email does not
         assert result["workflows"] == 2
         assert result["executions"] == 1
+        claimed = await db.workflowexecution.find_unique(where={"id": exec_id})
+        assert claimed is not None and claimed.userId == user_id
+        untouched_owned = await db.workflowexecution.find_unique(where={"id": owned.id})
+        assert untouched_owned is not None and untouched_owned.userId == "someone-else"
+        untouched_stranger = await db.workflowexecution.find_unique(where={"id": stranger.id})
+        assert untouched_stranger is not None and untouched_stranger.userId is None
 
         # Verify user_id is now set + original_owner_email preserved
         for wf in oab_wfs:
