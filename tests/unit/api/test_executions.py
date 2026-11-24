@@ -1,6 +1,6 @@
 """Tests for /executions endpoints."""
 
-from types import SimpleNamespace
+from datetime import UTC, datetime
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -10,10 +10,12 @@ from fastapi.testclient import TestClient
 from src.db.errors import AlreadyExists
 from src.db.repos import executions as executions_repo
 from src.db.repos import users as users_repo
+from src.db.repos.executions import ExecutionRecord, ExecutionRef
 from src.db.repos.workflows import WorkflowRecord
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
 from tests.unit.db_fakes import (
+    FakeSession,
     FakeSessionmaker,
     RecordingSessionmaker,
     WorkflowRepoMocks,
@@ -63,42 +65,79 @@ def _patch_workflow_reads(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: 
     monkeypatch.setattr(executions_repo, "create", create)
 
 
-def _execution_row(status: str = "running") -> SimpleNamespace:
-    return SimpleNamespace(
-        id="ex1",
-        workflowId="wf1",
-        userId="dev",
-        status=status,
-        currentNodeId=None,
-        nodeResults={},
-        variables={},
-        input="hi",
-        output=None,
-        error=None,
-        startedAt="2026-04-20T00:00:00Z",
-        completedAt=None,
-        threadId="t1",
-    )
+class _ExecRepoMocks:
+    """The ``executions_repo`` functions the routes call, patched (no database here)."""
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.get: Any = AsyncMock(return_value=_execution_row(status="completed"))
+        self.find_key: Any = AsyncMock(return_value=None)
+        self.list_refs: Any = AsyncMock(return_value=[])
+        self.cancel: Any = AsyncMock(return_value=True)
+        self.mark_failed: Any = AsyncMock(return_value=True)
+
+        async def _delete_terminal(_session: object, ids: list[str]) -> list[ExecutionRef]:
+            return [ExecutionRef(i, "t-" + i, "completed") for i in ids]
+
+        self.delete_terminal: Any = AsyncMock(side_effect=_delete_terminal)
+        monkeypatch.setattr(executions_repo, "get", self.get)
+        monkeypatch.setattr(executions_repo, "find_by_idempotency_key", self.find_key)
+        monkeypatch.setattr(executions_repo, "list_refs", self.list_refs)
+        monkeypatch.setattr(executions_repo, "cancel_if_active", self.cancel)
+        monkeypatch.setattr(executions_repo, "mark_enqueue_failed_if_queued", self.mark_failed)
+        monkeypatch.setattr(executions_repo, "delete_terminal", self.delete_terminal)
 
 
-def _execution_record(status: str = "running") -> SimpleNamespace:
-    """What the repo returns (snake_case), as ``start_execution`` hands it to the route."""
-    return SimpleNamespace(
-        id="ex1",
-        workflow_id="wf1",
-        user_id="dev",
-        status=status,
-        current_node_id=None,
-        node_results={},
-        variables={},
-        input="hi",
-        output=None,
-        error=None,
-        failure_code=None,
-        started_at="2026-04-20T00:00:00Z",
-        completed_at=None,
-        thread_id="t1",
-    )
+_exec_holder: list[_ExecRepoMocks] = []
+
+
+def _exec_repo() -> _ExecRepoMocks:
+    return _exec_holder[0]
+
+
+def _session() -> FakeSession:
+    """The session every route in this module opens (FakeSessionmaker's shared one)."""
+    return _session_holder[0]
+
+
+_session_holder: list[FakeSession] = []
+
+
+@pytest.fixture(autouse=True)
+def _patch_execution_repo(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
+    _exec_holder[:] = [_ExecRepoMocks(monkeypatch)]
+
+
+def _execution_row(status: str = "running", **overrides: Any) -> ExecutionRecord:
+    """A repository record (snake_case), as ``executions_repo.get`` returns it."""
+    base: dict[str, Any] = {
+        "id": "ex1",
+        "workflow_id": "wf1",
+        "user_id": "dev",
+        "status": status,
+        "current_node_id": None,
+        "node_results": {},
+        "variables": {},
+        "input": "hi",
+        "output": None,
+        "error": None,
+        "failure_code": None,
+        "started_at": datetime(2026, 4, 20, tzinfo=UTC),
+        "completed_at": None,
+        "thread_id": "t1",
+        "original_owner_email": None,
+        "idempotency_key": None,
+        "lease_owner": None,
+        "lease_expires_at": None,
+        "running_since": None,
+        "delivery_attempts": 0,
+    }
+    base.update(overrides)
+    return ExecutionRecord(**base)
+
+
+def _execution_record(status: str = "running") -> ExecutionRecord:
+    """What the repo returns, as ``start_execution`` hands it to the route."""
+    return _execution_row(status=status)
 
 
 def _workflow_row(**overrides: Any) -> WorkflowRecord:
@@ -120,22 +159,16 @@ def _workflow_row(**overrides: Any) -> WorkflowRecord:
 
 def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     app = create_app()
+    # The Prisma client is only passed through to enqueue_execution (dev-mode fallback);
+    # no execution query goes through it any more.
     db = MagicMock()
-    db.workflowexecution = MagicMock()
-    # P1-2: start_execution creates rows with status='queued' (the autouse fixture patches
-    # executions_repo.create); the row only becomes 'running' once /internal/claim-and-run
-    # actually claims it.
-    db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="completed"))
-    # Idempotency lookups go through find_first scoped to (workflow, user, key).
-    db.workflowexecution.find_first = AsyncMock(return_value=None)
-    db.workflowexecution.update = AsyncMock(return_value=_execution_row(status="completed"))
-    db.executionevent = MagicMock()
-    db.executionevent.delete_many = AsyncMock()
     # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
     db.user = MagicMock()
     db.user.find_unique = AsyncMock(return_value=None)
     app.state.db = db
-    app.state.db_sessionmaker = FakeSessionmaker()
+    sessionmaker = FakeSessionmaker()
+    _session_holder[:] = [sessionmaker.session]
+    app.state.db_sessionmaker = sessionmaker
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
     return TestClient(app), db
@@ -179,104 +212,76 @@ def test_post_execution_enqueues_cloud_task_instead_of_background_task(
 def test_post_execution_marks_row_failed_when_enqueue_raises(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Important #2 (P1-2-followup): if enqueue_execution raises after the
-    row already committed as 'queued' (un-retried gRPC error, transient
-    network blip, IAM/ADC misconfiguration), the row must not be left
-    stuck at 'queued' forever — invisible to every sweeper (they only
-    scan status='running') and, if the caller retries with the same
-    idempotencyKey, permanently un-repairable (the idempotency
-    short-circuit would just keep returning the same stuck row without
-    ever calling enqueue_execution again). The endpoint must mark the row
-    'failed' and return a handled error, not an unhandled 500.
-
-    The mark-failed write must be an atomic, status-guarded `update_many`
-    (where status='queued'), matching the pattern used everywhere else in
-    this file — NOT an unconditional `update()` — so a concurrent cancel
-    that already flipped the row to 'canceled' can't be clobbered back to
-    'failed' by a stale enqueue error (see the dedicated race test below).
-    """
+    """If enqueue_execution raises after the row already committed as 'queued', the row
+    must not be left stuck at 'queued' forever (no sweeper scans it). The endpoint marks it
+    'failed' through the status-guarded repo transition (G1) in its own session, commits,
+    and returns a handled 500."""
 
     async def _raise_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
         raise RuntimeError("Cloud Tasks unavailable")
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _raise_enqueue)
 
-    client, db = _client_with_mock_db()
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    client, _db = _client_with_mock_db()
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
 
     assert resp.status_code == 500
-    assert "ex1" in resp.json()["detail"]
+    assert resp.json()["detail"] == "Execution 'ex1' could not be enqueued for processing."
 
-    db.workflowexecution.update_many.assert_awaited_once()
-    _, kwargs = db.workflowexecution.update_many.call_args
-    assert kwargs["where"] == {"id": "ex1", "status": "queued"}
-    assert kwargs["data"]["status"] == "failed"
-    assert "enqueue" in kwargs["data"]["error"]
-    db.workflowexecution.update.assert_not_awaited()
+    _exec_repo().mark_failed.assert_awaited_once()
+    assert _exec_repo().mark_failed.await_args.args[1] == "ex1"
+    kwargs = _exec_repo().mark_failed.await_args.kwargs
+    assert kwargs["error"] == (
+        "failed to enqueue execution for durable processing: Cloud Tasks unavailable"
+    )
+    assert isinstance(kwargs["now"], datetime)
+    _session().commit.assert_awaited()
 
 
 def test_post_execution_enqueue_failure_does_not_clobber_concurrent_cancel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Issue 2 regression: a client cancels the still-'queued' row (now
-    valid, P1-2-followup) while enqueue_execution is mid-flight/timing
-    out. cancel_execution's atomic update_many wins first (row ->
-    'canceled'). When the enqueue-failure handler then tries to mark the
-    row 'failed', its status-guarded update_many (where status='queued')
-    must affect zero rows — since the row is no longer 'queued' — so it
-    becomes a safe no-op instead of clobbering the legitimate
-    cancellation. The caller still gets an informative 500 for the
-    enqueue failure itself; the row's real status is left untouched."""
+    """A client cancels the still-'queued' row while enqueue_execution is mid-flight. The
+    guarded transition (status = 'queued') then affects zero rows, so the cancellation is
+    left alone; the caller still gets the informative 500 for the enqueue failure."""
 
     async def _raise_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
         raise RuntimeError("Cloud Tasks unavailable")
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _raise_enqueue)
 
-    client, db = _client_with_mock_db()
-    # 0 rows affected == exactly what Postgres would report if a
-    # concurrent cancel already flipped this row's status away from
-    # 'queued' before this update_many's WHERE clause evaluated.
-    db.workflowexecution.update_many = AsyncMock(return_value=0)
+    client, _db = _client_with_mock_db()
+    _exec_repo().mark_failed.return_value = False
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
 
     assert resp.status_code == 500
     assert "ex1" in resp.json()["detail"]
-
-    db.workflowexecution.update_many.assert_awaited_once()
-    _, kwargs = db.workflowexecution.update_many.call_args
-    # The guard is what makes this a no-op against an already-canceled
-    # row — asserting it's present is the actual regression check.
-    assert kwargs["where"] == {"id": "ex1", "status": "queued"}
-    db.workflowexecution.update.assert_not_awaited()
+    # The guard lives in the repo function (proven by the oracle's G1 race test); the route
+    # must go through it and never write the status itself.
+    _exec_repo().mark_failed.assert_awaited_once()
 
 
 def test_post_execution_enqueue_failure_survives_nested_mark_failed_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Issue 3 regression: if the mark-failed `update_many` call itself
-    raises (a DB blip right after the row's own successful create()), that
-    secondary exception must NOT propagate and mask the original,
-    informative enqueue-failure HTTPException with FastAPI's generic 500
-    handler. The client must still receive the same handled 500 response
-    referencing the execution id, proving the primary error survives the
-    nested failure."""
+    """If the mark-failed write itself raises (a DB blip right after the row's own
+    successful create), that secondary exception must NOT mask the original, informative
+    enqueue-failure HTTPException."""
 
     async def _raise_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
         raise RuntimeError("Cloud Tasks unavailable")
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _raise_enqueue)
 
-    client, db = _client_with_mock_db()
-    db.workflowexecution.update_many = AsyncMock(side_effect=RuntimeError("DB blip"))
+    client, _db = _client_with_mock_db()
+    _exec_repo().mark_failed.side_effect = RuntimeError("DB blip")
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
 
     assert resp.status_code == 500
     body = resp.json()
     assert "ex1" in body["detail"]
     assert "enqueued" in body["detail"]
-    db.workflowexecution.update_many.assert_awaited_once()
+    _exec_repo().mark_failed.assert_awaited_once()
 
 
 def test_post_execution_404_when_workflow_missing() -> None:
@@ -304,14 +309,11 @@ def test_post_execution_allows_other_users_public_workflow() -> None:
 
 
 def test_post_execution_with_idempotency_key_replays_existing_execution() -> None:
-    """A client that retries POST /executions after a network timeout (the
-    actual retry vector in this system — LangGraph doesn't auto-retry nodes,
-    and the sweeper only marks stuck runs failed, never re-runs them) must
-    not get a second execution, or side-effecting nodes downstream (Jira,
-    email) would fire twice for one logical request (P1-3)."""
-    client, db = _client_with_mock_db()
+    """A client that retries POST /executions after a network timeout must not get a second
+    execution, or side-effecting nodes downstream would fire twice for one request (P1-3)."""
+    client, _db = _client_with_mock_db()
     existing = _execution_row(status="completed")
-    db.workflowexecution.find_first = AsyncMock(return_value=existing)
+    _exec_repo().find_key.return_value = existing
     resp = client.post(
         "/executions",
         json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "retry-key-1"},
@@ -320,9 +322,12 @@ def test_post_execution_with_idempotency_key_replays_existing_execution() -> Non
     assert resp.json()["id"] == existing.id
     _create_mock().assert_not_awaited()
     # The lookup is scoped to the caller: keys are unique per (workflow, user).
-    db.workflowexecution.find_first.assert_awaited_once_with(
-        where={"workflowId": "wf1", "userId": "dev", "idempotencyKey": "retry-key-1"}
-    )
+    _exec_repo().find_key.assert_awaited_once()
+    assert _exec_repo().find_key.await_args.kwargs == {
+        "workflow_id": "wf1",
+        "user_id": "dev",
+        "key": "retry-key-1",
+    }
 
 
 def test_post_execution_allows_an_assignee_of_a_private_workflow() -> None:
@@ -378,7 +383,7 @@ def test_assignment_is_read_in_the_same_short_session_as_the_workflow() -> None:
         events.append("assignment")
         return True
 
-    async def _create(*_a: object, **_k: object) -> SimpleNamespace:
+    async def _create(*_a: object, **_k: object) -> ExecutionRecord:
         events.append("db:create_execution")
         return _execution_record(status="queued")
 
@@ -398,9 +403,9 @@ def test_assignment_is_read_in_the_same_short_session_as_the_workflow() -> None:
 def test_same_key_from_another_user_starts_their_own_execution() -> None:
     """Keys are unique per (workflow, user): another user's use of the key is invisible,
     so this caller gets a fresh execution instead of a replay or a 409."""
-    client, db = _client_with_mock_db()
+    client, _db = _client_with_mock_db()
     _repos().get.return_value = _workflow_row(user_id="someone-else", is_public=True)
-    db.workflowexecution.find_first = AsyncMock(return_value=None)
+    _exec_repo().find_key.return_value = None
     resp = client.post(
         "/executions",
         json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "shared-key"},
@@ -408,8 +413,7 @@ def test_same_key_from_another_user_starts_their_own_execution() -> None:
     assert resp.status_code == 202
     _create_mock().assert_awaited_once()
     assert _create_mock().call_args.kwargs["idempotency_key"] == "shared-key"
-    where = db.workflowexecution.find_first.call_args.kwargs["where"]
-    assert where["userId"] == "dev"
+    assert _exec_repo().find_key.await_args.kwargs["user_id"] == "dev"
 
 
 def test_require_same_caller_is_a_fail_closed_backstop() -> None:
@@ -419,8 +423,7 @@ def test_require_same_caller_is_a_fail_closed_backstop() -> None:
 
     from src.api._idempotency import require_same_caller
 
-    other = _execution_row(status="completed")
-    other.userId = "someone-else"
+    other = _execution_row(status="completed", user_id="someone-else")
     with pytest.raises(HTTPException) as exc:
         require_same_caller(other, "dev")
     assert exc.value.status_code == 409
@@ -428,10 +431,8 @@ def test_require_same_caller_is_a_fail_closed_backstop() -> None:
 
 
 def test_foreign_row_from_the_lookup_is_still_refused_with_409() -> None:
-    client, db = _client_with_mock_db()
-    other = _execution_row(status="completed")
-    other.userId = "someone-else"
-    db.workflowexecution.find_first = AsyncMock(return_value=other)
+    client, _db = _client_with_mock_db()
+    _exec_repo().find_key.return_value = _execution_row(status="completed", user_id="someone-else")
     resp = client.post(
         "/executions",
         json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "k"},
@@ -443,9 +444,9 @@ def test_foreign_row_from_the_lookup_is_still_refused_with_409() -> None:
 def test_idempotency_key_race_lost_relooks_up_scoped_to_the_caller(
     _patch_enqueue_execution: AsyncMock,
 ) -> None:
-    client, db = _client_with_mock_db()
+    client, _db = _client_with_mock_db()
     mine = _execution_row(status="queued")
-    db.workflowexecution.find_first = AsyncMock(side_effect=[None, mine])
+    _exec_repo().find_key.side_effect = [None, mine]
     _create_mock().side_effect = AlreadyExists("uq")
     resp = client.post(
         "/executions",
@@ -454,15 +455,15 @@ def test_idempotency_key_race_lost_relooks_up_scoped_to_the_caller(
     assert resp.status_code == 202
     assert resp.json()["id"] == mine.id
     _patch_enqueue_execution.assert_not_awaited()
-    wheres = [c.kwargs["where"] for c in db.workflowexecution.find_first.await_args_list]
-    assert wheres == [{"workflowId": "wf1", "userId": "dev", "idempotencyKey": "k"}] * 2
+    kwargs = [c.kwargs for c in _exec_repo().find_key.await_args_list]
+    assert kwargs == [{"workflow_id": "wf1", "user_id": "dev", "key": "k"}] * 2
 
 
 def _lost_race_client(
     lookups: list[Any],
 ) -> tuple[TestClient, MagicMock]:
     client, db = _client_with_mock_db()
-    db.workflowexecution.find_first = AsyncMock(side_effect=lookups)
+    _exec_repo().find_key.side_effect = lookups
     _create_mock().side_effect = AlreadyExists("uq")
     return client, db
 
@@ -471,8 +472,7 @@ def test_race_lost_to_a_foreign_row_is_409_and_not_enqueued(
     _patch_enqueue_execution: AsyncMock,
 ) -> None:
     """Backstop on the race path: a row owned by someone else is never replayed."""
-    foreign = _execution_row(status="completed")
-    foreign.userId = "someone-else"
+    foreign = _execution_row(status="completed", user_id="someone-else")
     client, _ = _lost_race_client([None, foreign])
     resp = client.post(
         "/executions",
@@ -498,8 +498,8 @@ def test_unique_violation_with_no_row_for_the_caller_is_409_not_500(
 
 
 def test_post_execution_with_idempotency_key_creates_when_no_existing_match() -> None:
-    client, db = _client_with_mock_db()
-    db.workflowexecution.find_first = AsyncMock(return_value=None)
+    client, _db = _client_with_mock_db()
+    _exec_repo().find_key.return_value = None
     resp = client.post(
         "/executions",
         json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "fresh-key"},
@@ -510,12 +510,12 @@ def test_post_execution_with_idempotency_key_creates_when_no_existing_match() ->
 
 
 def test_post_execution_without_idempotency_key_skips_lookup() -> None:
-    """No idempotency lookup (find_first) without a key. As of P1-2, the row is no
-    longer run in-process (Cloud Tasks enqueueing replaces the BackgroundTask)."""
-    client, db = _client_with_mock_db()
+    """No idempotency lookup without a key. As of P1-2, the row is no longer run
+    in-process (Cloud Tasks enqueueing replaces the BackgroundTask)."""
+    client, _db = _client_with_mock_db()
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 202
-    db.workflowexecution.find_first.assert_not_awaited()
+    _exec_repo().find_key.assert_not_awaited()
 
 
 def test_get_execution_returns_row() -> None:
@@ -523,90 +523,84 @@ def test_get_execution_returns_row() -> None:
     resp = client.get("/executions/ex1")
     assert resp.status_code == 200
     assert resp.json()["status"] == "completed"
+    assert resp.json()["threadId"] == "t1"
 
 
 def test_get_execution_404_when_missing() -> None:
-    client, db = _client_with_mock_db()
-    db.workflowexecution.find_unique = AsyncMock(return_value=None)
+    client, _ = _client_with_mock_db()
+    _exec_repo().get.return_value = None
     resp = client.get("/executions/ghost")
     assert resp.status_code == 404
+    assert resp.json()["detail"] == "Execution 'ghost' not found."
+
+
+def test_get_execution_404_for_another_users_execution() -> None:
+    client, _ = _client_with_mock_db()
+    _exec_repo().get.return_value = _execution_row(user_id="someone-else")
+    resp = client.get("/executions/ex1")
+    assert resp.status_code == 404
+    assert resp.json()["detail"] == "Execution 'ex1' not found."
 
 
 def test_delete_execution_owner_succeeds() -> None:
-    """Owner can delete their own execution.  Returns 204 with no body
-    and cascades to the LangGraph checkpoint tables (writes first,
-    then checkpoints, FK ordering) and to execution_events (P1-4)."""
-    client, db = _client_with_mock_db()
-    db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="completed"))
-    db.langgraphcheckpointwrite = MagicMock()
-    db.langgraphcheckpointwrite.delete_many = AsyncMock()
-    db.langgraphcheckpoint = MagicMock()
-    db.langgraphcheckpoint.delete_many = AsyncMock()
-    db.workflowexecution.delete = AsyncMock()
+    """Owner can delete their own execution: 204 with no body; the row, its checkpoints and
+    its events go through ONE repo call and ONE commit (D6)."""
+    client, _ = _client_with_mock_db()
+    _exec_repo().get.return_value = _execution_row(status="completed")
 
     resp = client.delete("/executions/ex1")
     assert resp.status_code == 204
-    db.langgraphcheckpointwrite.delete_many.assert_awaited_once_with(where={"threadId": "t1"})
-    db.langgraphcheckpoint.delete_many.assert_awaited_once_with(where={"threadId": "t1"})
-    db.executionevent.delete_many.assert_awaited_once_with(where={"executionId": "ex1"})
-    db.workflowexecution.delete.assert_awaited_once_with(where={"id": "ex1"})
+    _exec_repo().delete_terminal.assert_awaited_once()
+    assert _exec_repo().delete_terminal.await_args.args[1] == ["ex1"]
+    _session().commit.assert_awaited_once()
 
 
 def test_delete_execution_404_when_missing() -> None:
-    client, db = _client_with_mock_db()
-    db.workflowexecution.find_unique = AsyncMock(return_value=None)
+    client, _ = _client_with_mock_db()
+    _exec_repo().get.return_value = None
     resp = client.delete("/executions/ghost")
     assert resp.status_code == 404
+    _exec_repo().delete_terminal.assert_not_awaited()
 
 
 def test_delete_execution_404_when_not_owner() -> None:
     """Non-owner gets 404 (not 403) — same authz pattern as read."""
-    client, db = _client_with_mock_db()
-    other_user_row = _execution_row()
-    other_user_row.userId = "someone-else"
-    db.workflowexecution.find_unique = AsyncMock(return_value=other_user_row)
+    client, _ = _client_with_mock_db()
+    _exec_repo().get.return_value = _execution_row(user_id="someone-else")
     resp = client.delete("/executions/ex1")
     assert resp.status_code == 404
+    _exec_repo().delete_terminal.assert_not_awaited()
 
 
 def test_delete_execution_running_rejected_409() -> None:
-    """Deleting a still-running execution would delete its LangGraph
-    checkpoints out from under the in-flight background task, which then
-    fails to persist its final state against a row that no longer exists
-    (P1-6). Reject rather than silently deleting live state."""
-    client, db = _client_with_mock_db()
-    db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="running"))
-    db.workflowexecution.delete = AsyncMock()
+    """Deleting a still-running execution would delete its checkpoints out from under the
+    in-flight task (P1-6). Reject rather than silently deleting live state."""
+    client, _ = _client_with_mock_db()
+    _exec_repo().get.return_value = _execution_row(status="running")
     resp = client.delete("/executions/ex1")
     assert resp.status_code == 409
-    db.workflowexecution.delete.assert_not_awaited()
+    assert "running" in resp.json()["detail"]
+    _exec_repo().delete_terminal.assert_not_awaited()
 
 
 def test_delete_execution_queued_rejected_409() -> None:
-    """Critical regression (P1-2-followup): a 'queued' row may be actively
-    in flight to Cloud Tasks, or already claimed and running by a
-    concurrent /internal/claim-and-run delivery — it is never safe to
-    delete unconditionally. Must behave exactly like 'running': 409, no
-    delete call."""
-    client, db = _client_with_mock_db()
-    db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="queued"))
-    db.workflowexecution.delete = AsyncMock()
+    """A 'queued' row may be in flight to Cloud Tasks or already claimed by a concurrent
+    delivery — never safe to delete unconditionally. Behaves like 'running': 409."""
+    client, _ = _client_with_mock_db()
+    _exec_repo().get.return_value = _execution_row(status="queued")
     resp = client.delete("/executions/ex1")
     assert resp.status_code == 409
-    db.workflowexecution.delete.assert_not_awaited()
+    assert "queued" in resp.json()["detail"]
+    _exec_repo().delete_terminal.assert_not_awaited()
 
 
 def test_bulk_delete_skips_queued_executions() -> None:
     """Same guard as the single-delete 409 above, applied to the bulk path."""
-    client, db = _client_with_mock_db()
-    rows = [_execution_row(status="completed"), _execution_row(status="queued")]
-    rows[1].id, rows[1].threadId = "ex2", "t2"
-    db.workflowexecution.find_many = AsyncMock(return_value=rows)
-    db.workflowexecution.delete_many = AsyncMock()
-    db.langgraphcheckpointwrite = MagicMock()
-    db.langgraphcheckpointwrite.delete_many = AsyncMock()
-    db.langgraphcheckpoint = MagicMock()
-    db.langgraphcheckpoint.delete_many = AsyncMock()
+    client, _ = _client_with_mock_db()
+    _exec_repo().list_refs.return_value = [
+        ExecutionRef("ex1", "t1", "completed"),
+        ExecutionRef("ex2", "t2", "queued"),
+    ]
 
     resp = client.post(
         "/executions/delete-bulk",
@@ -616,33 +610,25 @@ def test_bulk_delete_skips_queued_executions() -> None:
     body = resp.json()
     assert body["deletedCount"] == 1
     assert body["skippedCount"] == 1
-    db.workflowexecution.delete_many.assert_awaited_once_with(where={"id": {"in": ["ex1"]}})
+    assert _exec_repo().delete_terminal.await_args.args[1] == ["ex1"]
 
 
 def test_delete_execution_waiting_approval_rejected_409() -> None:
-    client, db = _client_with_mock_db()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=_execution_row(status="waiting_approval")
-    )
-    db.workflowexecution.delete = AsyncMock()
+    """A row paused for approval is active too: 409."""
+    client, _ = _client_with_mock_db()
+    _exec_repo().get.return_value = _execution_row(status="waiting_approval")
     resp = client.delete("/executions/ex1")
     assert resp.status_code == 409
-    db.workflowexecution.delete.assert_not_awaited()
+    assert "waiting_approval" in resp.json()["detail"]
+    _exec_repo().delete_terminal.assert_not_awaited()
 
 
 def test_delete_execution_admin_can_delete_any() -> None:
     """Admin role bypasses ownership check."""
     from src.security.auth import get_current_role
 
-    client, db = _client_with_mock_db()
-    other_user_row = _execution_row(status="completed")
-    other_user_row.userId = "someone-else"
-    db.workflowexecution.find_unique = AsyncMock(return_value=other_user_row)
-    db.langgraphcheckpointwrite = MagicMock()
-    db.langgraphcheckpointwrite.delete_many = AsyncMock()
-    db.langgraphcheckpoint = MagicMock()
-    db.langgraphcheckpoint.delete_many = AsyncMock()
-    db.workflowexecution.delete = AsyncMock()
+    client, _ = _client_with_mock_db()
+    _exec_repo().get.return_value = _execution_row(status="completed", user_id="someone-else")
 
     client.app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")  # type: ignore[attr-defined]
     try:
@@ -650,21 +636,17 @@ def test_delete_execution_admin_can_delete_any() -> None:
     finally:
         client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
     assert resp.status_code == 204
-    db.workflowexecution.delete.assert_awaited_once_with(where={"id": "ex1"})
+    assert _exec_repo().delete_terminal.await_args.args[1] == ["ex1"]
 
 
 def test_bulk_delete_owned_ids() -> None:
-    """Owner can bulk-delete their own executions by id list."""
-    client, db = _client_with_mock_db()
-    rows = [_execution_row(status="completed"), _execution_row(status="completed")]
-    rows[1].id = "ex2"
-    rows[1].threadId = "t2"
-    db.workflowexecution.find_many = AsyncMock(return_value=rows)
-    db.workflowexecution.delete_many = AsyncMock()
-    db.langgraphcheckpointwrite = MagicMock()
-    db.langgraphcheckpointwrite.delete_many = AsyncMock()
-    db.langgraphcheckpoint = MagicMock()
-    db.langgraphcheckpoint.delete_many = AsyncMock()
+    """Owner can bulk-delete their own executions by id list: the id list is intersected
+    with their own rows (``owner_id``), and deletion is one repo call and one commit."""
+    client, _ = _client_with_mock_db()
+    _exec_repo().list_refs.return_value = [
+        ExecutionRef("ex1", "t1", "completed"),
+        ExecutionRef("ex2", "t2", "completed"),
+    ]
 
     resp = client.post(
         "/executions/delete-bulk",
@@ -674,31 +656,20 @@ def test_bulk_delete_owned_ids() -> None:
     body = resp.json()
     assert body["deletedCount"] == 2
     assert body["skippedCount"] == 0
-    db.executionevent.delete_many.assert_awaited_once_with(
-        where={"executionId": {"in": ["ex1", "ex2"]}}
-    )
-    db.workflowexecution.delete_many.assert_awaited_once_with(where={"id": {"in": ["ex1", "ex2"]}})
+    assert _exec_repo().list_refs.await_args.kwargs == {"ids": ["ex1", "ex2"], "owner_id": "dev"}
+    assert _exec_repo().delete_terminal.await_args.args[1] == ["ex1", "ex2"]
+    _session().commit.assert_awaited_once()
 
 
 def test_bulk_delete_skips_active_executions() -> None:
-    """A running or waiting_approval row in the requested set is skipped,
-    not deleted — same reasoning as the single-delete 409 (P1-6): deleting
-    live checkpoints out from under an in-flight execution breaks its
-    ability to persist a final state."""
-    client, db = _client_with_mock_db()
-    rows = [
-        _execution_row(status="completed"),
-        _execution_row(status="running"),
-        _execution_row(status="waiting_approval"),
+    """A running or waiting_approval row in the requested set is skipped, not deleted —
+    same reasoning as the single-delete 409 (P1-6)."""
+    client, _ = _client_with_mock_db()
+    _exec_repo().list_refs.return_value = [
+        ExecutionRef("ex1", "t1", "completed"),
+        ExecutionRef("ex2", "t2", "running"),
+        ExecutionRef("ex3", "t3", "waiting_approval"),
     ]
-    rows[1].id, rows[1].threadId = "ex2", "t2"
-    rows[2].id, rows[2].threadId = "ex3", "t3"
-    db.workflowexecution.find_many = AsyncMock(return_value=rows)
-    db.workflowexecution.delete_many = AsyncMock()
-    db.langgraphcheckpointwrite = MagicMock()
-    db.langgraphcheckpointwrite.delete_many = AsyncMock()
-    db.langgraphcheckpoint = MagicMock()
-    db.langgraphcheckpoint.delete_many = AsyncMock()
 
     resp = client.post(
         "/executions/delete-bulk",
@@ -708,22 +679,14 @@ def test_bulk_delete_skips_active_executions() -> None:
     body = resp.json()
     assert body["deletedCount"] == 1
     assert body["skippedCount"] == 2
-    db.workflowexecution.delete_many.assert_awaited_once_with(where={"id": {"in": ["ex1"]}})
+    assert _exec_repo().delete_terminal.await_args.args[1] == ["ex1"]
 
 
 def test_bulk_delete_skips_non_owned_ids() -> None:
-    """Member callers passing other users' ids → those rows are
-    silently skipped (the find_many WHERE clause filters by userId,
-    so they never match)."""
-    client, db = _client_with_mock_db()
-    # Only ex1 belongs to dev; ex2/ex3 are someone else's and get
-    # filtered out by the userId scope.
-    db.workflowexecution.find_many = AsyncMock(return_value=[_execution_row(status="completed")])
-    db.workflowexecution.delete_many = AsyncMock()
-    db.langgraphcheckpointwrite = MagicMock()
-    db.langgraphcheckpointwrite.delete_many = AsyncMock()
-    db.langgraphcheckpoint = MagicMock()
-    db.langgraphcheckpoint.delete_many = AsyncMock()
+    """Member callers passing other users' ids: those rows never match the owner-scoped
+    read, so they are skipped."""
+    client, _ = _client_with_mock_db()
+    _exec_repo().list_refs.return_value = [ExecutionRef("ex1", "t1", "completed")]
 
     resp = client.post(
         "/executions/delete-bulk",
@@ -733,6 +696,7 @@ def test_bulk_delete_skips_non_owned_ids() -> None:
     body = resp.json()
     assert body["deletedCount"] == 1
     assert body["skippedCount"] == 2
+    assert _exec_repo().list_refs.await_args.kwargs["owner_id"] == "dev"
 
 
 def test_bulk_delete_all_in_scope_member_rejected() -> None:
@@ -744,19 +708,14 @@ def test_bulk_delete_all_in_scope_member_rejected() -> None:
 
 
 def test_bulk_delete_all_in_scope_admin_succeeds() -> None:
-    """Admin can wipe everything via allInScope=true."""
+    """Admin can wipe everything via allInScope=true (no id or owner narrowing)."""
     from src.security.auth import get_current_role
 
-    client, db = _client_with_mock_db()
-    rows = [_execution_row(status="completed"), _execution_row(status="completed")]
-    rows[1].id = "ex2"
-    rows[1].threadId = "t2"
-    db.workflowexecution.find_many = AsyncMock(return_value=rows)
-    db.workflowexecution.delete_many = AsyncMock()
-    db.langgraphcheckpointwrite = MagicMock()
-    db.langgraphcheckpointwrite.delete_many = AsyncMock()
-    db.langgraphcheckpoint = MagicMock()
-    db.langgraphcheckpoint.delete_many = AsyncMock()
+    client, _ = _client_with_mock_db()
+    _exec_repo().list_refs.return_value = [
+        ExecutionRef("ex1", "t1", "completed"),
+        ExecutionRef("ex2", "t2", "completed"),
+    ]
 
     client.app.dependency_overrides[get_current_role] = lambda: ("admin-id", "admin")  # type: ignore[attr-defined]
     try:
@@ -764,7 +723,8 @@ def test_bulk_delete_all_in_scope_admin_succeeds() -> None:
     finally:
         client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
     assert resp.status_code == 200
-    assert resp.json()["deletedCount"] == 2
+    assert resp.json() == {"deletedCount": 2, "skippedCount": 0}
+    assert _exec_repo().list_refs.await_args.kwargs == {"ids": None, "owner_id": None}
 
 
 def test_bulk_delete_no_args_rejected() -> None:
@@ -773,58 +733,41 @@ def test_bulk_delete_no_args_rejected() -> None:
     client, _ = _client_with_mock_db()
     resp = client.post("/executions/delete-bulk", json={})
     assert resp.status_code == 422
+    assert resp.json()["detail"] == "Provide executionIds or set allInScope=true."
+    _exec_repo().list_refs.assert_not_awaited()
 
 
 def test_cancel_execution_running_succeeds() -> None:
-    """P1-6: the public status vocabulary documents `canceled`, but nothing
-    ever wrote it — worker shutdown persisted `failed` instead, and there
-    was no user-triggered cancel operation at all. A running execution can
-    now be explicitly canceled."""
-    client, db = _client_with_mock_db()
-    db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="running"))
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    """P1-6: a running execution can be explicitly canceled. The response carries the
+    pre-update row with only status and error replaced (completedAt stays null)."""
+    client, _ = _client_with_mock_db()
+    _exec_repo().get.return_value = _execution_row(status="running")
     resp = client.post("/executions/ex1/cancel")
     assert resp.status_code == 200
     body = resp.json()
     assert body["status"] == "canceled"
-    where = db.workflowexecution.update_many.call_args.kwargs["where"]
-    assert where["id"] == "ex1"
-    # P1-2-followup: 'queued' is now a cancellable status too (see
-    # _ACTIVE_EXECUTION_STATUSES_SORTED) — the atomic update_many's
-    # allow-list is sourced from the same set as the guard check above it.
-    assert where["status"] == {"in": ["queued", "running", "waiting_approval"]}
-
-    data = db.workflowexecution.update_many.call_args.kwargs["data"]
-    assert data["runningSince"] is None
-    assert data["leaseOwner"] is None
-    assert data["leaseExpiresAt"] is None
+    assert body["error"] == "Execution canceled by user request."
+    assert body["completedAt"] is None
+    _exec_repo().cancel.assert_awaited_once()
+    assert _exec_repo().cancel.await_args.args[1] == "ex1"
+    assert _exec_repo().cancel.await_args.kwargs["error"] == "Execution canceled by user request."
+    _session().commit.assert_awaited_once()
 
 
 def test_cancel_execution_queued_succeeds() -> None:
-    """Important #1 (P1-2-followup): a user who cancels immediately after
-    starting an execution — before any worker has claimed it — must not
-    get an incorrect 409. Canceling a 'queued' row is safe on its own:
-    claim-and-run's claim query only matches
-    status IN ('queued', 'running', 'waiting_approval'), so once this
-    flips the row to 'canceled' the eventual Cloud Task delivery finds
-    nothing to claim (no separate task-cancellation call needed)."""
-    client, db = _client_with_mock_db()
-    db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="queued"))
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    """A user who cancels immediately after starting an execution — before any worker has
+    claimed it — must not get a 409: 'queued' is cancellable."""
+    client, _ = _client_with_mock_db()
+    _exec_repo().get.return_value = _execution_row(status="queued")
     resp = client.post("/executions/ex1/cancel")
     assert resp.status_code == 200
-    body = resp.json()
-    assert body["status"] == "canceled"
-    where = db.workflowexecution.update_many.call_args.kwargs["where"]
-    assert where["status"] == {"in": ["queued", "running", "waiting_approval"]}
+    assert resp.json()["status"] == "canceled"
+    _exec_repo().cancel.assert_awaited_once()
 
 
 def test_cancel_execution_waiting_approval_succeeds() -> None:
-    client, db = _client_with_mock_db()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=_execution_row(status="waiting_approval")
-    )
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    client, _ = _client_with_mock_db()
+    _exec_repo().get.return_value = _execution_row(status="waiting_approval")
     resp = client.post("/executions/ex1/cancel")
     assert resp.status_code == 200
     assert resp.json()["status"] == "canceled"
@@ -832,45 +775,45 @@ def test_cancel_execution_waiting_approval_succeeds() -> None:
 
 def test_cancel_execution_completed_rejected_409() -> None:
     """Already-terminal executions can't be canceled."""
-    client, db = _client_with_mock_db()
-    db.workflowexecution.update_many = AsyncMock()
+    client, _ = _client_with_mock_db()
     resp = client.post("/executions/ex1/cancel")
     assert resp.status_code == 409
-    db.workflowexecution.update_many.assert_not_awaited()
+    assert resp.json()["detail"] == "Execution is 'completed', not cancellable."
+    _exec_repo().cancel.assert_not_awaited()
 
 
 def test_cancel_execution_404_when_missing() -> None:
-    client, db = _client_with_mock_db()
-    db.workflowexecution.find_unique = AsyncMock(return_value=None)
+    client, _ = _client_with_mock_db()
+    _exec_repo().get.return_value = None
     resp = client.post("/executions/ghost/cancel")
     assert resp.status_code == 404
 
 
 def test_cancel_execution_404_when_not_owner() -> None:
-    client, db = _client_with_mock_db()
-    other_user_row = _execution_row(status="running")
-    other_user_row.userId = "someone-else"
-    db.workflowexecution.find_unique = AsyncMock(return_value=other_user_row)
+    client, _ = _client_with_mock_db()
+    _exec_repo().get.return_value = _execution_row(status="running", user_id="someone-else")
     resp = client.post("/executions/ex1/cancel")
     assert resp.status_code == 404
+    _exec_repo().cancel.assert_not_awaited()
 
 
-def test_cancel_execution_race_loses_when_update_many_affects_zero_rows() -> None:
-    """Two near-simultaneous cancel requests (or a cancel racing a resume)
-    — only one can win the atomic transition."""
-    client, db = _client_with_mock_db()
-    db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="running"))
-    db.workflowexecution.update_many = AsyncMock(return_value=0)
+def test_cancel_execution_race_loses_when_the_guarded_update_matches_nothing() -> None:
+    """Two near-simultaneous cancel requests (or a cancel racing a resume) — only one can
+    win the atomic transition; the loser gets the 'no longer cancellable' 409."""
+    client, _ = _client_with_mock_db()
+    _exec_repo().get.return_value = _execution_row(status="running")
+    _exec_repo().cancel.return_value = False
     resp = client.post("/executions/ex1/cancel")
     assert resp.status_code == 409
+    assert resp.json()["detail"] == (
+        "Execution 'ex1' is no longer cancellable (already resolved by a concurrent request)."
+    )
 
 
 @pytest.mark.parametrize("failure_code", ["lease_expired", None])
 def test_detail_serializes_failure_code(failure_code: str | None) -> None:
-    client, db = _client_with_mock_db()
-    row = _execution_row(status="failed")
-    row.failureCode = failure_code
-    db.workflowexecution.find_unique = AsyncMock(return_value=row)
+    client, _ = _client_with_mock_db()
+    _exec_repo().get.return_value = _execution_row(status="failed", failure_code=failure_code)
     response = cast("Any", client).get("/executions/ex1")
     assert response.status_code == 200, response.text
     assert response.json()["failureCode"] == failure_code
@@ -885,7 +828,7 @@ def test_workflow_is_read_in_a_short_session_closed_before_the_execution_is_crea
         events.append("read")
         return _workflow_row()
 
-    async def _create(*_a: object, **_k: object) -> SimpleNamespace:
+    async def _create(*_a: object, **_k: object) -> ExecutionRecord:
         events.append("db:create_execution")
         return _execution_record(status="queued")
 
@@ -908,3 +851,72 @@ def test_post_execution_without_a_database_is_503() -> None:
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 503
     assert resp.json()["detail"] == "database unavailable"
+
+
+def test_create_enqueues_outside_any_session_and_marks_failure_in_its_own(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    client, _db = _client_with_mock_db()
+    client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
+
+    async def _enqueue(*_a: object, **_k: object) -> None:
+        events.append("net:enqueue")
+        raise RuntimeError("boom")
+
+    async def _mark(*_a: object, **_k: object) -> bool:
+        events.append("db:mark_failed")
+        return True
+
+    monkeypatch.setattr("src.api.executions.enqueue_execution", _enqueue)
+    _exec_repo().mark_failed.side_effect = _mark
+    resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
+
+    assert resp.status_code == 500
+    at = events.index("net:enqueue")
+    assert events[at - 1] == "session:exit"
+    assert events[at + 1 :] == ["session:enter", "db:mark_failed", "session:exit"]
+    assert_no_network_inside_session(events)
+
+
+def test_cancel_runs_read_and_guarded_update_in_one_short_session() -> None:
+    events: list[str] = []
+    client, _db = _client_with_mock_db()
+    client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
+    _exec_repo().get.return_value = _execution_row(status="running")
+
+    async def _get(*_a: object, **_k: object) -> ExecutionRecord:
+        events.append("db:read")
+        return _execution_row(status="running")
+
+    async def _cancel(*_a: object, **_k: object) -> bool:
+        events.append("db:cancel")
+        return True
+
+    _exec_repo().get.side_effect = _get
+    _exec_repo().cancel.side_effect = _cancel
+    resp = client.post("/executions/ex1/cancel")
+
+    assert resp.status_code == 200
+    assert events[-4:] == ["session:enter", "db:read", "db:cancel", "session:exit"]
+
+
+def test_delete_runs_authz_read_and_delete_in_one_short_session() -> None:
+    events: list[str] = []
+    client, _db = _client_with_mock_db()
+    client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
+
+    async def _get(*_a: object, **_k: object) -> ExecutionRecord:
+        events.append("db:read")
+        return _execution_row(status="completed")
+
+    async def _delete(*_a: object, **_k: object) -> list[ExecutionRef]:
+        events.append("db:delete")
+        return [ExecutionRef("ex1", "t1", "completed")]
+
+    _exec_repo().get.side_effect = _get
+    _exec_repo().delete_terminal.side_effect = _delete
+    resp = client.delete("/executions/ex1")
+
+    assert resp.status_code == 204
+    assert events[-4:] == ["session:enter", "db:read", "db:delete", "session:exit"]

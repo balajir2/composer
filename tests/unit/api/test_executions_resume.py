@@ -8,9 +8,13 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.repos import executions as executions_repo
+from src.db.repos import users as users_repo
+from src.db.repos.executions import ExecutionRecord
 from src.engine.events import ExecutionEvent
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
+from tests.unit.db_fakes import FakeSessionmaker, make_user
 
 
 @pytest.fixture(autouse=True)
@@ -231,6 +235,32 @@ def test_get_execution_non_owner_returns_404(
 ) -> None:
     """Non-owner reading an execution gets 404 (info-leak tight)."""
     client, _ = _client_with_execution(monkeypatch, _execution_row(id="e1", userId="someone-else"))
+    # GET is a 4a route on SQLAlchemy: the row comes from the repo, not the Prisma mock.
+    foreign = ExecutionRecord(
+        id="e1",
+        workflow_id="w1",
+        user_id="someone-else",
+        status="completed",
+        current_node_id=None,
+        node_results={},
+        variables={},
+        input=None,
+        output=None,
+        error=None,
+        failure_code=None,
+        started_at=datetime(2026, 4, 21, tzinfo=UTC),
+        completed_at=None,
+        thread_id="t1",
+        original_owner_email=None,
+        idempotency_key=None,
+        lease_owner=None,
+        lease_expires_at=None,
+        running_since=None,
+        delivery_attempts=0,
+    )
+    monkeypatch.setattr(executions_repo, "get", AsyncMock(return_value=foreign))
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=make_user(id="dev")))
+    client.app.state.db_sessionmaker = FakeSessionmaker()  # type: ignore[attr-defined]
     resp = client.get("/executions/e1")
     assert resp.status_code == 404
 

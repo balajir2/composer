@@ -2,7 +2,6 @@
 
 import time
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -11,9 +10,11 @@ from fastapi.testclient import TestClient
 
 from src.db.models import UserRole
 from src.db.repos import api_keys as keys_repo
+from src.db.repos import executions as executions_repo
 from src.db.repos import users as users_repo
 from src.db.repos import workflows as workflows_repo
 from src.db.repos.api_keys import ApiKeyRecord
+from src.db.repos.executions import ExecutionRecord
 from src.db.repos.workflows import WorkflowRecord
 from src.engine.events import ExecutionEventBus
 from src.main import create_app
@@ -56,22 +57,31 @@ def _key(**overrides: Any) -> ApiKeyRecord:
     return ApiKeyRecord(**base)
 
 
-def _exec(**overrides: Any) -> SimpleNamespace:
+def _exec(**overrides: Any) -> ExecutionRecord:
     base: dict[str, Any] = {
         "id": "exec1",
-        "workflowId": "wf1",
-        "userId": "owner-u",
+        "workflow_id": "wf1",
+        "user_id": "owner-u",
         "status": "running",
-        "currentNodeId": None,
-        "nodeResults": {},
+        "current_node_id": None,
+        "node_results": {},
         "variables": {},
         "input": None,
         "output": None,
         "error": None,
-        "threadId": "t1",
+        "failure_code": None,
+        "started_at": datetime(2026, 4, 20, tzinfo=UTC),
+        "completed_at": None,
+        "thread_id": "t1",
+        "original_owner_email": None,
+        "idempotency_key": None,
+        "lease_owner": None,
+        "lease_expires_at": None,
+        "running_since": None,
+        "delivery_attempts": 0,
     }
     base.update(overrides)
-    return SimpleNamespace(**base)
+    return ExecutionRecord(**base)
 
 
 def _build_client(
@@ -119,10 +129,11 @@ def _build_client(
     app.state.db_sessionmaker = FakeSessionmaker()
     monkeypatch.setattr(workflows_repo, "get_by_slug", AsyncMock(return_value=wf))
     db = MagicMock()
-    db.workflowexecution = MagicMock()
     looked_up = existing_execution if existing_execution is not None else start_result
-    db.workflowexecution.find_first = AsyncMock(return_value=looked_up)
-    db.workflowexecution.find_unique = AsyncMock(return_value=looked_up)
+    find_key = AsyncMock(return_value=existing_execution)
+    monkeypatch.setattr(executions_repo, "find_by_idempotency_key", find_key)
+    monkeypatch.setattr(executions_repo, "get", AsyncMock(return_value=looked_up))
+    app.state.find_key = find_key  # for assertions
     app.state.db = db
     app.state.checkpointer = MagicMock()
     app.state.event_bus = ExecutionEventBus()
@@ -145,7 +156,7 @@ def _build_client(
         ) -> Any:
             if start_calls is not None:
                 start_calls.append({"workflow_id": workflow_id, "idempotency_key": idempotency_key})
-            return _exec(id="exec1", workflowId=workflow_id, userId=user_id or "owner-u")
+            return _exec(id="exec1", workflow_id=workflow_id, user_id=user_id or "owner-u")
 
         async def run(self, execution_id: str) -> None:
             return None
@@ -189,7 +200,7 @@ def test_idempotency_lookup_is_scoped_to_the_caller(monkeypatch: pytest.MonkeyPa
     wf = _wf(is_public=True)
     start_calls: list[dict[str, Any]] = []
     client = _build_client(monkeypatch, wf, start_calls=start_calls)
-    find_first = client.app.state.db.workflowexecution.find_first  # type: ignore[attr-defined]
+    find_key = client.app.state.find_key  # type: ignore[attr-defined]
     resp = client.post(
         "/api/run/my-wf",
         headers={"Authorization": "Bearer ck_abc123456789"},
@@ -197,9 +208,12 @@ def test_idempotency_lookup_is_scoped_to_the_caller(monkeypatch: pytest.MonkeyPa
     )
     assert resp.status_code == 200
     assert start_calls == [{"workflow_id": "wf1", "idempotency_key": "shared-key"}]
-    find_first.assert_awaited_once_with(
-        where={"workflowId": "wf1", "userId": "owner-u", "idempotencyKey": "shared-key"}
-    )
+    find_key.assert_awaited_once()
+    assert find_key.await_args.kwargs == {
+        "workflow_id": "wf1",
+        "user_id": "owner-u",
+        "key": "shared-key",
+    }
 
 
 def test_foreign_row_from_the_lookup_is_still_refused_with_409(
@@ -209,7 +223,7 @@ def test_foreign_row_from_the_lookup_is_still_refused_with_409(
     is never replayed."""
     wf = _wf(is_public=True)
     other = _exec(
-        id="other-ex-id", userId="someone-else", status="completed", output="SECRET-OUTPUT"
+        id="other-ex-id", user_id="someone-else", status="completed", output="SECRET-OUTPUT"
     )
     start_calls: list[dict[str, Any]] = []
     client = _build_client(monkeypatch, wf, existing_execution=other, start_calls=start_calls)
@@ -234,9 +248,9 @@ def test_idempotency_key_race_lost_relooks_up_scoped_to_the_caller(
 
     wf = _wf(is_public=True)
     client = _build_client(monkeypatch, wf)
-    mine = _exec(id="exec1", userId="owner-u", status="queued")
-    find_first = AsyncMock(side_effect=[None, mine])
-    client.app.state.db.workflowexecution.find_first = find_first  # type: ignore[attr-defined]
+    mine = _exec(id="exec1", user_id="owner-u", status="queued")
+    find_key = AsyncMock(side_effect=[None, mine])
+    monkeypatch.setattr(executions_repo, "find_by_idempotency_key", find_key)
 
     async def _lose_race(self: Any, **kwargs: Any) -> Any:
         raise AlreadyExists("uq")
@@ -252,8 +266,8 @@ def test_idempotency_key_race_lost_relooks_up_scoped_to_the_caller(
     )
     assert resp.status_code == 200
     assert resp.json()["executionId"] == "exec1"
-    wheres = [c.kwargs["where"] for c in find_first.await_args_list]
-    assert wheres == [{"workflowId": "wf1", "userId": "owner-u", "idempotencyKey": "raced-key"}] * 2
+    kwargs = [c.kwargs for c in find_key.await_args_list]
+    assert kwargs == [{"workflow_id": "wf1", "user_id": "owner-u", "key": "raced-key"}] * 2
     enqueue.assert_not_awaited()
 
 
@@ -262,7 +276,7 @@ def _lose_race_setup(monkeypatch: pytest.MonkeyPatch, lookups: list[Any]) -> tup
     from src.db.errors import AlreadyExists
 
     client = _build_client(monkeypatch, _wf(is_public=True))
-    client.app.state.db.workflowexecution.find_first = AsyncMock(side_effect=lookups)  # type: ignore[attr-defined]
+    monkeypatch.setattr(executions_repo, "find_by_idempotency_key", AsyncMock(side_effect=lookups))
 
     async def _lose_race(self: Any, **kwargs: Any) -> Any:
         raise AlreadyExists("uq")
@@ -276,7 +290,7 @@ def _lose_race_setup(monkeypatch: pytest.MonkeyPatch, lookups: list[Any]) -> tup
 def test_race_lost_to_a_foreign_row_is_409_and_not_enqueued(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    foreign = _exec(id="other-ex-id", userId="someone-else", status="completed")
+    foreign = _exec(id="other-ex-id", user_id="someone-else", status="completed")
     client, enqueue = _lose_race_setup(monkeypatch, [None, foreign])
     resp = client.post(
         "/api/run/my-wf",
@@ -533,13 +547,19 @@ def test_sync_mode_starts_enqueues_and_polls_only_after_the_session_closed(
     async def _enqueue(*_a: object, **_k: object) -> None:
         events.append("net:enqueue")
 
-    async def _poll(**_k: object) -> Any:
-        events.append("net:poll")
-        return _exec(status="completed", output={"ok": True})
+    polls = iter([_exec(status="running"), _exec(status="completed", output={"ok": True})])
+
+    async def _poll(*_a: object, **_k: object) -> Any:
+        events.append("db:poll")
+        return next(polls)
+
+    async def _sleep(_delay: float) -> None:
+        events.append("net:sleep")
 
     monkeypatch.setattr(_run_module, "LangGraphExecutor", _RecordingExec)
     monkeypatch.setattr(_run_module, "enqueue_execution", _enqueue)
-    client.app.state.db.workflowexecution.find_unique = _poll  # type: ignore[attr-defined]
+    monkeypatch.setattr(executions_repo, "get", _poll)
+    monkeypatch.setattr(_run_module.asyncio, "sleep", _sleep)
 
     resp = client.post(
         "/api/run/my-wf",
@@ -550,7 +570,17 @@ def test_sync_mode_starts_enqueues_and_polls_only_after_the_session_closed(
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "completed"
     nets = [e for e in events if e.startswith("net:")]
-    assert nets == ["net:start_execution", "net:enqueue", "net:poll"]
+    assert nets == ["net:start_execution", "net:enqueue", "net:sleep"]
+    # Every poll is its own short session, closed before the sleep (no long-lived session).
+    assert events[-7:] == [
+        "session:enter",
+        "db:poll",
+        "session:exit",
+        "net:sleep",
+        "session:enter",
+        "db:poll",
+        "session:exit",
+    ]
     assert_no_network_inside_session(events)
 
 

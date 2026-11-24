@@ -1,5 +1,6 @@
 """POST /executions (start a run) + GET /executions/{id} (fetch state)."""
 
+import dataclasses
 import json as _json
 import logging
 from datetime import UTC, datetime
@@ -11,12 +12,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.api._idempotency import find_execution_by_idempotency_key, require_same_caller
-from src.api.execution_status import (
-    ACTIVE_EXECUTION_STATUSES,
-    ACTIVE_EXECUTION_STATUSES_SORTED,
-)
+from src.api.execution_status import ACTIVE_EXECUTION_STATUSES
 from src.config import get_settings
 from src.db.errors import AlreadyExists
+from src.db.repos import executions as executions_repo
 from src.db.repos import workflow_assignments as workflow_assignments_repo
 from src.db.repos import workflows as workflows_repo
 from src.db.repos.executions import ExecutionRecord
@@ -167,31 +166,31 @@ async def create_execution(
         status_code=status.HTTP_404_NOT_FOUND,
         detail=f"Workflow {payload.workflow_id!r} not found.",
     )
-    async with require_sessionmaker(request)() as session:
+    # Idempotent replay (P1-3): a caller that retries this POST after a network timeout is
+    # the actual duplicate-execution vector in this system — LangGraph doesn't auto-retry
+    # nodes, and the stuck-execution sweeper only marks abandoned runs failed, it never
+    # re-runs them. A matching (workflowId, userId, idempotencyKey) row means an earlier
+    # request already started (or finished) this logical operation; return it instead of
+    # starting a second one that would fire side-effecting nodes a second time. The lookup
+    # shares the workflow read's short session.
+    sessionmaker = require_sessionmaker(request)
+    replay: ExecutionRecord | None = None
+    async with sessionmaker() as session:
         workflow = await workflows_repo.get(session, payload.workflow_id)
         if workflow is None:
             raise not_found
         allowed = role == "admin" or workflow.is_public or workflow.user_id == user_id
         if not allowed:
             allowed = await workflow_assignments_repo.exists(session, payload.workflow_id, user_id)
+        if allowed and payload.idempotency_key:
+            replay = await find_execution_by_idempotency_key(
+                session, payload.workflow_id, user_id, payload.idempotency_key
+            )
     if not allowed:
         raise not_found
-
-    # Idempotent replay (P1-3): a caller that retries this POST after a
-    # network timeout is the actual duplicate-execution vector in this
-    # system — LangGraph doesn't auto-retry nodes, and the stuck-execution
-    # sweeper only marks abandoned runs failed, it never re-runs them.
-    # A matching (workflowId, userId, idempotencyKey) row means an earlier request
-    # already started (or finished) this logical operation; return it
-    # instead of starting a second one that would fire side-effecting
-    # nodes (Jira, email, HTTP mutations) a second time.
-    if payload.idempotency_key:
-        existing = await find_execution_by_idempotency_key(
-            db, payload.workflow_id, user_id, payload.idempotency_key
-        )
-        if existing is not None:
-            require_same_caller(existing, user_id)
-            return ExecutionRead.model_validate(existing)
+    if replay is not None:
+        require_same_caller(replay, user_id)
+        return _to_execution_read(replay)
 
     executor = _get_executor(request)
     try:
@@ -207,9 +206,10 @@ async def create_execution(
         # lookup above is just a fast path that can't close the race alone.
         if payload.idempotency_key is None:
             raise
-        existing = await find_execution_by_idempotency_key(
-            db, payload.workflow_id, user_id, payload.idempotency_key
-        )
+        async with sessionmaker() as session:
+            existing = await find_execution_by_idempotency_key(
+                session, payload.workflow_id, user_id, payload.idempotency_key
+            )
         if existing is None:
             # Only reachable while the DB still has the old per-workflow unique
             # index (code deployed before alembic 0002): the key is another
@@ -219,7 +219,7 @@ async def create_execution(
                 detail="idempotency key already used for this workflow",
             ) from None
         require_same_caller(existing, user_id)
-        return ExecutionRead.model_validate(existing)
+        return _to_execution_read(existing)
 
     # P1-2: enqueue a Cloud Task instead of a request-bound BackgroundTask —
     # Cloud Run can scale a request-bound background task's instance to
@@ -256,14 +256,14 @@ async def create_execution(
             # (row -> 'canceled'). Guarding on status='queued' here makes
             # this write a safe no-op in that case instead of clobbering a
             # legitimate cancellation with a stale 'failed'.
-            await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
-                where={"id": row.id, "status": "queued"},
-                data={
-                    "status": "failed",
-                    "error": f"failed to enqueue execution for durable processing: {exc}",
-                    "completedAt": datetime.now(UTC),
-                },
-            )
+            async with sessionmaker() as session:
+                await executions_repo.mark_enqueue_failed_if_queued(
+                    session,
+                    row.id,
+                    error=f"failed to enqueue execution for durable processing: {exc}",
+                    now=datetime.now(UTC),
+                )
+                await session.commit()
         except Exception:
             # Nested-failure path: if THIS write also raises (a DB blip
             # right after row's own successful create()), we must not let
@@ -290,7 +290,7 @@ async def create_execution(
 
 @router.get("/executions", response_model=ExecutionListResponse)
 async def list_executions(
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    request: Request,
     _role: tuple[str, str] = Depends(get_current_role),
     workflow_id: str | None = Query(default=None, alias="workflowId"),
     status_filter: str | None = Query(default=None, alias="status"),
@@ -298,46 +298,34 @@ async def list_executions(
     offset: int = Query(default=0, ge=0),
 ) -> ExecutionListResponse:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
-    where: dict[str, Any] = {}
-    if role != "admin":
-        where["userId"] = user_id
-    if workflow_id is not None:
-        where["workflowId"] = workflow_id
-    if status_filter is not None:
-        where["status"] = status_filter
-
-    total = await db.workflowexecution.count(where=where)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
-    rows = await db.workflowexecution.find_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where=where,  # pyright: ignore[reportArgumentType]
-        take=limit,
-        skip=offset,
-        order={"startedAt": "desc"},
-    )
-    items = [ExecutionRead.model_validate(row) for row in rows]
+    async with require_sessionmaker(request)() as session:
+        records, total = await executions_repo.list_page(
+            session,
+            owner_id=None if role == "admin" else user_id,
+            workflow_id=workflow_id,
+            status=status_filter,
+            limit=limit,
+            offset=offset,
+        )
+    items = [_to_execution_read(r) for r in records]
     return ExecutionListResponse(total=total, items=items, limit=limit, offset=offset)
 
 
 @router.get("/executions/{execution_id}", response_model=ExecutionRead)
 async def get_execution(
     execution_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    request: Request,
     _role: tuple[str, str] = Depends(get_current_role),
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
     user_id, role = _role
-    row = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": execution_id}
-    )
-    if row is None:
+    async with require_sessionmaker(request)() as session:
+        row = await executions_repo.get(session, execution_id)
+    if row is None or (role != "admin" and row.user_id != user_id):
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Execution {execution_id!r} not found.",
         )
-    if role != "admin" and row.userId != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Execution {execution_id!r} not found.",
-        )
-    return ExecutionRead.model_validate(row)
+    return _to_execution_read(row)
 
 
 class BulkDeleteRequest(BaseModel):
@@ -374,7 +362,7 @@ class BulkDeleteResponse(BaseModel):
 )
 async def delete_executions_bulk(  # pyright: ignore[reportUnusedFunction]
     payload: BulkDeleteRequest,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    request: Request,
     _role: tuple[str, str] = Depends(get_current_role),
 ) -> BulkDeleteResponse:
     """Delete multiple executions in one round-trip.
@@ -398,65 +386,37 @@ async def delete_executions_bulk(  # pyright: ignore[reportUnusedFunction]
             detail="allInScope=true is admin-only.",
         )
 
-    where: dict[str, Any]
     requested_ids = payload.execution_ids or []
-    if payload.all_in_scope:
-        # Admin wipe — every row.  No scope narrowing because
-        # admins see everything.
-        where = {}
-    elif requested_ids:
-        # Explicit-ids mode.  Intersect with the caller's authz
-        # scope so member callers can't pass admin-only ids and
-        # have them slip through.
-        where = {"id": {"in": requested_ids}}
-        if role != "admin":
-            where["userId"] = user_id
-    else:
+    if not payload.all_in_scope and not requested_ids:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="Provide executionIds or set allInScope=true.",
         )
 
-    # Find the matching rows so we can collect thread_ids for the
-    # checkpoint cleanup step.  Without this we'd leave orphan
-    # checkpoints behind.
-    rows = await db.workflowexecution.find_many(where=where)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
-    # Skip active executions (P1-6): deleting a running or waiting_approval
-    # row's checkpoints out from under its in-flight background task leaves
-    # that task unable to persist a final state against a row that's gone.
-    rows = [row for row in rows if row.status not in ACTIVE_EXECUTION_STATUSES]
-    if not rows:
-        return BulkDeleteResponse(
-            deletedCount=0,
-            skippedCount=len(requested_ids),
+    # Resolve the target set under the caller's scope and delete it in ONE transaction
+    # (checkpoints and events of exactly the rows deleted). allInScope takes every row
+    # (admin only); explicit ids are intersected with the caller's own for members so
+    # admin-only ids can't slip through. Active executions are skipped (P1-6): deleting a
+    # running or waiting_approval row out from under its in-flight task leaves that task
+    # unable to persist a final state against a row that's gone.
+    async with require_sessionmaker(request)() as session:
+        refs = await executions_repo.list_refs(
+            session,
+            ids=None if payload.all_in_scope else requested_ids,
+            owner_id=None if role == "admin" else user_id,
         )
+        target_ids = [r.id for r in refs if r.status not in ACTIVE_EXECUTION_STATUSES]
+        deleted = await executions_repo.delete_terminal(session, target_ids)
+        await session.commit()
 
-    thread_ids = [row.threadId for row in rows]
-    target_ids = [row.id for row in rows]
-
-    # Order matters: writes table is FK'd into the checkpoints table,
-    # so writes go first, then checkpoints, then the executions
-    # themselves (which cascade-delete approvals via Prisma).
-    await db.langgraphcheckpointwrite.delete_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"threadId": {"in": thread_ids}}
-    )
-    await db.langgraphcheckpoint.delete_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"threadId": {"in": thread_ids}}
-    )
-    await db.executionevent.delete_many(where={"executionId": {"in": target_ids}})  # pyright: ignore[reportAttributeAccessIssue]
-    await db.workflowexecution.delete_many(where={"id": {"in": target_ids}})  # pyright: ignore[reportAttributeAccessIssue]
-
-    skipped = max(0, len(requested_ids) - len(target_ids)) if requested_ids else 0
-    return BulkDeleteResponse(
-        deletedCount=len(target_ids),
-        skippedCount=skipped,
-    )
+    skipped = max(0, len(requested_ids) - len(deleted)) if requested_ids else 0
+    return BulkDeleteResponse(deletedCount=len(deleted), skippedCount=skipped)
 
 
 @router.delete("/executions/{execution_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_execution(  # pyright: ignore[reportUnusedFunction]
     execution_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    request: Request,
     _role: tuple[str, str] = Depends(get_current_role),
 ) -> None:
     """Delete an execution + its derived artefacts.
@@ -479,35 +439,25 @@ async def delete_execution(  # pyright: ignore[reportUnusedFunction]
       - `workflow_executions` row itself.
     """
     user_id, role = _role
-    row = await db.workflowexecution.find_unique(where={"id": execution_id})  # pyright: ignore[reportAttributeAccessIssue]
-    if row is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Execution {execution_id!r} not found.",
-        )
-    if role != "admin" and row.userId != user_id:
-        # Same 404 we use on read for non-owners — don't leak existence.
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Execution {execution_id!r} not found.",
-        )
-    if row.status in ACTIVE_EXECUTION_STATUSES:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Execution {execution_id!r} is {row.status!r} — cancel it first, or wait "
-                "for it to reach a terminal state, before deleting."
-            ),
-        )
-
-    thread_id = row.threadId
-    # Order matters: writes table is FK'd into the checkpoint table,
-    # so writes go first, then checkpoints, then the execution itself.
-    # Approvals cascade through the execution FK.
-    await db.langgraphcheckpointwrite.delete_many(where={"threadId": thread_id})  # pyright: ignore[reportAttributeAccessIssue]
-    await db.langgraphcheckpoint.delete_many(where={"threadId": thread_id})  # pyright: ignore[reportAttributeAccessIssue]
-    await db.executionevent.delete_many(where={"executionId": execution_id})  # pyright: ignore[reportAttributeAccessIssue]
-    await db.workflowexecution.delete(where={"id": execution_id})  # pyright: ignore[reportAttributeAccessIssue]
+    async with require_sessionmaker(request)() as session:
+        row = await executions_repo.get(session, execution_id)
+        # Same 404 for a missing row and a non-owner: don't leak existence.
+        if row is None or (role != "admin" and row.user_id != user_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Execution {execution_id!r} not found.",
+            )
+        if row.status in ACTIVE_EXECUTION_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=(
+                    f"Execution {execution_id!r} is {row.status!r} — cancel it first, or wait "
+                    "for it to reach a terminal state, before deleting."
+                ),
+            )
+        # Checkpoints, events and the row go in one transaction.
+        await executions_repo.delete_terminal(session, [execution_id])
+        await session.commit()
 
 
 _CANCEL_ERROR_MESSAGE = "Execution canceled by user request."
@@ -516,7 +466,7 @@ _CANCEL_ERROR_MESSAGE = "Execution canceled by user request."
 @router.post("/executions/{execution_id}/cancel", response_model=ExecutionRead)
 async def cancel_execution(  # pyright: ignore[reportUnusedFunction]
     execution_id: str,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    request: Request,
     _role: tuple[str, str] = Depends(get_current_role),
 ) -> ExecutionRead:
     """First-class cancellation (P1-6): the public status vocabulary
@@ -528,60 +478,38 @@ async def cancel_execution(  # pyright: ignore[reportUnusedFunction]
     attempt's ownership without deleting its checkpoints or pending writes.
     """
     user_id, role = _role
-    execution = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": execution_id}
-    )
-    if execution is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Execution {execution_id!r} not found.",
+    async with require_sessionmaker(request)() as session:
+        execution = await executions_repo.get(session, execution_id)
+        if execution is None or (role != "admin" and execution.user_id != user_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Execution {execution_id!r} not found.",
+            )
+        if execution.status not in ACTIVE_EXECUTION_STATUSES:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Execution is {execution.status!r}, not cancellable.",
+            )
+        # Atomic conditional transition (G2): the status guard is part of the UPDATE, so
+        # two concurrent cancels (or a cancel racing a resume or claim-and-run's claim)
+        # can't both succeed. Canceling a still-queued row is safe: claim-and-run's claim no
+        # longer matches once the row is 'canceled', so the eventual Cloud Task delivery
+        # finds nothing to claim and returns 'already_claimed'.
+        canceled = await executions_repo.cancel_if_active(
+            session, execution_id, error=_CANCEL_ERROR_MESSAGE, now=datetime.now(UTC)
         )
-    if role != "admin" and execution.userId != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Execution {execution_id!r} not found.",
-        )
-    if execution.status not in ACTIVE_EXECUTION_STATUSES:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Execution is {execution.status!r}, not cancellable.",
-        )
-
-    # Atomic conditional transition (same pattern as resume_execution, P1-1)
-    # — folds the status guard into the update itself so two concurrent
-    # cancel calls (or a cancel racing a resume, or a cancel racing
-    # claim-and-run's own claim) can't both succeed. Sourced from
-    # `ACTIVE_EXECUTION_STATUSES_SORTED` (not a separately-hardcoded list)
-    # so this can never silently drift from the guard check above it —
-    # this now includes 'queued', so canceling a not-yet-claimed execution
-    # succeeds here instead of hitting the 409 above. Safe to cancel while
-    # queued: claim-and-run's own claim query
-    # (`status IN ('queued', 'running', 'waiting_approval')`, see
-    # src/api/internal.py) no longer matches once this flips the row to
-    # 'canceled', so the eventual Cloud Task delivery finds nothing to
-    # claim and returns 'already_claimed' — no separate task-cancellation
-    # call is needed.
-    updated_count = await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": execution_id, "status": {"in": ACTIVE_EXECUTION_STATUSES_SORTED}},
-        data={
-            "status": "canceled",
-            "error": _CANCEL_ERROR_MESSAGE,
-            "completedAt": datetime.now(UTC),
-            "runningSince": None,
-            "leaseOwner": None,
-            "leaseExpiresAt": None,
-        },
-    )
-    if updated_count != 1:
+        await session.commit()
+    if not canceled:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=f"Execution {execution_id!r} is no longer cancellable "
             "(already resolved by a concurrent request).",
         )
 
-    execution.status = "canceled"
-    execution.error = _CANCEL_ERROR_MESSAGE
-    return ExecutionRead.model_validate(execution)
+    # The response carries the pre-update row with only status and error replaced.
+    return _to_execution_read(
+        dataclasses.replace(execution, status="canceled", error=_CANCEL_ERROR_MESSAGE)
+    )
 
 
 @router.post("/executions/{execution_id}/resume", response_model=ExecutionRead)
