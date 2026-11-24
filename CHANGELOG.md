@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Security - builder diagnosis only reads your own runs of the workflow being built (2026-11-24)
+
+- **Before:** a user with access to any workflow could send a builder message naming another user's execution id (on any workflow) and have that run's status, error, node results and some variables (only secret-looking keys were redacted) added to their builder chat, where the model could repeat them.
+- **Now:** the builder diagnoses an execution only if it belongs to the workflow being built and the caller started it (admins: any user's run, but still only of that workflow). This is the same owner-or-admin rule as `GET /executions/{id}`. Otherwise it behaves as if the execution does not exist: no diagnosis, no error, nothing revealed.
+
 ### Fixed — `/ready` tolerates a Neon cold start (2026-11-24)
 
 - **Before:** the readiness database check made one 1.0 s attempt. On 2026-11-23 at 16:55:53Z, after about 10 minutes idle, one `/ready` returned 503 `database: unavailable` after 1.25 s while Neon woke from scale-to-zero; the next request 7 s later returned 200 in 0.4 s.

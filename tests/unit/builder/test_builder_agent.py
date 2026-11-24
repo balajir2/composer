@@ -86,6 +86,7 @@ async def test_planning_turn_emits_plan_event() -> None:
         message="build me a RAG pipeline",
         execution_id=None,
         db=None,
+        user_id="u1",
     )
     assert any(e.get("type") == "plan" for e in events)
     assert session.pending_plan is not None
@@ -106,6 +107,7 @@ async def test_approve_patch_applies_pending_patch() -> None:
         message="__APPROVE_PATCH__",
         execution_id=None,
         db=None,
+        user_id="u1",
     )
     assert any(e.get("type") == "stage_applied" for e in events)
     assert session.pending_patch is None
@@ -128,6 +130,7 @@ async def test_approved_patch_collapses_duplicate_edges() -> None:
         message="__APPROVE_PATCH__",
         execution_id=None,
         db=None,
+        user_id="u1",
     )
     assert [e.id for e in wf.edges] == ["e1"]
 
@@ -143,6 +146,7 @@ async def test_reject_patch_discards_pending_patch() -> None:
         message="__REJECT_PATCH__",
         execution_id=None,
         db=None,
+        user_id="u1",
     )
     assert session.pending_patch is None
     assert len(wf.nodes) == 2
@@ -159,6 +163,7 @@ async def test_diagnose_turn_proposes_without_applying() -> None:
         message="why did it fail?",
         execution_id="x",
         db=None,
+        user_id="u1",
     )
     assert any(e.get("type") == "patch_proposal" for e in events)
     assert session.pending_patch is not None
@@ -176,6 +181,7 @@ async def test_build_turn_applies_layout_to_generated_nodes() -> None:
         message="build it",
         execution_id=None,
         db=None,
+        user_id="u1",
     )
     positions = {n.id: n.position for n in wf.nodes}
     # All three nodes started at the origin; layout must separate them.
@@ -195,6 +201,7 @@ async def test_plan_wrapped_in_code_fence_still_becomes_a_plan_card() -> None:
         message="search the web",
         execution_id=None,
         db=None,
+        user_id="u1",
     )
     assert [e for e in events if e.get("type") == "plan"] == [
         {"type": "plan", "stages": [{"id": "s1", "summary": "search"}]}
@@ -260,6 +267,7 @@ async def test_build_turn_repairs_a_second_start_and_disconnected_end() -> None:
         message="approve the plan",
         execution_id=None,
         db=None,
+        user_id="u1",
     )
 
     assert reply == "Built it."
@@ -282,6 +290,7 @@ async def _build(
         message="approve the plan",
         execution_id=None,
         db=None,
+        user_id="u1",
         **kw,
     )
     return model, events, reply, wf

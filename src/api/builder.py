@@ -251,6 +251,8 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
         message=payload.message,
         execution_id=payload.execution_id,
         db=db,
+        user_id=user_id,
+        role=role,
         model_catalog=model_catalog,
     )
 

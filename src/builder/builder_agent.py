@@ -240,6 +240,8 @@ async def run_builder_turn(
     message: str,
     execution_id: str | None,
     db: Any,
+    user_id: str,
+    role: str = "user",
     model_catalog: ModelCatalog | None = None,
 ) -> tuple[list[dict[str, Any]], str, Workflow]:
     """Run one turn. Returns (events, reply, workflow-to-persist)."""
@@ -271,7 +273,9 @@ async def run_builder_turn(
     # 2. Diagnose turn: propose a patch, do NOT apply.
     if execution_id:
         if db is not None:
-            diag = await build_diagnosis(db, execution_id)
+            diag = await build_diagnosis(
+                db, execution_id, workflow_id=workflow_id, user_id=user_id, role=role
+            )
             if diag is not None:
                 session.messages.append(
                     SystemMessage(
