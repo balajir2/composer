@@ -22,6 +22,9 @@ export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
   // as a conflict with ourselves.
   const runningRef = useRef<Promise<void> | null>(null);
   const queuedRef = useRef<Promise<void> | null>(null);
+  // Bumped by every markDirty. A save that finishes after the counter moved did not
+  // include the newer edit, so it must not report "saved".
+  const dirtyGenerationRef = useRef(0);
 
   function updateStatus(next: SaveStatus) {
     statusRef.current = next;
@@ -52,10 +55,13 @@ export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
 
   function start(): Promise<void> {
     if (isMountedRef.current) updateStatus("saving");
+    const sentAt = dirtyGenerationRef.current;
     const p = (async () => {
       try {
         await saveRef.current();
-        if (isMountedRef.current) updateStatus("saved");
+        if (isMountedRef.current) {
+          updateStatus(dirtyGenerationRef.current === sentAt ? "saved" : "dirty");
+        }
       } catch (err) {
         if (isMountedRef.current) updateStatus("error");
         throw err;
@@ -85,6 +91,7 @@ export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
   }
 
   function markDirty() {
+    dirtyGenerationRef.current += 1;
     updateStatus("dirty");
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
@@ -109,8 +116,8 @@ export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
 
   /** Resolves once no save is running or queued; failures are not rethrown. */
   async function settled(): Promise<void> {
-    while (runningRef.current) {
-      await runningRef.current.catch(() => {});
+    while (runningRef.current || queuedRef.current) {
+      await (runningRef.current ?? queuedRef.current)?.catch(() => {});
       await Promise.resolve();
     }
   }
@@ -122,10 +129,27 @@ export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
    */
   async function flush() {
     await settled();
-    if (statusRef.current === "dirty" || statusRef.current === "error") await saveNow();
+    if (statusRef.current === "dirty" || statusRef.current === "error" || timerRef.current) {
+      await saveNow();
+    }
   }
 
-  /** Drop pending work and return to idle, e.g. after the user discards their edits. */
+  /** True while an edit is unsaved: dirty, debounce pending, or a save running or queued. */
+  function hasPendingWork(): boolean {
+    return (
+      statusRef.current === "dirty" ||
+      statusRef.current === "saving" ||
+      timerRef.current !== null ||
+      runningRef.current !== null ||
+      queuedRef.current !== null
+    );
+  }
+
+  /**
+   * Drop pending work and return to idle, e.g. after the user discards their edits.
+   * A save already queued still runs: it sends the freshly loaded graph with the fresh
+   * stamp, a harmless redundant PUT.
+   */
   function reset() {
     if (timerRef.current) {
       clearTimeout(timerRef.current);
@@ -134,5 +158,5 @@ export function useAutosave(save: () => Promise<void>, debounceMs = 3000) {
     updateStatus("idle");
   }
 
-  return { status, markDirty, saveNow, flush, settled, reset };
+  return { status, markDirty, saveNow, flush, settled, hasPendingWork, reset };
 }

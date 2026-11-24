@@ -188,5 +188,40 @@ describe("useAutosave", () => {
       });
       expect(save).toHaveBeenCalledTimes(1); // nothing was dirtied meanwhile
     });
+
+    it("stays dirty when an edit lands while a save is in flight, and flush saves it", async () => {
+      const first = deferred();
+      const save = vi.fn().mockReturnValueOnce(first.promise).mockResolvedValue(undefined);
+      const { result } = renderHook(() => useAutosave(save, 3000));
+
+      let running!: Promise<void>;
+      act(() => {
+        running = result.current.saveNow();
+      });
+      act(() => result.current.markDirty()); // edited after the save was sent
+      await act(async () => {
+        first.resolve();
+        await running;
+      });
+
+      expect(result.current.status).toBe("dirty"); // not "saved": the edit is not stored
+      expect(result.current.hasPendingWork()).toBe(true);
+      await act(async () => {
+        await result.current.flush();
+      });
+      expect(save).toHaveBeenCalledTimes(2);
+      expect(result.current.status).toBe("saved");
+      expect(result.current.hasPendingWork()).toBe(false);
+    });
+
+    it("flush saves when only the debounce timer is pending", async () => {
+      const save = vi.fn().mockResolvedValue(undefined);
+      const { result } = renderHook(() => useAutosave(save, 3000));
+      act(() => result.current.markDirty());
+      await act(async () => {
+        await result.current.flush();
+      });
+      expect(save).toHaveBeenCalledTimes(1);
+    });
   });
 });

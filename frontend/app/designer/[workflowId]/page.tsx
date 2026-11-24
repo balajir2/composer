@@ -290,7 +290,7 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
 
   useEffect(() => {
     function handleBeforeUnload(e: BeforeUnloadEvent) {
-      if (autosave.status === "dirty" || autosave.status === "saving") {
+      if (autosave.hasPendingWork()) {
         e.preventDefault();
         e.returnValue = "";
       }

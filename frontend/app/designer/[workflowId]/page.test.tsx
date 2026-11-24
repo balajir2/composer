@@ -366,4 +366,21 @@ describe("DesignerCanvasPage optimistic locking", () => {
     expect(bodyOfCall(1).expectedUpdatedAt).toBe(SEEN); // the ordinary save keeps its guard
     expect(bodyOfCall(2).expectedUpdatedAt).toBeUndefined(); // the overwrite is the one without
   });
+
+  it("still warns on unload when an edit landed during a save that then succeeded", async () => {
+    let finish!: (v: unknown) => void;
+    updateWorkflow.mockReturnValueOnce(new Promise((r) => (finish = r)));
+    renderPage("wf-a");
+    await screen.findByTestId("save-status");
+
+    fireEvent.click(screen.getByText("save-now"));
+    await waitFor(() => expect(updateWorkflow).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByText("edit-nodes")); // edited while the save is in flight
+    finish({ updatedAt: AFTER_SAVE });
+    await waitFor(() => expect(screen.getByTestId("save-status").textContent).toBe("dirty"));
+
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
+  });
 });
