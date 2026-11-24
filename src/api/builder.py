@@ -2,6 +2,7 @@
 
 import secrets
 import time
+from datetime import datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -16,15 +17,18 @@ from src.api.workflows import (  # reuse existing secret helpers (additive impor
     _encrypt_jira_tokens,  # pyright: ignore[reportPrivateUsage]
     _encrypt_vector_db_keys,  # pyright: ignore[reportPrivateUsage]
     _to_workflow_read,  # pyright: ignore[reportPrivateUsage]
+    workflow_changed_409,
 )
 from src.builder.builder_agent import BuildSession, run_builder_turn
 from src.builder.model_policy import ModelNotAllowedError, enabled_model_catalog, load_policy
 from src.config import get_settings
+from src.db.errors import StalePrecondition
 from src.db.repos import workflow_assignments as assignments_repo
 from src.db.repos import workflows as workflows_repo
 from src.db.repos.workflows import WorkflowRecord
 from src.db.runtime import require_sessionmaker
 from src.db.session import get_session
+from src.db.types import ensure_utc, truncate_to_millis
 from src.engine.graph_builder import collect_workflow_violations
 from src.engine.workflow import Workflow
 from src.llm.providers import build_chat_model
@@ -50,6 +54,9 @@ class BuilderMessageRequest(BaseModel):
     execution_id: str | None = Field(default=None, alias="executionId")
     # "provider/modelId"; must be in the admin-approved set. Omit for the default.
     model: str | None = None
+    # The workflow's ``updatedAt`` as the client last saw it. When sent, the save is
+    # rejected with 409 if someone else changed the workflow in the meantime.
+    expected_updated_at: datetime | None = Field(default=None, alias="expectedUpdatedAt")
 
 
 class BuilderModelOption(BaseModel):
@@ -144,6 +151,7 @@ async def _persist(
     existing: WorkflowRecord,
     user_id: str,
     role: str,
+    expected_updated_at: datetime | None = None,
 ) -> WorkflowRecord:
     """Write nodes and edges in a fresh short session.
 
@@ -163,9 +171,15 @@ async def _persist(
     # Metadata ruling: update ONLY nodes + edges; never the metadata columns.
     async with sessionmaker() as session:
         await _get_accessible(session, workflow_id, user_id, role, for_update=True)
-        row = await workflows_repo.update(
-            session, workflow_id, {"nodes": nodes_json, "edges": edges_json}
-        )
+        try:
+            row = await workflows_repo.update(
+                session,
+                workflow_id,
+                {"nodes": nodes_json, "edges": edges_json},
+                expected_updated_at=expected_updated_at,
+            )
+        except StalePrecondition as exc:  # saved by someone else while the turn ran
+            raise workflow_changed_409(exc.current_updated_at) from exc
         if row is None:  # deleted while the builder turn ran
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -223,6 +237,14 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
 
     sessionmaker = require_sessionmaker(request)
     existing = await _load_workflow(sessionmaker, workflow_id, user_id, role)
+    expected = (
+        truncate_to_millis(ensure_utc(payload.expected_updated_at))
+        if payload.expected_updated_at
+        else None
+    )
+    if expected is not None and existing.updated_at != expected:
+        # Already stale: refuse before spending an LLM turn on an outdated canvas.
+        raise workflow_changed_409(existing.updated_at)
 
     if session is None:
         sid = secrets.token_hex(16)
@@ -257,7 +279,9 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
     )
 
     _check_workflow_size_limits(updated)
-    row = await _persist(sessionmaker, workflow_id, updated, existing, user_id, role)
+    row = await _persist(
+        sessionmaker, workflow_id, updated, existing, user_id, role, expected_updated_at=expected
+    )
     validation_errors = collect_workflow_violations(updated)
     return BuilderMessageResponse(
         sessionId=sid,

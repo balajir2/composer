@@ -16,6 +16,8 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { Skeleton } from "@/components/ui/skeleton";
 import { toast } from "sonner";
+import { WorkflowChangedDialog } from "@/components/composer/workflow-changed-dialog";
+import { workflowChanged } from "@/lib/workflow-conflict";
 
 export default function WorkflowSettingsPage() {
   const { workflowId } = useParams<{ workflowId: string }>();
@@ -40,6 +42,11 @@ export default function WorkflowSettingsPage() {
   const [isPublic, setIsPublic] = useState(false);
   const [isTemplate, setIsTemplate] = useState(false);
   const [publishOpen, setPublishOpen] = useState(false);
+  // The save someone else's change refused, kept so Overwrite can resend it.
+  const [conflict, setConflict] = useState<{
+    retry: "save" | "unpublish";
+    currentUpdatedAt: string | null;
+  } | null>(null);
 
   // Seed form fields when workflow data loads.
   useEffect(() => {
@@ -54,7 +61,7 @@ export default function WorkflowSettingsPage() {
   }, [workflow]);
 
   const saveMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (opts?: { overwrite?: boolean }) => {
       if (!workflow) throw new Error("Workflow not loaded.");
       const tags = tagsInput
         .split(",")
@@ -62,6 +69,7 @@ export default function WorkflowSettingsPage() {
         .filter(Boolean);
       // Preserve existing nodes + edges — only update metadata fields.
       return updateWorkflow(workflowId, {
+        expectedUpdatedAt: opts?.overwrite ? undefined : (workflow.updatedAt as string | undefined),
         name: name.trim() || workflow.name,
         description: description.trim() || null,
         category: category.trim() || null,
@@ -77,20 +85,28 @@ export default function WorkflowSettingsPage() {
         externalSlug: workflow.externalSlug ?? null,
       });
     },
-    onSuccess: () => {
+    onSuccess: (saved) => {
+      // Take the response as the loaded copy now, so the next save sends its new
+      // `updatedAt` instead of the pre-save one while the refetch is still on its way.
+      queryClient.setQueryData(["workflow", workflowId], saved);
       void queryClient.invalidateQueries({ queryKey: ["workflow", workflowId] });
       // Templates list pulled by /designer/templates is keyed separately,
       // so make sure flipping the toggle takes effect there too.
       void queryClient.invalidateQueries({ queryKey: ["designer-templates"] });
       toast.success("Settings saved.");
     },
-    onError: (err) => toast.error(err instanceof Error ? err.message : "Failed to save settings."),
+    onError: (err) => {
+      const changed = workflowChanged(err);
+      if (changed) return setConflict({ retry: "save", ...changed });
+      toast.error(err instanceof Error ? err.message : "Failed to save settings.");
+    },
   });
 
   const unpublishMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (opts?: { overwrite?: boolean }) => {
       if (!workflow) throw new Error("Workflow not loaded.");
       return updateWorkflow(workflowId, {
+        expectedUpdatedAt: opts?.overwrite ? undefined : (workflow.updatedAt as string | undefined),
         name: workflow.name,
         description: workflow.description ?? null,
         category: workflow.category ?? null,
@@ -106,13 +122,33 @@ export default function WorkflowSettingsPage() {
         externalSlug: workflow.externalSlug ?? null,
       });
     },
-    onSuccess: () => {
+    onSuccess: (saved) => {
+      // Take the response as the loaded copy now, so the next save sends its new
+      // `updatedAt` instead of the pre-save one while the refetch is still on its way.
+      queryClient.setQueryData(["workflow", workflowId], saved);
       void queryClient.invalidateQueries({ queryKey: ["workflow", workflowId] });
       toast.success("Workflow unpublished.");
     },
-    onError: (err) =>
-      toast.error(err instanceof Error ? err.message : "Failed to unpublish workflow."),
+    onError: (err) => {
+      const changed = workflowChanged(err);
+      if (changed) return setConflict({ retry: "unpublish", ...changed });
+      toast.error(err instanceof Error ? err.message : "Failed to unpublish workflow.");
+    },
   });
+
+  // Reload: forget the form edits and show what is stored now (the seeding effect
+  // above refills the fields from the refetched workflow).
+  async function reloadAfterConflict() {
+    await queryClient.refetchQueries({ queryKey: ["workflow", workflowId] });
+    setConflict(null);
+  }
+
+  function overwriteAfterConflict() {
+    const retry = conflict?.retry;
+    setConflict(null);
+    if (retry === "save") saveMutation.mutate({ overwrite: true });
+    if (retry === "unpublish") unpublishMutation.mutate({ overwrite: true });
+  }
 
   if (isLoading) {
     return (
@@ -142,6 +178,12 @@ export default function WorkflowSettingsPage() {
 
   return (
     <div className="mx-auto max-w-2xl space-y-8 px-4 py-8">
+      <WorkflowChangedDialog
+        open={conflict !== null}
+        currentUpdatedAt={conflict?.currentUpdatedAt ?? null}
+        onReload={() => void reloadAfterConflict()}
+        onOverwrite={overwriteAfterConflict}
+      />
       {/* Back link */}
       <div className="flex items-center gap-3">
         <Link

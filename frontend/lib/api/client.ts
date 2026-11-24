@@ -19,6 +19,9 @@ function extractDetail(status: number, detail: unknown): string {
   if (detail && typeof detail === "object" && "detail" in detail) {
     const d = (detail as { detail: unknown }).detail;
     if (typeof d === "string") return `${status}: ${d}`;
+    if (d && typeof d === "object" && typeof (d as { message?: unknown }).message === "string") {
+      return `${status}: ${(d as { message: string }).message}`;
+    }
     if (Array.isArray(d)) {
       const first = d[0] as { loc?: unknown[]; msg?: string } | undefined;
       if (first?.msg) {

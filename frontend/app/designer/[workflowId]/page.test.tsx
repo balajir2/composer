@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useEffect } from "react";
@@ -38,8 +38,11 @@ vi.mock("@/components/composer/canvas/designer-execution-panel", () => ({
 }));
 
 vi.mock("@/components/composer/canvas/save-controls", () => ({
-  SaveControls: ({ saveStatus }: { saveStatus: string }) => (
-    <div data-testid="save-status">{saveStatus}</div>
+  SaveControls: ({ saveStatus, onSave }: { saveStatus: string; onSave: () => Promise<void> }) => (
+    <div>
+      <div data-testid="save-status">{saveStatus}</div>
+      <button onClick={() => onSave().catch(() => undefined)}>save-now</button>
+    </div>
   ),
 }));
 
@@ -222,5 +225,162 @@ describe("DesignerCanvasPage autosave dirty-tracking", () => {
 
     await waitFor(() => expect(getWorkflow).toHaveBeenCalledWith("wf-b"));
     await waitFor(() => expect(screen.getByTestId("save-status").textContent).toBe("idle"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Optimistic locking: never overwrite someone else's save unknowingly
+// ---------------------------------------------------------------------------
+
+const SEEN = "2026-11-24T10:00:00.123000Z";
+const AFTER_SAVE = "2026-11-24T10:01:00.456000Z";
+const THEIRS = "2026-11-24T10:05:00.500000Z";
+
+function changedError() {
+  return {
+    status: 409,
+    detail: {
+      detail: {
+        code: "workflow_changed",
+        message: "workflow changed since you loaded it",
+        currentUpdatedAt: THEIRS,
+      },
+    },
+  };
+}
+
+function bodyOfCall(n: number): Record<string, unknown> {
+  return updateWorkflow.mock.calls[n]?.[1] as Record<string, unknown>;
+}
+
+describe("DesignerCanvasPage optimistic locking", () => {
+  beforeEach(() => {
+    getWorkflow.mockReset();
+    updateWorkflow.mockReset();
+    // Background refetches (after a save) keep answering with the originally loaded copy.
+    getWorkflow.mockResolvedValue({ ...workflowFixture("wf-a"), updatedAt: SEEN });
+  });
+
+  it("sends the last-seen updatedAt, then the one each save returned", async () => {
+    updateWorkflow.mockResolvedValue({ updatedAt: AFTER_SAVE });
+    renderPage("wf-a");
+    await screen.findByTestId("save-status");
+
+    fireEvent.click(screen.getByText("save-now"));
+    await waitFor(() => expect(updateWorkflow).toHaveBeenCalledTimes(1));
+    expect(bodyOfCall(0).expectedUpdatedAt).toBe(SEEN);
+
+    await waitFor(() => expect(screen.getByTestId("save-status").textContent).toBe("saved"));
+    fireEvent.click(screen.getByText("save-now"));
+    await waitFor(() => expect(updateWorkflow).toHaveBeenCalledTimes(2));
+    expect(bodyOfCall(1).expectedUpdatedAt).toBe(AFTER_SAVE);
+  });
+
+  it("opens the dialog on a 409 instead of silently failing", async () => {
+    updateWorkflow.mockRejectedValue(changedError());
+    renderPage("wf-a");
+    await screen.findByTestId("save-status");
+
+    fireEvent.click(screen.getByText("save-now"));
+
+    expect(await screen.findByText("This workflow was saved elsewhere")).toBeTruthy();
+    expect(screen.getByText(/saved from another tab or by someone else at /)).toBeTruthy();
+  });
+
+  it("Reload refetches the workflow and the next save uses its updatedAt", async () => {
+    updateWorkflow.mockRejectedValueOnce(changedError()).mockResolvedValue({ updatedAt: "x" });
+    renderPage("wf-a");
+    await screen.findByTestId("save-status");
+    fireEvent.click(screen.getByText("save-now"));
+    await screen.findByText("This workflow was saved elsewhere");
+
+    getWorkflow.mockResolvedValueOnce({ ...workflowFixture("wf-a"), updatedAt: THEIRS });
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+
+    await waitFor(() => expect(getWorkflow).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(screen.queryByText("This workflow was saved elsewhere")).toBeNull());
+    expect(updateWorkflow).toHaveBeenCalledTimes(1); // reloading saves nothing
+    expect(screen.getByTestId("save-status").textContent).toBe("idle");
+
+    fireEvent.click(screen.getByText("save-now"));
+    await waitFor(() => expect(updateWorkflow).toHaveBeenCalledTimes(2));
+    expect(bodyOfCall(1).expectedUpdatedAt).toBe(THEIRS);
+  });
+
+  it("Overwrite resends the same save without the precondition", async () => {
+    updateWorkflow
+      .mockRejectedValueOnce(changedError())
+      .mockResolvedValue({ updatedAt: AFTER_SAVE });
+    renderPage("wf-a");
+    await screen.findByTestId("save-status");
+    fireEvent.click(screen.getByText("save-now"));
+    await screen.findByText("This workflow was saved elsewhere");
+
+    fireEvent.click(screen.getByRole("button", { name: "Overwrite" }));
+
+    await waitFor(() => expect(updateWorkflow).toHaveBeenCalledTimes(2));
+    expect(bodyOfCall(1).expectedUpdatedAt).toBeUndefined();
+    await waitFor(() => expect(screen.queryByText("This workflow was saved elsewhere")).toBeNull());
+
+    // Later saves are guarded again, from what the overwrite returned.
+    fireEvent.click(screen.getByText("save-now"));
+    await waitFor(() => expect(updateWorkflow).toHaveBeenCalledTimes(3));
+    expect(bodyOfCall(2).expectedUpdatedAt).toBe(AFTER_SAVE);
+  });
+
+  it("sends a save made during an in-flight save only after it resolves, with its stamp", async () => {
+    let finishFirst!: (v: unknown) => void;
+    updateWorkflow
+      .mockReturnValueOnce(new Promise((r) => (finishFirst = r)))
+      .mockResolvedValue({ updatedAt: "2026-11-24T10:02:00.000000Z" });
+    renderPage("wf-a");
+    await screen.findByTestId("save-status");
+
+    fireEvent.click(screen.getByText("save-now"));
+    await waitFor(() => expect(updateWorkflow).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByText("save-now"));
+    await new Promise((r) => setTimeout(r, 50));
+    expect(updateWorkflow).toHaveBeenCalledTimes(1); // held back, not racing the first
+
+    finishFirst({ updatedAt: AFTER_SAVE });
+    await waitFor(() => expect(updateWorkflow).toHaveBeenCalledTimes(2));
+    expect(bodyOfCall(0).expectedUpdatedAt).toBe(SEEN);
+    expect(bodyOfCall(1).expectedUpdatedAt).toBe(AFTER_SAVE);
+    expect(screen.queryByText("This workflow was saved elsewhere")).toBeNull();
+  });
+
+  it("applies Overwrite to its own save, not to one already in flight", async () => {
+    updateWorkflow
+      .mockRejectedValueOnce(changedError())
+      .mockResolvedValue({ updatedAt: AFTER_SAVE });
+    renderPage("wf-a");
+    await screen.findByTestId("save-status");
+    fireEvent.click(screen.getByText("save-now"));
+    await screen.findByText("This workflow was saved elsewhere");
+
+    // A save is requested, and Overwrite is clicked before it has even started.
+    fireEvent.click(screen.getByText("save-now"));
+    fireEvent.click(screen.getByRole("button", { name: "Overwrite" }));
+
+    await waitFor(() => expect(updateWorkflow).toHaveBeenCalledTimes(3));
+    expect(bodyOfCall(1).expectedUpdatedAt).toBe(SEEN); // the ordinary save keeps its guard
+    expect(bodyOfCall(2).expectedUpdatedAt).toBeUndefined(); // the overwrite is the one without
+  });
+
+  it("still warns on unload when an edit landed during a save that then succeeded", async () => {
+    let finish!: (v: unknown) => void;
+    updateWorkflow.mockReturnValueOnce(new Promise((r) => (finish = r)));
+    renderPage("wf-a");
+    await screen.findByTestId("save-status");
+
+    fireEvent.click(screen.getByText("save-now"));
+    await waitFor(() => expect(updateWorkflow).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByText("edit-nodes")); // edited while the save is in flight
+    finish({ updatedAt: AFTER_SAVE });
+    await waitFor(() => expect(screen.getByTestId("save-status").textContent).toBe("dirty"));
+
+    const event = new Event("beforeunload", { cancelable: true });
+    window.dispatchEvent(event);
+    expect(event.defaultPrevented).toBe(true);
   });
 });

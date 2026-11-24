@@ -6,6 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Added — warn before overwriting someone else's workflow changes (2026-11-24)
+
+- **Before:** two people editing the same workflow meant the last save silently won, including a builder (Build with AI) message that finished after someone else had saved.
+- **Now:** `PUT /workflows/{id}` and `POST /builder/{id}/message` take an optional `expectedUpdatedAt`, the `updatedAt` the client last saw. If the workflow changed since, nothing is written and the answer is `409` with `{"detail": {"code": "workflow_changed", "message": "workflow changed since you loaded it", "currentUpdatedAt": ...}}`. Optional, so existing scripts behave exactly as before; a workflow deleted meanwhile is still 404.
+- **Atomic:** the repository's `update` takes `expected_updated_at` and issues one `UPDATE ... WHERE id = :id AND updated_at = :expected RETURNING`, raising `StalePrecondition` (new, in `src/db/errors.py`) when no row matches but the workflow exists. No read-then-write window, so of two concurrent saves with the same precondition exactly one succeeds.
+- **Builder:** checked once before the model turn (no wasted turn on an outdated canvas) and again under the existing row lock when saving. The response carries the new `workflow.updatedAt` for the next message.
+- **Precision:** `updated_at` is `timestamp(3)` (milliseconds) and is truncated to milliseconds on write, so the `updatedAt` a response returns round-trips into the next precondition exactly. Two saves within the same millisecond share a timestamp and cannot be told apart by it; acceptable for human edits.
+- **Designer:** always sends the last-seen `updatedAt` (from load and from each save or builder response, not from background refetches the canvas does not show). On `409` a dialog, "This workflow changed", says when and offers **Reload** (discard unsaved changes, fetch the latest) or **Overwrite** (resend without the precondition). Workflow settings (save and unpublish) do the same. The publish dialog is unchanged: it re-fetches immediately before saving, and it reads any 409 as a slug clash.
+- **Sub-millisecond stamps:** `expectedUpdatedAt` is truncated to milliseconds (`truncate_to_millis`, next to `ensure_utc`) before it is compared, in `PUT` and in the builder's pre-check, so a client echoing `.123456Z` matches the stored `.123`.
+- **No false conflicts with yourself:** the Designer's saves are now serialized (`useAutosave`): a save requested while another is in flight waits for it and then reads the stamp its response returned; several waiting requests coalesce into one. The builder waits for an in-flight save before it reads the stamp, and Overwrite applies to its own save only. The dialog is titled "This workflow was saved elsewhere" because the other save may be the user's own second tab.
+- **Unmount flush:** a debounced save flushed when leaving the page that gets a 409 is dropped rather than overwriting the other save.
+- **Follow-up (not done):** the workflow settings page still reseeds its form whenever the workflow query refetches, as before; a refetch can therefore discard form edits that were not yet saved.
+- No Alembic migration. The "concurrent edits are last-write-wins" follow-up from the SQLAlchemy phase 3 plan is done.
+
 ### Changed — workflow assignments now have foreign keys to users (2026-11-24)
 
 - **Before:** `workflow_assignments.user_id` and `assigned_by_id` were plain text with no foreign key, so an assignment could point at a deleted user, and a grant to a user deleted mid-request succeeded.

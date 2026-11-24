@@ -1,6 +1,7 @@
 """POST /workflows — create a workflow from JSON."""
 
 import re
+from datetime import UTC, datetime
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -8,12 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.config import get_settings
-from src.db.errors import AlreadyExists, ReferencedRowMissing
+from src.db.errors import AlreadyExists, ReferencedRowMissing, StalePrecondition
 from src.db.repos import users as users_repo
 from src.db.repos import workflow_assignments as assignments_repo
 from src.db.repos import workflows as workflows_repo
 from src.db.repos.workflows import WorkflowChanges, WorkflowRecord
 from src.db.session import get_session
+from src.db.types import ensure_utc, truncate_to_millis
 from src.engine.graph_builder import (
     WorkflowValidationError,
     dedupe_edges,
@@ -311,6 +313,16 @@ class WorkflowCreate(BaseModel):
     external_slug: str | None = Field(default=None, alias="externalSlug")
 
 
+class WorkflowUpdate(WorkflowCreate):
+    """Request body for PUT /workflows/{id}.
+
+    ``expectedUpdatedAt`` is the ``updatedAt`` the client last saw. When sent, the save is
+    rejected with 409 if the workflow changed since; omitted, the last save wins.
+    """
+
+    expected_updated_at: datetime | None = Field(default=None, alias="expectedUpdatedAt")
+
+
 class WorkflowRead(BaseModel):
     """Response body for /workflows endpoints."""
 
@@ -344,12 +356,38 @@ class WorkflowListResponse(BaseModel):
     offset: int
 
 
+WORKFLOW_CHANGED_MESSAGE = "workflow changed since you loaded it"
+
+
+def workflow_changed_409(current_updated_at: datetime) -> HTTPException:
+    """The 409 for a stale ``expectedUpdatedAt``; the detail carries when it changed."""
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            "code": "workflow_changed",
+            "message": WORKFLOW_CHANGED_MESSAGE,
+            # Same ``...Z`` form the workflow responses use for ``updatedAt``.
+            "currentUpdatedAt": current_updated_at.astimezone(UTC)
+            .isoformat()
+            .replace("+00:00", "Z"),
+        },
+    )
+
+
 async def _update_or_409(
-    session: AsyncSession, workflow_id: str, changes: WorkflowChanges
+    session: AsyncSession,
+    workflow_id: str,
+    changes: WorkflowChanges,
+    *,
+    expected_updated_at: datetime | None = None,
 ) -> WorkflowRecord:
     """Update a workflow; a slug clash is a 409 whose detail names only the constraint."""
     try:
-        updated = await workflows_repo.update(session, workflow_id, changes)
+        updated = await workflows_repo.update(
+            session, workflow_id, changes, expected_updated_at=expected_updated_at
+        )
+    except StalePrecondition as exc:
+        raise workflow_changed_409(exc.current_updated_at) from exc
     except AlreadyExists as exc:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
@@ -488,7 +526,7 @@ async def get_workflow(
 @router.put("/workflows/{workflow_id}", response_model=WorkflowRead)
 async def update_workflow(
     workflow_id: str,
-    payload: WorkflowCreate,
+    payload: WorkflowUpdate,
     session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
 ) -> WorkflowRead:
@@ -561,7 +599,12 @@ async def update_workflow(
         **publish_data,
     }
 
-    updated = await _update_or_409(session, workflow_id, changes)
+    expected = (
+        truncate_to_millis(ensure_utc(payload.expected_updated_at))
+        if payload.expected_updated_at
+        else None
+    )
+    updated = await _update_or_409(session, workflow_id, changes, expected_updated_at=expected)
     await session.commit()
     return _to_workflow_read(updated)
 

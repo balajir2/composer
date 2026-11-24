@@ -8,7 +8,10 @@ import {
   type BuilderEvent,
   type BuilderModels,
 } from "@/lib/api/builder";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { workflowChanged } from "@/lib/workflow-conflict";
+import { WorkflowChangedDialog } from "@/components/composer/workflow-changed-dialog";
 import { PlanCard } from "./plan-card";
 import { CredentialRequestCard } from "./credential-request-card";
 import { PatchDiffCard } from "./patch-diff-card";
@@ -92,9 +95,15 @@ export function BuilderPanel({
   onWorkflowUpdated,
   executionId,
   beforeSend,
+  getExpectedUpdatedAt,
+  onReload,
 }: {
   workflowId: string;
-  onWorkflowUpdated: (workflow: { nodes: unknown[]; edges: unknown[] }) => void;
+  onWorkflowUpdated: (workflow: {
+    nodes: unknown[];
+    edges: unknown[];
+    updatedAt?: unknown;
+  }) => void;
   executionId?: string;
   /**
    * Persist any unsaved canvas edits. The builder reads the workflow from the
@@ -102,6 +111,13 @@ export function BuilderPanel({
    * autosave debounce would otherwise be overwritten by the builder's turn.
    */
   beforeSend?: () => Promise<void>;
+  /**
+   * The workflow's `updatedAt` as this page last saw it, sent with every message so the
+   * server refuses (409) to build on, and save over, a workflow someone else changed.
+   */
+  getExpectedUpdatedAt?: () => string | undefined;
+  /** Discard local state and load the latest workflow (the dialog's Reload). */
+  onReload?: () => Promise<void>;
 }) {
   const [sessionId, setSessionId] = useState<string | undefined>();
   const [transcript, setTranscript] = useState<Msg[]>([]);
@@ -114,6 +130,15 @@ export function BuilderPanel({
   // case the server default is used).
   const [models, setModels] = useState<BuilderModels | null>(null);
   const [model, setModel] = useState<string | undefined>();
+  // A message the server refused because the workflow changed under us, kept so
+  // Overwrite can resend it.
+  const [conflict, setConflict] = useState<{
+    text: string;
+    executionId?: string;
+    cardKey?: string;
+    currentUpdatedAt: string | null;
+  } | null>(null);
+  const [resolving, setResolving] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -136,12 +161,12 @@ export function BuilderPanel({
     endRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
   }, [transcript, busy]);
 
-  async function send(text: string, executionId?: string, cardKey?: string) {
+  async function send(text: string, executionId?: string, cardKey?: string, overwrite = false) {
     if (!text.trim() || busy) return;
     setBusy(true);
     if (cardKey) setResolved((r) => new Set(r).add(cardKey));
     // Internal sentinel messages (patch approve/reject) are not shown as user text.
-    if (!text.startsWith("__")) {
+    if (!overwrite && !text.startsWith("__")) {
       setTranscript((t) => [...t, { role: "user", text, events: [] }]);
     }
     setInput("");
@@ -176,6 +201,7 @@ export function BuilderPanel({
         sessionId,
         executionId,
         model,
+        expectedUpdatedAt: overwrite ? undefined : getExpectedUpdatedAt?.(),
       });
       if (res.events.some((e) => e.type === "session_expired")) {
         setSessionId(undefined); // next turn opens a fresh session
@@ -184,7 +210,20 @@ export function BuilderPanel({
       }
       setTranscript((t) => [...t, { role: "assistant", text: res.reply, events: res.events }]);
       if (res.workflow) onWorkflowUpdated(res.workflow as never);
-    } catch {
+    } catch (err) {
+      const changed = workflowChanged(err);
+      if (changed) {
+        // Nothing was written. Let the user choose before anything is overwritten.
+        if (cardKey)
+          setResolved((r) => {
+            const next = new Set(r);
+            next.delete(cardKey);
+            return next;
+          });
+        setConflict({ text, executionId, cardKey, currentUpdatedAt: changed.currentUpdatedAt });
+        setBusy(false);
+        return;
+      }
       setTranscript((t) => [
         ...t,
         {
@@ -198,8 +237,35 @@ export function BuilderPanel({
     }
   }
 
+  async function handleReload() {
+    setResolving(true);
+    try {
+      await onReload?.();
+      setConflict(null);
+    } catch {
+      // Keep the dialog open so the user can retry or choose Overwrite.
+      toast.error("Could not reload the workflow. Please try again.");
+    } finally {
+      setResolving(false);
+    }
+  }
+
+  function handleOverwrite() {
+    if (!conflict) return;
+    const { text, executionId, cardKey } = conflict;
+    setConflict(null);
+    void send(text, executionId, cardKey, true);
+  }
+
   return (
     <div className="flex h-full w-96 shrink-0 flex-col border-l bg-background">
+      <WorkflowChangedDialog
+        open={conflict !== null}
+        currentUpdatedAt={conflict?.currentUpdatedAt ?? null}
+        busy={resolving}
+        onReload={() => void handleReload()}
+        onOverwrite={handleOverwrite}
+      />
       <div className="flex items-center gap-2 border-b px-3 py-2.5">
         <Sparkles className="h-4 w-4 text-primary" aria-hidden />
         <span className="text-sm font-semibold">Build with AI</span>

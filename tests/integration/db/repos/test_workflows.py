@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession
 
-from src.db.errors import AlreadyExists
+from src.db.errors import AlreadyExists, StalePrecondition
 from src.db.models import User, UserRole, Workflow, WorkflowAssignment, WorkflowExecution
 from src.db.repos import workflows as repo
 from src.db.repos.workflows import Visibility, WorkflowValues
@@ -216,6 +216,57 @@ async def test_update_changes_only_given_keys_and_bumps_updated_at(
     assert updated.nodes == [{"id": "n"}] and updated.created_at == w.created_at
     assert await repo.update(session, "missing", {"name": "x"}) is None
     assert await repo.get(session, w.id) == updated
+
+
+async def test_update_with_a_matching_precondition_saves_and_bumps(
+    session: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w = await repo.create(session, _values(updated_at=T0))
+    t = datetime(2026, 3, 4, 5, 6, 7, 8000, tzinfo=UTC)
+    monkeypatch.setattr(repo, "utcnow", lambda: t)
+    updated = await repo.update(session, w.id, {"name": "New"}, expected_updated_at=T0)
+    assert updated is not None and updated.name == "New" and updated.updated_at == t
+
+
+async def test_update_with_a_stale_precondition_raises_and_writes_nothing(
+    session: AsyncSession,
+) -> None:
+    w = await repo.create(session, _values(updated_at=T0))
+    stale = T0 - timedelta(seconds=1)
+    with pytest.raises(StalePrecondition) as info:
+        await repo.update(session, w.id, {"name": "New"}, expected_updated_at=stale)
+    assert info.value.current_updated_at == T0
+    after = await repo.get(session, w.id)
+    assert after is not None and after.name == "W" and after.updated_at == T0
+
+
+async def test_update_with_a_precondition_on_a_missing_row_returns_none(
+    session: AsyncSession,
+) -> None:
+    assert await repo.update(session, "missing", {"name": "x"}, expected_updated_at=T0) is None
+
+
+async def test_precondition_compares_at_stored_millisecond_precision(
+    session: AsyncSession,
+) -> None:
+    ms = datetime(2026, 11, 24, 10, 0, 0, 123000, tzinfo=UTC)
+    w = await repo.create(session, _values(updated_at=ms))
+    # A non-UTC offset still matches the same instant.
+    echoed = datetime.fromisoformat("2026-11-24T11:00:00.123+01:00")
+    updated = await repo.update(session, w.id, {"name": "New"}, expected_updated_at=echoed)
+    assert updated is not None
+
+
+async def test_sub_millisecond_precondition_is_the_callers_to_truncate(
+    session: AsyncSession,
+) -> None:
+    """The bind rounds (``.123789`` becomes ``.124``), so the API must truncate first."""
+    ms = datetime(2026, 11, 24, 10, 0, 0, 123000, tzinfo=UTC)
+    w = await repo.create(session, _values(updated_at=ms))
+    with pytest.raises(StalePrecondition):
+        await repo.update(
+            session, w.id, {"name": "x"}, expected_updated_at=ms.replace(microsecond=123789)
+        )
 
 
 async def test_update_refreshes_row_already_loaded_in_session(session: AsyncSession) -> None:

@@ -3,6 +3,7 @@ import type { components } from "./generated/schema";
 
 type WorkflowRead = components["schemas"]["WorkflowRead"];
 type WorkflowCreate = components["schemas"]["WorkflowCreate"];
+type WorkflowUpdate = components["schemas"]["WorkflowUpdate"];
 type WorkflowListResponse = components["schemas"]["WorkflowListResponse"];
 
 export async function listWorkflows(params?: {
@@ -28,7 +29,11 @@ export async function createWorkflow(body: WorkflowCreate): Promise<WorkflowRead
   return apiFetch<WorkflowRead>(`/workflows`, { method: "POST", body: JSON.stringify(body) });
 }
 
-export async function updateWorkflow(id: string, body: WorkflowCreate): Promise<WorkflowRead> {
+/**
+ * Replace a workflow. Send `expectedUpdatedAt` (the `updatedAt` you last saw) to be
+ * refused with a 409 if someone else saved first; omit it to overwrite regardless.
+ */
+export async function updateWorkflow(id: string, body: WorkflowUpdate): Promise<WorkflowRead> {
   return apiFetch<WorkflowRead>(`/workflows/${id}`, { method: "PUT", body: JSON.stringify(body) });
 }
 

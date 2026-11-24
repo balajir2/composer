@@ -302,3 +302,114 @@ describe("BuilderPanel flushes unsaved canvas edits", () => {
     expect(sendBuilderMessage).not.toHaveBeenCalled();
   });
 });
+
+describe("BuilderPanel optimistic locking", () => {
+  const SEEN = "2026-11-24T10:00:00.123000Z";
+  const changed = {
+    status: 409,
+    detail: {
+      detail: {
+        code: "workflow_changed",
+        message: "workflow changed since you loaded it",
+        currentUpdatedAt: "2026-11-24T10:05:00.500000Z",
+      },
+    },
+  };
+
+  beforeEach(() => {
+    sendBuilderMessage.mockReset();
+    listBuilderModels.mockReset();
+    listBuilderModels.mockResolvedValue({
+      default: "anthropic/sonnet",
+      models: [{ id: "anthropic/sonnet", label: "Sonnet" }],
+    });
+    window.localStorage.clear();
+  });
+
+  function send(text: string) {
+    const input = screen.getByPlaceholderText("Describe your workflow…");
+    fireEvent.change(input, { target: { value: text } });
+    fireEvent.keyDown(input, { key: "Enter" });
+  }
+
+  it("sends the last-seen updatedAt with the message", async () => {
+    sendBuilderMessage.mockResolvedValue(reply());
+    render(
+      <BuilderPanel
+        workflowId="wf-1"
+        onWorkflowUpdated={vi.fn()}
+        getExpectedUpdatedAt={() => SEEN}
+      />
+    );
+    send("hello");
+    await screen.findByText("ok");
+    expect(sendBuilderMessage.mock.calls[0]?.[1]).toMatchObject({
+      message: "hello",
+      expectedUpdatedAt: SEEN,
+    });
+  });
+
+  it("opens the dialog on a 409, and Overwrite resends without the precondition", async () => {
+    sendBuilderMessage
+      .mockRejectedValueOnce(changed)
+      .mockResolvedValueOnce(reply({ reply: "done anyway" }));
+    render(
+      <BuilderPanel
+        workflowId="wf-1"
+        onWorkflowUpdated={vi.fn()}
+        getExpectedUpdatedAt={() => SEEN}
+      />
+    );
+    send("build it");
+    await screen.findByText("This workflow was saved elsewhere");
+
+    fireEvent.click(screen.getByRole("button", { name: "Overwrite" }));
+
+    await screen.findByText("done anyway");
+    expect(sendBuilderMessage).toHaveBeenCalledTimes(2);
+    expect(sendBuilderMessage.mock.calls[1]?.[1].message).toBe("build it");
+    expect(sendBuilderMessage.mock.calls[1]?.[1].expectedUpdatedAt).toBeUndefined();
+  });
+
+  it("Reload asks the page to refetch and does not resend", async () => {
+    sendBuilderMessage.mockRejectedValueOnce(changed);
+    const onReload = vi.fn().mockResolvedValue(undefined);
+    render(
+      <BuilderPanel
+        workflowId="wf-1"
+        onWorkflowUpdated={vi.fn()}
+        getExpectedUpdatedAt={() => SEEN}
+        onReload={onReload}
+      />
+    );
+    send("build it");
+    await screen.findByText("This workflow was saved elsewhere");
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+
+    await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(screen.queryByText("This workflow was saved elsewhere")).toBeNull());
+    expect(sendBuilderMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the dialog open when Reload fails, so the user can retry", async () => {
+    sendBuilderMessage.mockRejectedValueOnce(changed);
+    const onReload = vi.fn().mockRejectedValue(new Error("network"));
+    render(
+      <BuilderPanel
+        workflowId="wf-1"
+        onWorkflowUpdated={vi.fn()}
+        getExpectedUpdatedAt={() => SEEN}
+        onReload={onReload}
+      />
+    );
+    send("build it");
+    await screen.findByText("This workflow was saved elsewhere");
+
+    fireEvent.click(screen.getByRole("button", { name: "Reload" }));
+
+    await waitFor(() => expect(onReload).toHaveBeenCalledTimes(1));
+    expect(screen.getByText("This workflow was saved elsewhere")).toBeTruthy();
+    await waitFor(() => expect(screen.getByRole("button", { name: "Reload" })).toBeTruthy());
+  });
+});

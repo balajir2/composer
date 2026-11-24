@@ -1,5 +1,6 @@
 """Tests for workflow list + search endpoints (Phase 7b)."""
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
@@ -7,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
-from src.db.errors import AlreadyExists
+from src.db.errors import AlreadyExists, StalePrecondition
 from src.db.repos import users as users_repo
 from src.db.repos.workflows import WorkflowRecord
 from src.main import create_app
@@ -311,6 +312,69 @@ def test_put_workflow_owner_happy(monkeypatch: pytest.MonkeyPatch) -> None:
     resp = client.put("/workflows/w1", json=_VALID_BODY)
     assert resp.status_code == 200, resp.text
     assert resp.json()["name"] == "Updated"
+
+
+def test_put_passes_the_precondition_to_the_repo(monkeypatch: pytest.MonkeyPatch) -> None:
+    existing = _wf_row(id="w1", user_id="dev")
+    client, repos = _client_put(monkeypatch, existing, _wf_row(id="w1", user_id="dev"))
+    resp = client.put(
+        "/workflows/w1", json={**_VALID_BODY, "expectedUpdatedAt": "2026-11-24T10:00:00.123Z"}
+    )
+    assert resp.status_code == 200, resp.text
+    kwargs = repos.update.await_args.kwargs  # type: ignore[union-attr]
+    assert kwargs["expected_updated_at"] == datetime(2026, 11, 24, 10, 0, 0, 123000, tzinfo=UTC)
+
+
+def test_put_truncates_a_sub_millisecond_precondition_to_stored_precision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The column keeps milliseconds, so ``.123789`` must match a stored ``.123``."""
+    existing = _wf_row(id="w1", user_id="dev")
+    client, repos = _client_put(monkeypatch, existing, _wf_row(id="w1", user_id="dev"))
+    resp = client.put(
+        "/workflows/w1", json={**_VALID_BODY, "expectedUpdatedAt": "2026-11-24T10:00:00.123789Z"}
+    )
+    assert resp.status_code == 200, resp.text
+    kwargs = repos.update.await_args.kwargs  # type: ignore[union-attr]
+    assert kwargs["expected_updated_at"] == datetime(2026, 11, 24, 10, 0, 0, 123000, tzinfo=UTC)
+
+
+def test_put_by_a_stranger_with_a_stale_precondition_is_403_not_409(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    existing = _wf_row(id="w1", user_id="someone-else")
+    client, repos = _client_put(monkeypatch, existing, None)
+    repos.update.side_effect = StalePrecondition(datetime(2026, 11, 24, 10, 5, tzinfo=UTC))
+    resp = client.put(
+        "/workflows/w1", json={**_VALID_BODY, "expectedUpdatedAt": "2026-11-24T10:00:00Z"}
+    )
+    assert resp.status_code == 403
+    assert "currentUpdatedAt" not in resp.text
+    repos.update.assert_not_awaited()
+
+
+def test_put_without_a_precondition_passes_none(monkeypatch: pytest.MonkeyPatch) -> None:
+    existing = _wf_row(id="w1", user_id="dev")
+    client, repos = _client_put(monkeypatch, existing, _wf_row(id="w1", user_id="dev"))
+    assert client.put("/workflows/w1", json=_VALID_BODY).status_code == 200
+    assert repos.update.await_args.kwargs["expected_updated_at"] is None  # type: ignore[union-attr]
+
+
+def test_put_with_a_stale_precondition_is_409_with_the_current_updated_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    existing = _wf_row(id="w1", user_id="dev")
+    client, repos = _client_put(monkeypatch, existing, None)
+    current = datetime(2026, 11, 24, 10, 5, 0, 500000, tzinfo=UTC)
+    repos.update.side_effect = StalePrecondition(current)
+    resp = client.put(
+        "/workflows/w1", json={**_VALID_BODY, "expectedUpdatedAt": "2026-11-24T10:00:00Z"}
+    )
+    assert resp.status_code == 409
+    detail = resp.json()["detail"]
+    assert detail["message"] == "workflow changed since you loaded it"
+    assert detail["code"] == "workflow_changed"
+    assert datetime.fromisoformat(detail["currentUpdatedAt"].replace("Z", "+00:00")) == current
 
 
 _DUP_EDGE_BODY: dict[str, Any] = {
