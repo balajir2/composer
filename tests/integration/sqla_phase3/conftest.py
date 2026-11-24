@@ -615,7 +615,7 @@ class Phase3Adapter:
         from src.engine.langgraph_executor import LangGraphExecutor
 
         return LangGraphExecutor(
-            db=self._db,
+            sessionmaker=self._sm,
             checkpointer=self._app.state.checkpointer,
             event_bus=self._app.state.event_bus,
         )
@@ -629,9 +629,16 @@ class Phase3Adapter:
         row = await executor.start_execution(
             workflow_id=workflow_id, input=run_input, user_id=user_id
         )
-        await self._db.workflowexecution.update(where={"id": row.id}, data={"status": "running"})
+        async with self._sm() as s:
+            await s.execute(
+                update(WorkflowExecution)
+                .where(WorkflowExecution.id == row.id)
+                .values(status="running")
+            )
+            await s.commit()
         await executor.run(row.id)
-        final = await self._db.workflowexecution.find_unique(where={"id": row.id})
+        async with self._sm() as s:
+            final = await s.get(WorkflowExecution, row.id, populate_existing=True)
         assert final is not None
         return {"id": row.id, "status": final.status, "output": final.output, "error": final.error}
 
@@ -644,7 +651,8 @@ class Phase3Adapter:
             await s.execute(delete(Workflow).where(Workflow.id == workflow_id))
             await s.commit()
         await executor.run(row.id)
-        found = await self._db.workflowexecution.find_unique(where={"id": row.id})
+        async with self._sm() as s:
+            found = await s.get(WorkflowExecution, row.id, populate_existing=True)
         return found is not None
 
     async def prepare_compiled_for(self, workflow_id: str) -> None:
@@ -652,10 +660,10 @@ class Phase3Adapter:
         Raises whatever the executor raises for a missing workflow."""
         execution = SimpleNamespace(
             id="exec-synthetic",
-            workflowId=workflow_id,
+            workflow_id=workflow_id,
             input="x",
-            userId=None,
-            threadId=unique("thread"),
+            user_id=None,
+            thread_id=unique("thread"),
         )
         await self._executor()._prepare_compiled(execution)  # pyright: ignore[reportPrivateUsage]
 

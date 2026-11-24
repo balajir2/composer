@@ -49,6 +49,7 @@ from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.config import get_settings
+from src.db.errors import AlreadyExists
 from src.db.models import (
     Approval,
     LangGraphCheckpoint,
@@ -865,7 +866,7 @@ class Phase4aAdapter:
         from src.engine.langgraph_executor import LangGraphExecutor
 
         return LangGraphExecutor(
-            db=self._db,
+            sessionmaker=self._sm,
             checkpointer=self._app.state.checkpointer,
             event_bus=self._app.state.event_bus,
         )
@@ -916,7 +917,7 @@ class Phase4aAdapter:
                 user_id=user_id,
                 idempotency_key=idempotency_key,
             )
-        except UniqueViolationError as exc:
+        except AlreadyExists as exc:
             raise DuplicateKey(str(exc)) from exc
         return cast("str", row.id)
 
@@ -961,20 +962,10 @@ class Phase4aAdapter:
         """Make the claim route's crash handler's own "mark failed" write raise (today the
         Prisma ``update_many``; after the port ``executions_repo.mark_failed_if_running``)."""
 
-        real = self._db.workflowexecution
-
         async def _raise(*_args: Any, **_kwargs: Any) -> Any:
             raise RuntimeError("failure write is down")
 
-        # The generated actions class uses __slots__, so wrap it instead of patching a method.
-        proxy = SimpleNamespace(
-            **{
-                name: getattr(real, name)
-                for name in ("find_unique", "find_first", "find_many", "create", "update", "count")
-            },
-            update_many=_raise,
-        )
-        self._monkeypatch.setattr(self._db, "workflowexecution", proxy)
+        self._monkeypatch.setattr("src.db.repos.executions.mark_failed_if_running", _raise)
 
     # ---- sweeps -----------------------------------------------------------------------------
 

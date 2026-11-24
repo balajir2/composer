@@ -15,11 +15,11 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.api._idempotency import find_execution_by_idempotency_key, require_same_caller
 from src.config import get_settings
+from src.db.errors import AlreadyExists
 from src.db.repos import workflows as workflows_repo
 from src.db.runtime import require_sessionmaker
 from src.engine.langgraph_executor import LangGraphExecutor
@@ -78,11 +78,15 @@ TERMINAL_STATUSES = {"completed", "failed", "canceled"}
 SYNC_EARLY_RETURN_STATUSES = TERMINAL_STATUSES | {"waiting_approval"}
 
 
-def _get_executor(request: Request, db: Any, event_bus: Any) -> LangGraphExecutor:
+def _get_executor(request: Request, event_bus: Any) -> LangGraphExecutor:
     checkpointer = getattr(request.app.state, "checkpointer", None)
     if checkpointer is None:
         raise RuntimeError("Checkpointer not attached to app.state")
-    return LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
+    return LangGraphExecutor(
+        sessionmaker=require_sessionmaker(request),
+        checkpointer=checkpointer,
+        event_bus=event_bus,
+    )
 
 
 @router.post("/api/run/{slug}")
@@ -128,7 +132,7 @@ async def run_external(
     if not workflow.is_public and workflow.user_id != auth.user_id and auth.role != "admin":
         raise HTTPException(status_code=404, detail=f"production workflow {slug!r} not found")
 
-    executor = _get_executor(request, db, event_bus)
+    executor = _get_executor(request, event_bus)
 
     # Idempotent replay (P1-3): a caller retrying this POST after a network
     # timeout is the actual duplicate-execution vector here — LangGraph
@@ -155,7 +159,7 @@ async def run_external(
                 user_id=auth.user_id,
                 idempotency_key=payload.idempotency_key,
             )
-        except UniqueViolationError:
+        except AlreadyExists:
             # Lost a race against a concurrent request carrying the same
             # key — the DB's unique constraint is the actual guarantee,
             # the find_first lookup above is just a fast path.

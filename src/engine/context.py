@@ -11,20 +11,24 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
     from src.engine.events_pg import PostgresEventStore
 
-_current_db: ContextVar[Any | None] = ContextVar("_current_db", default=None)
+_current_sessionmaker: ContextVar[async_sessionmaker[AsyncSession] | None] = ContextVar(
+    "_current_sessionmaker", default=None
+)
 
 
-def set_current_db(db: Any) -> None:
-    _current_db.set(db)
+def set_current_sessionmaker(sm: async_sessionmaker[AsyncSession] | None) -> None:
+    _current_sessionmaker.set(sm)
 
 
-def get_current_db() -> Any | None:
-    return _current_db.get()
+def get_current_sessionmaker() -> async_sessionmaker[AsyncSession] | None:
+    return _current_sessionmaker.get()
 
 
 @dataclass(frozen=True)
@@ -78,12 +82,12 @@ def get_current_event_bus() -> PostgresEventStore | None:
 
 __all__ = [
     "LangSmithConfig",
-    "get_current_db",
     "get_current_event_bus",
     "get_current_execution_id",
     "get_current_langsmith",
-    "set_current_db",
+    "get_current_sessionmaker",
     "set_current_event_bus",
     "set_current_execution_id",
     "set_current_langsmith",
+    "set_current_sessionmaker",
 ]

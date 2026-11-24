@@ -105,7 +105,11 @@ async def test_running_cancel_competes_with_executor_transition_in_postgres(
         }
     )
     try:
-        executor = LangGraphExecutor(db, app.state.checkpointer, app.state.event_bus)
+        executor = LangGraphExecutor(
+            sessionmaker=app.state.db_sessionmaker,
+            checkpointer=app.state.checkpointer,
+            event_bus=app.state.event_bus,
+        )
         method_name = {
             "completed": "_mark_completed",
             "failed": "_mark_failed",
@@ -226,7 +230,11 @@ async def test_public_cancel_accepts_an_already_committed_approval_pause(
         }
     )
     try:
-        executor = LangGraphExecutor(db, app.state.checkpointer, app.state.event_bus)
+        executor = LangGraphExecutor(
+            sessionmaker=app.state.db_sessionmaker,
+            checkpointer=app.state.checkpointer,
+            event_bus=app.state.event_bus,
+        )
         assert await executor._mark_waiting_approval(  # pyright: ignore[reportPrivateUsage]
             execution.id,
             {"node_id": "approval", "prompt": "Approve"},

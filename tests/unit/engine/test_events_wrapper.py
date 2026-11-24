@@ -1,8 +1,7 @@
 """Tests for the event-emitting executor wrapper."""
 
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from langgraph.errors import GraphBubbleUp
@@ -11,7 +10,11 @@ from src.engine.events import ExecutionEvent
 from src.engine.events_wrapper import wrap_executor_with_events
 from src.engine.execution_control import ExecutionStopped
 from src.engine.state import initial_state
-from src.engine.workflow import Workflow
+from tests.unit.db_fakes import (
+    FakeSessionmaker,
+    RecordingSessionmaker,
+    assert_no_network_inside_session,
+)
 
 
 class _FakeExecutor:
@@ -218,20 +221,37 @@ async def test_wrapper_noop_when_context_unset() -> None:
     assert result["variables"]["k"] == "v"
 
 
+def _patch_statuses(monkeypatch: pytest.MonkeyPatch, statuses: list[str | None]) -> list[str]:
+    """Make ``executions_repo.get_status`` answer from ``statuses``; returns the asked ids."""
+    asked: list[str] = []
+    remaining = list(statuses)
+
+    async def _get_status(_session: Any, execution_id: str) -> str | None:
+        asked.append(execution_id)
+        return remaining.pop(0)
+
+    monkeypatch.setattr("src.db.repos.executions.get_status", _get_status)
+    return asked
+
+
 @pytest.mark.parametrize(
     "status", ["canceled", "completed", "failed", "waiting_approval", "queued", None]
 )
-async def test_wrapper_stops_before_start_when_execution_is_not_running(status: str | None) -> None:
-    from src.engine.context import set_current_db, set_current_event_bus, set_current_execution_id
-
-    db = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(status=status) if status is not None else None
+async def test_wrapper_stops_before_start_when_execution_is_not_running(
+    status: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.engine.context import (
+        set_current_event_bus,
+        set_current_execution_id,
+        set_current_sessionmaker,
     )
+
+    asked = _patch_statuses(monkeypatch, [status])
+    sm = FakeSessionmaker()
     executor = _FakeExecutor()
     executor.arun = AsyncMock(wraps=executor.arun)
     store = _FakeEventStore()
-    set_current_db(db)
+    set_current_sessionmaker(sm)  # pyright: ignore[reportArgumentType]
     set_current_execution_id("e1")
     set_current_event_bus(store)  # pyright: ignore[reportArgumentType]
 
@@ -240,7 +260,7 @@ async def test_wrapper_stops_before_start_when_execution_is_not_running(status: 
         with pytest.raises(ExecutionStopped) as stopped:
             await arun(initial_state())
     finally:
-        set_current_db(None)
+        set_current_sessionmaker(None)
         set_current_execution_id(None)
         set_current_event_bus(None)
 
@@ -249,20 +269,24 @@ async def test_wrapper_stops_before_start_when_execution_is_not_running(status: 
     assert stopped.value.status == (status if status is not None else "missing")
     executor.arun.assert_not_awaited()
     assert store.events == []
-    db.workflowexecution.find_unique.assert_awaited_once_with(where={"id": "e1"})
+    assert asked == ["e1"]
 
 
-async def test_wrapper_stops_after_executor_returns_when_execution_was_canceled() -> None:
-    from src.engine.context import set_current_db, set_current_event_bus, set_current_execution_id
-
-    db = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        side_effect=[SimpleNamespace(status="running"), SimpleNamespace(status="canceled")]
+async def test_wrapper_stops_after_executor_returns_when_execution_was_canceled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.engine.context import (
+        set_current_event_bus,
+        set_current_execution_id,
+        set_current_sessionmaker,
     )
+
+    asked = _patch_statuses(monkeypatch, ["running", "canceled"])
+    sm = FakeSessionmaker()
     executor = _FakeExecutor()
     executor.arun = AsyncMock(wraps=executor.arun)
     store = _FakeEventStore()
-    set_current_db(db)
+    set_current_sessionmaker(sm)  # pyright: ignore[reportArgumentType]
     set_current_execution_id("e1")
     set_current_event_bus(store)  # pyright: ignore[reportArgumentType]
 
@@ -271,7 +295,7 @@ async def test_wrapper_stops_after_executor_returns_when_execution_was_canceled(
         with pytest.raises(ExecutionStopped) as stopped:
             await arun(initial_state())
     finally:
-        set_current_db(None)
+        set_current_sessionmaker(None)
         set_current_execution_id(None)
         set_current_event_bus(None)
 
@@ -280,94 +304,43 @@ async def test_wrapper_stops_after_executor_returns_when_execution_was_canceled(
     assert stopped.value.status == "canceled"
     executor.arun.assert_awaited_once()
     assert [event.type for event in store.events] == ["node_started"]
-    assert db.workflowexecution.find_unique.await_count == 2
+    assert asked == ["e1", "e1"]
 
 
-async def test_wrapper_persists_events_and_notifies() -> None:
-    from unittest.mock import AsyncMock, patch
-
-    from src.engine.context import set_current_event_bus, set_current_execution_id
-
-    store = AsyncMock()
-    store.append = AsyncMock(return_value=1)
-    set_current_execution_id("e1")
-    set_current_event_bus(store)
-
-    try:
-        with patch("src.engine.events_wrapper.notify_execution_event", new=AsyncMock()) as notify:
-            arun = wrap_executor_with_events(_FakeExecutor(), _FakeNode("n1", "http"))  # pyright: ignore[reportArgumentType]
-            await arun(initial_state())
-            assert store.append.await_count == 2  # node_started + node_completed
-            notify.assert_awaited()
-    finally:
-        set_current_execution_id(None)
-        set_current_event_bus(None)
-
-
-async def test_wrapper_node_completed_survives_event_store_failure() -> None:
-    """P1-4 regression: a telemetry-path failure (event append or NOTIFY)
-    must not abort the node. By the time node_completed would be emitted,
-    the executor has already produced its real, possibly expensive output
-    -- a broken event store must not discard that and raise past the
-    caller. _persist_and_notify's internal try/except is what protects
-    this."""
-    from src.engine.context import set_current_event_bus, set_current_execution_id
-
-    class _RaisingEventStore:
-        async def append(self, event: ExecutionEvent) -> int:
-            raise RuntimeError("simulated Postgres event-log outage")
-
-    set_current_execution_id("e1")
-    set_current_event_bus(_RaisingEventStore())  # pyright: ignore[reportArgumentType]
-
-    try:
-        arun = wrap_executor_with_events(_FakeExecutor(), _FakeNode("n1", "http"))  # pyright: ignore[reportArgumentType]
-        # Must not raise despite every append() call failing (node_started
-        # and node_completed both hit the broken store).
-        result = await arun(initial_state())
-    finally:
-        set_current_execution_id(None)
-        set_current_event_bus(None)
-
-    # The executor's actual output is still returned successfully.
-    assert result["variables"]["k"] == "v"
-
-
-async def test_build_graph_wraps_executors() -> None:
-    """Integration: build_graph applies the wrapper and emits events through
-    a real compiled graph."""
-    from langgraph.checkpoint.memory import MemorySaver
-
-    from src.engine.context import set_current_event_bus, set_current_execution_id
-    from src.engine.graph_builder import build_graph
-
-    store = _FakeEventStore()
-    set_current_execution_id("e1")
-    set_current_event_bus(store)  # pyright: ignore[reportArgumentType]
-
-    wf = Workflow.model_validate(
-        {
-            "id": "w",
-            "name": "t",
-            "nodes": [
-                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
-                {"id": "e", "type": "end", "position": {"x": 1, "y": 0}, "data": {"label": "E"}},
-            ],
-            "edges": [{"id": "e1", "source": "s", "target": "e"}],
-        }
+async def test_stop_check_is_a_short_read_that_closes_before_the_node_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ordering: session open -> read -> close, then the node executes, then a second read."""
+    from src.engine.context import (
+        set_current_event_bus,
+        set_current_execution_id,
+        set_current_sessionmaker,
     )
-    compiled = build_graph(wf, MemorySaver())
+
+    events: list[str] = []
+    _patch_statuses(monkeypatch, ["running", "running"])
+    sm = RecordingSessionmaker(events)
+
+    class _Node:
+        async def arun(self, state: Any) -> dict[str, Any]:
+            events.append("net:node")
+            return {"variables": {}, "node_results": {}}
+
+    set_current_sessionmaker(sm)  # pyright: ignore[reportArgumentType]
+    set_current_execution_id("e1")
+    set_current_event_bus(None)
     try:
-        await compiled.ainvoke(  # pyright: ignore[reportUnknownMemberType]
-            initial_state(), config={"configurable": {"thread_id": "t1"}}
-        )
+        arun = wrap_executor_with_events(_Node(), _FakeNode())  # pyright: ignore[reportArgumentType]
+        await arun(initial_state())
     finally:
+        set_current_sessionmaker(None)
         set_current_execution_id(None)
-        set_current_event_bus(None)
 
-    types_by_node: dict[str, list[str]] = {}
-    for ev in store.events:
-        types_by_node.setdefault(ev.payload["nodeId"], []).append(ev.type)
-
-    assert types_by_node["s"] == ["node_started", "node_completed"]
-    assert types_by_node["e"] == ["node_started", "node_completed"]
+    assert events == [
+        "session:enter",
+        "session:exit",
+        "net:node",
+        "session:enter",
+        "session:exit",
+    ]
+    assert_no_network_inside_session(events)

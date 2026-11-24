@@ -7,6 +7,8 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.errors import AlreadyExists
+from src.db.repos import executions as executions_repo
 from src.db.repos import users as users_repo
 from src.db.repos.workflows import WorkflowRecord
 from src.main import create_app
@@ -38,6 +40,12 @@ def _patch_enqueue_execution(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # p
 
 
 _repos_holder: list[WorkflowRepoMocks] = []
+_create_holder: list[AsyncMock] = []
+
+
+def _create_mock() -> AsyncMock:
+    """``executions_repo.create``, which ``LangGraphExecutor.start_execution`` calls."""
+    return _create_holder[0]
 
 
 def _repos() -> WorkflowRepoMocks:
@@ -50,6 +58,9 @@ def _patch_workflow_reads(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: 
     _repos_holder[:] = [patch_workflow_repos(monkeypatch)]
     _repos().get.return_value = _workflow_row()
     monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=make_user(id="dev")))
+    create = AsyncMock(return_value=_execution_record(status="queued"))
+    _create_holder[:] = [create]
+    monkeypatch.setattr(executions_repo, "create", create)
 
 
 def _execution_row(status: str = "running") -> SimpleNamespace:
@@ -67,6 +78,26 @@ def _execution_row(status: str = "running") -> SimpleNamespace:
         startedAt="2026-04-20T00:00:00Z",
         completedAt=None,
         threadId="t1",
+    )
+
+
+def _execution_record(status: str = "running") -> SimpleNamespace:
+    """What the repo returns (snake_case), as ``start_execution`` hands it to the route."""
+    return SimpleNamespace(
+        id="ex1",
+        workflow_id="wf1",
+        user_id="dev",
+        status=status,
+        current_node_id=None,
+        node_results={},
+        variables={},
+        input="hi",
+        output=None,
+        error=None,
+        failure_code=None,
+        started_at="2026-04-20T00:00:00Z",
+        completed_at=None,
+        thread_id="t1",
     )
 
 
@@ -91,10 +122,9 @@ def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     app = create_app()
     db = MagicMock()
     db.workflowexecution = MagicMock()
-    # P1-2: start_execution now creates rows with status='queued' — see
-    # LangGraphExecutor.start_execution's docstring; the row only becomes
-    # 'running' once /internal/claim-and-run actually claims it.
-    db.workflowexecution.create = AsyncMock(return_value=_execution_row(status="queued"))
+    # P1-2: start_execution creates rows with status='queued' (the autouse fixture patches
+    # executions_repo.create); the row only becomes 'running' once /internal/claim-and-run
+    # actually claims it.
     db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="completed"))
     # Idempotency lookups go through find_first scoped to (workflow, user, key).
     db.workflowexecution.find_first = AsyncMock(return_value=None)
@@ -115,13 +145,13 @@ def test_post_execution_returns_queued() -> None:
     """P1-2: the response now reflects the row's real initial status —
     'queued' — rather than lying about being 'running' before any worker
     has claimed it via /internal/claim-and-run."""
-    client, db = _client_with_mock_db()
+    client, _db = _client_with_mock_db()
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 202
     body = resp.json()
     assert body["id"] == "ex1"
     assert body["status"] == "queued"
-    db.workflowexecution.create.assert_awaited_once()
+    _create_mock().assert_awaited_once()
 
 
 def test_post_execution_enqueues_cloud_task_instead_of_background_task(
@@ -258,11 +288,11 @@ def test_post_execution_404_when_workflow_missing() -> None:
 
 def test_post_execution_404_for_other_users_private_workflow() -> None:
     """A member cannot execute a private workflow they do not own."""
-    client, db = _client_with_mock_db()
+    client, _db = _client_with_mock_db()
     _repos().get.return_value = _workflow_row(user_id="someone-else")
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 404
-    db.workflowexecution.create.assert_not_awaited()
+    _create_mock().assert_not_awaited()
 
 
 def test_post_execution_allows_other_users_public_workflow() -> None:
@@ -288,7 +318,7 @@ def test_post_execution_with_idempotency_key_replays_existing_execution() -> Non
     )
     assert resp.status_code == 202
     assert resp.json()["id"] == existing.id
-    db.workflowexecution.create.assert_not_awaited()
+    _create_mock().assert_not_awaited()
     # The lookup is scoped to the caller: keys are unique per (workflow, user).
     db.workflowexecution.find_first.assert_awaited_once_with(
         where={"workflowId": "wf1", "userId": "dev", "idempotencyKey": "retry-key-1"}
@@ -296,24 +326,24 @@ def test_post_execution_with_idempotency_key_replays_existing_execution() -> Non
 
 
 def test_post_execution_allows_an_assignee_of_a_private_workflow() -> None:
-    client, db = _client_with_mock_db()
+    client, _db = _client_with_mock_db()
     _repos().get.return_value = _workflow_row(user_id="someone-else")
     _repos().exists.return_value = True
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 202
-    db.workflowexecution.create.assert_awaited_once()
+    _create_mock().assert_awaited_once()
     assert _repos().exists.await_args.args[1:] == ("wf1", "dev")
 
 
 def test_post_execution_404_for_a_non_assignee_of_a_private_workflow() -> None:
-    client, db = _client_with_mock_db()
+    client, _db = _client_with_mock_db()
     _repos().get.return_value = _workflow_row(user_id="someone-else")
     _repos().exists.return_value = False
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 404
     assert resp.json()["detail"] == "Workflow 'wf1' not found."
     _repos().exists.assert_awaited_once()
-    db.workflowexecution.create.assert_not_awaited()
+    _create_mock().assert_not_awaited()
 
 
 def test_post_execution_admin_runs_without_an_assignment_lookup() -> None:
@@ -340,7 +370,7 @@ def test_post_execution_owner_and_public_runs_skip_the_assignment_lookup() -> No
 
 def test_assignment_is_read_in_the_same_short_session_as_the_workflow() -> None:
     events: list[str] = []
-    client, db = _client_with_mock_db()
+    client, _db = _client_with_mock_db()
     client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
     _repos().get.return_value = _workflow_row(user_id="someone-else")
 
@@ -348,19 +378,20 @@ def test_assignment_is_read_in_the_same_short_session_as_the_workflow() -> None:
         events.append("assignment")
         return True
 
-    async def _create(**_k: object) -> SimpleNamespace:
-        events.append("net:create_execution")
-        return _execution_row(status="queued")
+    async def _create(*_a: object, **_k: object) -> SimpleNamespace:
+        events.append("db:create_execution")
+        return _execution_record(status="queued")
 
     _repos().exists.side_effect = _exists
-    db.workflowexecution.create = AsyncMock(side_effect=_create)
+    _create_mock().side_effect = _create
 
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
 
     assert resp.status_code == 202
     at = events.index("assignment")
     assert events[at + 1] == "session:exit"
-    assert events.index("net:create_execution") > at
+    # The row is created in the executor's own session, opened after this one closed.
+    assert events[at + 2 :][:3] == ["session:enter", "db:create_execution", "session:exit"]
     assert_no_network_inside_session(events)
 
 
@@ -375,9 +406,8 @@ def test_same_key_from_another_user_starts_their_own_execution() -> None:
         json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "shared-key"},
     )
     assert resp.status_code == 202
-    db.workflowexecution.create.assert_awaited_once()
-    _, kwargs = db.workflowexecution.create.call_args
-    assert kwargs["data"]["idempotencyKey"] == "shared-key"
+    _create_mock().assert_awaited_once()
+    assert _create_mock().call_args.kwargs["idempotency_key"] == "shared-key"
     where = db.workflowexecution.find_first.call_args.kwargs["where"]
     assert where["userId"] == "dev"
 
@@ -407,20 +437,16 @@ def test_foreign_row_from_the_lookup_is_still_refused_with_409() -> None:
         json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "k"},
     )
     assert resp.status_code == 409
-    db.workflowexecution.create.assert_not_awaited()
+    _create_mock().assert_not_awaited()
 
 
 def test_idempotency_key_race_lost_relooks_up_scoped_to_the_caller(
     _patch_enqueue_execution: AsyncMock,
 ) -> None:
-    from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
-
     client, db = _client_with_mock_db()
     mine = _execution_row(status="queued")
     db.workflowexecution.find_first = AsyncMock(side_effect=[None, mine])
-    db.workflowexecution.create = AsyncMock(
-        side_effect=UniqueViolationError({"user_facing_error": {"meta": {}}})  # type: ignore[arg-type]
-    )
+    _create_mock().side_effect = AlreadyExists("uq")
     resp = client.post(
         "/executions",
         json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "k"},
@@ -435,13 +461,9 @@ def test_idempotency_key_race_lost_relooks_up_scoped_to_the_caller(
 def _lost_race_client(
     lookups: list[Any],
 ) -> tuple[TestClient, MagicMock]:
-    from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
-
     client, db = _client_with_mock_db()
     db.workflowexecution.find_first = AsyncMock(side_effect=lookups)
-    db.workflowexecution.create = AsyncMock(
-        side_effect=UniqueViolationError({"user_facing_error": {"meta": {}}})  # type: ignore[arg-type]
-    )
+    _create_mock().side_effect = AlreadyExists("uq")
     return client, db
 
 
@@ -483,9 +505,8 @@ def test_post_execution_with_idempotency_key_creates_when_no_existing_match() ->
         json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "fresh-key"},
     )
     assert resp.status_code == 202
-    db.workflowexecution.create.assert_awaited_once()
-    _, kwargs = db.workflowexecution.create.call_args
-    assert kwargs["data"]["idempotencyKey"] == "fresh-key"
+    _create_mock().assert_awaited_once()
+    assert _create_mock().call_args.kwargs["idempotency_key"] == "fresh-key"
 
 
 def test_post_execution_without_idempotency_key_skips_lookup() -> None:
@@ -857,26 +878,27 @@ def test_detail_serializes_failure_code(failure_code: str | None) -> None:
 
 def test_workflow_is_read_in_a_short_session_closed_before_the_execution_is_created() -> None:
     events: list[str] = []
-    client, db = _client_with_mock_db()
+    client, _db = _client_with_mock_db()
     client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
 
     async def _get(*_a: object, **_k: object) -> WorkflowRecord:
         events.append("read")
         return _workflow_row()
 
-    async def _create(**_k: object) -> SimpleNamespace:
-        events.append("net:create_execution")
-        return _execution_row(status="queued")
+    async def _create(*_a: object, **_k: object) -> SimpleNamespace:
+        events.append("db:create_execution")
+        return _execution_record(status="queued")
 
     _repos().get.side_effect = _get
-    db.workflowexecution.create = AsyncMock(side_effect=_create)
+    _create_mock().side_effect = _create
 
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
 
     assert resp.status_code == 202
     first_read = events.index("read")
     assert events[first_read - 1 : first_read + 2] == ["session:enter", "read", "session:exit"]
-    assert events.index("net:create_execution") > first_read + 1
+    # The row is created in the executor's own short session, opened after the read's closed.
+    assert events[first_read + 2 :][:3] == ["session:enter", "db:create_execution", "session:exit"]
     assert_no_network_inside_session(events)
 
 

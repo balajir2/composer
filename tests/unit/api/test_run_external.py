@@ -229,9 +229,8 @@ def test_idempotency_key_race_lost_relooks_up_scoped_to_the_caller(
 ) -> None:
     """start_execution loses the unique-key race against the caller's own concurrent
     request; the re-lookup includes the caller's id and replays without enqueueing."""
-    from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
-
     from src.api import run as _run_module
+    from src.db.errors import AlreadyExists
 
     wf = _wf(is_public=True)
     client = _build_client(monkeypatch, wf)
@@ -240,7 +239,7 @@ def test_idempotency_key_race_lost_relooks_up_scoped_to_the_caller(
     client.app.state.db.workflowexecution.find_first = find_first  # type: ignore[attr-defined]
 
     async def _lose_race(self: Any, **kwargs: Any) -> Any:
-        raise UniqueViolationError({"user_facing_error": {"meta": {}}})  # type: ignore[arg-type]
+        raise AlreadyExists("uq")
 
     monkeypatch.setattr(_run_module.LangGraphExecutor, "start_execution", _lose_race)
     enqueue = AsyncMock()
@@ -259,15 +258,14 @@ def test_idempotency_key_race_lost_relooks_up_scoped_to_the_caller(
 
 
 def _lose_race_setup(monkeypatch: pytest.MonkeyPatch, lookups: list[Any]) -> tuple[Any, AsyncMock]:
-    from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
-
     from src.api import run as _run_module
+    from src.db.errors import AlreadyExists
 
     client = _build_client(monkeypatch, _wf(is_public=True))
     client.app.state.db.workflowexecution.find_first = AsyncMock(side_effect=lookups)  # type: ignore[attr-defined]
 
     async def _lose_race(self: Any, **kwargs: Any) -> Any:
-        raise UniqueViolationError({"user_facing_error": {"meta": {}}})  # type: ignore[arg-type]
+        raise AlreadyExists("uq")
 
     monkeypatch.setattr(_run_module.LangGraphExecutor, "start_execution", _lose_race)
     enqueue = AsyncMock()

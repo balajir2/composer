@@ -1,7 +1,7 @@
 """Tests for persisted execution events (P1-4)."""
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
@@ -92,7 +92,9 @@ async def test_executor_emit_notifies_after_the_session_closes(
     from src.engine.langgraph_executor import LangGraphExecutor
 
     events, store = ordering
-    executor = LangGraphExecutor(db=None, checkpointer=None, event_bus=store)  # pyright: ignore[reportArgumentType]
+    executor = LangGraphExecutor(
+        sessionmaker=cast("Any", None), checkpointer=cast("Any", None), event_bus=store
+    )
     await executor._emit("workflow_started", "ex1", {})  # pyright: ignore[reportPrivateUsage]
     assert events == ["session:enter", "session:exit", "net:notify"]
 

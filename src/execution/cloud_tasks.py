@@ -104,27 +104,35 @@ async def _run_in_process(execution_id: str, kind: _TaskKind, db: Any) -> None:
     sweep_expired_leases).
 
     checkpointer/event_bus are constructed fresh here rather than fetched
-    off `app.state` (what the HTTP endpoint does) — both classes are thin,
-    stateless wrappers around `db` (see their own `__init__`), so a fresh
-    instance wrapping the SAME `db` connection is behaviorally identical
-    to the app-wide singleton, without requiring this module to carry a
-    FastAPI `Request`/`app` reference it otherwise has no use for.
+    off `app.state` (what the HTTP endpoint does) without requiring this
+    module to carry a FastAPI `Request`/`app` reference it otherwise has no
+    use for. The event store wraps the registered SQLAlchemy sessionmaker
+    (the app lifespan registers it). The checkpointer still wraps the Prisma
+    client `db` (TODO(phase 5): the checkpointer moves to SQLAlchemy and `db`
+    leaves this signature).
+
+    The sessionmaker lookup and the event-store construction are inside the
+    `try` below: with no sessionmaker registered the RuntimeError is logged by
+    the handler instead of escaping the fire-and-forget task silently (the row
+    then stays `queued` for the operator to see in the log).
     """
     from src.api.internal import claim_and_run_execution
     from src.db.runtime import get_registered_sessionmaker
     from src.engine.events_pg import PostgresEventStore
     from src.storage.checkpointer import PrismaCheckpointSaver
 
-    checkpointer = PrismaCheckpointSaver(db)
-    sessionmaker = get_registered_sessionmaker()
-    if sessionmaker is None:
-        raise RuntimeError("no SQLAlchemy sessionmaker registered; is the app lifespan running?")
-    event_bus = PostgresEventStore(sessionmaker)
     try:
+        checkpointer = PrismaCheckpointSaver(db)
+        sessionmaker = get_registered_sessionmaker()
+        if sessionmaker is None:
+            raise RuntimeError(
+                "no SQLAlchemy sessionmaker registered; is the app lifespan running?"
+            )
+        event_bus = PostgresEventStore(sessionmaker)
         await claim_and_run_execution(
             execution_id,
             kind,
-            db,
+            sessionmaker,
             checkpointer,
             event_bus,
             worker_id=f"in-process:{execution_id}",

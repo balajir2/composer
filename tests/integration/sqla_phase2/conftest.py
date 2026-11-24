@@ -725,10 +725,14 @@ class Phase2Adapter:
     @staticmethod
     def reset_context() -> Callable[[], None]:
         """Clear the per-execution db context; the returned callable restores it."""
-        from src.engine.context import _current_db  # pyright: ignore[reportPrivateUsage]
+        from src.engine.context import _current_sessionmaker  # pyright: ignore[reportPrivateUsage]
 
-        token = _current_db.set(None)
-        return lambda: _current_db.reset(token)
+        token = _current_sessionmaker.set(None)
+
+        def _restore() -> None:
+            _current_sessionmaker.reset(token)
+
+        return _restore
 
     def _set_sessionmaker(self, with_db: bool) -> None:
         """MCP resolution reads the registered sessionmaker; ``with_db=False`` clears it for the
@@ -739,9 +743,9 @@ class Phase2Adapter:
 
     @staticmethod
     def _set_context_db(db: Any) -> None:
-        from src.engine.context import set_current_db
+        from src.engine.context import set_current_sessionmaker
 
-        set_current_db(db)
+        set_current_sessionmaker(db)
 
     @staticmethod
     def _state(user_id: str | None) -> Any:

@@ -15,7 +15,11 @@ from typing import TYPE_CHECKING, Any
 
 from langgraph.errors import GraphBubbleUp
 
-from src.engine.context import get_current_db, get_current_event_bus, get_current_execution_id
+from src.engine.context import (
+    get_current_event_bus,
+    get_current_execution_id,
+    get_current_sessionmaker,
+)
 from src.engine.events import ExecutionEvent
 from src.engine.events_notify import notify_execution_event
 from src.engine.execution_control import ensure_execution_running
@@ -174,10 +178,10 @@ def wrap_executor_with_events(
     async def _arun(state: WorkflowStateDict) -> dict[str, Any]:
         execution_id = get_current_execution_id()
         event_store = get_current_event_bus()
-        db = get_current_db()
+        sessionmaker = get_current_sessionmaker()
 
-        if execution_id is not None and db is not None:
-            await ensure_execution_running(db, execution_id)
+        if execution_id is not None and sessionmaker is not None:
+            await ensure_execution_running(sessionmaker, execution_id)
 
         if execution_id is not None:
             await _persist_and_notify(
@@ -197,8 +201,8 @@ def wrap_executor_with_events(
 
         try:
             result = await executor.arun(state)
-            if execution_id is not None and db is not None:
-                await ensure_execution_running(db, execution_id)
+            if execution_id is not None and sessionmaker is not None:
+                await ensure_execution_running(sessionmaker, execution_id)
         except GraphBubbleUp:
             # LangGraph's own control-flow signals (interrupt/resume via
             # user-approval, subgraph hand-off) — not a node failure. Must

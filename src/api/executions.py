@@ -7,7 +7,6 @@ from enum import StrEnum
 from typing import Any, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
-from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel, ConfigDict, Field
 
 from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
@@ -17,8 +16,10 @@ from src.api.execution_status import (
     ACTIVE_EXECUTION_STATUSES_SORTED,
 )
 from src.config import get_settings
+from src.db.errors import AlreadyExists
 from src.db.repos import workflow_assignments as workflow_assignments_repo
 from src.db.repos import workflows as workflows_repo
+from src.db.repos.executions import ExecutionRecord
 from src.db.runtime import require_sessionmaker
 from src.engine.langgraph_executor import LangGraphExecutor
 from src.execution.cloud_tasks import enqueue_execution
@@ -99,12 +100,36 @@ class ResumeRequest(BaseModel):
     note: str | None = None
 
 
-def _get_executor(request: Request, db: Prisma) -> LangGraphExecutor:  # pyright: ignore[reportUnknownParameterType]
+def _to_execution_read(record: ExecutionRecord) -> ExecutionRead:
+    """Build the API model from a repository record (snake_case attributes)."""
+    return ExecutionRead(
+        id=record.id,
+        workflowId=record.workflow_id,
+        userId=record.user_id,
+        status=record.status,
+        currentNodeId=record.current_node_id,
+        nodeResults=record.node_results or {},
+        variables=record.variables or {},
+        input=record.input,
+        output=record.output,
+        error=record.error,
+        failureCode=record.failure_code,
+        startedAt=record.started_at,
+        completedAt=record.completed_at,
+        threadId=record.thread_id,
+    )
+
+
+def _get_executor(request: Request) -> LangGraphExecutor:
     checkpointer = getattr(request.app.state, "checkpointer", None)
     if checkpointer is None:
         raise RuntimeError("Checkpointer not attached to app.state")
     event_bus = getattr(request.app.state, "event_bus", None)
-    return LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
+    return LangGraphExecutor(
+        sessionmaker=require_sessionmaker(request),
+        checkpointer=checkpointer,
+        event_bus=event_bus,
+    )
 
 
 @router.post("/executions", response_model=ExecutionRead, status_code=status.HTTP_202_ACCEPTED)
@@ -168,7 +193,7 @@ async def create_execution(
             require_same_caller(existing, user_id)
             return ExecutionRead.model_validate(existing)
 
-    executor = _get_executor(request, db)
+    executor = _get_executor(request)
     try:
         row = await executor.start_execution(
             workflow_id=payload.workflow_id,
@@ -176,7 +201,7 @@ async def create_execution(
             user_id=user_id,
             idempotency_key=payload.idempotency_key,
         )
-    except UniqueViolationError:
+    except AlreadyExists:
         # Lost a race against a concurrent request carrying the same key —
         # the DB's unique constraint is the actual guarantee; the find_first
         # lookup above is just a fast path that can't close the race alone.
@@ -260,7 +285,7 @@ async def create_execution(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Execution {row.id!r} could not be enqueued for processing.",
         ) from exc
-    return ExecutionRead.model_validate(row)
+    return _to_execution_read(row)
 
 
 @router.get("/executions", response_model=ExecutionListResponse)
