@@ -43,7 +43,6 @@ from httpx import AsyncClient
 # ADAPTER AREA imports: exception classes that tests assert on are re-exported from here, so a
 # rename in src only touches this block and the Phase4aAdapter bodies. Tests import them from this
 # module, never from src.
-from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 from pytest_httpx import HTTPXMock  # pyright: ignore[reportMissingImports]
 from sqlalchemy import delete, func, or_, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
@@ -932,7 +931,7 @@ class Phase4aAdapter:
         event = ExecutionEvent(type=cast("Any", type_), execution_id=execution_id, payload=payload)
         try:
             return cast("int", await self._app.state.event_bus.append(event))
-        except UniqueViolationError as exc:
+        except AlreadyExists as exc:
             raise DuplicateKey(str(exc)) from exc
 
     async def list_events_since(self, execution_id: str, after_seq: int) -> list[dict[str, Any]]:

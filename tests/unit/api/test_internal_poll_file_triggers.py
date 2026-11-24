@@ -63,9 +63,8 @@ def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
     app = create_app()
     db = MagicMock()
     db.workflowexecution = MagicMock()
-    app.state.db = (
-        db  # Prisma handle: only enqueue_execution's dev-mode checkpointer still reads it
-    )
+    # Prisma handle: only enqueue_execution's dev-mode checkpointer still reads it
+    app.state.db = db
     sessionmaker = RecordingSessionmaker([])
     app.state.db_sessionmaker = sessionmaker
     app.state.checkpointer = MagicMock()

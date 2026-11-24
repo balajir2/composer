@@ -10,6 +10,7 @@ from src.engine.events import ExecutionEvent
 from src.engine.events_wrapper import wrap_executor_with_events
 from src.engine.execution_control import ExecutionStopped
 from src.engine.state import initial_state
+from src.engine.workflow import Workflow
 from tests.unit.db_fakes import (
     FakeSessionmaker,
     RecordingSessionmaker,
@@ -344,3 +345,93 @@ async def test_stop_check_is_a_short_read_that_closes_before_the_node_runs(
         "session:exit",
     ]
     assert_no_network_inside_session(events)
+
+
+async def test_wrapper_persists_events_and_notifies() -> None:
+    from unittest.mock import AsyncMock, patch
+
+    from src.engine.context import set_current_event_bus, set_current_execution_id
+
+    store = AsyncMock()
+    store.append = AsyncMock(return_value=1)
+    set_current_execution_id("e1")
+    set_current_event_bus(store)
+
+    try:
+        with patch("src.engine.events_wrapper.notify_execution_event", new=AsyncMock()) as notify:
+            arun = wrap_executor_with_events(_FakeExecutor(), _FakeNode("n1", "http"))  # pyright: ignore[reportArgumentType]
+            await arun(initial_state())
+            assert store.append.await_count == 2  # node_started + node_completed
+            notify.assert_awaited()
+    finally:
+        set_current_execution_id(None)
+        set_current_event_bus(None)
+
+
+async def test_wrapper_node_completed_survives_event_store_failure() -> None:
+    """P1-4 regression: a telemetry-path failure (event append or NOTIFY)
+    must not abort the node. By the time node_completed would be emitted,
+    the executor has already produced its real, possibly expensive output
+    -- a broken event store must not discard that and raise past the
+    caller. _persist_and_notify's internal try/except is what protects
+    this."""
+    from src.engine.context import set_current_event_bus, set_current_execution_id
+
+    class _RaisingEventStore:
+        async def append(self, event: ExecutionEvent) -> int:
+            raise RuntimeError("simulated Postgres event-log outage")
+
+    set_current_execution_id("e1")
+    set_current_event_bus(_RaisingEventStore())  # pyright: ignore[reportArgumentType]
+
+    try:
+        arun = wrap_executor_with_events(_FakeExecutor(), _FakeNode("n1", "http"))  # pyright: ignore[reportArgumentType]
+        # Must not raise despite every append() call failing (node_started
+        # and node_completed both hit the broken store).
+        result = await arun(initial_state())
+    finally:
+        set_current_execution_id(None)
+        set_current_event_bus(None)
+
+    # The executor's actual output is still returned successfully.
+    assert result["variables"]["k"] == "v"
+
+
+async def test_build_graph_wraps_executors() -> None:
+    """Integration: build_graph applies the wrapper and emits events through
+    a real compiled graph."""
+    from langgraph.checkpoint.memory import MemorySaver
+
+    from src.engine.context import set_current_event_bus, set_current_execution_id
+    from src.engine.graph_builder import build_graph
+
+    store = _FakeEventStore()
+    set_current_execution_id("e1")
+    set_current_event_bus(store)  # pyright: ignore[reportArgumentType]
+
+    wf = Workflow.model_validate(
+        {
+            "id": "w",
+            "name": "t",
+            "nodes": [
+                {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+                {"id": "e", "type": "end", "position": {"x": 1, "y": 0}, "data": {"label": "E"}},
+            ],
+            "edges": [{"id": "e1", "source": "s", "target": "e"}],
+        }
+    )
+    compiled = build_graph(wf, MemorySaver())
+    try:
+        await compiled.ainvoke(  # pyright: ignore[reportUnknownMemberType]
+            initial_state(), config={"configurable": {"thread_id": "t1"}}
+        )
+    finally:
+        set_current_execution_id(None)
+        set_current_event_bus(None)
+
+    types_by_node: dict[str, list[str]] = {}
+    for ev in store.events:
+        types_by_node.setdefault(ev.payload["nodeId"], []).append(ev.type)
+
+    assert types_by_node["s"] == ["node_started", "node_completed"]
+    assert types_by_node["e"] == ["node_started", "node_completed"]

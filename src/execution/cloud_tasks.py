@@ -160,11 +160,9 @@ async def enqueue_execution(execution_id: str, *, kind: _TaskKind, db: Any) -> N
     claim-and-run endpoint knows which LangGraphExecutor method to call —
     both still go through the same claim (FOR UPDATE SKIP LOCKED) guard.
 
-    `db` is only used by the dev-mode fallback (see module docstring) —
-    real Cloud Tasks delivery re-derives its own `db` from `app.state` via
-    the claim-and-run endpoint's normal dependency injection. Every
-    caller already has `db` in scope (it's `app.state.db`, threaded in via
-    each route's own `Depends(get_db)`), so this adds no new plumbing.
+    `db` (the Prisma client) now only feeds the dev-mode fallback's
+    `PrismaCheckpointSaver` (see module docstring); real Cloud Tasks delivery
+    never uses it. TODO(phase 5): drop it with the checkpointer move.
     """
     settings = get_settings()
     if not settings.cloud_tasks_service_account:
