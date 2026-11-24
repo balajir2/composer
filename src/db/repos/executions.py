@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Literal, NotRequired, TypedDict
 
-from sqlalchemy import JSON, ColumnElement, func, literal, select, text
+from sqlalchemy import JSON, ColumnElement, cast, func, literal, select, text, type_coerce
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import update as sa_update
 from sqlalchemy.dialects.postgresql import JSONB
@@ -511,3 +511,56 @@ async def insert_if_absent(session: AsyncSession, values: ExecutionInsert) -> bo
         .returning(WorkflowExecution.id)
     )
     return inserted is not None
+
+
+@dataclass(frozen=True)
+class PendingInstance:
+    """The approval pause a token was issued for (``_pending_approval_node``/``_since``)."""
+
+    node_id: str
+    since: str
+
+
+async def resume_if_waiting(
+    session: AsyncSession,
+    execution_id: str,
+    *,
+    decision: str,
+    now: datetime,
+    expected_pending: PendingInstance | None = None,
+) -> bool:
+    """G3/G4: waiting_approval -> running, stamping ``_resume_decision`` in the same statement.
+
+    With ``expected_pending`` the row must still be paused at that exact pause instance.
+    """
+    guard: list[ColumnElement[bool]] = [
+        WorkflowExecution.id == execution_id,
+        WorkflowExecution.status == "waiting_approval",
+    ]
+    if expected_pending is not None:
+        guard += [
+            WorkflowExecution.variables["_pending_approval_node"].astext
+            == expected_pending.node_id,
+            WorkflowExecution.variables["_pending_approval_since"].astext == expected_pending.since,
+        ]
+    won = await session.scalar(
+        sa_update(WorkflowExecution)
+        .where(*guard)
+        .values(
+            status="running",
+            running_since=now,
+            lease_owner=None,
+            lease_expires_at=None,
+            # jsonb || jsonb merges the key into the CURRENT row value; the right side must be
+            # a typed jsonb bind (an untyped str inside jsonb_build_object fails in Postgres).
+            variables=type_coerce(
+                WorkflowExecution.variables.op("||")(
+                    cast(literal({"_resume_decision": decision}, JSONB), JSONB)
+                ),
+                JSONB,
+            ),
+        )
+        .returning(WorkflowExecution.id)
+        .execution_options(synchronize_session=False)
+    )
+    return won is not None
