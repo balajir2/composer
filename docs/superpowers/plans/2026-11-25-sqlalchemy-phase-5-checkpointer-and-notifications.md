@@ -145,7 +145,7 @@ The oracle describes what users and operators can observe about checkpoints and 
 - Consumes (from `tests/integration/sqla_phase4a/conftest.py`, unchanged): `phase4a_env`, `app`, `sessionmaker_`, `make_user`, `member`, `db` (`Db`), `exec_api`, `Member`, `approval_graph`, `node`, `edge`, `start_node`, `end_node`, `install_email_recorder`, `jbody`, `unique`, `HTTPX_MARK`, `purge_execution_artifacts`. From `tests/integration/sqla_phase4b/conftest.py`: `resume`.
 - Produces: `running_app()` async context manager yielding `RunningApp(app, client, sm)` with Cloud Tasks enqueue bound to that app; `checkpoint_row_count(sm, thread_id) -> int`; `wait_for_status(sm, execution_id, statuses, timeout) -> str`; `two_approval_graph()`.
 
-- [ ] **Step 1: Write `conftest.py`**
+- [x] **Step 1: Write `conftest.py`**
 
 ```python
 """Fixtures for the SQLAlchemy phase 5 behaviour oracle (checkpointer and notifications).
@@ -291,7 +291,7 @@ def two_approval_graph() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     return nodes, edges
 ```
 
-- [ ] **Step 2: Write `test_pause_resume.py`** (pause in one process, resume in another; both decisions; chained pause across two restarts)
+- [x] **Step 2: Write `test_pause_resume.py`** (pause in one process, resume in another; both decisions; chained pause across two restarts)
 
 ```python
 """Pause in one app process, resume in a fresh one: the checkpoint survives a restart."""
@@ -356,7 +356,7 @@ async def test_chained_pause_survives_two_restarts(
     assert (row.variables["first"], row.variables["second"]) == ("yes", "yes")
 ```
 
-- [ ] **Step 3: Write `test_history_and_delete.py`**
+- [x] **Step 3: Write `test_history_and_delete.py`**
 
 ```python
 """Checkpoint history through the BaseCheckpointSaver interface, and execution delete."""
@@ -436,7 +436,7 @@ async def test_active_run_delete_is_refused_and_keeps_its_checkpoints(
 
 (Before writing, confirm the delete status codes against `tests/integration/sqla_phase4a/test_delete.py` and use the same ones; the 204/409 above are what that file asserts at `77e5e80`.)
 
-- [ ] **Step 4: Write `test_dev_mode.py`** (the real `enqueue_execution` with `CLOUD_TASKS_SERVICE_ACCOUNT` unset runs claim-and-run as an in-process task, today with a Prisma saver built from `db`)
+- [x] **Step 4: Write `test_dev_mode.py`** (the real `enqueue_execution` with `CLOUD_TASKS_SERVICE_ACCOUNT` unset runs claim-and-run as an in-process task, today with a Prisma saver built from `db`)
 
 ```python
 """Dev-mode fallback: the real enqueue_execution runs the graph in-process, pause and resume."""
@@ -473,7 +473,7 @@ async def test_in_process_fallback_pauses_and_resumes(
     assert row.variables["result"] == "approved"
 ```
 
-- [ ] **Step 5: Write `test_events_live.py`** (live push arrives well inside the 15 s poll, so it proves LISTEN/NOTIFY works, not the fallback poll; reconnect replays). Use Starlette's `TestClient` and `client.portal.call(...)` exactly as `tests/integration/sqla_phase4a/test_events_ws.py` does (copy its `WsEnv` shape: seed users/workflow/execution through the portal, mint the token through the same helper it uses).
+- [x] **Step 5: Write `test_events_live.py`** (live push arrives well inside the 15 s poll, so it proves LISTEN/NOTIFY works, not the fallback poll; reconnect replays). Use Starlette's `TestClient` and `client.portal.call(...)` exactly as `tests/integration/sqla_phase4a/test_events_ws.py` does (copy its `WsEnv` shape: seed users/workflow/execution through the portal, mint the token through the same helper it uses).
 
 ```python
 """Live WebSocket delivery rides LISTEN/NOTIFY (well under the 15 s poll); reconnect replays."""
@@ -525,16 +525,16 @@ def test_reconnect_with_cursor_replays_only_missed_events(ws_env) -> None:
 
 Add the `ws_env` fixture to this module: a class with `running_execution()` (seeds a member, a workflow and a `running` execution through `client.portal.call`, returns `(execution_id, token)`), `append(eid, type, payload) -> int` (`app.state.event_bus.append(ExecutionEvent(...))` through the portal), `notify(eid, seq)` (`src.engine.events_notify.notify_execution_event` through the portal), `connect(eid, token, after=None)`, and cleanup with `purge_execution_artifacts` plus user/workflow deletes. Build it by copying `WsEnv` from `tests/integration/sqla_phase4a/test_events_ws.py` **except** its `close_notify_connection()` call (that function is removed in Task 8; the 4a copy is edited there).
 
-- [ ] **Step 6: Run on today's code**
+- [x] **Step 6: Run on today's code**
 
 Run: `uv run pytest tests/integration/sqla_phase5 -v` (with `TEST_DATABASE_URL` set to the throwaway container).
 Expected: all PASS. If one fails, the test is wrong about today's behaviour: fix the test, not `src`.
 
-- [ ] **Step 7: Record (do not pin) what Task 7 changes on purpose.** In a scratch test (not committed): pause a run, delete its checkpoint rows directly (raw SQL on both old tables), resume it over HTTP, and note the final `status`, `error` and `failure_code`. This is also what the old revision does in a rollback when a run paused only in the new tables (it sees no checkpoint). Write the observation into this plan's Outcome section in Task 9. Task 7 pins the new behaviour (`checkpoint_missing`).
+- [x] **Step 7: Record (do not pin) what Task 7 changes on purpose.** In a scratch test (not committed): pause a run, delete its checkpoint rows directly (raw SQL on both old tables), resume it over HTTP, and note the final `status`, `error` and `failure_code`. This is also what the old revision does in a rollback when a run paused only in the new tables (it sees no checkpoint). Write the observation into this plan's Outcome section in Task 9. Task 7 pins the new behaviour (`checkpoint_missing`).
 
-- [ ] **Step 7b: Verify** `uv run ruff check tests/integration/sqla_phase5 && uv run ruff format --check tests/integration/sqla_phase5 && uv run pyright --pythonplatform Linux --pythonversion 3.12 tests/integration/sqla_phase5`.
+- [x] **Step 7b: Verify** `uv run ruff check tests/integration/sqla_phase5 && uv run ruff format --check tests/integration/sqla_phase5 && uv run pyright --pythonplatform Linux --pythonversion 3.12 tests/integration/sqla_phase5`.
 
-- [ ] **Step 8: Commit:** `test(db): phase 5 behaviour oracle for checkpoints and live events`.
+- [x] **Step 8: Commit:** `test(db): phase 5 behaviour oracle for checkpoints and live events`.
 
 **Review gate:** spec-compliance reviewer checks every behaviour in "Phase 5 extras" that can be observed today is pinned, and that no test reaches into `PrismaCheckpointSaver`, asyncpg or `app.state.db`.
 
@@ -546,7 +546,7 @@ Expected: all PASS. If one fails, the test is wrong about today's behaviour: fix
 
 **Files:** Modify `pyproject.toml` (dependencies list only), `uv.lock`. Create `tests/unit/checkpoints/__init__.py`, `tests/unit/checkpoints/test_library_contract.py`.
 
-- [ ] **Step 1: Write the failing contract test**
+- [x] **Step 1: Write the failing contract test**
 
 ```python
 """Pins the parts of langgraph-checkpoint-postgres this codebase depends on.
@@ -567,9 +567,9 @@ def test_async_saver_accepts_a_pool() -> None:
     assert "conn" in AsyncPostgresSaver.__init__.__code__.co_varnames
 ```
 
-- [ ] **Step 2:** Run `uv run pytest tests/unit/checkpoints -v`. Expected: FAIL with `ModuleNotFoundError: No module named 'langgraph.checkpoint.postgres'`.
+- [x] **Step 2:** Run `uv run pytest tests/unit/checkpoints -v`. Expected: FAIL with `ModuleNotFoundError: No module named 'langgraph.checkpoint.postgres'`.
 
-- [ ] **Step 3:** Add to `[project] dependencies`, next to the `psycopg[binary]` line, with the spec link comment above it already present:
+- [x] **Step 3:** Add to `[project] dependencies`, next to the `psycopg[binary]` line, with the spec link comment above it already present:
 
 ```toml
     # Phase 5 (checkpointer): official LangGraph saver on its own psycopg pool.
@@ -580,11 +580,11 @@ def test_async_saver_accepts_a_pool() -> None:
 
 Run: `uv lock --upgrade-package langgraph-checkpoint-postgres --upgrade-package psycopg-pool` then `uv sync --all-extras`.
 
-- [ ] **Step 4: Check the lock diff moved nothing else:** `git diff uv.lock | grep '^[-+]name = ' ` lists only `langgraph-checkpoint-postgres` and `psycopg-pool` as added; `git diff uv.lock | grep -A1 '^-name = '` is empty (no package removed or re-versioned). If anything else moved, stop and report.
+- [x] **Step 4: Check the lock diff moved nothing else:** `git diff uv.lock | grep '^[-+]name = ' ` lists only `langgraph-checkpoint-postgres` and `psycopg-pool` as added; `git diff uv.lock | grep -A1 '^-name = '` is empty (no package removed or re-versioned). If anything else moved, stop and report.
 
-- [ ] **Step 5:** Run `uv run pytest tests/unit/checkpoints -v` → PASS; then the full unit suite `uv run pytest -m "not integration"` → PASS; pyright (both invocations) → 0 errors.
+- [x] **Step 5:** Run `uv run pytest tests/unit/checkpoints -v` → PASS; then the full unit suite `uv run pytest -m "not integration"` → PASS; pyright (both invocations) → 0 errors.
 
-- [ ] **Step 6: Commit:** `build(deps): add langgraph-checkpoint-postgres and psycopg-pool for the official checkpointer`.
+- [x] **Step 6: Commit:** `build(deps): add langgraph-checkpoint-postgres and psycopg-pool for the official checkpointer`.
 
 ---
 
@@ -595,7 +595,7 @@ Run: `uv lock --upgrade-package langgraph-checkpoint-postgres --upgrade-package 
 **Interfaces:**
 - Produces: `src.checkpoints.schema.SAVER_MIGRATION_COUNT: int` (= `len(BasePostgresSaver.MIGRATIONS)`), `async def assert_saver_schema_current(conn: psycopg.AsyncConnection[Any]) -> None` (raises `RuntimeError` naming the found and expected versions), models `SaverCheckpoint` (`checkpoints`), `SaverCheckpointBlob` (`checkpoint_blobs`), `SaverCheckpointWrite` (`checkpoint_writes`), `SaverCheckpointMigration` (`checkpoint_migrations`).
 
-- [ ] **Step 1: Write the failing tests.** `test_alembic_0004_saver_tables.py`:
+- [x] **Step 1: Write the failing tests.** `test_alembic_0004_saver_tables.py`:
 
 ```python
 """Revision 0004 creates the official saver's tables and marks its migrations applied."""
@@ -637,9 +637,9 @@ async def test_setup_is_a_no_op_after_alembic(test_database_url) -> None:
 
 Unit test `tests/unit/checkpoints/test_schema.py`: `assert_saver_schema_current` with a fake connection whose `execute(...).fetchone()` returns `{"v": 9}` passes, `{"v": 8}` and `None` raise `RuntimeError` whose message contains `"9"` and the found value and no connection string.
 
-- [ ] **Step 2:** Run them. Expected: FAIL (`to_regclass` false; `ImportError` for `to_libpq_url` / `src.checkpoints.schema`).
+- [x] **Step 2:** Run them. Expected: FAIL (`to_regclass` false; `ImportError` for `to_libpq_url` / `src.checkpoints.schema`).
 
-- [ ] **Step 3: Write the revision.**
+- [x] **Step 3: Write the revision.**
 
 ```python
 """Tables for LangGraph's official Postgres checkpointer (langgraph-checkpoint-postgres 3.2.1).
@@ -748,7 +748,7 @@ def downgrade() -> None:
 
 Note: the `checkpoint_writes` column order differs from `setup()` (there `task_path` is appended by `ALTER TABLE` and so is also last — same order). If the schema-equality test compares `ordinal_position`, it matches.
 
-- [ ] **Step 3b: Add `to_libpq_url` to `src/db/url.py`** (the saver and LISTEN use libpq URLs; SQLAlchemy uses `postgresql+psycopg`):
+- [x] **Step 3b: Add `to_libpq_url` to `src/db/url.py`** (the saver and LISTEN use libpq URLs; SQLAlchemy uses `postgresql+psycopg`):
 
 ```python
 def to_libpq_url(database_url: str) -> str:
@@ -758,9 +758,9 @@ def to_libpq_url(database_url: str) -> str:
 
 Unit test in `tests/unit/db/test_url.py`: Prisma params stripped, scheme `postgresql://`, `sslmode=require` kept.
 
-- [ ] **Step 4: Models** in `src/db/models/checkpoints.py` (export from `src/db/models/__init__.py`). Match the DDL exactly; JSONB from `sqlalchemy.dialects.postgresql`; `metadata_` mapped to column `"metadata"` (as `LangGraphCheckpoint` does); `server_default=text("''::text")` for `checkpoint_ns`/`task_path`, `server_default=text("'{}'::jsonb")` for `metadata`; `idx` with `autoincrement=False`; indexes declared in `__table_args__` with the names above; `SaverCheckpointMigration.v` `Integer` primary key, `autoincrement=False`. Module docstring: "The official saver's tables (Alembic 0004). Only the library writes them; Composer reads them for the deploy guard and deletes from them in `checkpoints_repo.delete_threads`."
+- [x] **Step 4: Models** in `src/db/models/checkpoints.py` (export from `src/db/models/__init__.py`). Match the DDL exactly; JSONB from `sqlalchemy.dialects.postgresql`; `metadata_` mapped to column `"metadata"` (as `LangGraphCheckpoint` does); `server_default=text("''::text")` for `checkpoint_ns`/`task_path`, `server_default=text("'{}'::jsonb")` for `metadata`; `idx` with `autoincrement=False`; indexes declared in `__table_args__` with the names above; `SaverCheckpointMigration.v` `Integer` primary key, `autoincrement=False`. Module docstring: "The official saver's tables (Alembic 0004). Only the library writes them; Composer reads them for the deploy guard and deletes from them in `checkpoints_repo.delete_threads`."
 
-- [ ] **Step 5: `src/checkpoints/schema.py`**
+- [x] **Step 5: `src/checkpoints/schema.py`**
 
 ```python
 """The official saver's schema version check (fail closed at startup)."""
@@ -791,9 +791,9 @@ async def assert_saver_schema_current(conn: AsyncConnection[Any]) -> None:
         )
 ```
 
-- [ ] **Step 6:** Run: the two new integration files, `tests/integration/db/test_schema_parity.py` (models match tables), `tests/unit/checkpoints`, and `uv run alembic heads` (one head) and `uv run alembic downgrade -1 && uv run alembic upgrade head` against the container. Expected: PASS.
+- [x] **Step 6:** Run: the two new integration files, `tests/integration/db/test_schema_parity.py` (models match tables), `tests/unit/checkpoints`, and `uv run alembic heads` (one head) and `uv run alembic downgrade -1 && uv run alembic upgrade head` against the container. Expected: PASS.
 
-- [ ] **Step 7: Commit:** `feat(db): Alembic revision for the official LangGraph checkpointer tables`.
+- [x] **Step 7: Commit:** `feat(db): Alembic revision for the official LangGraph checkpointer tables`.
 
 ---
 
@@ -838,16 +838,16 @@ async def legacy_namespaces(session, thread_id: str) -> list[str]
 
 - Produces `src.checkpoints.legacy.LegacyCheckpointSaver(sessionmaker: async_sessionmaker[AsyncSession])`, a `BaseCheckpointSaver[int]` with `aget_tuple`, `alist`, `aput`, `aput_writes`, `adelete_thread`; sync methods raise `NotImplementedError("Use the async API")`; `serde=JsonPlusSerializer()`; the `_pack`/`_unpack` format `>I` tag length | tag | payload, moved here verbatim in behaviour (write it fresh; do not import from `src.storage`). Each method opens one short session (`async with self._sm() as s:`), runs repo calls, commits writes, and closes before returning.
 
-- [ ] **Step 1: Write the failing tests.**
+- [x] **Step 1: Write the failing tests.**
   - `test_legacy_saver.py` (real Postgres): a saver round trip using LangGraph's own helpers: `empty_checkpoint()`, `create_checkpoint(...)` from `langgraph.checkpoint.base`; `aput` three checkpoints chained by parent, `aput_writes` two tasks; `aget_tuple` latest returns the third with its writes ordered by `(task_id, idx)` and its `parent_config`; `aget_tuple` by id; `alist` newest first, `before=` and `limit=`; `adelete_thread` removes writes and checkpoints of that thread only. **Same-millisecond test (D9):** insert two checkpoints whose `created_at` is forced equal (`UPDATE langgraph_checkpoints SET created_at = ...`), the one with the larger `checkpoint_id` is returned as latest.
   - `test_legacy_matches_prisma.py` (deleted in Task 7, listed there): parametrized both directions: write with `PrismaCheckpointSaver(app.state.db)`, read with `LegacyCheckpointSaver(sm)` and vice versa; assert equal `CheckpointTuple`s and **byte-identical** `checkpoint`, `metadata` and `value` columns for the same inputs. Also a real graph: compile `approval_graph()` with `LegacyCheckpointSaver`, run to the pause, then resume with a graph compiled on `PrismaCheckpointSaver`; it completes.
   - Golden fixture: a one-off helper in `test_legacy_matches_prisma.py` (`write_golden_fixture()`, run manually once, then left uncalled) dumps the rows `PrismaCheckpointSaver` wrote for a paused `approval_graph()` thread as hex into `tests/fixtures/legacy_checkpoint_rows.json`. `test_legacy_saver.py::test_reads_rows_written_by_prisma` inserts those rows with `legacy_upsert_*` and asserts `aget_tuple` returns a checkpoint whose `pending_writes` contain an `__interrupt__` and whose `channel_values` include `variables`. This survives Task 7.
   - Repo tests in `tests/integration/db/repos/test_checkpoints.py` for each new function.
 
-- [ ] **Step 2:** Run. Expected: FAIL (`ImportError`).
-- [ ] **Step 3:** Implement the repo functions (SQLAlchemy Core `insert(...).on_conflict_do_update(...)` from `sqlalchemy.dialects.postgresql`; `select(...).order_by(LangGraphCheckpoint.checkpoint_id.desc())`), then `LegacyCheckpointSaver`. `aput` stores `parent_checkpoint_id = config["configurable"].get("checkpoint_id")` exactly as the Prisma saver did; `aput_writes` enumerates `idx` from 0 per call exactly as the Prisma saver did (it ignores `WRITES_IDX_MAP`; keep that, it is what the old revision reads).
-- [ ] **Step 4:** Run the new tests and `tests/integration/sqla_phase5` (unchanged). Expected: PASS.
-- [ ] **Step 5: Commit:** `feat(checkpoints): SQLAlchemy port of the old checkpoint saver for the copy tool and rollback`.
+- [x] **Step 2:** Run. Expected: FAIL (`ImportError`).
+- [x] **Step 3:** Implement the repo functions (SQLAlchemy Core `insert(...).on_conflict_do_update(...)` from `sqlalchemy.dialects.postgresql`; `select(...).order_by(LangGraphCheckpoint.checkpoint_id.desc())`), then `LegacyCheckpointSaver`. `aput` stores `parent_checkpoint_id = config["configurable"].get("checkpoint_id")` exactly as the Prisma saver did; `aput_writes` enumerates `idx` from 0 per call exactly as the Prisma saver did (it ignores `WRITES_IDX_MAP`; keep that, it is what the old revision reads).
+- [x] **Step 4:** Run the new tests and `tests/integration/sqla_phase5` (unchanged). Expected: PASS.
+- [x] **Step 5: Commit:** `feat(checkpoints): SQLAlchemy port of the old checkpoint saver for the copy tool and rollback`.
 
 ---
 
@@ -920,9 +920,9 @@ composer checkpoints copy --to {postgres,legacy} (--execution ID [--execution ID
 ```
 For each target execution (looked up with a one-shot SQLAlchemy session: `executions_repo.get`; `--all-waiting` uses a new `checkpoints_repo.waiting_threads(session) -> list[tuple[str, str]]` returning `(execution_id, thread_id)` of `waiting_approval` rows): refuse (exit 2, message names id and status) unless status is `waiting_approval` or `--force`; namespaces from `checkpoints_repo.legacy_namespaces` (to postgres) or `checkpoints_repo.saver_namespaces` (to legacy; add it: `SELECT DISTINCT checkpoint_ns FROM checkpoints WHERE thread_id = :t`); source/target are `LegacyCheckpointSaver(one-shot sessionmaker)` and the `open_one_shot_saver` saver; print `copied <execution_id>: <n> checkpoints, <m> writes`. Exit 0 when all succeed, 1 if any copy raised (print the exception class name only).
 
-- [ ] **Step 1: Failing unit tests** `test_versions.py`: `to_postgres_version(5) == "00000000000000000000000000000005.0000000000000000"`; strings pass through; `to_legacy_version("00000000000000000000000000000007.0123456789") == 7`; ints pass through; ordering preserved (`sorted` of converted equals converted of `sorted` for `[1, 2, 10, 11]`); `convert_checkpoint` converts `channel_versions` and every `versions_seen` entry and does not mutate its input; round trip `to_legacy(to_postgres(n)) == n`.
+- [x] **Step 1: Failing unit tests** `test_versions.py`: `to_postgres_version(5) == "00000000000000000000000000000005.0000000000000000"`; strings pass through; `to_legacy_version("00000000000000000000000000000007.0123456789") == 7`; ints pass through; ordering preserved (`sorted` of converted equals converted of `sorted` for `[1, 2, 10, 11]`); `convert_checkpoint` converts `channel_versions` and every `versions_seen` entry and does not mutate its input; round trip `to_legacy(to_postgres(n)) == n`.
 
-- [ ] **Step 2: Failing integration tests** `test_copy_round_trip.py` (the spec's "copy-tool round-trip tests both directions with resume"). Use a module fixture that opens `build_saver_pool(get_settings())` (opened in the test) → `AsyncPostgresSaver(pool)`, and `LegacyCheckpointSaver(sessionmaker_)`. Graph: `build_graph(Workflow.model_validate({...approval_graph()...}), saver)` from `src/engine/graph_builder.py`, invoked directly (no HTTP) with `initial_state("x")` from the same module the executor uses, and `{"configurable": {"thread_id": <unique>}}`.
+- [x] **Step 2: Failing integration tests** `test_copy_round_trip.py` (the spec's "copy-tool round-trip tests both directions with resume"). Use a module fixture that opens `build_saver_pool(get_settings())` (opened in the test) → `AsyncPostgresSaver(pool)`, and `LegacyCheckpointSaver(sessionmaker_)`. Graph: `build_graph(Workflow.model_validate({...approval_graph()...}), saver)` from `src/engine/graph_builder.py`, invoked directly (no HTTP) with `initial_state("x")` from the same module the executor uses, and `{"configurable": {"thread_id": <unique>}}`.
   1. `test_legacy_to_postgres_then_resume`: run to the pause on the legacy saver; `copy_thread(legacy, postgres, tid, to="postgres", namespaces=[""])`; compile on postgres; `ainvoke(Command(resume="approved"), cfg)` completes with `variables["result"] == "approved"`; `aget_state(cfg).next == ()`.
   2. `test_postgres_to_legacy_then_resume` (rollback direction): pause on postgres, copy `to="legacy"`, resume on a graph compiled with **`PrismaCheckpointSaver(app.state.db)`** (the old revision's saver; this test switches to `LegacyCheckpointSaver` in Task 7, listed there) → completes.
   3. `test_chained_pause_round_trip`: `two_approval_graph()`: pause 1 on legacy → copy to postgres → resume → pause 2 on postgres → copy to legacy → resume on legacy → completed with both variables set.
@@ -930,12 +930,12 @@ For each target execution (looked up with a one-shot SQLAlchemy session: `execut
   5. `test_naive_copy_without_conversion_breaks_resume`: documents why conversion exists: with `convert_checkpoint` monkeypatched to identity, the postgres → legacy resume raises `NotImplementedError` (base `get_next_version` on a string). Keep this test; it fails loudly if a future LangGraph removes the need.
   6. `test_history_shape_survives_copy`: same number of checkpoints, same ids, same parent chain, same pending-write channels per task in both stores.
 
-- [ ] **Step 3:** CLI unit tests with fakes (`monkeypatch` `copy_thread`, the one-shot openers and the repo lookups): refuses `running` without `--force` (exit 2, prints the id and `running`, nothing copied); `--force` copies; `--all-waiting` copies each waiting thread; a copy that raises → exit 1 and the output contains the exception class name but not its message.
+- [x] **Step 3:** CLI unit tests with fakes (`monkeypatch` `copy_thread`, the one-shot openers and the repo lookups): refuses `running` without `--force` (exit 2, prints the id and `running`, nothing copied); `--force` copies; `--all-waiting` copies each waiting thread; a copy that raises → exit 1 and the output contains the exception class name but not its message.
 
-- [ ] **Step 4:** Run all three files. Expected: FAIL (imports).
-- [ ] **Step 5:** Implement `versions.py`, `copy.py`, `saver.py` (this task's part), settings, CLI.
-- [ ] **Step 6:** Run them plus `tests/integration/sqla_phase5`. Expected: PASS.
-- [ ] **Step 7: Commit:** `feat(checkpoints): two-way checkpoint copy tool with channel-version conversion`.
+- [x] **Step 4:** Run all three files. Expected: FAIL (imports).
+- [x] **Step 5:** Implement `versions.py`, `copy.py`, `saver.py` (this task's part), settings, CLI.
+- [x] **Step 6:** Run them plus `tests/integration/sqla_phase5`. Expected: PASS.
+- [x] **Step 7: Commit:** `feat(checkpoints): two-way checkpoint copy tool with channel-version conversion`.
 
 **Review gate (high risk):** a frontier-model reviewer checks the copy algorithm against `AsyncPostgresSaver.aput`/`aput_writes` and `LegacyCheckpointSaver` (parent chain, namespace key, blob versions, write grouping, `WRITES_IDX_MAP` idx handling on the official side, idempotency) before Task 6 starts.
 
@@ -965,9 +965,9 @@ async def active_status_counts(session: AsyncSession) -> dict[str, int]
 - `src/checkpoints/sync.py`: `async def find_unsynced(sessionmaker) -> list[UnsyncedRun]` (short session).
 - CLI: `composer checkpoints guard` prints `active runs: queued=<n> running=<n> waiting_approval=<n>` then either `ok: no active run has checkpoints only in the old tables` (exit 0) or one line per blocking run `blocked: <execution_id> (<status>)` followed by the runbook line `copy waiting runs with 'composer checkpoints copy --to postgres --all-waiting', wait for running ones, or cancel them; then re-run the deploy` (exit 1). Uses `one_shot_session` only (no saver needed).
 
-- [ ] **Step 1: Failing tests** `test_guard.py` (real Postgres, rows seeded through the repos and the savers): (a) no active runs → `[]`; (b) a `waiting_approval` run paused on `LegacyCheckpointSaver` → listed (the spec's "deploy guard refuses while a paused run exists"); (c) after `copy_thread(... to="postgres")` → not listed; (d) the legacy saver then gets one more checkpoint for the thread (a run that progressed on an old instance) → listed again; (e) a `completed` run with only legacy rows → not listed; (f) a `queued` run with no checkpoints anywhere → not listed; (g) a `running` run with legacy rows → listed with status `running`. CLI unit tests: exit codes and output lines for both outcomes; output never contains a thread id or connection string.
-- [ ] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** Run → PASS.
-- [ ] **Step 5: Deploy workflow.** In `.github/workflows/deploy-gcp.yml`, in the "Apply database migrations" step, after `uv run alembic current`, add:
+- [x] **Step 1: Failing tests** `test_guard.py` (real Postgres, rows seeded through the repos and the savers): (a) no active runs → `[]`; (b) a `waiting_approval` run paused on `LegacyCheckpointSaver` → listed (the spec's "deploy guard refuses while a paused run exists"); (c) after `copy_thread(... to="postgres")` → not listed; (d) the legacy saver then gets one more checkpoint for the thread (a run that progressed on an old instance) → listed again; (e) a `completed` run with only legacy rows → not listed; (f) a `queued` run with no checkpoints anywhere → not listed; (g) a `running` run with legacy rows → listed with status `running`. CLI unit tests: exit codes and output lines for both outcomes; output never contains a thread id or connection string.
+- [x] **Step 2:** Run → FAIL. **Step 3:** Implement. **Step 4:** Run → PASS.
+- [x] **Step 5: Deploy workflow.** In `.github/workflows/deploy-gcp.yml`, in the "Apply database migrations" step, after `uv run alembic current`, add:
 
 ```yaml
           # SQLAlchemy phase 5 (until phase 7 drops the old checkpoint tables):
@@ -980,7 +980,7 @@ async def active_status_counts(session: AsyncSession) -> dict[str, int]
 
 Validate the YAML locally (`uv run python -c "import yaml,sys; yaml.safe_load(open('.github/workflows/deploy-gcp.yml'))"`; if PyYAML is not installed, use `actionlint` if available, otherwise review the diff by eye: two-space indentation inside the `run: |` block).
 
-- [ ] **Step 6: Commit:** `feat(checkpoints): deploy guard refusing the cutover while a run is left on the old tables`.
+- [x] **Step 6: Commit:** `feat(checkpoints): deploy guard refusing the cutover while a run is left on the old tables`.
 
 ---
 
@@ -996,7 +996,7 @@ Validate the YAML locally (`uv run python -c "import yaml,sys; yaml.safe_load(op
 - `enqueue_execution(execution_id: str, *, kind: _TaskKind) -> None` (no `db`); `_run_in_process(execution_id, kind)` uses `get_registered_checkpointer()` and raises `RuntimeError("no checkpointer registered; is the app lifespan running?")` inside its `try` (logged, row stays `queued`, as for the sessionmaker today).
 - `LangGraphExecutor` gains `class CheckpointMissing(Exception)` in `src/engine/langgraph_executor.py` and the failure code `"checkpoint_missing"`.
 
-- [ ] **Step 1: Failing tests.**
+- [x] **Step 1: Failing tests.**
   - `tests/integration/sqla_phase5/test_deliberate_changes.py` (new module in the oracle package, not part of the oracle; it must FAIL on the code before this task):
     - `test_resume_with_no_checkpoint_fails_closed`: pause a run, delete its checkpoint rows in every table (raw SQL), resume over HTTP → row `failed`, `failure_code == "checkpoint_missing"`, `"ok"` and `"no"` absent from `node_results`, `node_results` unchanged otherwise.
     - `test_run_paused_on_the_old_tables_resumes_after_cutover`: seed a paused run by running `approval_graph()` to the pause with `LegacyCheckpointSaver` directly (graph built with `build_graph`), with a `waiting_approval` execution row (`Db.seed_execution` + the pause variables from `tests/integration/sqla_phase4b/conftest.py:paused_variables`) whose `thread_id` matches; resume over HTTP → `completed`, `result == "approved"`; the new tables now hold the thread.
@@ -1008,8 +1008,8 @@ Validate the YAML locally (`uv run python -c "import yaml,sys; yaml.safe_load(op
   - `tests/unit/engine/test_resume_checkpoint_sync.py`: with a fake checkpointer and `monkeypatch`ed `bring_forward`, `resume` calls `bring_forward` before `compiled.ainvoke`, and no session is open around it (`RecordingSessionmaker` + `assert_no_network_inside_session`); when `aget_tuple` returns `None`, `_mark_failed` is called with `failure_code="checkpoint_missing"` and `ainvoke` is never called.
   - `tests/unit/checkpoints/test_saver_lifespan.py` (also: on a normal exit the saver pool's `close` is awaited, and `unregister_checkpointer` of an already-replaced registration leaves the newer one in place): with a fake pool class monkeypatched into `build_saver_pool`: retries then succeeds; gives up after `db_connect_max_attempts` and raises; a schema-version mismatch raises and closes the pool; on exit the pool is closed even if `close` of something else raised; `app.state.checkpointer` and the registry are cleared.
   - `tests/integration/db/repos/test_checkpoints.py`: `delete_threads` clears all five tables for the given threads only, in the caller's transaction (roll back → rows still there); `test_delete_threads_matches_adelete_thread`: after it, `AsyncPostgresSaver.aget_tuple` is `None` and `alist` is empty; `test_delete_threads_covers_every_saver_table`: parse `BasePostgresSaver.MIGRATIONS` with `re.findall(r"CREATE TABLE IF NOT EXISTS (\w+) \(([^;]*?)\);", ...)`, keep the tables whose body contains `thread_id`, and assert that set equals the saver tables `delete_threads` deletes from (exposed as module constant `SAVER_THREAD_TABLES`).
-- [ ] **Step 2:** Run → FAIL.
-- [ ] **Step 3: Lifespan.** `src/main.py`:
+- [x] **Step 2:** Run → FAIL.
+- [x] **Step 3: Lifespan.** `src/main.py`:
 
 ```python
     async with sqlalchemy_lifespan(app), checkpointer_lifespan(app):
@@ -1028,8 +1028,8 @@ Validate the YAML locally (`uv run python -c "import yaml,sys; yaml.safe_load(op
 
 (Task 8 adds `notifications_lifespan(app)` to the same `async with`.)
 
-- [ ] **Step 4: Routes and fallback.** Remove every `db` parameter and `db=db` argument listed in the call-site table; import `get_checkpointer`/`get_event_bus` from `src.api.app_state`; delete `from prisma import Prisma` lines; update `_run_in_process` and `enqueue_execution` as in Interfaces and their docstrings (drop the `TODO(phase 5)` text). In `tests/integration/conftest.py`, `_fake_enqueue` becomes `async def _fake_enqueue(execution_id: str, *, kind: str) -> None`.
-- [ ] **Step 5: Executor.** In `resume()`, inside the `try`, right after `ensure_execution_running(...)` and before `_emit("workflow_started", ...)`:
+- [x] **Step 4: Routes and fallback.** Remove every `db` parameter and `db=db` argument listed in the call-site table; import `get_checkpointer`/`get_event_bus` from `src.api.app_state`; delete `from prisma import Prisma` lines; update `_run_in_process` and `enqueue_execution` as in Interfaces and their docstrings (drop the `TODO(phase 5)` text). In `tests/integration/conftest.py`, `_fake_enqueue` becomes `async def _fake_enqueue(execution_id: str, *, kind: str) -> None`.
+- [x] **Step 5: Executor.** In `resume()`, inside the `try`, right after `ensure_execution_running(...)` and before `_emit("workflow_started", ...)`:
 
 ```python
             await bring_forward(self.checkpointer, self.sessionmaker, execution.thread_id)
@@ -1039,12 +1039,12 @@ Validate the YAML locally (`uv run python -c "import yaml,sys; yaml.safe_load(op
 ```
 
 and a new `except CheckpointMissing as exc:` before `except Exception`, which logs `Execution %s has no checkpoint to resume` (id only) and calls `_mark_failed(execution_id, exc, failure_code="checkpoint_missing")` then emits `workflow_completed` with `{"status": "failed"}` if it won. Replace the docstring's `TODO(phase 5)` sentence with: "Loads the checkpoint from the official Postgres saver, first copying it from the old tables if a pre-cutover pause left it there (src/checkpoints/sync.py, until phase 7)." Add `"checkpoint_missing"` to the `failure_code` set in `src/telemetry/attributes.py` and a row to the failure-code table in `docs/api-reference.md`: "`checkpoint_missing` | A resume found no saved state for the run; it was not restarted."
-- [ ] **Step 6: Deletes.** `checkpoints_repo.delete_threads` also deletes from `checkpoint_writes`, `checkpoint_blobs`, `checkpoints` (the `SAVER_THREAD_TABLES` constant, with the saver models), same `in_array` predicate, same transaction; update its docstring (D7). `executions_repo` is unchanged (it already calls `delete_threads`).
-- [ ] **Step 7: Delete `src/storage/`** (`__init__.py`, `db.py`, `checkpointer.py`) and `tests/unit/storage/`, and delete `tests/integration/db/checkpoints/test_legacy_matches_prisma.py` (its golden fixture stays and is still read by `test_legacy_saver.py`); in `test_copy_round_trip.py::test_postgres_to_legacy_then_resume`, replace `PrismaCheckpointSaver(app.state.db)` with `LegacyCheckpointSaver(sessionmaker_)` (the byte-compatibility proven in Task 4 makes this the same test).
-- [ ] **Step 8: 4a adapter.** In `tests/integration/sqla_phase4a/conftest.py`, `Phase4aAdapter.__init__` (adapter area): delete `self._db: Any = app.state.db` and any use of `self._db`.
-- [ ] **Step 9: Unit tests.** Fix every test that imports `src.storage` or passes `db=` to `enqueue_execution`: `grep -rln "src.storage\b\|src\.storage\.\|enqueue_execution(.*db=" tests`. Known: `tests/unit/execution/test_cloud_tasks.py` (drop `db=MagicMock()`; the fallback test registers a fake checkpointer with `register_checkpointer` and asserts it reaches `claim_and_run_execution`; a new test: no checkpointer registered → logged, row untouched), `tests/unit/api/test_internal_poll_file_triggers.py`, `tests/unit/api/test_internal_fail_closed.py`, `tests/unit/api/test_executions*.py`, `tests/unit/api/test_approval_email.py`, `tests/unit/api/test_run_external.py` (dependency overrides of `get_db` removed; `app.state.db = MagicMock()` lines whose comment says "only handed to enqueue_execution (phase 5)" removed; other `app.state.db` assignments are harmless and go in phase 6). Integration tests that used `app.state.db` for Prisma (`grep -rln "app.state.db\b" tests/integration`) switch to the sessionmaker or are listed for phase 6 if they test the Prisma-era migration CLI.
-- [ ] **Step 10: Verify:** `tests/integration/sqla_phase5` (oracle unchanged) + `test_deliberate_changes.py`; `tests/integration/sqla_phase4a`, `sqla_phase4b` (unchanged apart from Step 8); `tests/integration/db`; `tests/integration/test_user_approval_approved.py`, `test_user_approval_rejected.py`, `test_durable_execution.py`; full unit suite; `tests/regression`; pyright both ways; ruff check and format check. Then the done-criterion greps from "Every remaining … use" except the asyncpg ones (Task 8).
-- [ ] **Step 11: Commit:** `feat(checkpoints): official Postgres checkpointer in the app; Prisma client plumbing removed`.
+- [x] **Step 6: Deletes.** `checkpoints_repo.delete_threads` also deletes from `checkpoint_writes`, `checkpoint_blobs`, `checkpoints` (the `SAVER_THREAD_TABLES` constant, with the saver models), same `in_array` predicate, same transaction; update its docstring (D7). `executions_repo` is unchanged (it already calls `delete_threads`).
+- [x] **Step 7: Delete `src/storage/`** (`__init__.py`, `db.py`, `checkpointer.py`) and `tests/unit/storage/`, and delete `tests/integration/db/checkpoints/test_legacy_matches_prisma.py` (its golden fixture stays and is still read by `test_legacy_saver.py`); in `test_copy_round_trip.py::test_postgres_to_legacy_then_resume`, replace `PrismaCheckpointSaver(app.state.db)` with `LegacyCheckpointSaver(sessionmaker_)` (the byte-compatibility proven in Task 4 makes this the same test).
+- [x] **Step 8: 4a adapter.** In `tests/integration/sqla_phase4a/conftest.py`, `Phase4aAdapter.__init__` (adapter area): delete `self._db: Any = app.state.db` and any use of `self._db`.
+- [x] **Step 9: Unit tests.** Fix every test that imports `src.storage` or passes `db=` to `enqueue_execution`: `grep -rln "src.storage\b\|src\.storage\.\|enqueue_execution(.*db=" tests`. Known: `tests/unit/execution/test_cloud_tasks.py` (drop `db=MagicMock()`; the fallback test registers a fake checkpointer with `register_checkpointer` and asserts it reaches `claim_and_run_execution`; a new test: no checkpointer registered → logged, row untouched), `tests/unit/api/test_internal_poll_file_triggers.py`, `tests/unit/api/test_internal_fail_closed.py`, `tests/unit/api/test_executions*.py`, `tests/unit/api/test_approval_email.py`, `tests/unit/api/test_run_external.py` (dependency overrides of `get_db` removed; `app.state.db = MagicMock()` lines whose comment says "only handed to enqueue_execution (phase 5)" removed; other `app.state.db` assignments are harmless and go in phase 6). Integration tests that used `app.state.db` for Prisma (`grep -rln "app.state.db\b" tests/integration`) switch to the sessionmaker or are listed for phase 6 if they test the Prisma-era migration CLI.
+- [x] **Step 10: Verify:** `tests/integration/sqla_phase5` (oracle unchanged) + `test_deliberate_changes.py`; `tests/integration/sqla_phase4a`, `sqla_phase4b` (unchanged apart from Step 8); `tests/integration/db`; `tests/integration/test_user_approval_approved.py`, `test_user_approval_rejected.py`, `test_durable_execution.py`; full unit suite; `tests/regression`; pyright both ways; ruff check and format check. Then the done-criterion greps from "Every remaining … use" except the asyncpg ones (Task 8).
+- [x] **Step 11: Commit:** `feat(checkpoints): official Postgres checkpointer in the app; Prisma client plumbing removed`.
 
 **Review gate (high risk):** frontier-model reviewer: lifespan ordering and shutdown, fail-closed paths, no session held across `bring_forward`'s saver calls, every `db=` removed, Codex-shared files touched only where the coordination section says.
 
@@ -1102,14 +1102,14 @@ Without a listener (unit tests), the loop still delivers through the 15 s poll. 
 
 - `saver_conninfo`'s direct branch now returns `settings.database_direct_url` converted with `to_libpq_url`, else `direct_endpoint_url(to_libpq_url(settings.database_url))`.
 
-- [ ] **Step 1: Failing unit tests** `test_notifications.py` with a fake `AsyncConnection` factory (monkeypatched `psycopg.AsyncConnection.connect`) whose `notifies()` yields queued `Notify`-like objects: dispatch wakes only the matching execution; no connection before the first subscribe; reconnect after the fake raises, with all subscribers woken; idle close after the last unsubscribe (use a 0.05 s idle timeout), a re-subscribe inside the window cancels the close; `aclose` stops everything; logs never contain the conninfo. `test_url.py`: `direct_endpoint_url` for a pooler host, a non-Neon host, and a host with `-pooler` elsewhere in the name (`my-pooler-db.example.com`'s first label is `my-pooler-db`: unchanged). `test_events_notify.py`: `notify_execution_event` opens one session, executes `pg_notify` with `("composer_execution_events", "<id>:<seq>")`, commits; raises `RuntimeError` with no sessionmaker. `test_events_ws.py`: replace the asyncpg mocks with a fake listener on `app.state.event_listener` whose event the test sets; keep every existing behavioural assertion (snapshot, replay, terminal close, keepalive failure closes).
-- [ ] **Step 2: Failing live test** `tests/integration/test_notifications_live.py` (marker `integration`): a real listener on `TEST_DATABASE_URL` (no `-pooler`, so the derived URL is the same), `subscribe("e1")`, then `notify_execution_event("e1", seq=1)` through the app's sessionmaker → the event is set within 2 s; `notify("e2")` does not set it.
+- [x] **Step 1: Failing unit tests** `test_notifications.py` with a fake `AsyncConnection` factory (monkeypatched `psycopg.AsyncConnection.connect`) whose `notifies()` yields queued `Notify`-like objects: dispatch wakes only the matching execution; no connection before the first subscribe; reconnect after the fake raises, with all subscribers woken; idle close after the last unsubscribe (use a 0.05 s idle timeout), a re-subscribe inside the window cancels the close; `aclose` stops everything; logs never contain the conninfo. `test_url.py`: `direct_endpoint_url` for a pooler host, a non-Neon host, and a host with `-pooler` elsewhere in the name (`my-pooler-db.example.com`'s first label is `my-pooler-db`: unchanged). `test_events_notify.py`: `notify_execution_event` opens one session, executes `pg_notify` with `("composer_execution_events", "<id>:<seq>")`, commits; raises `RuntimeError` with no sessionmaker. `test_events_ws.py`: replace the asyncpg mocks with a fake listener on `app.state.event_listener` whose event the test sets; keep every existing behavioural assertion (snapshot, replay, terminal close, keepalive failure closes).
+- [x] **Step 2: Failing live test** `tests/integration/test_notifications_live.py` (marker `integration`): a real listener on `TEST_DATABASE_URL` (no `-pooler`, so the derived URL is the same), `subscribe("e1")`, then `notify_execution_event("e1", seq=1)` through the app's sessionmaker → the event is set within 2 s; `notify("e2")` does not set it.
   Also in this module: with `idle_close_seconds=0.2`, the count of `LISTEN` backends (`SELECT count(*) FROM pg_stat_activity WHERE datname = current_database() AND query ILIKE 'LISTEN%'`) is 0 before the first subscribe, 1 while subscribed, and 0 again shortly after the last unsubscribe. The listener connection sets `application_name` (e.g. `composer-listen`) so operators can find it.
-- [ ] **Step 3:** Run → FAIL. **Step 4:** Implement; wire `notifications_lifespan` into `src/main.py`'s `async with` after `checkpointer_lifespan`.
-- [ ] **Step 5: Oracle lines that reached into asyncpg internals** (the only oracle edits in this phase besides Task 7 Step 8): delete the autouse `_fresh_notify_connection` fixtures in `tests/integration/sqla_phase4a/conftest.py` and `tests/integration/sqla_phase4b/conftest.py` (they reset `events_notify._notify_connection`, which no longer exists), and the `close_notify_connection()` import and call in `WsEnv.cleanup` in `tests/integration/sqla_phase4a/test_events_ws.py`. No assertion changes.
-- [ ] **Step 6:** Add to `tests/unit/db/test_prisma_import_boundary.py` a test `test_src_does_not_import_asyncpg` that walks all of `src` with the same AST helper and fails on `asyncpg` (D1: the package itself leaves in phase 6).
-- [ ] **Step 7: Verify:** `tests/integration/sqla_phase5/test_events_live.py` (oracle; the 4 s bound and the no-notify-no-delivery test prove NOTIFY, not the poll), `tests/integration/sqla_phase4a/test_events_ws.py`, `test_executor.py::test_event_row_is_committed_before_its_notify_is_sent` (unchanged), `tests/integration/test_events_ws_hardening.py`, the new tests, full unit suite, pyright both ways, ruff. Then `grep -rnE "^\s*(from|import) asyncpg\b" src` prints nothing.
-- [ ] **Step 8: Commit:** `feat(events): LISTEN/NOTIFY on psycopg with one lazy listener per process`.
+- [x] **Step 3:** Run → FAIL. **Step 4:** Implement; wire `notifications_lifespan` into `src/main.py`'s `async with` after `checkpointer_lifespan`.
+- [x] **Step 5: Oracle lines that reached into asyncpg internals** (the only oracle edits in this phase besides Task 7 Step 8): delete the autouse `_fresh_notify_connection` fixtures in `tests/integration/sqla_phase4a/conftest.py` and `tests/integration/sqla_phase4b/conftest.py` (they reset `events_notify._notify_connection`, which no longer exists), and the `close_notify_connection()` import and call in `WsEnv.cleanup` in `tests/integration/sqla_phase4a/test_events_ws.py`. No assertion changes.
+- [x] **Step 6:** Add to `tests/unit/db/test_prisma_import_boundary.py` a test `test_src_does_not_import_asyncpg` that walks all of `src` with the same AST helper and fails on `asyncpg` (D1: the package itself leaves in phase 6).
+- [x] **Step 7: Verify:** `tests/integration/sqla_phase5/test_events_live.py` (oracle; the 4 s bound and the no-notify-no-delivery test prove NOTIFY, not the poll), `tests/integration/sqla_phase4a/test_events_ws.py`, `test_executor.py::test_event_row_is_committed_before_its_notify_is_sent` (unchanged), `tests/integration/test_events_ws_hardening.py`, the new tests, full unit suite, pyright both ways, ruff. Then `grep -rnE "^\s*(from|import) asyncpg\b" src` prints nothing.
+- [x] **Step 8: Commit:** `feat(events): LISTEN/NOTIFY on psycopg with one lazy listener per process`.
 
 ---
 
@@ -1117,9 +1117,9 @@ Without a listener (unit tests), the loop still delivers through the 15 s poll. 
 
 ### Task 9: Lock, docs, live checks, PR
 
-- [ ] **Step 1: Done-criterion greps** (from "Every remaining … use"); all print nothing, and `src/storage` does not exist.
-- [ ] **Step 2: Boundary test.** In `tests/unit/db/test_prisma_import_boundary.py` replace `MIGRATED_PATHS` with `["src"]` (every file), update the module docstring ("After phase 5 nothing in `src` imports Prisma, `src.storage` or asyncpg; phase 6 removes the packages") and keep the detector tests.
-- [ ] **Step 3: Docs.**
+- [x] **Step 1: Done-criterion greps** (from "Every remaining … use"); all print nothing, and `src/storage` does not exist.
+- [x] **Step 2: Boundary test.** In `tests/unit/db/test_prisma_import_boundary.py` replace `MIGRATED_PATHS` with `["src"]` (every file), update the module docstring ("After phase 5 nothing in `src` imports Prisma, `src.storage` or asyncpg; phase 6 removes the packages") and keep the detector tests.
+- [x] **Step 3: Docs.**
   - `CHANGELOG.md` `[Unreleased]` first entry: the official checkpointer (Alembic 0004; separate psycopg pool; old tables kept until phase 7); copy tool and deploy guard; copy-on-resume; `checkpoint_missing`; deletes cover both table sets in one transaction; LISTEN on one lazy direct connection per process, NOTIFY through the pool; deliberate changes (D9 newest-by-id, fail closed on a missing checkpoint, WebSocket wakes only for its own execution); the finding "LISTEN through the pooler" (with Task 9 Step 7's result).
   - `docs/architecture.md` data-access section: a paragraph "Checkpoints and notifications (phase 5)" (pool separation and how connections are held during a run, Alembic-owned saver tables and the startup version check, legacy saver/copy/guard until phase 7, listener design); edit the phase 4b paragraph's last sentence ("After phase 4 only the checkpointer … remain on Prisma") to "After phase 5 nothing in `src` uses Prisma; phase 6 removes the client, schema and Node.js".
   - `docs/operations/production-deployment.md`: new section "Checkpointer cutover (phase 5 → phase 7)": what the guard checks; the runbook (`composer checkpoints guard`, `copy --to postgres --all-waiting`, cancel); the rollback runbook (`copy --to legacy --all-waiting` before moving traffic back; roll-forward is automatic via copy-on-resume); note in it that under `--to legacy --all-waiting` a run with no official checkpoints prints "nothing to copy" and the command exits 1, which is harmless (nothing to roll back for that run), and that the guard's runbook line and the tool's exit code 2 (a refused run, others still copied) are expected outcomes; the `checkpointer_use_direct_endpoint` escape hatch; `DATABASE_DIRECT_URL` optional; connection budget table from D4. `docs/operations/gcp-cloud-run-setup.md`: the guard step in the deploy description.
@@ -1127,7 +1127,7 @@ Without a listener (unit tests), the loop still delivers through the 15 s poll. 
   - `CLAUDE.md` (edit authorized by this task only) stack table: "Postgres driver: psycopg 3 (asyncpg leaves the image in phase 6)"; and a line under Development commands: "Never run `AsyncPostgresSaver.setup()`; the saver's tables are Alembic revision 0004."
   - Spec §3.3 phase 5 row → "(done, PR #<n>)"; spec §2.2 row for `prisma migrate deploy` → "`alembic upgrade head` (the saver's tables are an Alembic revision, not `setup()`; see the phase 5 plan D3)"; spec §2.3 note that `langgraph-checkpoint` was already 4.3.2.
   - The 4b plan's "After 4b" list: tick items with a link here. This plan: checkboxes and an Outcome section (what changed vs plan, oracle edits with reasons, Task 1 Step 7 observations, verification counts, PR number).
-- [ ] **Step 4: Run everything CI runs, locally** against the throwaway Postgres 15: `uv run ruff check src tests && uv run ruff format --check src tests && uv run pyright src tests && uv run pyright --pythonplatform Linux --pythonversion 3.12 src tests && uv run pytest && uv run pytest -m "integration and not live"`; plus `uv run alembic heads` (one head) and a fresh-database build (`prisma migrate deploy` + `alembic upgrade head` on an empty database, then the parity test). Frontend and E2E smoke are unaffected but run once locally if the E2E stack is available (`docs/operations` describes it); otherwise note it for CI.
+- [x] **Step 4: Run everything CI runs, locally** against the throwaway Postgres 15: `uv run ruff check src tests && uv run ruff format --check src tests && uv run pyright src tests && uv run pyright --pythonplatform Linux --pythonversion 3.12 src tests && uv run pytest && uv run pytest -m "integration and not live"`; plus `uv run alembic heads` (one head) and a fresh-database build (`prisma migrate deploy` + `alembic upgrade head` on an empty database, then the parity test). Frontend and E2E smoke are unaffected but run once locally if the E2E stack is available (`docs/operations` describes it); otherwise note it for CI.
 - [ ] **Step 5: Commit** `docs(db): record phase 5 outcome`; push the branch; open ONE PR; wait for the checks.
 - [ ] **Step 6: Pre-merge production check (needs Balaji's go-ahead: reads production).** Run `composer checkpoints guard` against production read-only with the direct URL (the same secret and `sed` the deploy uses), from the PR branch. Expected: `active runs: queued=0 running=0 waiting_approval=<n>` and `ok`, or a list to copy. Record the output (counts only) in the PR.
 - [ ] **Step 7: Live Neon checks (if a Neon test branch is available; Neon credentials were rejected for local work earlier, so this may move to the first deploy).** On a Neon branch with the pooler URL as `DATABASE_URL`: run the phase 5 oracle (`TEST_DATABASE_URL=<pooler URL>`). It proves (a) the saver's pipelined writes work through the pooler with `prepare_threshold=None` (else set `CHECKPOINTER_USE_DIRECT_ENDPOINT=true` and record it) and (b) `test_live_event_arrives_within_seconds_of_its_notify` passes with LISTEN on the derived direct URL. The oracle's live deadline is 4 s: on a cold Neon direct endpoint (compute waking) the first run may exceed it, so treat a first failure as a possible cold start and re-run before concluding anything. Also, for the record, run the same live test at `77e5e80` against the pooler URL to learn whether today's asyncpg LISTEN through the pooler works (the D4 finding).
@@ -1156,3 +1156,29 @@ Without a listener (unit tests), the loop still delivers through the 15 s poll. 
 
 - **Spec coverage:** §3.4 "what users see" (oracle Tasks 1, unchanged API), deploy guard (Task 6), two-way copy tool via `BaseCheckpointSaver` (Task 5), deletes (Task 7 / D7, deliberately in-transaction instead of `adelete_thread`, equivalence tested), Neon pooler `prepare_threshold=None` (Task 5 `SAVER_CONNECTION_KWARGS`, Task 9 Step 7), rollback (D6, Task 5 tests, runbook in Task 9); §5 phase 5 extras: round trips both directions with resume (Task 5 Step 2), guard refuses with a paused run (Task 6 Step 1 b), post-deploy manual check (Task 9 Step 8); §2.2 LISTEN/NOTIFY on psycopg (Task 8); §2.3 deps (Task 2); §4.5 lifespan (Task 7 Step 3, Task 8); risks table rows (guard, copy tool, old tables kept, pool sizing D4, pooler test). Divergences from the spec are explicit decisions: D3 (Alembic, not `setup()`), D4 (separate pools), D7 (in-transaction delete), D1 (asyncpg leaves in phase 6, as the spec says; `langgraph-checkpoint` already at 4.3.2).
 - **Names used across tasks:** `LegacyCheckpointSaver`, `copy_thread(..., to=, namespaces=)`, `Target`, `convert_checkpoint`, `build_saver_pool`, `open_one_shot_saver`, `saver_conninfo`, `checkpointer_lifespan`, `register_checkpointer`/`get_registered_checkpointer`, `bring_forward`, `find_unsynced`, `UnsyncedRun`, `unsynced_active_runs`, `legacy_ahead`, `SAVER_THREAD_TABLES`, `assert_saver_schema_current`, `SAVER_MIGRATION_COUNT`, `to_libpq_url`, `direct_endpoint_url`, `ExecutionEventListener`, `notifications_lifespan`, `CheckpointMissing`, `"checkpoint_missing"`.
+
+## Outcome (Tasks 1 to 9, as built)
+
+Status: Tasks 1 to 9 Step 4 done on branch `feat/sqlalchemy-phase-5`; Steps 5 to 8 (push, PR, production guard check, live Neon checks, merge and post-deploy check) wait for Balaji's go-ahead. PR number: pending.
+
+**What changed against the plan**
+
+- **Step 0 addition, `checkpoint_sync_failed`.** The plan only had `checkpoint_missing`. A failure while copying a thread forward (or reading it) during a resume is a different situation from "there is no checkpoint": the old-table rows are intact and the run is recoverable. It gets its own failure code, `checkpoint_sync_failed` (commit `0eb1bf4`), added to `src/telemetry/attributes.py`, `docs/telemetry/signal-catalog.md` and `docs/api-reference.md`. Codex is told in the handoff note.
+- **Oracle edits beyond Task 8 Step 5, each with no assertion change:**
+  - `tests/integration/sqla_phase4a/conftest.py`: `Phase4aAdapter` no longer reads `app.state.db` (Task 7 Step 8; it holds the sessionmaker instead), its cleanup clears all five checkpoint tables through `checkpoints_repo.delete_threads`, and the autouse notify-connection reset fixture was removed (Task 8 Step 5).
+  - `tests/integration/sqla_phase4b/conftest.py`: the same notify-connection fixture removal; `tests/integration/sqla_phase4a/test_events_ws.py`: the `close_notify_connection()` import and call removed.
+  - `tests/integration/sqla_phase2/conftest.py` and `sqla_phase3/conftest.py`: the adapters no longer reach for `app.state.db` (the app has no Prisma client any more; phase 2 uses the sessionmaker).
+  - Step 5 fixture removals (the asyncpg-internals resets) were authorized by Balaji.
+  - Phase 5's own oracle (`tests/integration/sqla_phase5`) got the "survive the official saver" fixes (`13f9acb`, `abbb745`: live readers keyed by socket, not `id()`).
+- **Pool-test timing tweaks:** a few pool and listener tests got looser or tighter timing bounds (idle-close windows, wait bounds) to be stable on Windows and on CI; none changes what is asserted.
+- **`bring_forward` copies only namespaces where the old tables lead.** The plan said "copy the thread"; copying a namespace the new tables already had ahead would roll it back, so only namespaces whose old newest checkpoint id is newer (or which the new tables lack) are copied.
+- **`NEEDS_LEGACY_PRISMA` test-only shim:** the few tests that still need a Prisma-shaped object (the Prisma-era migration CLI tests) get it from a marker/shim in the tests; phase 6 removes the shim along with the Prisma dependency.
+- **Test isolation (Task 9):** the full integration suite shares one database, and tests that run graphs left rows in the new saver tables; Alembic 0004's downgrade refuses while rows exist, so the 0002/0003/0004 up/down tests failed when the suite ran in one process. Many modules leaked (for example `test_durable_execution.py`, whose cleanup used the Prisma client on the old tables only, `test_if_else_routing.py`, `test_guardrails.py`, `test_external_invoke.py`, `test_events_ws_hardening.py`, and the regression `test_oab_start_end.py`), so instead of patching each one, an autouse fixture in `tests/integration/conftest.py` and `tests/regression/conftest.py` (helper `tests/_checkpoint_reset.py`) snapshots the checkpoint thread ids before each test and deletes every other thread from all five tables afterwards. Proof: from a truncated database the full `-m "integration and not live"` suite ran twice in a row, 869 passed and 1 skipped both times, and the five tables held 0 rows after each run.
+
+**Observations recorded (Task 1 Step 7)**
+
+- On the old revision, a resume that finds no checkpoint (rows deleted from both old tables) does not fail: the graph restarts from scratch with empty input. That is exactly what the old revision does in a rollback for a run that paused only in the new tables, which is why the rollback runbook pauses the queue and copies twice. The new code fails such a resume closed with `checkpoint_missing`.
+
+**Not done yet (needs Balaji):** pushing and the PR; the read-only production guard run (Step 6); the live Neon checks (Step 7: saver through the pooler with `prepare_threshold=None`, the live LISTEN test on the derived direct URL, and whether the old asyncpg LISTEN through the pooler ever delivered); the merge and the post-deploy manual check (Step 8).
+
+**Verification counts (local, Postgres 15 container, Windows):** ruff check and `ruff format --check` clean (593 files formatted); pyright default and `--pythonplatform Linux --pythonversion 3.12` on `src tests`: 0 errors (58 warnings, all in existing test files); unit (`-m "not integration"`): 2323 passed; integration (`-m "integration and not live"`, which includes `tests/regression`): 869 passed, 1 skipped (Jira, no credentials), twice in a row from a truncated database, 0 rows left in all five checkpoint tables; `alembic heads`: one head, `0004_langgraph_saver_tables`. Not done locally: the fresh-database build via `prisma migrate deploy` and the E2E smoke (left to CI).
