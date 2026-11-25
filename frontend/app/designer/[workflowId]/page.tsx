@@ -176,22 +176,41 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
       const { nodes, edges } = fromReactFlow(nodesRef.current, edgesRef.current);
       const overwrite = overwriteNextSaveRef.current;
       overwriteNextSaveRef.current = false;
-      return updateWorkflow(workflowId, {
-        expectedUpdatedAt: overwrite ? undefined : seenUpdatedAtRef.current,
-        name: workflow.name,
-        description: workflow.description ?? null,
-        category: workflow.category ?? null,
-        tags: workflow.tags ?? [],
-        difficulty: workflow.difficulty ?? null,
-        estimatedTime: workflow.estimatedTime ?? null,
-        nodes: nodes as Parameters<typeof updateWorkflow>[1]["nodes"],
-        edges: edges as Parameters<typeof updateWorkflow>[1]["edges"],
-        version: workflow.version ?? null,
-        isTemplate: workflow.isTemplate,
-        isPublic: workflow.isPublic,
-        isProduction: workflow.isProduction ?? null,
-        externalSlug: workflow.externalSlug ?? null,
-      });
+      // What this save carries becomes the baseline that canvas reports are compared
+      // against. The canvas re-reports its (unchanged) nodes on every page render, and
+      // against the as-loaded baseline that looked like a fresh edit each time: every
+      // save re-armed the debounce, so one edit was re-saved every few seconds forever.
+      // Those endless saves bumped `updatedAt` under a running builder turn, which then
+      // refused to save over "someone else's change" that was only our own autosave.
+      const previousNodes = initialNodesRef.current;
+      const previousEdges = initialEdgesRef.current;
+      const sentNodes = nodesRef.current;
+      const sentEdges = edgesRef.current;
+      initialNodesRef.current = sentNodes;
+      initialEdgesRef.current = sentEdges;
+      try {
+        return await updateWorkflow(workflowId, {
+          expectedUpdatedAt: overwrite ? undefined : seenUpdatedAtRef.current,
+          name: workflow.name,
+          description: workflow.description ?? null,
+          category: workflow.category ?? null,
+          tags: workflow.tags ?? [],
+          difficulty: workflow.difficulty ?? null,
+          estimatedTime: workflow.estimatedTime ?? null,
+          nodes: nodes as Parameters<typeof updateWorkflow>[1]["nodes"],
+          edges: edges as Parameters<typeof updateWorkflow>[1]["edges"],
+          version: workflow.version ?? null,
+          isTemplate: workflow.isTemplate,
+          isPublic: workflow.isPublic,
+          isProduction: workflow.isProduction ?? null,
+          externalSlug: workflow.externalSlug ?? null,
+        });
+      } catch (err) {
+        // Not stored: keep treating the canvas as differing from what is saved.
+        if (initialNodesRef.current === sentNodes) initialNodesRef.current = previousNodes;
+        if (initialEdgesRef.current === sentEdges) initialEdgesRef.current = previousEdges;
+        throw err;
+      }
     },
     onSuccess: (saved) => {
       if (typeof saved.updatedAt === "string") seenUpdatedAtRef.current = saved.updatedAt;

@@ -80,8 +80,14 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 WORKDIR /app
 
 # Pull fixed Debian security packages that may be newer than the pinned base
-# image rebuild (for example apt 3.0.4 and zlib deb13u1).
-RUN apt-get update \
+# image rebuild (for example apt 3.0.4, zlib deb13u1 and libzstd1 deb13u1).
+# CI and deploy builds use a layer cache keyed on this instruction's text, so
+# without a changing input this upgrade layer is reused forever and new
+# security fixes never land. Bump SECURITY_REFRESH whenever the image scan
+# reports a fixed OS package (last bumped for CVE-2026-124851, libzstd1).
+ARG SECURITY_REFRESH=2026-11-25
+RUN echo "security refresh ${SECURITY_REFRESH}" \
+    && apt-get update \
     && apt-get upgrade -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
