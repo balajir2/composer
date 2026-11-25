@@ -19,7 +19,7 @@ from src.db.repos import approvals as approvals_repo
 from src.db.repos import executions as executions_repo
 from src.db.repos import workflow_assignments as workflow_assignments_repo
 from src.db.repos import workflows as workflows_repo
-from src.db.repos.executions import ExecutionRecord
+from src.db.repos.executions import ExecutionRecord, PendingInstance
 from src.db.runtime import require_sessionmaker
 from src.db.types import utcnow
 from src.engine.langgraph_executor import LangGraphExecutor
@@ -560,16 +560,7 @@ async def resume_execution(
         # the decision into `variables`: enqueue_execution's Cloud Task body carries no room
         # for it, so it travels as row state that claim-and-run reads back after claiming.
         # The approval audit row commits in the same transaction (phase 4b, DB1).
-        won = await executions_repo.resume_if_waiting(
-            session, execution_id, decision=payload.decision.value, now=utcnow()
-        )
-        if not won:
-            raise HTTPException(
-                status_code=status.HTTP_409_CONFLICT,
-                detail=f"Execution {execution_id!r} is no longer waiting_approval "
-                "(already resolved by a concurrent request).",
-            )
-        await approvals_repo.create(
+        approval = await approvals_repo.create(
             session,
             execution_id=execution_id,
             node_id=str(pending_node_id),
@@ -579,6 +570,27 @@ async def resume_execution(
             via_email_link=False,
             note=payload.note,
         )
+        pending_since = cast("dict[str, Any]", variables).get("_pending_approval_since")
+        if not isinstance(pending_since, str):
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Execution is waiting_approval but has no _pending_approval_since.",
+            )
+        expected_pending = PendingInstance(node_id=str(pending_node_id), since=pending_since)
+        won = await executions_repo.resume_if_waiting(
+            session,
+            execution_id,
+            decision=payload.decision.value,
+            now=utcnow(),
+            expected_pending=expected_pending,
+            approval_id=approval.id,
+        )
+        if not won:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Execution {execution_id!r} is no longer waiting_approval "
+                "(already resolved by a concurrent request).",
+            )
         await session.commit()
     # The session is closed: enqueue is network I/O (short-session rule).
     await enqueue_execution(execution_id, kind="resume")

@@ -155,19 +155,9 @@ async def confirm_approval_email(
         execution = await executions_repo.get(session, claims.sub)
         if not _matches_pause(execution, claims):
             return _redirect_result("invalid")
-        # Atomic conditional transition: status AND pause instance are re-checked in the
-        # statement that resumes (DB2), which also stamps the decision (P1-2, Task 13) so
-        # claim-and-run reads it back as row state; the audit row shares the transaction (DB1).
-        won = await executions_repo.resume_if_waiting(
-            session,
-            claims.sub,
-            decision=decision.value,
-            now=utcnow(),
-            expected_pending=PendingInstance(node_id=claims.node_id, since=claims.pending_since),
-        )
-        if not won:
-            return _redirect_result("invalid")
-        await approvals_repo.create(
+        # The approval row and guarded transition share a transaction, so a losing transition
+        # rolls the approval insert back. Its ID is carried to the later resume claim.
+        approval = await approvals_repo.create(
             session,
             execution_id=claims.sub,
             node_id=claims.node_id,
@@ -177,6 +167,16 @@ async def confirm_approval_email(
             via_email_link=True,
             note=None,
         )
+        won = await executions_repo.resume_if_waiting(
+            session,
+            claims.sub,
+            decision=decision.value,
+            now=utcnow(),
+            expected_pending=PendingInstance(node_id=claims.node_id, since=claims.pending_since),
+            approval_id=approval.id,
+        )
+        if not won:
+            return _redirect_result("invalid")
         await session.commit()
     await enqueue_execution(claims.sub, kind="resume")
     return _redirect_result(decision.value)

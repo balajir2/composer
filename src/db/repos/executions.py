@@ -359,12 +359,31 @@ async def cancel_if_active(
     session: AsyncSession, execution_id: str, *, error: str, now: datetime
 ) -> bool:
     """G2: queued/running/waiting_approval -> canceled, dropping any lease."""
-    return await _guarded(
+    won = await _guarded(
         session,
         execution_id,
         (WorkflowExecution.status.in_(ACTIVE_STATUSES),),
         {"status": "canceled", "error": error, "completed_at": now, **_NO_LEASE},
     )
+    if not won:
+        return False
+    open_attempt_id = await session.scalar(
+        select(ExecutionAttempt.id)
+        .where(ExecutionAttempt.execution_id == execution_id, ExecutionAttempt.ended_at.is_(None))
+        .limit(1)
+    )
+    if open_attempt_id is not None:
+        closed = await execution_attempts_repo.close_open(
+            session,
+            execution_id=execution_id,
+            attempt_id=open_attempt_id,
+            result=AttemptResult.CANCELED,
+            failure_code=None,
+            ended_at=now,
+        )
+        if not closed:
+            raise RuntimeError("canceled execution had an open attempt that could not be closed")
+    return True
 
 
 def _worker_attempt_guard(attempt_id: str | None) -> ColumnElement[bool]:
@@ -652,6 +671,7 @@ async def resume_if_waiting(
     decision: str,
     now: datetime,
     expected_pending: PendingInstance | None = None,
+    approval_id: str | None = None,
 ) -> bool:
     """G3/G4: waiting_approval -> running, stamping ``_resume_decision`` in the same statement.
 
@@ -683,6 +703,7 @@ async def resume_if_waiting(
                 ),
                 JSONB,
             ),
+            **({"pending_attempt_approval_id": approval_id} if approval_id is not None else {}),
         )
         .returning(WorkflowExecution.id)
         .execution_options(synchronize_session=False)
