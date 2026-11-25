@@ -536,6 +536,37 @@ def _orphan_guard(cutoff: datetime) -> tuple[ColumnElement[bool], ...]:
     )
 
 
+async def _close_swept_attempt(
+    session: AsyncSession,
+    execution_id: str,
+    *,
+    failure_code: str,
+    now: datetime,
+) -> None:
+    """Close the attempt made terminal by a winning sweeper transition, if any.
+
+    Legacy running rows and unclaimed resume rows legitimately have no attempt.
+    The execution update is the CAS winner and holds the row lock while this
+    transaction finds and closes its open attempt.
+    """
+    attempt_id = await session.scalar(
+        select(ExecutionAttempt.id)
+        .where(ExecutionAttempt.execution_id == execution_id, ExecutionAttempt.ended_at.is_(None))
+        .limit(1)
+    )
+    if attempt_id is not None:
+        closed = await execution_attempts_repo.close_open(
+            session,
+            execution_id=execution_id,
+            attempt_id=attempt_id,
+            result=AttemptResult.FAILED,
+            failure_code=failure_code,
+            ended_at=now,
+        )
+        if not closed:
+            raise RuntimeError("winning sweeper transition lost its open attempt")
+
+
 async def list_orphaned_running(
     session: AsyncSession, *, cutoff: datetime
 ) -> list[ExecutionRecord]:
@@ -552,7 +583,7 @@ async def fail_orphaned_if_unchanged(
     session: AsyncSession, execution_id: str, *, cutoff: datetime, error: str, now: datetime
 ) -> bool:
     """G10: fail a still-orphaned row; a claim or renewal since the scan wins."""
-    return await _guarded(
+    won = await _guarded(
         session,
         execution_id,
         _orphan_guard(cutoff),
@@ -564,6 +595,9 @@ async def fail_orphaned_if_unchanged(
             **_NO_LEASE,
         },
     )
+    if won:
+        await _close_swept_attempt(session, execution_id, failure_code="orphaned_running", now=now)
+    return won
 
 
 async def list_waiting_approval(session: AsyncSession) -> list[ExecutionRecord]:
@@ -613,7 +647,7 @@ async def fail_expired_lease_if_unchanged(
     now: datetime,
 ) -> bool:
     """G12: fail a running row whose lease expiry is still the scanned value."""
-    return await _guarded(
+    won = await _guarded(
         session,
         execution_id,
         (
@@ -628,6 +662,9 @@ async def fail_expired_lease_if_unchanged(
             **_NO_LEASE,
         },
     )
+    if won:
+        await _close_swept_attempt(session, execution_id, failure_code="lease_expired", now=now)
+    return won
 
 
 async def claim_orphans_by_email(session: AsyncSession, email: str, user_id: str) -> int:
