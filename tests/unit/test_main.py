@@ -339,6 +339,8 @@ async def test_telemetry_wraps_both_database_lifecycles_even_on_failure(
     app.state.db_sessionmaker = session
     async with main.lifespan(app):
         events.append("serving")
+        assert app.state.event_bus.sessionmaker is session
+        assert app.state.rate_limiter.sessionmaker is session
     assert events == [
         "telemetry start",
         "prisma start",

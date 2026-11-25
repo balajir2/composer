@@ -4,8 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import re
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -16,48 +15,42 @@ from opentelemetry import trace
 from opentelemetry.trace import NonRecordingSpan, SpanContext
 from starlette.requests import Request
 
+from src.db.repos.executions import ClaimedExecution
+from src.engine.events_pg import PostgresEventStore
 from src.main import create_app
+from tests.unit.db_fakes import FakeSessionmaker
+from tests.unit.execution_fakes import FakeExecutions
 
 
-class _FakeTx:
-    """Mimics Prisma's `db.tx()` async context manager.
-
-    Real Prisma's transaction object exposes the same query_raw/
-    execute_raw surface as the top-level client, scoped to the
-    transaction. Rather than inventing a separate mock object (which
-    would let a test assert against `tx.query_raw` while the
-    implementation coincidentally reads `db.query_raw`, hiding a bug),
-    `__aenter__` returns the same `db` mock the test already configures
-    — so `db.query_raw`/`db.execute_raw` assignments in a test are what
-    the implementation actually observes inside the `async with` block,
-    same as real Prisma.
-    """
-
-    def __init__(self, db: MagicMock) -> None:
-        self._db = db
-
-    async def __aenter__(self) -> MagicMock:
-        return self._db
-
-    async def __aexit__(self, *exc_info: object) -> None:
-        return None
-
-
-def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
+def _client_with_fakes(
+    monkeypatch: pytest.MonkeyPatch, **fake_kwargs: Any
+) -> tuple[TestClient, FakeExecutions]:
+    """An app whose sessionmaker is a fake and whose executions repo is patched."""
     app = create_app()
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-
-    def _make_tx(**_kwargs: object) -> _FakeTx:
-        return _FakeTx(db)
-
-    db.tx = MagicMock(side_effect=_make_tx)
-    app.state.db = db
+    fake = FakeExecutions(monkeypatch, **fake_kwargs)
+    app.state.db_sessionmaker = fake.sessionmaker
     app.state.checkpointer = MagicMock()
-    from src.engine.events_pg import PostgresEventStore
+    app.state.event_bus = PostgresEventStore(fake.sessionmaker)
+    return TestClient(app), fake
 
-    app.state.event_bus = PostgresEventStore(db)
-    return TestClient(app), db
+
+def _claimed(variables: Any = None) -> ClaimedExecution:
+    return ClaimedExecution(id="exec-1", variables=variables if variables is not None else {})
+
+
+def _scope_request(headers: list[tuple[bytes, bytes]]) -> Request:
+    """A bare request whose app carries a fake sessionmaker (no TestClient, no lifespan)."""
+    app = SimpleNamespace(state=SimpleNamespace(db_sessionmaker=FakeSessionmaker()))
+    return Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/internal/claim-and-run",
+            "headers": headers,
+            "client": ("127.0.0.1", 1234),
+            "app": app,
+        }
+    )
 
 
 @pytest.mark.parametrize("outcome", ["success", "error", "cancel"])
@@ -84,16 +77,8 @@ def test_claim_and_run_attaches_remote_context_only_during_execution(
 
     monkeypatch.setattr(internal, "get_checkpointer", _fake_dependency)
     monkeypatch.setattr(internal, "get_event_bus", _fake_dependency)
-    request = Request(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": "/internal/claim-and-run",
-            "headers": [
-                (b"traceparent", b"00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")
-            ],
-            "client": ("127.0.0.1", 1234),
-        }
+    request = _scope_request(
+        [(b"traceparent", b"00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")]
     )
 
     async def _invoke_and_check_cleanup() -> None:
@@ -101,7 +86,6 @@ def test_claim_and_run_attaches_remote_context_only_during_execution(
             await internal.claim_and_run(
                 payload=ClaimAndRunRequest(executionId="exec-1", kind="run"),
                 request=request,
-                db=MagicMock(),
                 _oidc=None,
             )
         assert not trace.get_current_span().get_span_context().is_valid
@@ -149,16 +133,8 @@ def test_claim_and_run_uses_clean_context_when_attachment_fails(
 
     monkeypatch.setattr(internal, "get_checkpointer", _fake_dependency)
     monkeypatch.setattr(internal, "get_event_bus", _fake_dependency)
-    request = Request(
-        {
-            "type": "http",
-            "method": "POST",
-            "path": "/internal/claim-and-run",
-            "headers": [
-                (b"traceparent", b"00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")
-            ],
-            "client": ("127.0.0.1", 1234),
-        }
+    request = _scope_request(
+        [(b"traceparent", b"00-0123456789abcdef0123456789abcdef-0123456789abcdef-01")]
     )
 
     async def _invoke() -> None:
@@ -166,7 +142,6 @@ def test_claim_and_run_uses_clean_context_when_attachment_fails(
             await internal.claim_and_run(
                 payload=ClaimAndRunRequest(executionId="exec-1", kind="run"),
                 request=request,
-                db=MagicMock(),
                 _oidc=None,
             )
 
@@ -183,24 +158,16 @@ async def test_claim_and_run_execution_runs_directly_without_a_request(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """`claim_and_run_execution` (the core claim+run logic factored out of
-    the `claim_and_run` HTTP handler) must be callable with plain
-    db/checkpointer/event_bus objects — no FastAPI `Request` involved.
+    the `claim_and_run` HTTP handler) must be callable with a plain
+    sessionmaker/checkpointer/event_bus — no FastAPI `Request` involved.
 
     This is what `src/execution/cloud_tasks.py`'s dev-mode fallback (no
     CLOUD_TASKS_SERVICE_ACCOUNT configured) needs: it dispatches execution
     in-process instead of enqueueing a real Cloud Task, and has no HTTP
-    request to hand `claim_and_run` — only whatever `db` its own caller
-    already has. If this function can only run behind the HTTP layer, that
-    fallback is impossible without inventing a fake `Request`."""
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
-    db.execute_raw = AsyncMock()
-
-    def _make_tx(**_kwargs: object) -> _FakeTx:
-        return _FakeTx(db)
-
-    db.tx = MagicMock(side_effect=_make_tx)
+    request to hand `claim_and_run`. If this function can only run behind the
+    HTTP layer, that fallback is impossible without inventing a fake
+    `Request`."""
+    fake = FakeExecutions(monkeypatch, claim_result=_claimed())
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
@@ -216,7 +183,7 @@ async def test_claim_and_run_execution_runs_directly_without_a_request(
     result = await claim_and_run_execution(
         "exec-1",
         "run",
-        db=db,
+        sessionmaker=fake.sessionmaker,
         checkpointer=MagicMock(),
         event_bus=MagicMock(),
         worker_id="in-process:exec-1",
@@ -224,14 +191,74 @@ async def test_claim_and_run_execution_runs_directly_without_a_request(
 
     assert result == {"status": "completed"}
     assert ran == ["exec-1"]
-    db.execute_raw.assert_awaited_once()
+    assert len(fake.claim_calls) == 1
+
+
+async def test_claim_session_is_committed_and_closed_before_the_run_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ordering: claim -> commit -> session closed -> THEN the executor runs.
+
+    The claim's SET LOCAL statement_timeout lasts until its transaction ends and the lease
+    must be durable before any graph or external call, so nothing may run inside the claim's
+    session."""
+    events: list[str] = []
+    fake = FakeExecutions(monkeypatch, claim_result=_claimed(), events=events)
+
+    from src.api.internal import claim_and_run_execution
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    async def _fake_run(self: LangGraphExecutor, execution_id: str) -> None:
+        events.append("net:run")
+
+    monkeypatch.setattr(LangGraphExecutor, "run", _fake_run)
+
+    await claim_and_run_execution(
+        "exec-1",
+        "run",
+        sessionmaker=fake.sessionmaker,
+        checkpointer=MagicMock(),
+        event_bus=MagicMock(),
+        worker_id="w",
+    )
+
+    assert events == ["session:enter", "db:claim", "db:commit", "session:exit", "net:run"]
+
+
+async def test_claim_transaction_is_bounded_by_a_ten_second_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hanging claim fails fast (today: Prisma's tx(timeout=10000)) instead of holding the
+    row lock and a pooled connection for the whole lease."""
+    fake = FakeExecutions(monkeypatch, claim_hangs=True)
+    bounds: list[float | None] = []
+    real_timeout = asyncio.timeout
+
+    def _short_timeout(delay: float | None) -> Any:
+        bounds.append(delay)
+        return real_timeout(0.05)
+
+    monkeypatch.setattr(asyncio, "timeout", _short_timeout)
+
+    from src.api.internal import claim_and_run_execution
+
+    with pytest.raises(TimeoutError):
+        await claim_and_run_execution(
+            "exec-1",
+            "run",
+            sessionmaker=fake.sessionmaker,
+            checkpointer=MagicMock(),
+            event_bus=MagicMock(),
+            worker_id="w",
+        )
+
+    assert bounds == [10]
+    assert fake.commits == 0
 
 
 def test_claim_and_run_claims_and_dispatches_run(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")  # dev mode: OIDC check skipped
-    client, db = _client_with_mock_db()
-    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
-    db.execute_raw = AsyncMock()
+    client, fake = _client_with_fakes(monkeypatch, claim_result=_claimed())
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
@@ -245,7 +272,18 @@ def test_claim_and_run_claims_and_dispatches_run(monkeypatch: pytest.MonkeyPatch
     resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
     assert resp.status_code == 200, resp.text
     assert ran == ["exec-1"]
-    db.execute_raw.assert_awaited_once()
+    assert len(fake.claim_calls) == 1
+    assert fake.claim_calls[0]["execution_id"] == "exec-1"
+
+
+def test_claim_and_run_is_503_without_a_database(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    client, _fake = _client_with_fakes(monkeypatch)
+    del cast("Any", client.app).state.db_sessionmaker
+
+    resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "database unavailable"
 
 
 def test_claim_and_run_no_op_when_already_claimed(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -253,170 +291,38 @@ def test_claim_and_run_no_op_when_already_claimed(monkeypatch: pytest.MonkeyPatc
     execution finds nothing to claim and returns success without re-running
     — this is the actual single-claim guarantee, not Cloud Tasks itself."""
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
-    client, db = _client_with_mock_db()
-    db.query_raw = AsyncMock(return_value=[])  # already locked by another worker
-    db.execute_raw = AsyncMock()
+    client, fake = _client_with_fakes(monkeypatch, claim_result=None)  # locked / not eligible
 
     resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "already_claimed"
-    db.execute_raw.assert_not_awaited()
+    assert fake.commits == 1  # the (empty) claim transaction still ends cleanly
 
 
-def test_claim_and_run_claim_query_filters_on_status(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Regression test: the claim query MUST filter on status so a
-    redelivered Cloud Tasks request can never re-claim (and re-run) an
-    execution that already reached a terminal status ('completed',
-    'failed', 'canceled') — even once its lease has expired (or was
-    never set). Without a status predicate, the claim query only checks
-    lease_expires_at, which a redelivery after the (default 1h) lease
-    window would satisfy for an already-finished row, causing
-    `executor.run()`/`.resume()` to be invoked a second time on a
-    terminal execution.
+def test_claimable_statuses_exclude_terminal_rows_and_include_queued() -> None:
+    """Regression pin: the claim's eligibility must never include a terminal status (a
+    redelivered Cloud Task could otherwise re-run a finished execution once its lease is
+    gone) and must include 'queued' (the row a fresh delivery exists to claim). The SQL
+    itself is exercised against Postgres by the repo tests and the behaviour oracle."""
+    from src.db.repos.executions import _CLAIMABLE  # pyright: ignore[reportPrivateUsage]
 
-    Terminal transitions clear ownership, so the status predicate must
-    still exclude those rows when their lease is null.
-    """
+    assert _CLAIMABLE == {"run": ("queued",), "resume": ("running",)}
+    for statuses in _CLAIMABLE.values():
+        assert not {"completed", "failed", "canceled", "waiting_approval"} & set(statuses)
+
+
+@pytest.mark.parametrize("kind", ["run", "resume"])
+def test_claim_eligibility_is_kind_specific(monkeypatch: pytest.MonkeyPatch, kind: str) -> None:
+    """The delivery kind selects the claim's eligible status; an ineligible row is acked
+    without replay."""
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
-    client, db = _client_with_mock_db()
-    # Simulate what Postgres would actually do: a terminal-status row
-    # never matches, regardless of what query_raw is asked to return by
-    # a naive caller — the fake here proves the SQL text itself carries
-    # the predicate by parsing which statuses the query allows and
-    # applying it against a fake 'completed' row for execution_id.
-    fake_row_id = "exec-1"
-    fake_row_status = "completed"
-
-    async def _fake_query_raw(sql: str, *args: object) -> list[dict[str, str]]:
-        assert "status" in sql, "claim query must filter on status"
-        assert re.search(r"status\s*=\s*ANY\(\$\d+::text\[\]\)", sql, re.IGNORECASE), (
-            "claim query must filter status via a bound `= ANY($N::text[])` "
-            "parameter, not a hardcoded literal"
-        )
-        assert len(args) >= 2, "claim query must bind the allowed statuses as a parameter"
-        allowed = set(args[1])  # type: ignore[arg-type]
-        # Terminal statuses must never be claimable, whatever else changes.
-        assert "completed" not in allowed
-        assert "failed" not in allowed
-        assert "canceled" not in allowed
-        if fake_row_status not in allowed:
-            return []
-        return [{"id": fake_row_id}]
-
-    db.query_raw = AsyncMock(side_effect=_fake_query_raw)
-    db.execute_raw = AsyncMock()
-
-    from src.engine.langgraph_executor import LangGraphExecutor
-
-    ran: list[str] = []
-
-    async def _fake_run(self: LangGraphExecutor, execution_id: str) -> None:
-        ran.append(execution_id)
-
-    monkeypatch.setattr(LangGraphExecutor, "run", _fake_run)
-
-    resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
-    assert resp.status_code == 200, resp.text
-    # The completed row must NOT have been claimed/run.
-    assert resp.json()["status"] == "already_claimed"
-    assert ran == []
-    db.execute_raw.assert_not_awaited()
-
-
-def test_claim_and_run_claim_query_includes_queued_status(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Important #3 regression: the claim query's allowed-status set MUST
-    include 'queued', not just 'running'/'waiting_approval' — a freshly
-    created row (P1-2: created 'queued', see LangGraphExecutor.
-    start_execution) is exactly the row a fresh Cloud Task delivery is
-    meant to claim. Without 'queued' in the predicate, every newly
-    created execution would sit unclaimable forever. Complements
-    test_claim_and_run_claim_query_filters_on_status, which only asserts
-    terminal statuses are EXCLUDED and would pass unchanged even if
-    'queued' had been left out of the allowed set entirely.
-    """
-    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
-    client, db = _client_with_mock_db()
-
-    async def _fake_query_raw(sql: str, *args: object) -> list[dict[str, str]]:
-        assert re.search(r"status\s*=\s*ANY\(\$\d+::text\[\]\)", sql, re.IGNORECASE), (
-            "claim query must have a bound `status = ANY($N::text[])` predicate"
-        )
-        assert len(args) >= 2, "claim query must bind the allowed statuses as a parameter"
-        allowed = set(args[1])  # type: ignore[arg-type]
-        assert "queued" in allowed, "freshly created 'queued' rows must be claimable"
-        return [{"id": "exec-1"}]
-
-    db.query_raw = AsyncMock(side_effect=_fake_query_raw)
-    db.execute_raw = AsyncMock()
-
-    from src.engine.langgraph_executor import LangGraphExecutor
-
-    ran: list[str] = []
-
-    async def _fake_run(self: LangGraphExecutor, execution_id: str) -> None:
-        ran.append(execution_id)
-
-    monkeypatch.setattr(LangGraphExecutor, "run", _fake_run)
-
-    resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
-    assert resp.status_code == 200, resp.text
-    assert ran == ["exec-1"]
-
-
-@pytest.mark.parametrize("kind, expected_status", [("run", "queued"), ("resume", "running")])
-def test_claim_eligibility_is_kind_specific(
-    monkeypatch: pytest.MonkeyPatch, kind: str, expected_status: str
-) -> None:
-    """Active paused or expired attempts must never be replayed by delivery."""
-    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
-    client, db = _client_with_mock_db()
-
-    async def _query(sql: str, *args: object) -> list[dict[str, str]]:
-        assert args[1] == [expected_status]
-        assert re.search(r"lease_expires_at\s+IS\s+NULL", sql, re.IGNORECASE)
-        assert re.search(r"lease_owner\s+IS\s+NULL", sql, re.IGNORECASE)
-        assert not re.search(r"lease_expires_at\s*<", sql, re.IGNORECASE)
-        return []
-
-    db.query_raw = AsyncMock(side_effect=_query)
-    db.execute_raw = AsyncMock()
+    client, fake = _client_with_fakes(monkeypatch, claim_result=None)
     response = cast("Any", client).post(
         "/internal/claim-and-run", json={"executionId": "exec-1", "kind": kind}
     )
     assert response.status_code == 200, response.text
     assert response.json() == {"status": "already_claimed"}
-    db.execute_raw.assert_not_awaited()
-
-
-def test_claim_and_run_update_sets_status_running(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Important #3 regression: the claim UPDATE must unconditionally
-    write status='running' — without it, a claimed 'queued' row would
-    stay 'queued' forever even though claim-and-run believes it owns the
-    row (see the P1-2 justification comment on the UPDATE statement in
-    src/api/internal.py)."""
-    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
-    client, db = _client_with_mock_db()
-    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
-    db.execute_raw = AsyncMock()
-
-    from src.engine.langgraph_executor import LangGraphExecutor
-
-    async def _fake_run(self: LangGraphExecutor, execution_id: str) -> None:
-        return None
-
-    monkeypatch.setattr(LangGraphExecutor, "run", _fake_run)
-
-    resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
-    assert resp.status_code == 200, resp.text
-
-    db.execute_raw.assert_awaited_once()
-    call = db.execute_raw.call_args
-    sql = call.args[0]
-    assert re.search(r"status\s*=\s*'running'", sql, re.IGNORECASE), (
-        "claim UPDATE must unconditionally set status='running'"
-    )
+    assert fake.claim_calls[0]["kind"] == kind
 
 
 @pytest.mark.parametrize("kind", ["run", "resume"])
@@ -426,32 +332,24 @@ def test_claim_stamps_attempt_and_derived_lease_from_one_timestamp(
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
     monkeypatch.setenv("EXECUTION_MAX_RUNTIME_SECONDS", "900")
     monkeypatch.setenv("EXECUTION_SHUTDOWN_GRACE_SECONDS", "47")
-    client, db = _client_with_mock_db()
-    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
-    db.execute_raw = AsyncMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(variables={"_resume_decision": "approved"})
+    client, fake = _client_with_fakes(
+        monkeypatch, claim_result=_claimed({"_resume_decision": "approved"})
     )
     frozen_now = datetime(2026, 11, 17, 12, tzinfo=UTC)
-    clock = MagicMock(wraps=datetime)
-    clock.now.return_value = frozen_now
-    monkeypatch.setattr("src.api.internal.datetime", clock)
+    clock = MagicMock(return_value=frozen_now)
+    monkeypatch.setattr("src.api.internal.utcnow", clock)
     monkeypatch.setattr("src.api.internal.LangGraphExecutor.run", AsyncMock())
     monkeypatch.setattr("src.api.internal.LangGraphExecutor.resume", AsyncMock())
 
     response = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": kind})
 
     assert response.status_code == 200, response.text
-    sql, owner, lease_expires, running_since, execution_id = db.execute_raw.call_args.args
-    assert "lease_owner = $1" in sql
-    assert "lease_expires_at = $2::timestamptz" in sql
-    assert "running_since = $3::timestamptz" in sql
-    assert "WHERE id = $4" in sql
-    assert owner
-    assert running_since == frozen_now
-    assert lease_expires == datetime(2026, 11, 17, 12, 15, 47, tzinfo=UTC)
-    assert execution_id == "exec-1"
-    clock.now.assert_called_once_with(UTC)
+    call = fake.claim_calls[0]
+    assert call["worker_id"]
+    assert call["now"] == frozen_now
+    assert call["lease_expires_at"] == frozen_now + timedelta(seconds=900 + 47)
+    assert call["execution_id"] == "exec-1"
+    clock.assert_called_once_with()
 
 
 def test_claim_and_run_resume_dispatches_resume(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -459,13 +357,11 @@ def test_claim_and_run_resume_dispatches_resume(monkeypatch: pytest.MonkeyPatch)
     `variables._resume_decision` (stamped by the enqueueing call site
     BEFORE the Cloud Task fires), not via any request-body field —
     enqueue_execution's Cloud Task body is hardcoded to
-    {"executionId": ..., "kind": ...} with no room for it."""
+    {"executionId": ..., "kind": ...} with no room for it. The claim returns the
+    variables it locked, so no second read is needed."""
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
-    client, db = _client_with_mock_db()
-    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
-    db.execute_raw = AsyncMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(variables={"_resume_decision": "approved"})
+    client, fake = _client_with_fakes(
+        monkeypatch, claim_result=_claimed({"_resume_decision": "approved"})
     )
 
     from src.engine.langgraph_executor import LangGraphExecutor
@@ -483,7 +379,7 @@ def test_claim_and_run_resume_dispatches_resume(monkeypatch: pytest.MonkeyPatch)
     )
     assert resp.status_code == 200, resp.text
     assert resumed == [("exec-1", "approved")]
-    db.workflowexecution.find_unique.assert_awaited_once_with(where={"id": "exec-1"})
+    assert len(fake.claim_calls) == 1
 
 
 def test_claim_and_run_resume_ignores_legacy_decision_field_in_request_body(
@@ -494,11 +390,8 @@ def test_claim_and_run_resume_ignores_legacy_decision_field_in_request_body(
     be ignored, not consulted; only `variables._resume_decision` on the
     claimed row is authoritative."""
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
-    client, db = _client_with_mock_db()
-    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
-    db.execute_raw = AsyncMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(variables={"_resume_decision": "rejected"})
+    client, _fake = _client_with_fakes(
+        monkeypatch, claim_result=_claimed({"_resume_decision": "rejected"})
     )
 
     from src.engine.langgraph_executor import LangGraphExecutor
@@ -525,10 +418,7 @@ def test_claim_and_run_resume_without_decision_is_rejected(
     or malformed enqueue) is a 422, matching the pre-Task-13 "decision is
     required" error shape."""
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
-    client, db = _client_with_mock_db()
-    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
-    db.execute_raw = AsyncMock()
-    db.workflowexecution.find_unique = AsyncMock(return_value=SimpleNamespace(variables={}))
+    client, _fake = _client_with_fakes(monkeypatch, claim_result=_claimed({}))
 
     resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "resume"})
     assert resp.status_code == 422
@@ -541,7 +431,7 @@ def test_claim_and_run_rejects_missing_oidc_token_when_service_account_set(
     a request with no Authorization header must be rejected — this is the
     actual security boundary the endpoint depends on."""
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "worker@test-project.iam.gserviceaccount.com")
-    client, _db = _client_with_mock_db()
+    client, _fake = _client_with_fakes(monkeypatch)
 
     resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
     assert resp.status_code == 401
@@ -549,7 +439,7 @@ def test_claim_and_run_rejects_missing_oidc_token_when_service_account_set(
 
 def test_claim_and_run_rejects_invalid_oidc_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "worker@test-project.iam.gserviceaccount.com")
-    client, _db = _client_with_mock_db()
+    client, _fake = _client_with_fakes(monkeypatch)
 
     from google.auth.exceptions import GoogleAuthError
 
@@ -573,7 +463,7 @@ def test_claim_and_run_rejects_oidc_token_with_wrong_email(
     signed as the SPECIFIC service account this app's Cloud Tasks queue
     uses, not merely any Google-issued token."""
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "worker@test-project.iam.gserviceaccount.com")
-    client, _db = _client_with_mock_db()
+    client, _fake = _client_with_fakes(monkeypatch)
 
     def _verify(*_args: object, **_kwargs: object) -> dict[str, str]:
         return {"email": "someone-else@test-project.iam.gserviceaccount.com"}
@@ -595,16 +485,14 @@ def test_claim_and_run_crash_in_run_marks_row_failed_and_returns_error(
     be caught synchronously, the row marked 'failed' with an informative
     message in the DB `error` field (mirroring the deleted
     `_run_with_persistence` wrapper's `f"{type(exc).__name__}: {exc}"`
-    format), guarded on `status='running'` (Issue 1) so the write can't
-    clobber a concurrent transition, and the HTTP response must carry a
-    generic client-facing message (Issue 2) — the raw exception text is
-    deliberately NOT included in the response body, only in the DB `error`
-    field and the application logs."""
+    format), through the guarded `mark_failed_if_running` (Issue 1; the guard
+    and the cleared lease columns are pinned by the repo tests and the
+    oracle) so the write can't clobber a concurrent transition, and the HTTP
+    response must carry a generic client-facing message (Issue 2) — the raw
+    exception text is deliberately NOT included in the response body, only in
+    the DB `error` field and the application logs."""
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
-    client, db = _client_with_mock_db()
-    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
-    db.execute_raw = AsyncMock()
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    client, fake = _client_with_fakes(monkeypatch, claim_result=_claimed())
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
@@ -624,18 +512,15 @@ def test_claim_and_run_crash_in_run_marks_row_failed_and_returns_error(
     assert "exec-1" in resp.text
     assert "see application logs" in resp.text
 
-    db.workflowexecution.update_many.assert_awaited_once()
-    call = db.workflowexecution.update_many.call_args
-    assert call.kwargs["where"] == {"id": "exec-1", "status": "running"}
-    data = call.kwargs["data"]
+    assert len(fake.updates) == 1
+    data = fake.updates[0]
+    assert data["execution_id"] == "exec-1"
     assert data["status"] == "failed"
     assert "RuntimeError" in data["error"]
     assert "simulated executor crash" in data["error"]
-    assert data["completedAt"] is not None
-    assert data["failureCode"] == "execution_error"
-    assert data["runningSince"] is None
-    assert data["leaseOwner"] is None
-    assert data["leaseExpiresAt"] is None
+    assert data["now"] is not None
+    assert data["failure_code"] == "execution_error"
+    assert fake.commits == 2  # the claim, then the failure write
 
 
 def test_claim_and_run_crash_in_resume_marks_row_failed_and_returns_error(
@@ -647,13 +532,9 @@ def test_claim_and_run_crash_in_resume_marks_row_failed_and_returns_error(
     row 'running' for the sweeper to eventually notice, or leaking raw
     exception text into the client-facing response body."""
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
-    client, db = _client_with_mock_db()
-    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
-    db.execute_raw = AsyncMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(variables={"_resume_decision": "approved"})
+    client, fake = _client_with_fakes(
+        monkeypatch, claim_result=_claimed({"_resume_decision": "approved"})
     )
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
@@ -673,18 +554,14 @@ def test_claim_and_run_crash_in_resume_marks_row_failed_and_returns_error(
     assert "exec-1" in resp.text
     assert "see application logs" in resp.text
 
-    db.workflowexecution.update_many.assert_awaited_once()
-    call = db.workflowexecution.update_many.call_args
-    assert call.kwargs["where"] == {"id": "exec-1", "status": "running"}
-    data = call.kwargs["data"]
+    assert len(fake.updates) == 1
+    data = fake.updates[0]
+    assert data["execution_id"] == "exec-1"
     assert data["status"] == "failed"
     assert "RuntimeError" in data["error"]
     assert "simulated resume crash" in data["error"]
-    assert data["completedAt"] is not None
-    assert data["failureCode"] == "execution_error"
-    assert data["runningSince"] is None
-    assert data["leaseOwner"] is None
-    assert data["leaseExpiresAt"] is None
+    assert data["now"] is not None
+    assert data["failure_code"] == "execution_error"
 
 
 def test_claim_and_run_crash_does_not_clobber_concurrent_cancel(
@@ -692,20 +569,12 @@ def test_claim_and_run_crash_does_not_clobber_concurrent_cancel(
 ) -> None:
     """P1-2 Task 13 follow-up, Issue 1: if a concurrent `cancel_execution`
     already flipped this row to 'canceled' by the time the crash handler's
-    guarded `update_many(where={..., "status": "running"})` runs, the guard
-    matches zero rows (Prisma's `update_many` returns the affected count).
-    The handler must NOT then report the crash as if the write had
+    guarded write runs, the guard matches zero rows (the repo function returns
+    False). The handler must NOT then report the crash as if the write had
     succeeded in overwriting a live row — the row's 'canceled' status is
-    already the legitimate, correctly-recorded outcome. Matches
-    `create_execution`'s equivalent "lost the race" guard in
-    src/api/executions.py."""
+    already the legitimate, correctly-recorded outcome."""
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
-    client, db = _client_with_mock_db()
-    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
-    db.execute_raw = AsyncMock()
-    # Simulate Prisma's update_many finding no matching row: a concurrent
-    # cancel already moved status away from 'running'.
-    db.workflowexecution.update_many = AsyncMock(return_value=0)
+    client, fake = _client_with_fakes(monkeypatch, claim_result=_claimed(), won=False)
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
@@ -722,10 +591,63 @@ def test_claim_and_run_crash_does_not_clobber_concurrent_cancel(
     # as a retry-worthy failure) — it's a benign race loss.
     assert resp.status_code == 200, resp.text
     assert resp.json()["status"] == "already_terminal"
+    assert len(fake.updates) == 1
 
-    db.workflowexecution.update_many.assert_awaited_once()
-    call = db.workflowexecution.update_many.call_args
-    assert call.kwargs["where"] == {"id": "exec-1", "status": "running"}
+
+def test_claim_and_run_crash_when_the_failure_write_itself_fails_still_reports_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The safety net has its own safety net: a DB error while recording the failure is
+    logged, never raised over the original crash, and the lease stays for the lease sweeper."""
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    client, fake = _client_with_fakes(
+        monkeypatch, claim_result=_claimed(), mark_failed_raises=RuntimeError("db down")
+    )
+
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    async def _crashing_run(self: LangGraphExecutor, execution_id: str) -> None:
+        raise RuntimeError("simulated executor crash")
+
+    monkeypatch.setattr(LangGraphExecutor, "run", _crashing_run)
+
+    resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
+
+    assert resp.status_code == 500
+    assert "see application logs" in resp.text
+    assert fake.updates == []
+
+
+def test_crash_handler_runs_in_its_own_session_after_the_claim_session_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ordering: the claim session closes first; the crash write is a separate short session."""
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    events: list[str] = []
+    client, _fake = _client_with_fakes(monkeypatch, claim_result=_claimed(), events=events)
+
+    from src.engine.langgraph_executor import LangGraphExecutor
+
+    async def _crashing_run(self: LangGraphExecutor, execution_id: str) -> None:
+        events.append("net:run")
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(LangGraphExecutor, "run", _crashing_run)
+
+    resp = client.post("/internal/claim-and-run", json={"executionId": "exec-1", "kind": "run"})
+
+    assert resp.status_code == 500
+    assert events == [
+        "session:enter",
+        "db:claim",
+        "db:commit",
+        "session:exit",
+        "net:run",
+        "session:enter",
+        "db:mark_failed",
+        "db:commit",
+        "session:exit",
+    ]
 
 
 def test_claim_and_run_cancelled_error_is_not_caught_by_fast_fail_guard(
@@ -742,16 +664,7 @@ def test_claim_and_run_cancelled_error_is_not_caught_by_fast_fail_guard(
     would swallow/translate the exception via Starlette's exception
     handling) is what lets this test observe the raw propagation."""
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.update_many = AsyncMock()
-    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
-    db.execute_raw = AsyncMock()
-
-    def _make_tx(**_kwargs: object) -> _FakeTx:
-        return _FakeTx(db)
-
-    db.tx = MagicMock(side_effect=_make_tx)
+    fake = FakeExecutions(monkeypatch, claim_result=_claimed())
 
     from src.api.internal import ClaimAndRunRequest, claim_and_run
     from src.engine.langgraph_executor import LangGraphExecutor
@@ -763,7 +676,11 @@ def test_claim_and_run_cancelled_error_is_not_caught_by_fast_fail_guard(
 
     fake_request = SimpleNamespace(
         client=SimpleNamespace(host="test"),
-        app=SimpleNamespace(state=SimpleNamespace(checkpointer=MagicMock(), event_bus=MagicMock())),
+        app=SimpleNamespace(
+            state=SimpleNamespace(
+                checkpointer=MagicMock(), event_bus=MagicMock(), db_sessionmaker=fake.sessionmaker
+            )
+        ),
     )
 
     def _fake_get_checkpointer(_req: object) -> MagicMock:
@@ -780,7 +697,6 @@ def test_claim_and_run_cancelled_error_is_not_caught_by_fast_fail_guard(
             claim_and_run(
                 payload=ClaimAndRunRequest(executionId="exec-1", kind="run"),
                 request=fake_request,  # type: ignore[arg-type]
-                db=db,
                 _oidc=None,
             )
         )
@@ -788,14 +704,12 @@ def test_claim_and_run_cancelled_error_is_not_caught_by_fast_fail_guard(
     # The fast-fail guard must not have touched the row at all — this is
     # what proves CancelledError skipped `except Exception` entirely
     # rather than being caught and re-raised after a (wrong) DB write.
-    db.workflowexecution.update_many.assert_not_awaited()
+    assert fake.updates == []
 
 
 def test_claim_and_run_accepts_valid_oidc_token(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "worker@test-project.iam.gserviceaccount.com")
-    client, db = _client_with_mock_db()
-    db.query_raw = AsyncMock(return_value=[{"id": "exec-1"}])
-    db.execute_raw = AsyncMock()
+    client, _fake = _client_with_fakes(monkeypatch, claim_result=_claimed())
 
     from src.engine.langgraph_executor import LangGraphExecutor
 

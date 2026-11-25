@@ -15,11 +15,12 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from prisma.errors import UniqueViolationError  # pyright: ignore[reportMissingImports]
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.api._idempotency import find_execution_by_idempotency_key, require_same_caller
 from src.config import get_settings
+from src.db.errors import AlreadyExists
+from src.db.repos import executions as executions_repo
 from src.db.repos import workflows as workflows_repo
 from src.db.runtime import require_sessionmaker
 from src.engine.langgraph_executor import LangGraphExecutor
@@ -35,6 +36,7 @@ from src.storage.db import get_db, get_event_bus
 
 if TYPE_CHECKING:
     from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+    from src.db.repos.executions import ExecutionRecord
     from src.engine.events_pg import PostgresEventStore
 
 logger = logging.getLogger(__name__)
@@ -78,11 +80,15 @@ TERMINAL_STATUSES = {"completed", "failed", "canceled"}
 SYNC_EARLY_RETURN_STATUSES = TERMINAL_STATUSES | {"waiting_approval"}
 
 
-def _get_executor(request: Request, db: Any, event_bus: Any) -> LangGraphExecutor:
+def _get_executor(request: Request, event_bus: Any) -> LangGraphExecutor:
     checkpointer = getattr(request.app.state, "checkpointer", None)
     if checkpointer is None:
         raise RuntimeError("Checkpointer not attached to app.state")
-    return LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
+    return LangGraphExecutor(
+        sessionmaker=require_sessionmaker(request),
+        checkpointer=checkpointer,
+        event_bus=event_bus,
+    )
 
 
 @router.post("/api/run/{slug}")
@@ -128,7 +134,8 @@ async def run_external(
     if not workflow.is_public and workflow.user_id != auth.user_id and auth.role != "admin":
         raise HTTPException(status_code=404, detail=f"production workflow {slug!r} not found")
 
-    executor = _get_executor(request, db, event_bus)
+    executor = _get_executor(request, event_bus)
+    sessionmaker = require_sessionmaker(request)
 
     # Idempotent replay (P1-3): a caller retrying this POST after a network
     # timeout is the actual duplicate-execution vector here — LangGraph
@@ -137,17 +144,17 @@ async def run_external(
     # (workflowId, userId, idempotencyKey) row means an earlier request already
     # started this logical operation; reuse it instead of firing
     # side-effecting nodes (Jira, email, HTTP mutations) a second time.
-    execution: Any = None
-    is_replay = False
+    execution: ExecutionRecord | None = None
     if payload.idempotency_key:
-        execution = await find_execution_by_idempotency_key(
-            db, workflow.id, auth.user_id, payload.idempotency_key
-        )
-        is_replay = execution is not None
-        if is_replay:
+        async with sessionmaker() as session:
+            execution = await find_execution_by_idempotency_key(
+                session, workflow.id, auth.user_id, payload.idempotency_key
+            )
+        if execution is not None:
             require_same_caller(execution, auth.user_id)
+    is_replay = execution is not None
 
-    if not is_replay:
+    if execution is None:
         try:
             execution = await executor.start_execution(
                 workflow_id=workflow.id,
@@ -155,23 +162,25 @@ async def run_external(
                 user_id=auth.user_id,
                 idempotency_key=payload.idempotency_key,
             )
-        except UniqueViolationError:
+        except AlreadyExists:
             # Lost a race against a concurrent request carrying the same
             # key — the DB's unique constraint is the actual guarantee,
-            # the find_first lookup above is just a fast path.
+            # the lookup above is just a fast path.
             if payload.idempotency_key is None:
                 raise
-            execution = await find_execution_by_idempotency_key(
-                db, workflow.id, auth.user_id, payload.idempotency_key
-            )
-            if execution is None:
+            async with sessionmaker() as session:
+                existing = await find_execution_by_idempotency_key(
+                    session, workflow.id, auth.user_id, payload.idempotency_key
+                )
+            if existing is None:
                 # Only reachable while the DB still has the old per-workflow
                 # unique index (code deployed before alembic 0002).
                 raise HTTPException(
                     status_code=409,
                     detail="idempotency key already used for this workflow",
                 ) from None
-            require_same_caller(execution, auth.user_id)
+            require_same_caller(existing, auth.user_id)
+            execution = existing
             is_replay = True
 
     base_url = str(request.base_url).rstrip("/")
@@ -204,7 +213,10 @@ async def run_external(
     last_status = execution.status
     deadline = time.monotonic() + payload.timeout_seconds
     while time.monotonic() < deadline:
-        current = await db.workflowexecution.find_unique(where={"id": execution.id})  # pyright: ignore[reportAttributeAccessIssue]
+        # One short session per poll, closed before the sleep: a long-lived session would
+        # serve stale identity-map rows and hold a connection for up to the timeout.
+        async with sessionmaker() as session:
+            current = await executions_repo.get(session, execution.id)
         if current is not None:
             last_status = current.status
             if current.status in SYNC_EARLY_RETURN_STATUSES:

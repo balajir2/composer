@@ -1,8 +1,7 @@
 """Tests for the event-emitting executor wrapper."""
 
-from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from langgraph.errors import GraphBubbleUp
@@ -12,6 +11,11 @@ from src.engine.events_wrapper import wrap_executor_with_events
 from src.engine.execution_control import ExecutionStopped
 from src.engine.state import initial_state
 from src.engine.workflow import Workflow
+from tests.unit.db_fakes import (
+    FakeSessionmaker,
+    RecordingSessionmaker,
+    assert_no_network_inside_session,
+)
 
 
 class _FakeExecutor:
@@ -218,20 +222,37 @@ async def test_wrapper_noop_when_context_unset() -> None:
     assert result["variables"]["k"] == "v"
 
 
+def _patch_statuses(monkeypatch: pytest.MonkeyPatch, statuses: list[str | None]) -> list[str]:
+    """Make ``executions_repo.get_status`` answer from ``statuses``; returns the asked ids."""
+    asked: list[str] = []
+    remaining = list(statuses)
+
+    async def _get_status(_session: Any, execution_id: str) -> str | None:
+        asked.append(execution_id)
+        return remaining.pop(0)
+
+    monkeypatch.setattr("src.db.repos.executions.get_status", _get_status)
+    return asked
+
+
 @pytest.mark.parametrize(
     "status", ["canceled", "completed", "failed", "waiting_approval", "queued", None]
 )
-async def test_wrapper_stops_before_start_when_execution_is_not_running(status: str | None) -> None:
-    from src.engine.context import set_current_db, set_current_event_bus, set_current_execution_id
-
-    db = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(status=status) if status is not None else None
+async def test_wrapper_stops_before_start_when_execution_is_not_running(
+    status: str | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from src.engine.context import (
+        set_current_event_bus,
+        set_current_execution_id,
+        set_current_sessionmaker,
     )
+
+    asked = _patch_statuses(monkeypatch, [status])
+    sm = FakeSessionmaker()
     executor = _FakeExecutor()
     executor.arun = AsyncMock(wraps=executor.arun)
     store = _FakeEventStore()
-    set_current_db(db)
+    set_current_sessionmaker(sm)  # pyright: ignore[reportArgumentType]
     set_current_execution_id("e1")
     set_current_event_bus(store)  # pyright: ignore[reportArgumentType]
 
@@ -240,7 +261,7 @@ async def test_wrapper_stops_before_start_when_execution_is_not_running(status: 
         with pytest.raises(ExecutionStopped) as stopped:
             await arun(initial_state())
     finally:
-        set_current_db(None)
+        set_current_sessionmaker(None)
         set_current_execution_id(None)
         set_current_event_bus(None)
 
@@ -249,20 +270,24 @@ async def test_wrapper_stops_before_start_when_execution_is_not_running(status: 
     assert stopped.value.status == (status if status is not None else "missing")
     executor.arun.assert_not_awaited()
     assert store.events == []
-    db.workflowexecution.find_unique.assert_awaited_once_with(where={"id": "e1"})
+    assert asked == ["e1"]
 
 
-async def test_wrapper_stops_after_executor_returns_when_execution_was_canceled() -> None:
-    from src.engine.context import set_current_db, set_current_event_bus, set_current_execution_id
-
-    db = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        side_effect=[SimpleNamespace(status="running"), SimpleNamespace(status="canceled")]
+async def test_wrapper_stops_after_executor_returns_when_execution_was_canceled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.engine.context import (
+        set_current_event_bus,
+        set_current_execution_id,
+        set_current_sessionmaker,
     )
+
+    asked = _patch_statuses(monkeypatch, ["running", "canceled"])
+    sm = FakeSessionmaker()
     executor = _FakeExecutor()
     executor.arun = AsyncMock(wraps=executor.arun)
     store = _FakeEventStore()
-    set_current_db(db)
+    set_current_sessionmaker(sm)  # pyright: ignore[reportArgumentType]
     set_current_execution_id("e1")
     set_current_event_bus(store)  # pyright: ignore[reportArgumentType]
 
@@ -271,7 +296,7 @@ async def test_wrapper_stops_after_executor_returns_when_execution_was_canceled(
         with pytest.raises(ExecutionStopped) as stopped:
             await arun(initial_state())
     finally:
-        set_current_db(None)
+        set_current_sessionmaker(None)
         set_current_execution_id(None)
         set_current_event_bus(None)
 
@@ -280,7 +305,46 @@ async def test_wrapper_stops_after_executor_returns_when_execution_was_canceled(
     assert stopped.value.status == "canceled"
     executor.arun.assert_awaited_once()
     assert [event.type for event in store.events] == ["node_started"]
-    assert db.workflowexecution.find_unique.await_count == 2
+    assert asked == ["e1", "e1"]
+
+
+async def test_stop_check_is_a_short_read_that_closes_before_the_node_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ordering: session open -> read -> close, then the node executes, then a second read."""
+    from src.engine.context import (
+        set_current_event_bus,
+        set_current_execution_id,
+        set_current_sessionmaker,
+    )
+
+    events: list[str] = []
+    _patch_statuses(monkeypatch, ["running", "running"])
+    sm = RecordingSessionmaker(events)
+
+    class _Node:
+        async def arun(self, state: Any) -> dict[str, Any]:
+            events.append("net:node")
+            return {"variables": {}, "node_results": {}}
+
+    set_current_sessionmaker(sm)  # pyright: ignore[reportArgumentType]
+    set_current_execution_id("e1")
+    set_current_event_bus(None)
+    try:
+        arun = wrap_executor_with_events(_Node(), _FakeNode())  # pyright: ignore[reportArgumentType]
+        await arun(initial_state())
+    finally:
+        set_current_sessionmaker(None)
+        set_current_execution_id(None)
+
+    assert events == [
+        "session:enter",
+        "session:exit",
+        "net:node",
+        "session:enter",
+        "session:exit",
+    ]
+    assert_no_network_inside_session(events)
 
 
 async def test_wrapper_persists_events_and_notifies() -> None:

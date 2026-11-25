@@ -14,17 +14,20 @@ this module is the durable record; that module is the wake-up signal.
 
 from __future__ import annotations
 
-from typing import Any, cast
+from typing import TYPE_CHECKING, cast
 
-from prisma import Json  # pyright: ignore[reportAttributeAccessIssue]
+from src.db.repos import events as events_repo
 from src.engine.events import EventType, ExecutionEvent
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 
 class PostgresEventStore:
     """Durable, sequence-numbered event log per execution."""
 
-    def __init__(self, db: Any) -> None:
-        self.db = db
+    def __init__(self, sessionmaker: async_sessionmaker[AsyncSession]) -> None:
+        self.sessionmaker = sessionmaker
 
     async def append(self, event: ExecutionEvent) -> int:
         """Persist `event`, returning its assigned sequence number.
@@ -34,36 +37,28 @@ class PostgresEventStore:
         which would redundantly re-embed `type`/`executionId`/`timestamp`
         that already have their own columns.
 
-        Sequence numbers start at 1 per execution. Not a single atomic
-        INSERT...SELECT COALESCE(MAX(seq),0)+1 to keep the Prisma-ORM
-        path simple; a genuine concurrent-write race on the same
-        execution's event stream is vanishingly unlikely in practice
-        (nodes within one execution run sequentially), but if a race
-        is ever observed, tighten via a raw SQL INSERT with a
-        window-function-derived seq instead.
+        Sequence numbers start at 1 per execution and continue from the current
+        maximum (the repository serializes concurrent appends). Runs in its own short
+        session and commits before returning, so callers may NOTIFY afterwards.
         """
-        count = await self.db.executionevent.count(where={"executionId": event.execution_id})
-        seq = count + 1
-        await self.db.executionevent.create(
-            data={
-                "executionId": event.execution_id,
-                "seq": seq,
-                "type": event.type,
-                "payload": Json(event.payload),
-            }
-        )
+        async with self.sessionmaker() as session:
+            seq = await events_repo.append(
+                session,
+                execution_id=event.execution_id,
+                type=event.type,
+                payload=event.payload,
+            )
+            await session.commit()
         return seq
 
     async def list_since(self, execution_id: str, *, after_seq: int) -> list[ExecutionEvent]:
         """Return all events for `execution_id` with seq > after_seq, ascending."""
-        rows = await self.db.executionevent.find_many(
-            where={"executionId": execution_id, "seq": {"gt": after_seq}},
-            order={"seq": "asc"},
-        )
+        async with self.sessionmaker() as session:
+            rows = await events_repo.list_since(session, execution_id, after_seq=after_seq)
         return [
             ExecutionEvent(
                 type=cast("EventType", row.type),
-                execution_id=row.executionId,
+                execution_id=row.execution_id,
                 seq=row.seq,
                 payload=row.payload,
             )

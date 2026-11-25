@@ -4,6 +4,10 @@ Responsibilities:
   - Create WorkflowExecution rows (thread_id generation)
   - Compile the graph and drive execution
   - Persist terminal state (status, output, node_results, variables, error)
+
+Short-session rule: the executor holds an ``async_sessionmaker`` and opens one short
+session per database step (load, workflow read, each guarded transition), closing it
+before any graph run, email or event emit. No session spans slow work.
 """
 
 import asyncio
@@ -15,18 +19,20 @@ from typing import Any, cast
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Command  # pyright: ignore[reportUnknownVariableType]
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.db.repos import executions as executions_repo
 from src.db.repos import workflows as workflows_repo
-from src.db.runtime import get_registered_sessionmaker
+from src.db.repos.executions import ExecutionRecord
+from src.db.types import utcnow
 from src.engine.approval_email import send_approval_email
 from src.engine.context import (
     LangSmithConfig,
-    set_current_db,
     set_current_event_bus,
     set_current_execution_id,
     set_current_langsmith,
+    set_current_sessionmaker,
 )
 from src.engine.events import EventType, ExecutionEvent
 from src.engine.events_notify import notify_execution_event
@@ -77,15 +83,16 @@ def _extract_pending_info(snapshot: Any) -> dict[str, Any]:
 
 
 class LangGraphExecutor:
-    """Orchestrates workflow execution via LangGraph and Prisma."""
+    """Orchestrates workflow execution via LangGraph and SQLAlchemy."""
 
     def __init__(
         self,
-        db: Prisma,  # pyright: ignore[reportUnknownParameterType]
+        *,
+        sessionmaker: async_sessionmaker[AsyncSession],
         checkpointer: BaseCheckpointSaver[Any],
         event_bus: PostgresEventStore | None = None,
     ) -> None:
-        self.db = db
+        self.sessionmaker = sessionmaker
         self.checkpointer = checkpointer
         self.event_bus = event_bus
 
@@ -100,7 +107,7 @@ class LangGraphExecutor:
         `run()`/`resume()` call this AFTER state-mutating writes (e.g.
         `_mark_completed`, `_mark_waiting_approval`) have already committed
         the real outcome to Postgres. A network hiccup on the event-log
-        side (Prisma insert or the asyncpg NOTIFY call) must not propagate
+        side (event insert or the asyncpg NOTIFY call) must not propagate
         into the outer `try/except`, which would overwrite an already-
         correct "completed"/"waiting_approval" status with "failed" —
         corrupting the real execution outcome over a telemetry failure.
@@ -123,8 +130,8 @@ class LangGraphExecutor:
         input: Any,
         user_id: str | None,
         idempotency_key: str | None = None,
-    ) -> Any:
-        """Create the execution row (status=queued).
+    ) -> ExecutionRecord:
+        """Create the execution row (status=queued) and commit it.
 
         P1-2: the row starts life as `queued`, not `running` — the caller
         (src/api/executions.py's create_execution) enqueues a Cloud Task
@@ -133,47 +140,38 @@ class LangGraphExecutor:
         claims it (src/api/internal.py). A row that never gets claimed
         (e.g. the Cloud Tasks enqueue itself fails) stays visibly
         `queued` rather than lying about being `running`.
+
+        Raises ``AlreadyExists`` when the (workflow, user, idempotency key) is taken.
         """
-        thread_id = str(uuid.uuid4())
-        data: dict[str, Any] = {
-            "workflowId": workflow_id,
-            "userId": user_id,
-            "status": "queued",
-            "threadId": thread_id,
-            "input": Json(input),
-            "nodeResults": Json({}),
-            "variables": Json({}),
-        }
-        if idempotency_key is not None:
-            data["idempotencyKey"] = idempotency_key
-        return await self.db.workflowexecution.create(  # pyright: ignore[reportAttributeAccessIssue]
-            data=data  # pyright: ignore[reportArgumentType]
-        )
+        async with self.sessionmaker() as session:
+            record = await executions_repo.create(
+                session,
+                workflow_id=workflow_id,
+                user_id=user_id,
+                input=input,
+                thread_id=str(uuid.uuid4()),
+                idempotency_key=idempotency_key,
+            )
+            await session.commit()
+        return record
 
-    async def _load_execution(self, execution_id: str) -> Any:
-        """Load and return the execution row, or None if not found."""
-        return await self.db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"id": execution_id}
-        )
+    async def _load_execution(self, execution_id: str) -> ExecutionRecord | None:
+        """Load and return the execution row (short session), or None if not found."""
+        async with self.sessionmaker() as session:
+            return await executions_repo.get(session, execution_id)
 
-    async def _prepare_compiled(self, execution: Any) -> tuple[Any, Any, dict[str, Any]]:
+    async def _prepare_compiled(
+        self, execution: ExecutionRecord
+    ) -> tuple[Any, Any, dict[str, Any]]:
         """Load workflow, build graph, prepare state + LangGraph config.
 
         Returns (compiled_graph, state, langgraph_config).
         """
-        # Short session: closed before the graph is built and the run starts. Without a
-        # registered sessionmaker (the app lifespan registers one) there is nothing to read
-        # the workflow with, so fail loudly, as the other executors' _require_db do.
-        sessionmaker = get_registered_sessionmaker()
-        if sessionmaker is None:
-            raise RuntimeError(
-                "no SQLAlchemy sessionmaker registered; is the app lifespan running? "
-                "LangGraphExecutor needs one to load the workflow."
-            )
-        async with sessionmaker() as session:
-            workflow_row = await workflows_repo.get(session, execution.workflowId)
+        # Short session: closed before the graph is built and the run starts.
+        async with self.sessionmaker() as session:
+            workflow_row = await workflows_repo.get(session, execution.workflow_id)
         if workflow_row is None:
-            raise RuntimeError(f"Workflow {execution.workflowId!r} not found")
+            raise RuntimeError(f"Workflow {execution.workflow_id!r} not found")
 
         workflow = Workflow.model_validate(
             {
@@ -186,8 +184,8 @@ class LangGraphExecutor:
         compiled = build_graph(workflow, self.checkpointer)
 
         state = initial_state(execution.input if execution.input is not None else "")
-        if execution.userId:
-            state["user_id"] = execution.userId  # Phase 7a
+        if execution.user_id:
+            state["user_id"] = execution.user_id  # Phase 7a
 
         settings = get_settings()
         ls_config = (
@@ -201,11 +199,11 @@ class LangGraphExecutor:
             else None
         )
         set_current_langsmith(ls_config)
-        set_current_db(self.db)  # TODO(phase 4): drop with the executions move
+        set_current_sessionmaker(self.sessionmaker)
         set_current_execution_id(execution.id)
         set_current_event_bus(self.event_bus)
 
-        lg_config: dict[str, Any] = {"configurable": {"thread_id": execution.threadId}}
+        lg_config: dict[str, Any] = {"configurable": {"thread_id": execution.thread_id}}
         return compiled, state, lg_config
 
     async def _mark_completed(self, execution_id: str, final_state: dict[str, Any]) -> bool:
@@ -227,19 +225,17 @@ class LangGraphExecutor:
             output_value = final_outputs
         else:
             output_value = final_vars.get("lastOutput")
-        updated = await self.db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"id": execution_id, "status": "running"},
-            data={
-                "status": "completed",
-                "output": Json(output_value),
-                "variables": Json(final_vars),
-                "nodeResults": Json(final_state.get("node_results") or {}),
-                "completedAt": datetime.now(UTC),
-                "leaseOwner": None,
-                "leaseExpiresAt": None,
-                "runningSince": None,
-            },
-        )
+        async with self.sessionmaker() as session:
+            won = await executions_repo.mark_completed_if_running(
+                session,
+                execution_id,
+                output=output_value,
+                variables=final_vars,
+                node_results=final_state.get("node_results") or {},
+                now=utcnow(),
+            )
+            await session.commit()
+        updated = 1 if won else 0
         return _transition_succeeded(execution_id, "completed", updated)
 
     async def _mark_waiting_approval(
@@ -264,34 +260,28 @@ class LangGraphExecutor:
         merged["_pending_approval_prompt"] = pending_info.get("prompt")
         merged["_pending_approval_since"] = pending_since
 
-        updated = await self.db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"id": execution_id, "status": "running"},
-            data={
-                "status": "waiting_approval",
-                "variables": Json(merged),
-                "leaseOwner": None,
-                "leaseExpiresAt": None,
-                "runningSince": None,
-            },
-        )
+        async with self.sessionmaker() as session:
+            won = await executions_repo.mark_waiting_approval_if_running(
+                session, execution_id, variables=merged
+            )
+            await session.commit()
+        updated = 1 if won else 0
         return _transition_succeeded(execution_id, "waiting_approval", updated)
 
     async def _mark_failed(
         self, execution_id: str, exc: Exception, *, failure_code: str = "execution_error"
     ) -> bool:
         """Persist failure details only while the execution is running."""
-        updated = await self.db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
-            where={"id": execution_id, "status": "running"},
-            data={
-                "status": "failed",
-                "error": f"{type(exc).__name__}: {exc}",
-                "failureCode": failure_code,
-                "completedAt": datetime.now(UTC),
-                "leaseOwner": None,
-                "leaseExpiresAt": None,
-                "runningSince": None,
-            },
-        )
+        async with self.sessionmaker() as session:
+            won = await executions_repo.mark_failed_if_running(
+                session,
+                execution_id,
+                error=f"{type(exc).__name__}: {exc}",
+                failure_code=failure_code,
+                now=utcnow(),
+            )
+            await session.commit()
+        updated = 1 if won else 0
         return _transition_succeeded(execution_id, "failed", updated)
 
     async def _invoke_with_timeout(self, awaitable: Awaitable[dict[str, Any]]) -> dict[str, Any]:
@@ -324,7 +314,7 @@ class LangGraphExecutor:
             return
 
         try:
-            await ensure_execution_running(self.db, execution_id)
+            await ensure_execution_running(self.sessionmaker, execution_id)
             await self._emit("workflow_started", execution_id, {"status": "running"})
             compiled, state, lg_config = await self._prepare_compiled(execution)
 
@@ -388,7 +378,7 @@ class LangGraphExecutor:
     async def resume(self, execution_id: str, decision: str) -> None:
         """Continue a paused execution with a user decision (approved/rejected).
 
-        Loads the execution checkpoint via LangGraph's PrismaCheckpointSaver and
+        Loads the execution checkpoint via the checkpointer (TODO(phase 5): still Prisma-backed) and
         feeds the decision via Command(resume=decision).  If another user-approval
         node is hit during resume, the execution is marked waiting_approval again.
         """
@@ -398,7 +388,7 @@ class LangGraphExecutor:
             return
 
         try:
-            await ensure_execution_running(self.db, execution_id)
+            await ensure_execution_running(self.sessionmaker, execution_id)
             await self._emit("workflow_started", execution_id, {"status": "running"})
             compiled, _state, lg_config = await self._prepare_compiled(execution)
 

@@ -13,11 +13,11 @@ from tests.unit.mcp._oauth_fakes import script_lock
 
 @pytest.fixture(autouse=True)
 def _reset_db_ctx() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
-    from src.engine.context import _current_db  # pyright: ignore[reportPrivateUsage]
+    from src.engine.context import _current_sessionmaker  # pyright: ignore[reportPrivateUsage]
 
-    token = _current_db.set(None)
+    token = _current_sessionmaker.set(None)
     yield
-    _current_db.reset(token)
+    _current_sessionmaker.reset(token)
 
 
 @pytest.fixture

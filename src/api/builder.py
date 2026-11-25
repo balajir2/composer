@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.api.workflows import (  # reuse existing secret helpers (additive import)
     _check_workflow_size_limits,  # pyright: ignore[reportPrivateUsage]
     _encrypt_confluence_tokens,  # pyright: ignore[reportPrivateUsage]
@@ -39,7 +38,6 @@ from src.security.rate_limit import (
     get_rate_limiter,
     per_minute_config,
 )
-from src.storage.db import get_db
 
 router = APIRouter(tags=["builder"])
 
@@ -207,8 +205,6 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
     workflow_id: str,
     payload: BuilderMessageRequest,
     request: Request,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
-    # TODO(prisma removal): merge db and sa_session
     sa_session: AsyncSession = Depends(get_session),
     _role: tuple[str, str] = Depends(get_current_role),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
@@ -272,7 +268,7 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
         session=session,
         message=payload.message,
         execution_id=payload.execution_id,
-        db=db,
+        sessionmaker=sessionmaker,
         user_id=user_id,
         role=role,
         model_catalog=model_catalog,

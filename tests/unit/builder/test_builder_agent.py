@@ -18,6 +18,7 @@ from src.builder.builder_agent import (
     BuildSession,
     run_builder_turn,
 )
+from src.db.repos import executions as executions_repo
 from src.engine.graph_builder import collect_workflow_violations
 from src.engine.workflow import (
     AgentNode,
@@ -31,8 +32,10 @@ from src.engine.workflow import (
     WorkflowEdge,
     WorkflowNode,
 )
+from tests.unit.db_fakes import RecordingSessionmaker, assert_no_network_inside_session
 
 if TYPE_CHECKING:
+    import pytest
     from langchain_core.language_models import BaseChatModel
 
 
@@ -85,7 +88,7 @@ async def test_planning_turn_emits_plan_event() -> None:
         session=session,
         message="build me a RAG pipeline",
         execution_id=None,
-        db=None,
+        sessionmaker=None,
         user_id="u1",
     )
     assert any(e.get("type") == "plan" for e in events)
@@ -106,7 +109,7 @@ async def test_approve_patch_applies_pending_patch() -> None:
         session=session,
         message="__APPROVE_PATCH__",
         execution_id=None,
-        db=None,
+        sessionmaker=None,
         user_id="u1",
     )
     assert any(e.get("type") == "stage_applied" for e in events)
@@ -129,7 +132,7 @@ async def test_approved_patch_collapses_duplicate_edges() -> None:
         session=session,
         message="__APPROVE_PATCH__",
         execution_id=None,
-        db=None,
+        sessionmaker=None,
         user_id="u1",
     )
     assert [e.id for e in wf.edges] == ["e1"]
@@ -145,7 +148,7 @@ async def test_reject_patch_discards_pending_patch() -> None:
         session=session,
         message="__REJECT_PATCH__",
         execution_id=None,
-        db=None,
+        sessionmaker=None,
         user_id="u1",
     )
     assert session.pending_patch is None
@@ -162,12 +165,55 @@ async def test_diagnose_turn_proposes_without_applying() -> None:
         session=session,
         message="why did it fail?",
         execution_id="x",
-        db=None,
+        sessionmaker=None,
         user_id="u1",
     )
     assert any(e.get("type") == "patch_proposal" for e in events)
     assert session.pending_patch is not None
     assert wf is not None
+
+
+async def test_diagnose_turn_closes_its_read_session_before_the_model_runs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+
+    class _RecordingModel(_ScriptedModel):
+        async def ainvoke(self, messages: Any, **kwargs: Any) -> AIMessage:
+            events.append("net:model")
+            return await super().ainvoke(messages, **kwargs)
+
+    async def _get(_session: Any, execution_id: str) -> Any:
+        events.append("db:read")
+        return type(
+            "Row",
+            (),
+            {
+                "id": execution_id,
+                "workflow_id": "w1",
+                "user_id": "u1",
+                "status": "failed",
+                "error": "boom",
+                "node_results": {},
+                "variables": {},
+            },
+        )()
+
+    monkeypatch.setattr(executions_repo, "get", _get)
+    session = BuildSession(workflow_id="w1")
+    session.pending_plan = {"stages": []}
+    await run_builder_turn(
+        model=cast("BaseChatModel", _RecordingModel("bad URL")),
+        workflow_id="w1",
+        workflow=_empty_workflow(),
+        session=session,
+        message="why did it fail?",
+        execution_id="x",
+        sessionmaker=cast("Any", RecordingSessionmaker(events)),
+        user_id="u1",
+    )
+    assert "db:read" in events and "net:model" in events
+    assert_no_network_inside_session(events)
 
 
 async def test_build_turn_applies_layout_to_generated_nodes() -> None:
@@ -180,7 +226,7 @@ async def test_build_turn_applies_layout_to_generated_nodes() -> None:
         session=session,
         message="build it",
         execution_id=None,
-        db=None,
+        sessionmaker=None,
         user_id="u1",
     )
     positions = {n.id: n.position for n in wf.nodes}
@@ -200,7 +246,7 @@ async def test_plan_wrapped_in_code_fence_still_becomes_a_plan_card() -> None:
         session=session,
         message="search the web",
         execution_id=None,
-        db=None,
+        sessionmaker=None,
         user_id="u1",
     )
     assert [e for e in events if e.get("type") == "plan"] == [
@@ -266,7 +312,7 @@ async def test_build_turn_repairs_a_second_start_and_disconnected_end() -> None:
         session=session,
         message="approve the plan",
         execution_id=None,
-        db=None,
+        sessionmaker=None,
         user_id="u1",
     )
 
@@ -289,7 +335,7 @@ async def _build(
         session=session,
         message="approve the plan",
         execution_id=None,
-        db=None,
+        sessionmaker=None,
         user_id="u1",
         **kw,
     )

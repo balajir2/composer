@@ -19,7 +19,6 @@ pattern).
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -105,7 +104,11 @@ async def test_running_cancel_competes_with_executor_transition_in_postgres(
         }
     )
     try:
-        executor = LangGraphExecutor(db, app.state.checkpointer, app.state.event_bus)
+        executor = LangGraphExecutor(
+            sessionmaker=app.state.db_sessionmaker,
+            checkpointer=app.state.checkpointer,
+            event_bus=app.state.event_bus,
+        )
         method_name = {
             "completed": "_mark_completed",
             "failed": "_mark_failed",
@@ -226,7 +229,11 @@ async def test_public_cancel_accepts_an_already_committed_approval_pause(
         }
     )
     try:
-        executor = LangGraphExecutor(db, app.state.checkpointer, app.state.event_bus)
+        executor = LangGraphExecutor(
+            sessionmaker=app.state.db_sessionmaker,
+            checkpointer=app.state.checkpointer,
+            event_bus=app.state.event_bus,
+        )
         assert await executor._mark_waiting_approval(  # pyright: ignore[reportPrivateUsage]
             execution.id,
             {"node_id": "approval", "prompt": "Approve"},
@@ -291,7 +298,7 @@ async def test_expired_lease_fails_without_replaying_execution(
         assert untouched.leaseOwner == "dead-worker-1"
         assert untouched.deliveryAttempts == 1
 
-        result = await sweep_expired_leases(db)
+        result = await sweep_expired_leases(app.state.db_sessionmaker)
 
         assert result.marked_failed >= 1
         refreshed = await db.workflowexecution.find_unique(where={"id": execution.id})
@@ -336,8 +343,8 @@ async def test_months_old_execution_with_recent_attempt_and_live_lease_survives_
         }
     )
     try:
-        await sweep_orphaned_running(db, grace_seconds=120, now=now)
-        await sweep_expired_leases(db, now=now)
+        await sweep_orphaned_running(app.state.db_sessionmaker, grace_seconds=120, now=now)
+        await sweep_expired_leases(app.state.db_sessionmaker, now=now)
 
         refreshed = await db.workflowexecution.find_unique(where={"id": execution.id})
         assert refreshed is not None
@@ -353,7 +360,7 @@ async def test_months_old_execution_with_recent_attempt_and_live_lease_survives_
 
 @pytest.mark.parametrize("sweep_kind", ["lease", "orphan"])
 async def test_sweeper_stale_read_cannot_fail_attempt_claimed_after_selection(
-    app: FastAPI, sweep_kind: str
+    app: FastAPI, sweep_kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from src.maintenance.execution_sweeper import sweep_expired_leases, sweep_orphaned_running
 
@@ -380,13 +387,15 @@ async def test_sweeper_stale_read_cannot_fail_attempt_claimed_after_selection(
         }
     )
     try:
+        from src.db.repos import executions as executions_repo
 
-        async def _select_then_claim(*, where: dict[str, Any]) -> list[Any]:
+        target = "list_expired_leases" if sweep_kind == "lease" else "list_orphaned_running"
+        real_list = getattr(executions_repo, target)
+
+        async def _select_then_claim(*args: Any, **kwargs: Any) -> list[Any]:
             # The seam controls timing only: selection, renewal, and the
             # sweeper's conditional update all execute against Postgres.
-            rows: list[Any] = await db.workflowexecution.find_many(
-                where={"id": execution.id, **where}
-            )
+            rows = [r for r in await real_list(*args, **kwargs) if r.id == execution.id]
             assert len(rows) == 1
             await db.workflowexecution.update(
                 where={"id": execution.id},
@@ -398,12 +407,8 @@ async def test_sweeper_stale_read_cannot_fail_attempt_claimed_after_selection(
             )
             return rows
 
-        sweep_db = SimpleNamespace(
-            workflowexecution=SimpleNamespace(
-                find_many=_select_then_claim,
-                update_many=db.workflowexecution.update_many,
-            )
-        )
+        monkeypatch.setattr(executions_repo, target, _select_then_claim)
+        sweep_db = app.state.db_sessionmaker
         if sweep_kind == "lease":
             result = await sweep_expired_leases(sweep_db, now=now)
         else:
@@ -738,8 +743,8 @@ async def test_resume_clears_stale_lease_and_reclaim_succeeds(
 
         from src.maintenance.execution_sweeper import sweep_expired_leases, sweep_orphaned_running
 
-        await sweep_orphaned_running(db, grace_seconds=120)
-        await sweep_expired_leases(db)
+        await sweep_orphaned_running(app.state.db_sessionmaker, grace_seconds=120)
+        await sweep_expired_leases(app.state.db_sessionmaker)
         awaiting_claim = await db.workflowexecution.find_unique(where={"id": execution.id})
         assert awaiting_claim is not None
         assert awaiting_claim.status == "running"

@@ -38,7 +38,7 @@ import json as _json
 import logging
 from contextlib import suppress
 from contextvars import Context as ContextVarsContext
-from datetime import UTC, datetime, timedelta
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -50,8 +50,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.config import get_settings
 from src.db.repos import cloud_storage as cloud_storage_repo
+from src.db.repos import executions as executions_repo
 from src.db.repos import workflows as workflows_repo
 from src.db.runtime import require_sessionmaker
+from src.db.types import utcnow
 from src.engine.langgraph_executor import LangGraphExecutor
 from src.engine.workflow import FileTriggerNode
 from src.execution.cloud_tasks import enqueue_execution
@@ -69,6 +71,8 @@ from src.telemetry.propagation import extract_task_context
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+
+    from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 logger = logging.getLogger(__name__)
 
@@ -193,7 +197,7 @@ async def _verify_internal_oidc(
 async def claim_and_run_execution(
     execution_id: str,
     kind: Literal["run", "resume"],
-    db: Any,
+    sessionmaker: async_sessionmaker[AsyncSession],
     checkpointer: Any,
     event_bus: Any,
     *,
@@ -211,7 +215,7 @@ async def claim_and_run_execution(
     correct rather than two that could drift apart.
     """
     lease_seconds = get_settings().execution_lease_seconds
-    claim_time = datetime.now(UTC)
+    claim_time = utcnow()
     lease_expires = claim_time + timedelta(seconds=lease_seconds)
 
     # Fixed, short timeout for the claim transaction — intentionally NOT
@@ -225,65 +229,33 @@ async def claim_and_run_execution(
     # failing fast — blocking unrelated operations (cancel, delete, status
     # reads) on that row. Matches the precedent set by the identical
     # FOR UPDATE SKIP LOCKED pattern in scripts/poc_persistence_row_lock.py.
-    async with db.tx(timeout=10000) as tx:
-        # Deliveries authorize a specific transition: run starts a queued
-        # thread; resume continues the unowned running attempt established by
-        # approval resolution. Expired ownership belongs to the failure sweeper,
-        # never to task redelivery, because replay may repeat external effects.
-        claimable_statuses = ["queued"] if kind == "run" else ["running"]
-        rows = await tx.query_raw(
-            """
-            SELECT id FROM workflow_executions
-            WHERE id = $1
-              AND status = ANY($2::text[])
-              AND lease_expires_at IS NULL
-              AND lease_owner IS NULL
-            FOR UPDATE SKIP LOCKED
-            LIMIT 1
-            """,
+    # Deliveries authorize a specific transition: run starts a queued thread; resume
+    # continues the unowned running attempt established by approval resolution. Expired
+    # ownership belongs to the failure sweeper, never to task redelivery, because replay may
+    # repeat external effects. The claim is one statement (see executions_repo.claim); its
+    # SET LOCAL timeouts last until this transaction ends, so it commits and its session
+    # closes before anything else runs.
+    # If this timeout fires after the server committed the claim but before the reply was
+    # read, the row stays leased and the handler answers 500; Cloud Tasks redelivers, gets
+    # ``already_claimed``, and the row fails at lease expiry (``lease_expired``). There is
+    # no duplicate execution. The window is the same as the old Prisma tx(timeout=10000).
+    async with asyncio.timeout(10), sessionmaker() as session:
+        claimed = await executions_repo.claim(
+            session,
             execution_id,
-            claimable_statuses,
+            kind=kind,
+            worker_id=worker_id,
+            now=claim_time,
+            lease_expires_at=lease_expires,
         )
-        if not rows:
-            # Another worker owns it, the row is locked, or this delivery
-            # kind cannot act on its state. Acknowledge without replay.
-            return {"status": "already_claimed"}
-
-        # The locked row is eligible for this delivery kind. Persist the
-        # processing attempt before invoking any graph or external operation.
-        # Both timestamps are explicitly cast to `timestamptz` — Prisma Python's raw-query
-        # binder tags a Python `datetime` parameter as `text` on the wire
-        # (verified directly against real Postgres while writing this
-        # code's integration test, tests/integration/test_durable_execution.py;
-        # neither unit test mocks the DB so this never executed against
-        # real Postgres before), and Postgres refuses to implicitly
-        # assign a `text`-typed bind parameter to a `timestamp without
-        # time zone` column ("column is of type timestamp without time
-        # zone but expression is of type text"). Casting to `timestamptz`
-        # first is safe regardless of session timezone: `lease_expires`
-        # is always a timezone-aware UTC `datetime`, so the `timestamptz`
-        # parse preserves the exact instant, and Postgres's implicit
-        # assignment cast from `timestamptz` to `timestamp` then truncates
-        # to the session's timezone (GMT on this project's Neon instances)
-        # — the same UTC wall-clock value every other `leaseExpiresAt`
-        # write in this codebase produces via the typed Prisma client
-        # (e.g. sweep_expired_leases's `db.workflowexecution.update_many`).
-        await tx.execute_raw(
-            """
-            UPDATE workflow_executions
-            SET status = 'running', lease_owner = $1, lease_expires_at = $2::timestamptz,
-                running_since = $3::timestamptz,
-                delivery_attempts = delivery_attempts + 1
-            WHERE id = $4
-            """,
-            worker_id,
-            lease_expires,
-            claim_time,
-            execution_id,
-        )
+        await session.commit()
+    if claimed is None:
+        # Another worker owns it, the row is locked, or this delivery kind cannot act on
+        # its state. Acknowledge without replay.
+        return {"status": "already_claimed"}
 
     # By the time we reach this point, the lease UPDATE above has already
-    # committed (the `async with db.tx(...)` block exited) — the row is
+    # committed (the claim session exited) — the row is
     # durably marked 'running' with an owner and an expiry BEFORE any of
     # the code below runs. That ordering matters for what follows: this
     # try/except is a fast-fail belt-and-suspenders layered ALONGSIDE
@@ -351,21 +323,16 @@ async def claim_and_run_execution(
     # committed above remains in place for `sweep_expired_leases` to
     # eventually mark failed. The safety net has its own safety net.
     try:
-        executor = LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
+        executor = LangGraphExecutor(
+            sessionmaker=sessionmaker, checkpointer=checkpointer, event_bus=event_bus
+        )
 
         if kind == "resume":
             # P1-2 (Task 13): the decision travels via the claimed row's
             # `variables._resume_decision`, stamped by the enqueueing call
             # site BEFORE the Cloud Task fired (see ClaimAndRunRequest's
             # docstring) — not via any request-body field.
-            row_data = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-                where={"id": execution_id}
-            )
-            decision = (
-                cast("dict[str, Any]", row_data.variables or {}).get("_resume_decision")
-                if row_data
-                else None
-            )
+            decision = cast("dict[str, Any]", claimed.variables or {}).get("_resume_decision")
             if not decision:
                 raise HTTPException(
                     status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
@@ -384,18 +351,16 @@ async def claim_and_run_execution(
         )
         updated_count: int | None
         try:
-            updated_count = await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
-                where={"id": execution_id, "status": "running"},
-                data={
-                    "status": "failed",
-                    "error": f"{type(exc).__name__}: {exc}",
-                    "failureCode": "execution_error",
-                    "completedAt": datetime.now(UTC),
-                    "runningSince": None,
-                    "leaseOwner": None,
-                    "leaseExpiresAt": None,
-                },
-            )
+            async with sessionmaker() as crash_session:
+                won = await executions_repo.mark_failed_if_running(
+                    crash_session,
+                    execution_id,
+                    error=f"{type(exc).__name__}: {exc}",
+                    failure_code="execution_error",
+                    now=utcnow(),
+                )
+                await crash_session.commit()
+            updated_count = 1 if won else 0
         except Exception:
             logger.exception(
                 "internal: failed to mark crashed execution %s as failed "
@@ -436,16 +401,16 @@ async def claim_and_run_execution(
 async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
     payload: ClaimAndRunRequest,
     request: Request,
-    db: Any = Depends(get_db),
     _oidc: None = Depends(_verify_internal_oidc),
 ) -> dict[str, str]:
+    sessionmaker = require_sessionmaker(request)
     worker_id = f"{request.client.host if request.client else 'unknown'}:{id(request)}"
 
     async def _run_claim() -> dict[str, str]:
         return await claim_and_run_execution(
             payload.execution_id,
             payload.kind,
-            db,
+            sessionmaker,
             get_checkpointer(request),
             get_event_bus(request),
             worker_id=worker_id,
@@ -467,7 +432,7 @@ async def claim_and_run(  # pyright: ignore[reportUnusedFunction]
 
 @router.post("/internal/sweep", status_code=status.HTTP_200_OK)
 async def sweep(  # pyright: ignore[reportUnusedFunction]
-    db: Any = Depends(get_db),
+    request: Request,
     _oidc: None = Depends(_verify_internal_oidc),
 ) -> dict[str, int | None]:
     """Cloud-Scheduler-triggered maintenance sweep (P1-2/P1-4).
@@ -490,11 +455,12 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
     real work done this invocation.
     """
     settings = get_settings()
+    sessionmaker = require_sessionmaker(request)
 
     orphaned_running: int | None
     try:
         orphaned_result = await sweep_orphaned_running(
-            db, grace_seconds=settings.orphaned_running_grace_seconds
+            sessionmaker, grace_seconds=settings.orphaned_running_grace_seconds
         )
         orphaned_running = orphaned_result.marked_failed
     except Exception:
@@ -505,7 +471,7 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
     if settings.approval_wait_timeout_hours > 0:
         try:
             approvals_result = await sweep_expired_approvals(
-                db, timeout_hours=settings.approval_wait_timeout_hours
+                sessionmaker, timeout_hours=settings.approval_wait_timeout_hours
             )
             approvals_expired = approvals_result.marked_failed
         except Exception:
@@ -514,7 +480,7 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
 
     leases_expired: int | None
     try:
-        leases_result = await sweep_expired_leases(db)
+        leases_result = await sweep_expired_leases(sessionmaker)
         leases_expired = leases_result.marked_failed
     except Exception:
         logger.exception("internal: sweep_expired_leases failed")
@@ -523,7 +489,7 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
     events_deleted: int | None
     try:
         events_deleted = await sweep_old_execution_events(
-            db, retention_days=settings.execution_events_retention_days
+            sessionmaker, retention_days=settings.execution_events_retention_days
         )
     except Exception:
         logger.exception("internal: sweep_old_execution_events failed")
@@ -565,7 +531,9 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
         workflows = await workflows_repo.list_production(session)
     checkpointer = get_checkpointer(request)
     event_bus = get_event_bus(request)
-    executor = LangGraphExecutor(db=db, checkpointer=checkpointer, event_bus=event_bus)
+    executor = LangGraphExecutor(
+        sessionmaker=sessionmaker, checkpointer=checkpointer, event_bus=event_bus
+    )
 
     triggered = 0
     failed = 0

@@ -6,6 +6,34 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — SQLAlchemy migration phase 4: executions, events, rate limits, approvals and resume (2026-11-25)
+
+- **What moved (4a and 4b ship as one change):** every read and write of `workflow_executions`, plus `execution_events`, `rate_limit_buckets` and `approvals`, now go through repository modules in `src/db/repos/` (`executions.py`, `events.py`, `rate_limits.py`, `approvals.py`, `checkpoints.py`). That covers the execution routes (create, list, get, delete, bulk delete, cancel, resume), external invoke, the executor and cooperative stop, the work claim, the stuck-execution and lease sweepers, the event WebSocket, the builder's failed-run diagnosis, the in-app resume and the emailed approval link (4b); and the migration CLI and reconcile. The checkpointer and LISTEN/NOTIFY stay as they are until phase 5. No Alembic migration.
+- **Proof:** the behaviour was pinned first, on the unchanged Prisma code, by `tests/integration/sqla_phase4a` and `tests/integration/sqla_phase4b` (behaviour oracles), then the same tests passed on the ported code. Oracle tests that pinned bugs were deliberately flipped (below).
+- **Event sequence numbers (both bugs fixed):** sequence numbers used to be `count(*) + 1`. (a) Parallel graph branches appended at once, one insert hit the unique `(execution_id, seq)` index and the event was silently dropped. (b) After the retention sweep deleted an execution's oldest events, `count + 1` equalled an existing number, so every later event of that run was dropped. An append now takes a per-execution advisory lock and inserts `MAX(seq) + 1`, committed before the NOTIFY is sent.
+- **Rate limiter is atomic:** same algorithm, but the bucket is read `FOR UPDATE`, so concurrent requests can no longer over-admit; N concurrent checks on a bucket with k tokens admit exactly k.
+- **Work claim is one statement:** `UPDATE ... WHERE id = (SELECT ... FOR UPDATE SKIP LOCKED) RETURNING`, with a lock timeout, a statement timeout and an overall 10 s bound, committed before any graph run starts. The resume decision comes from the row the claim returned instead of a second read.
+- **Guarded status changes:** each (cancel, fail, complete, wait for approval, the three sweeper writes) is one `UPDATE ... WHERE <guard> RETURNING id`, so there is exactly one winner when writers race.
+- **Delete is atomic:** deleting one or many executions removes the rows, their checkpoints and their events in one transaction (previously four separate statements). A single delete that loses a race against another delete now answers 204, as the bulk delete does, instead of 500.
+- **Short sessions:** no database session is held across a graph run, an LLM call, the Cloud Tasks enqueue, an approval email, the sync-invoke poll (each poll is its own read) or a WebSocket wait.
+- **Bulk deletes of more than 65,535 ids** no longer fail: id lists are bound as one array parameter rather than one parameter per id.
+- **Reconcile is atomic** across workflows, executions and MCP servers (one transaction, committed by the caller).
+- **Small behaviour notes:** `_to_execution_read` maps a null `node_results` or `variables` to `{}`. `/internal/sweep` and `/internal/claim-and-run` answer 503 `database unavailable` when the app has no sessionmaker (only in database-less test apps; production always has one). The event WebSocket closes with 4500 before authenticating when there is no sessionmaker.
+- **Builder diagnosis scoping** (reading only your own run of the workflow being built) shipped separately as the security fix in PR #37 and is ported here unchanged.
+- **Kept as-is (pinned by the oracle, listed as follow-ups):** cancel's response carries the pre-update row, so `completedAt` is `null` in it; a resume-kind claim without a stored decision answers 422 and leaves its lease for the sweeper; `POST /api/run/{slug}` leaves a row `queued` when the enqueue raises; `list_executions` has no tiebreak; `sweep_expired_approvals` filters in Python and compares the whole `variables` document.
+- **Approval resume is one transaction (4b, DB1):** `POST /executions/{id}/resume` and the emailed-link confirm each run one guarded `UPDATE ... WHERE status = 'waiting_approval' RETURNING` that moves the row to `running`, clears the lease and stamps `_resume_decision` in the same statement, and write the `approvals` row in the same transaction. The task is enqueued only after the commit. This closes two windows: a redelivered task claiming a row that was `running` with no decision yet (it answered 422 and left a lease), and a resumed run with no approval audit row. Exactly one of two racing resumes wins (200 and 409).
+- **Stale emailed link cannot resolve a later pause (4b, DB2):** the confirm's guarded statement also requires the row to still be paused at the same node and `_pending_approval_since` the token was minted for. Before, a link from an earlier pause of a re-pausing node could approve the new pause; it now answers "invalid" and writes nothing.
+- **Malformed decision claim is invalid (4b, DB6):** a signed token whose `decision` is neither approve nor reject used to 500 after the claim; it is now "invalid" before any write.
+- **503 without a database (4b):** resume, the emailed-link preview and confirm answer 503 `database unavailable` when the app has no sessionmaker (database-less test apps only).
+- **Kept as-is, listed as follow-ups (4b):** the approval token stays in the frontend query string (DB3); an enqueue failure after a resume is left to the orphan sweeper (DB4); resume's response carries the pre-transition row (DB5).
+- **Rate-limit lock wait is bounded:** the limiter transaction starts with `SET LOCAL lock_timeout = '2s'`; a timeout on a bucket's row lock is a deny (retry after 1 s), never a 500, and consumes no token.
+- **Pool sized for phase 4 traffic:** `db_pool_size` and `db_max_overflow` default to 5 and 5 (were 2 and 3), since SQLAlchemy now carries all execution traffic behind Neon's `-pooler` host (3 instances x 10 = 30 connections).
+- **Follow-ups:** pool raised to 5+5 in this PR; revisit after the production soak with real checkout-wait numbers.
+
+### Changed — Dependabot version updates run monthly (2026-11-25)
+
+- **Why:** Dependabot pull requests get no repository secrets, so their CI cannot pass, and weekly runs mostly produced noise. Version updates are now monthly. Security alerts and their pull requests are unchanged.
+
 ### Added — warn before overwriting someone else's workflow changes (2026-11-24)
 
 - **Before:** two people editing the same workflow meant the last save silently won, including a builder (Build with AI) message that finished after someone else had saved.

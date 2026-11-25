@@ -74,7 +74,7 @@ async def test_builder_produces_a_complete_workflow(request_text: str) -> None:
             session=session,
             message=message,
             execution_id=None,
-            db=None,
+            sessionmaker=None,
             user_id="u1",
             model_catalog=CATALOG,
         )

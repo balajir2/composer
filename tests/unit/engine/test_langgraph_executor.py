@@ -15,15 +15,13 @@ import pytest
 from langgraph.checkpoint.memory import MemorySaver
 
 from src.db.repos import workflows as workflows_repo
-from src.db.runtime import get_registered_sessionmaker, register_sessionmaker
 from src.engine.events import ExecutionEvent
 from src.engine.execution_control import ExecutionStopped
 from src.engine.langgraph_executor import LangGraphExecutor
 from tests.unit.db_fakes import (
-    FakeSessionmaker,
-    RecordingSessionmaker,
     assert_no_network_inside_session,
 )
+from tests.unit.execution_fakes import FakeExecutions, make_row
 
 
 class _FakeEventStore:
@@ -51,6 +49,16 @@ def _patch_notify(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # pyright: ign
 
 
 _workflow_get: list[AsyncMock] = []
+_monkeypatch: list[pytest.MonkeyPatch] = []
+
+
+def _row(**kw: Any) -> SimpleNamespace:
+    return make_row(**kw)
+
+
+def _install(row: Any = None, **kw: Any) -> FakeExecutions:
+    """Patch the executions repo the executor reads and writes through (see execution_fakes)."""
+    return FakeExecutions(_monkeypatch[0], row, **kw)
 
 
 def _set_workflow_get(mock: AsyncMock) -> None:
@@ -60,18 +68,17 @@ def _set_workflow_get(mock: AsyncMock) -> None:
 
 @pytest.fixture(autouse=True)
 def _workflow_reads(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
-    """The executor reads the workflow through the registered sessionmaker (no database here)."""
+    """The executor reads the workflow through its own sessionmaker (no database here)."""
 
     async def _get(_session: object, workflow_id: str) -> Any:
         return await _workflow_get[0](workflow_id)
 
     _workflow_get.clear()
+    _monkeypatch[:] = [monkeypatch]
     monkeypatch.setattr(workflows_repo, "get", _get)
-    previous = get_registered_sessionmaker()
-    register_sessionmaker(cast("Any", FakeSessionmaker()))
     yield
-    register_sessionmaker(previous)
     _workflow_get.clear()
+    _monkeypatch.clear()
 
 
 def _workflow_row(workflow_dict: dict[str, Any]) -> SimpleNamespace:
@@ -103,57 +110,39 @@ async def test_start_execution_creates_row_with_queued_status() -> None:
     becomes `running` once POST /internal/claim-and-run actually claims
     it (src/api/internal.py), since the caller now enqueues a Cloud Task
     rather than running the execution inline."""
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.create = AsyncMock(
-        return_value=SimpleNamespace(
-            id="ex1",
-            workflowId="wf1",
-            status="queued",
-            threadId="t1",
-        )
-    )
-    executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
+    _fake = _install()
+    executor = LangGraphExecutor(sessionmaker=_fake.sessionmaker, checkpointer=MemorySaver())
     row = await executor.start_execution(workflow_id="wf1", input={"msg": "hi"}, user_id="dev")
     assert row.id == "ex1"
     assert row.status == "queued"
-    db.workflowexecution.create.assert_awaited_once()
-    assert db.workflowexecution.create.await_args is not None
-    create_kwargs = db.workflowexecution.create.await_args.kwargs["data"]
-    assert create_kwargs["workflowId"] == "wf1"
-    assert create_kwargs["userId"] == "dev"
-    assert create_kwargs["status"] == "queued"
-    assert isinstance(create_kwargs["threadId"], str) and len(create_kwargs["threadId"]) > 0
+    assert len(_fake.created) == 1
+    created = _fake.created[0]
+    assert created["workflow_id"] == "wf1"
+    assert created["user_id"] == "dev"
+    assert created["input"] == {"msg": "hi"}
+    assert created["idempotency_key"] is None
+    assert isinstance(created["thread_id"], str) and len(created["thread_id"]) > 0
+    # The row is committed before start_execution returns.
+    assert _fake.commits == 1
 
 
 async def test_run_completes_start_to_end() -> None:
     wf_dict = _start_to_end_workflow_dict()
-    db = MagicMock()
     _set_workflow_get(AsyncMock(return_value=_workflow_row(wf_dict)))
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            status="running",
-            id="ex1",
-            workflowId="wf1",
-            threadId="t1",
-            input="hello",
-            userId=None,  # Phase 7a: nullable; executor checks before setting state
-        )
+    _fake = _install(
+        _row(status="running", id="ex1", workflow_id="wf1", thread_id="t1", input="hello")
     )
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
 
-    executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
+    executor = LangGraphExecutor(sessionmaker=_fake.sessionmaker, checkpointer=MemorySaver())
     await executor.run("ex1")
 
-    db.workflowexecution.update_many.assert_awaited_once()
-    assert db.workflowexecution.update_many.await_args is not None
-    update_kwargs = db.workflowexecution.update_many.await_args.kwargs["data"]
+    assert len(_fake.updates) == 1
+    update_kwargs = _fake.updates[0]
     assert update_kwargs["status"] == "completed"
     # output/variables/nodeResults are wrapped in prisma.Json(...) before being
     # passed to Prisma — unwrap via the .data attribute for assertion.
-    assert update_kwargs["output"].data == "hello"  # start sets lastOutput to parsed input
-    assert "completedAt" in update_kwargs
+    assert update_kwargs["output"] == "hello"  # start sets lastOutput to parsed input
+    assert update_kwargs["now"] is not None
 
 
 async def test_workflow_is_read_in_a_short_session_closed_before_the_graph_is_built(
@@ -162,7 +151,6 @@ async def test_workflow_is_read_in_a_short_session_closed_before_the_graph_is_bu
     from src.engine import langgraph_executor as lge_mod
 
     events: list[str] = []
-    register_sessionmaker(cast("Any", RecordingSessionmaker(events)))
 
     async def _get(_session: object, _workflow_id: str) -> Any:
         events.append("read")
@@ -174,45 +162,163 @@ async def test_workflow_is_read_in_a_short_session_closed_before_the_graph_is_bu
 
     monkeypatch.setattr(workflows_repo, "get", _get)
     monkeypatch.setattr(lge_mod, "build_graph", _build)
-    db = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            status="running", id="ex1", workflowId="wf1", threadId="t1", input="", userId=None
-        )
-    )
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    _fake = _install(_row(workflow_id="wf1", input=""), events=events)
 
-    await LangGraphExecutor(db=db, checkpointer=MemorySaver()).run("ex1")
+    await LangGraphExecutor(sessionmaker=_fake.sessionmaker, checkpointer=MemorySaver()).run("ex1")
 
-    assert events == ["session:enter", "read", "session:exit", "net:build_graph"]
+    assert events[:11] == [
+        "session:enter",
+        "db:get",
+        "session:exit",
+        "session:enter",
+        "db:get_status",
+        "session:exit",
+        "session:enter",
+        "read",
+        "session:exit",
+        "net:build_graph",
+        "session:enter",
+    ]
     assert_no_network_inside_session(events)
 
 
-async def test_run_without_a_registered_sessionmaker_fails_the_execution_clearly() -> None:
-    register_sessionmaker(None)
-    db = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            status="running", id="ex1", workflowId="wf1", threadId="t1", input="", userId=None
-        )
+class _OrderingBus:
+    """Event store that records ``net:emit`` (a Postgres insert + NOTIFY in production)."""
+
+    def __init__(self, events: list[str]) -> None:
+        self._events = events
+
+    async def append(self, event: ExecutionEvent) -> int:
+        self._events.append(f"net:emit:{event.type}")
+        return 1
+
+
+def _ordering_setup(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    outcome: str,
+    status_row: Any = None,
+) -> tuple[LangGraphExecutor, list[str], FakeExecutions]:
+    """An executor whose sessions, graph, email and emits all append to one ``events`` list."""
+    from src.engine import langgraph_executor as lge_mod
+
+    events: list[str] = []
+    fake = _install(status_row or _row(workflow_id="wf1", user_id="dev", input=None), events=events)
+
+    async def _get(_session: object, _workflow_id: str) -> Any:
+        events.append("db:workflow_get")
+        return _workflow_row(_start_to_end_workflow_dict())
+
+    monkeypatch.setattr(workflows_repo, "get", _get)
+
+    paused = outcome == "waiting_approval"
+    snapshot = SimpleNamespace(
+        next=("ua",) if paused else (),
+        tasks=(
+            SimpleNamespace(
+                interrupts=(
+                    SimpleNamespace(
+                        value={"node_id": "ua", "prompt": "Approve?", "approver_email": "a@x.io"}
+                    ),
+                )
+            ),
+        ),
     )
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
 
-    await LangGraphExecutor(db=db, checkpointer=MemorySaver()).run("ex1")
+    async def _ainvoke(*_a: Any, **_k: Any) -> dict[str, Any]:
+        events.append("net:graph:ainvoke")
+        if outcome == "failed":
+            raise RuntimeError("graph failed")
+        return {"variables": {"lastOutput": "x"}, "node_results": {}}
 
-    assert db.workflowexecution.update_many.await_args is not None
-    data = db.workflowexecution.update_many.await_args.kwargs["data"]
-    assert data["status"] == "failed"
-    assert "no SQLAlchemy sessionmaker registered" in data["error"]
+    async def _aget_state(*_a: Any, **_k: Any) -> Any:
+        events.append("net:graph:aget_state")
+        return snapshot
+
+    compiled = SimpleNamespace(ainvoke=_ainvoke, aget_state=_aget_state)
+
+    def _build(*_a: Any, **_k: Any) -> Any:
+        return compiled
+
+    monkeypatch.setattr(lge_mod, "build_graph", _build)
+
+    async def _email(**_k: Any) -> None:
+        events.append("net:email")
+
+    monkeypatch.setattr(lge_mod, "send_approval_email", _email)
+    monkeypatch.setattr(lge_mod, "notify_execution_event", AsyncMock())
+    executor = LangGraphExecutor(
+        sessionmaker=fake.sessionmaker,
+        checkpointer=MemorySaver(),
+        event_bus=cast("Any", _OrderingBus(events)),
+    )
+    return executor, events, fake
+
+
+@pytest.mark.parametrize(
+    ("method", "outcome", "terminal"),
+    [
+        ("run", "completed", "db:mark_completed"),
+        ("run", "waiting_approval", "db:mark_waiting_approval"),
+        ("run", "failed", "db:mark_failed"),
+        ("resume", "completed", "db:mark_completed"),
+    ],
+)
+async def test_no_session_is_open_across_graph_email_or_emit(
+    monkeypatch: pytest.MonkeyPatch, method: str, outcome: str, terminal: str
+) -> None:
+    executor, events, _fake_exec = _ordering_setup(monkeypatch, outcome=outcome)
+
+    if method == "run":
+        await executor.run("ex1")
+    else:
+        await executor.resume("ex1", "approved")
+
+    assert_no_network_inside_session(events)
+    # Each guarded transition is its own short session: enter, the one repo call, commit, exit.
+    at = events.index(terminal)
+    assert events[at - 1] == "session:enter"
+    assert events[at + 1 :][:2] == ["db:commit", "session:exit"]
+    # ... and it comes after the graph ran, before the follow-up email/emit.
+    assert events.index("net:graph:ainvoke") < at
+    if outcome == "waiting_approval":
+        assert events[events.index("net:email") - 1] == "session:exit"
+        assert at < events.index("net:email") < events.index("net:emit:approval_required")
+
+
+async def test_completed_run_sequence_is_load_check_graph_commit_emit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor, events, _fake_exec = _ordering_setup(monkeypatch, outcome="completed")
+
+    await executor.run("ex1")
+
+    assert events == [
+        "session:enter",
+        "db:get",
+        "session:exit",
+        "session:enter",
+        "db:get_status",
+        "session:exit",
+        "net:emit:workflow_started",
+        "session:enter",
+        "db:workflow_get",
+        "session:exit",
+        "net:graph:ainvoke",
+        "net:graph:aget_state",
+        "session:enter",
+        "db:mark_completed",
+        "db:commit",
+        "session:exit",
+        "net:emit:workflow_completed",
+    ]
 
 
 async def test_mark_completed_preserves_falsy_final_output() -> None:
     """P0-7 regression guard: a legitimate falsy final output (0, False,
     "", [], {}) must not be discarded in favor of lastOutput."""
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
-    executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
+    _fake = _install()
+    executor = LangGraphExecutor(sessionmaker=_fake.sessionmaker, checkpointer=MemorySaver())
 
     final_state = {
         "final_outputs": {"end-1": 0},
@@ -220,35 +326,29 @@ async def test_mark_completed_preserves_falsy_final_output() -> None:
     }
     await executor._mark_completed("ex1", final_state)  # pyright: ignore[reportPrivateUsage]
 
-    assert db.workflowexecution.update_many.await_args is not None
-    update_kwargs = db.workflowexecution.update_many.await_args.kwargs["data"]
-    assert update_kwargs["output"].data == 0
+    update_kwargs = _fake.updates[-1]
+    assert update_kwargs["output"] == 0
 
 
 async def test_mark_completed_falls_back_to_last_output_when_no_end_reached() -> None:
     """No End node reached (e.g. a run that errored before completion) --
     falls back to lastOutput, matching the historical fallback behavior
     for that case."""
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
-    executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
+    _fake = _install()
+    executor = LangGraphExecutor(sessionmaker=_fake.sessionmaker, checkpointer=MemorySaver())
 
     final_state = {"final_outputs": {}, "variables": {"lastOutput": "fallback value"}}
     await executor._mark_completed("ex1", final_state)  # pyright: ignore[reportPrivateUsage]
 
-    assert db.workflowexecution.update_many.await_args is not None
-    update_kwargs = db.workflowexecution.update_many.await_args.kwargs["data"]
-    assert update_kwargs["output"].data == "fallback value"
+    update_kwargs = _fake.updates[-1]
+    assert update_kwargs["output"] == "fallback value"
 
 
 async def test_mark_completed_persists_dict_when_multiple_ends_fire() -> None:
     """Genuinely multiple End nodes contributing -- output is the full
     dict, keyed by End node id, not a single collapsed scalar."""
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
-    executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
+    _fake = _install()
+    executor = LangGraphExecutor(sessionmaker=_fake.sessionmaker, checkpointer=MemorySaver())
 
     final_state = {
         "final_outputs": {"end-a": "value-a", "end-b": "value-b"},
@@ -256,9 +356,8 @@ async def test_mark_completed_persists_dict_when_multiple_ends_fire() -> None:
     }
     await executor._mark_completed("ex1", final_state)  # pyright: ignore[reportPrivateUsage]
 
-    assert db.workflowexecution.update_many.await_args is not None
-    update_kwargs = db.workflowexecution.update_many.await_args.kwargs["data"]
-    assert update_kwargs["output"].data == {"end-a": "value-a", "end-b": "value-b"}
+    update_kwargs = _fake.updates[-1]
+    assert update_kwargs["output"] == {"end-a": "value-a", "end-b": "value-b"}
 
 
 async def test_run_marks_failed_on_exception(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -273,27 +372,14 @@ async def test_run_marks_failed_on_exception(monkeypatch: pytest.MonkeyPatch) ->
     monkeypatch.setattr(lge_mod, "build_graph", _boom)
 
     wf_dict = _start_to_end_workflow_dict()
-    db = MagicMock()
     _set_workflow_get(AsyncMock(return_value=_workflow_row(wf_dict)))
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            status="running",
-            id="ex1",
-            workflowId="wf1",
-            threadId="t1",
-            input="",
-            userId=None,  # Phase 7a: nullable; executor checks before setting state
-        )
-    )
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    _fake = _install(_row(status="running", id="ex1", workflow_id="wf1", thread_id="t1", input=""))
 
-    executor = LangGraphExecutor(db=db, checkpointer=MemorySaver())
+    executor = LangGraphExecutor(sessionmaker=_fake.sessionmaker, checkpointer=MemorySaver())
     await executor.run("ex1")
 
-    db.workflowexecution.update_many.assert_awaited_once()
-    assert db.workflowexecution.update_many.await_args is not None
-    update_kwargs = db.workflowexecution.update_many.await_args.kwargs["data"]
+    assert len(_fake.updates) == 1
+    update_kwargs = _fake.updates[0]
     assert update_kwargs["status"] == "failed"
     assert "simulated build failure" in update_kwargs["error"]
 
@@ -310,15 +396,13 @@ async def test_run_marks_waiting_approval_on_interrupt(
     and returns cleanly.  The executor detects the pause via aget_state():
     snapshot.next is a non-empty tuple when the graph is paused.
     """
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
+    _fake = _install(
+        _row(
             status="running",
             id="e1",
-            workflowId="w1",
-            userId="dev",
-            threadId="t1",
+            workflow_id="w1",
+            user_id="dev",
+            thread_id="t1",
             input=None,
         )
     )
@@ -361,13 +445,6 @@ async def test_run_marks_waiting_approval_on_interrupt(
             )
         )
     )
-    update_calls: list[dict[str, Any]] = []
-
-    async def _update(*, where: Any, data: Any) -> Any:
-        update_calls.append({"where": where, "data": data})
-        return 1
-
-    db.workflowexecution.update_many = _update
 
     from src.engine import langgraph_executor as lge_mod
 
@@ -389,17 +466,15 @@ async def test_run_marks_waiting_approval_on_interrupt(
 
     monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
-    orchestrator = LangGraphExecutor(db, MagicMock())
+    orchestrator = LangGraphExecutor(sessionmaker=_fake.sessionmaker, checkpointer=MagicMock())
     await orchestrator.run("e1")
 
-    assert any(call["data"].get("status") == "waiting_approval" for call in update_calls), (
-        f"Expected waiting_approval update; got: {update_calls}"
+    assert any(call.get("status") == "waiting_approval" for call in _fake.updates), (
+        f"Expected waiting_approval update; got: {_fake.updates}"
     )
     # Verify the pending markers are present in variables
-    waiting_call = next(
-        call for call in update_calls if call["data"].get("status") == "waiting_approval"
-    )
-    saved_vars: dict[str, Any] = waiting_call["data"]["variables"].data
+    waiting_call = next(call for call in _fake.updates if call.get("status") == "waiting_approval")
+    saved_vars: dict[str, Any] = waiting_call["variables"]
     assert saved_vars.get("_pending_approval_node") == "ua", f"Got variables: {saved_vars}"
     assert saved_vars.get("_pending_approval_prompt") == "Approve?", f"Got variables: {saved_vars}"
 
@@ -408,15 +483,13 @@ async def test_resume_approved_continues_to_completion(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """resume() calls compiled.ainvoke(Command(resume=...)) and marks completed."""
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
+    _fake = _install(
+        _row(
             status="running",
             id="e1",
-            workflowId="w1",
-            userId="dev",
-            threadId="t1",
+            workflow_id="w1",
+            user_id="dev",
+            thread_id="t1",
             input=None,
         )
     )
@@ -443,13 +516,6 @@ async def test_resume_approved_continues_to_completion(
             )
         )
     )
-    update_calls: list[dict[str, Any]] = []
-
-    async def _update(*, where: Any, data: Any) -> Any:
-        update_calls.append(data)
-        return 1
-
-    db.workflowexecution.update_many = _update
 
     from src.engine import langgraph_executor as lge_mod
 
@@ -468,10 +534,10 @@ async def test_resume_approved_continues_to_completion(
 
     monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
-    orchestrator = LangGraphExecutor(db, MagicMock())
+    orchestrator = LangGraphExecutor(sessionmaker=_fake.sessionmaker, checkpointer=MagicMock())
     await orchestrator.resume("e1", "approved")
 
-    assert any(c.get("status") == "completed" for c in update_calls), update_calls
+    assert any(c.get("status") == "completed" for c in _fake.updates), _fake.updates
 
 
 async def test_run_emits_status_change_on_start_and_complete(
@@ -488,15 +554,13 @@ async def test_run_emits_status_change_on_start_and_complete(
 
     store = _FakeEventStore()
 
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
+    _fake = _install(
+        _row(
             status="running",
             id="e1",
-            workflowId="w1",
-            userId="dev",
-            threadId="t1",
+            workflow_id="w1",
+            user_id="dev",
+            thread_id="t1",
             input=None,
         )
     )
@@ -523,7 +587,6 @@ async def test_run_emits_status_change_on_start_and_complete(
             )
         )
     )
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
 
     class _FakeSnap:
         next = ()
@@ -541,7 +604,11 @@ async def test_run_emits_status_change_on_start_and_complete(
 
     monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
-    orch = LangGraphExecutor(db, MagicMock(), event_bus=store)  # pyright: ignore[reportArgumentType]
+    orch = LangGraphExecutor(
+        sessionmaker=_fake.sessionmaker,
+        checkpointer=MagicMock(),
+        event_bus=cast("Any", store),
+    )
     await orch.run("e1")
 
     types = [e.type for e in store.events]
@@ -570,15 +637,13 @@ async def test_run_emits_approval_pending_on_pause(
 
     store = _FakeEventStore()
 
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
+    _fake = _install(
+        _row(
             status="running",
             id="e1",
-            workflowId="w1",
-            userId="dev",
-            threadId="t1",
+            workflow_id="w1",
+            user_id="dev",
+            thread_id="t1",
             input=None,
         )
     )
@@ -621,7 +686,6 @@ async def test_run_emits_approval_pending_on_pause(
             )
         )
     )
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
 
     class _FakeInterrupt:
         value: ClassVar[dict[str, str]] = {"node_id": "ua", "prompt": "Approve?"}
@@ -645,7 +709,11 @@ async def test_run_emits_approval_pending_on_pause(
 
     monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
-    orch = LangGraphExecutor(db, MagicMock(), event_bus=store)  # pyright: ignore[reportArgumentType]
+    orch = LangGraphExecutor(
+        sessionmaker=_fake.sessionmaker,
+        checkpointer=MagicMock(),
+        event_bus=cast("Any", store),
+    )
     await orch.run("e1")
 
     types = [e.type for e in store.events]
@@ -659,29 +727,29 @@ async def test_run_emits_approval_pending_on_pause(
 async def test_run_emits_failed_on_exception(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from types import SimpleNamespace
     from unittest.mock import AsyncMock, MagicMock
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
     store = _FakeEventStore()
 
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
+    _fake = _install(
+        _row(
             status="running",
             id="e1",
-            workflowId="w1",
-            userId="dev",
-            threadId="t1",
+            workflow_id="w1",
+            user_id="dev",
+            thread_id="t1",
             input=None,
         )
     )
     _set_workflow_get(AsyncMock(side_effect=RuntimeError("boom")))
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
 
-    orch = LangGraphExecutor(db, MagicMock(), event_bus=store)  # pyright: ignore[reportArgumentType]
+    orch = LangGraphExecutor(
+        sessionmaker=_fake.sessionmaker,
+        checkpointer=MagicMock(),
+        event_bus=cast("Any", store),
+    )
     await orch.run("e1")
 
     statuses = [e.payload.get("status") for e in store.events if e.type == "workflow_completed"]
@@ -699,12 +767,8 @@ async def test_run_sends_approval_email_when_approver_email_set(
     send_mock = AsyncMock()
     monkeypatch.setattr(lge_mod, "send_approval_email", send_mock)
 
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            status="running", id="e1", workflowId="w1", userId="dev", threadId="t1", input=None
-        )
+    _fake = _install(
+        _row(status="running", id="e1", workflow_id="w1", user_id="dev", thread_id="t1", input=None)
     )
     _set_workflow_get(
         AsyncMock(
@@ -749,7 +813,6 @@ async def test_run_sends_approval_email_when_approver_email_set(
             )
         )
     )
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
 
     class _FakeInterrupt:
         value: ClassVar[dict[str, str]] = {
@@ -779,7 +842,7 @@ async def test_run_sends_approval_email_when_approver_email_set(
 
     monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
-    orch = LangGraphExecutor(db, MagicMock())
+    orch = LangGraphExecutor(sessionmaker=_fake.sessionmaker, checkpointer=MagicMock())
     await orch.run("e1")
 
     send_mock.assert_awaited_once()
@@ -807,12 +870,8 @@ async def test_run_pending_since_matches_persisted_and_emailed(
     send_mock = AsyncMock()
     monkeypatch.setattr(lge_mod, "send_approval_email", send_mock)
 
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
-            status="running", id="e1", workflowId="w1", userId="dev", threadId="t1", input=None
-        )
+    _fake = _install(
+        _row(status="running", id="e1", workflow_id="w1", user_id="dev", thread_id="t1", input=None)
     )
     _set_workflow_get(
         AsyncMock(
@@ -858,14 +917,6 @@ async def test_run_pending_since_matches_persisted_and_emailed(
         )
     )
 
-    update_calls: list[dict[str, Any]] = []
-
-    async def _update(*, where: Any, data: Any) -> Any:
-        update_calls.append({"where": where, "data": data})
-        return 1
-
-    db.workflowexecution.update_many = _update
-
     class _FakeInterrupt:
         value: ClassVar[dict[str, str]] = {
             "node_id": "ua",
@@ -893,17 +944,15 @@ async def test_run_pending_since_matches_persisted_and_emailed(
 
     monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
-    orch = LangGraphExecutor(db, MagicMock())
+    orch = LangGraphExecutor(sessionmaker=_fake.sessionmaker, checkpointer=MagicMock())
     await orch.run("e1")
 
     send_mock.assert_awaited_once()
     assert send_mock.await_args is not None
     emailed_pending_since = send_mock.await_args.kwargs["pending_since"]
 
-    waiting_call = next(
-        call for call in update_calls if call["data"].get("status") == "waiting_approval"
-    )
-    saved_vars: dict[str, Any] = waiting_call["data"]["variables"].data
+    waiting_call = next(call for call in _fake.updates if call.get("status") == "waiting_approval")
+    saved_vars: dict[str, Any] = waiting_call["variables"]
     persisted_pending_since = saved_vars.get("_pending_approval_since")
 
     assert persisted_pending_since is not None
@@ -927,15 +976,13 @@ async def test_resume_chained_pause_stamps_consistent_pending_since(
     send_mock = AsyncMock()
     monkeypatch.setattr(lge_mod, "send_approval_email", send_mock)
 
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
+    _fake = _install(
+        _row(
             status="running",
             id="e1",
-            workflowId="w1",
-            userId="dev",
-            threadId="t1",
+            workflow_id="w1",
+            user_id="dev",
+            thread_id="t1",
             input=None,
         )
     )
@@ -982,14 +1029,6 @@ async def test_resume_chained_pause_stamps_consistent_pending_since(
             )
         )
     )
-
-    update_calls: list[dict[str, Any]] = []
-
-    async def _update(*, where: Any, data: Any) -> Any:
-        update_calls.append({"where": where, "data": data})
-        return 1
-
-    db.workflowexecution.update_many = _update
 
     # Simulates a `while`-loop re-entering the same user-approval node: after
     # resume's ainvoke(Command(resume=...)), the graph immediately hits
@@ -1023,7 +1062,7 @@ async def test_resume_chained_pause_stamps_consistent_pending_since(
 
     monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
-    orchestrator = LangGraphExecutor(db, MagicMock())
+    orchestrator = LangGraphExecutor(sessionmaker=_fake.sessionmaker, checkpointer=MagicMock())
     await orchestrator.resume("e1", "approved")
 
     send_mock.assert_awaited_once()
@@ -1034,10 +1073,8 @@ async def test_resume_chained_pause_stamps_consistent_pending_since(
     assert call_kwargs["prompt"] == "Approve again?"
     emailed_pending_since = call_kwargs["pending_since"]
 
-    waiting_call = next(
-        call for call in update_calls if call["data"].get("status") == "waiting_approval"
-    )
-    saved_vars: dict[str, Any] = waiting_call["data"]["variables"].data
+    waiting_call = next(call for call in _fake.updates if call.get("status") == "waiting_approval")
+    saved_vars: dict[str, Any] = waiting_call["variables"]
     persisted_pending_since = saved_vars.get("_pending_approval_since")
 
     assert persisted_pending_since is not None
@@ -1061,15 +1098,13 @@ async def test_run_completed_status_survives_emit_failure(
         async def append(self, event: ExecutionEvent) -> int:
             raise RuntimeError("simulated Postgres event-log outage")
 
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
+    _fake = _install(
+        _row(
             status="running",
             id="e1",
-            workflowId="w1",
-            userId="dev",
-            threadId="t1",
+            workflow_id="w1",
+            user_id="dev",
+            thread_id="t1",
             input=None,
         )
     )
@@ -1097,14 +1132,6 @@ async def test_run_completed_status_survives_emit_failure(
         )
     )
 
-    update_calls: list[dict[str, Any]] = []
-
-    async def _update(*, where: Any, data: Any) -> Any:
-        update_calls.append(data)
-        return 1
-
-    db.workflowexecution.update_many = _update
-
     class _FakeSnap:
         next = ()
         tasks = ()
@@ -1121,15 +1148,19 @@ async def test_run_completed_status_survives_emit_failure(
 
     monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
-    orch = LangGraphExecutor(db, MagicMock(), event_bus=_RaisingEventStore())  # pyright: ignore[reportArgumentType]
+    orch = LangGraphExecutor(
+        sessionmaker=_fake.sessionmaker,
+        checkpointer=MagicMock(),
+        event_bus=cast("Any", _RaisingEventStore()),
+    )
     await orch.run("e1")
 
     # Exactly one DB update -- _mark_completed. If the bug were present, a
     # second update (from _mark_failed in the outer except) would follow,
     # flipping status to 'failed'.
-    assert len(update_calls) == 1, update_calls
-    assert update_calls[0]["status"] == "completed"
-    assert not any(c.get("status") == "failed" for c in update_calls)
+    assert len(_fake.updates) == 1, _fake.updates
+    assert _fake.updates[0]["status"] == "completed"
+    assert not any(c.get("status") == "failed" for c in _fake.updates)
 
 
 async def test_resume_waiting_approval_status_survives_emit_failure(
@@ -1150,15 +1181,13 @@ async def test_resume_waiting_approval_status_survives_emit_failure(
         async def append(self, event: ExecutionEvent) -> int:
             raise RuntimeError("simulated Postgres event-log outage")
 
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(
+    _fake = _install(
+        _row(
             status="running",
             id="e1",
-            workflowId="w1",
-            userId="dev",
-            threadId="t1",
+            workflow_id="w1",
+            user_id="dev",
+            thread_id="t1",
             input=None,
         )
     )
@@ -1206,14 +1235,6 @@ async def test_resume_waiting_approval_status_survives_emit_failure(
         )
     )
 
-    update_calls: list[dict[str, Any]] = []
-
-    async def _update(*, where: Any, data: Any) -> Any:
-        update_calls.append(data)
-        return 1
-
-    db.workflowexecution.update_many = _update
-
     class _FakeInterrupt:
         value: ClassVar[dict[str, str]] = {
             "node_id": "ua",
@@ -1241,36 +1262,32 @@ async def test_resume_waiting_approval_status_survives_emit_failure(
 
     monkeypatch.setattr(lge_mod, "build_graph", _fake_build_graph)
 
-    orchestrator = LangGraphExecutor(db, MagicMock(), event_bus=_RaisingEventStore())  # pyright: ignore[reportArgumentType]
+    orchestrator = LangGraphExecutor(
+        sessionmaker=_fake.sessionmaker,
+        checkpointer=MagicMock(),
+        event_bus=cast("Any", _RaisingEventStore()),
+    )
     await orchestrator.resume("e1", "approved")
 
     # send_approval_email must still fire -- the approver gets a valid token --
     # and the persisted status must remain waiting_approval, not be flipped to
     # failed by the broken event store.
     send_mock.assert_awaited_once()
-    assert len(update_calls) == 1, update_calls
-    assert update_calls[0]["status"] == "waiting_approval"
-    assert not any(c.get("status") == "failed" for c in update_calls)
+    assert len(_fake.updates) == 1, _fake.updates
+    assert _fake.updates[0]["status"] == "waiting_approval"
+    assert not any(c.get("status") == "failed" for c in _fake.updates)
 
 
 async def test_mark_waiting_approval_stamps_pending_since() -> None:
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    update_calls: list[dict[str, Any]] = []
 
-    async def _update(*, where: Any, data: Any) -> Any:
-        update_calls.append({"where": where, "data": data})
-        return 1
-
-    db.workflowexecution.update_many = _update
-
-    orch = LangGraphExecutor(db, MagicMock())
+    _fake = _install()
+    orch = LangGraphExecutor(sessionmaker=_fake.sessionmaker, checkpointer=MagicMock())
     pending_since = "2026-07-11T10:00:00+00:00"
     await orch._mark_waiting_approval(  # pyright: ignore[reportPrivateUsage]
         "e1", {"node_id": "ua", "prompt": "Approve?"}, {}, pending_since
     )
 
-    saved_vars: dict[str, Any] = update_calls[0]["data"]["variables"].data
+    saved_vars: dict[str, Any] = _fake.updates[0]["variables"]
     since = saved_vars.get("_pending_approval_since")
     assert since == pending_since
     from datetime import datetime
@@ -1283,10 +1300,8 @@ async def test_mark_waiting_approval_stamps_pending_since() -> None:
 async def test_status_transition_compares_running_and_clears_attempt(
     status: str, updated: int, expected: bool, caplog: pytest.LogCaptureFixture
 ) -> None:
-    db = MagicMock()
-    db.workflowexecution.update = AsyncMock()
-    db.workflowexecution.update_many = AsyncMock(return_value=updated)
-    executor = LangGraphExecutor(db, MemorySaver())
+    _fake = _install(won=bool(updated))
+    executor = LangGraphExecutor(sessionmaker=_fake.sessionmaker, checkpointer=MemorySaver())
 
     with caplog.at_level("INFO", logger="src.engine.langgraph_executor"):
         if status == "completed":
@@ -1308,31 +1323,29 @@ async def test_status_transition_compares_running_and_clears_attempt(
             )
 
     assert transitioned is expected
-    db.workflowexecution.update.assert_not_awaited()
-    db.workflowexecution.update_many.assert_awaited_once()
-    assert db.workflowexecution.update_many.await_args is not None
-    kwargs = db.workflowexecution.update_many.await_args.kwargs
-    assert kwargs["where"] == {"id": "ex1", "status": "running"}
-    data = kwargs["data"]
+    # One guarded repo call, committed. The guard itself (status = running) and the cleared
+    # lease columns are pinned by the repo tests and the behaviour oracle.
+    assert len(_fake.updates) == 1
+    assert _fake.commits == 1
+    data = _fake.updates[0]
+    assert data["execution_id"] == "ex1"
     assert data["status"] == status
-    for field in ("leaseOwner", "leaseExpiresAt", "runningSince"):
-        assert field in data and data[field] is None
     if status == "completed":
-        assert data["output"].data == "result"
-        assert data["variables"].data == {"lastOutput": "previous"}
-        assert data["nodeResults"].data == {"end": {"output": "result"}}
-        assert data["completedAt"] is not None
+        assert data["output"] == "result"
+        assert data["variables"] == {"lastOutput": "previous"}
+        assert data["node_results"] == {"end": {"output": "result"}}
+        assert data["now"] is not None
     elif status == "waiting_approval":
-        assert data["variables"].data == {
+        assert data["variables"] == {
             "saved": "value",
             "_pending_approval_node": "ua",
             "_pending_approval_prompt": "Approve?",
             "_pending_approval_since": "pause-1",
         }
     else:
-        assert data["failureCode"] == "execution_timeout"
+        assert data["failure_code"] == "execution_timeout"
         assert data["error"] == "RuntimeError: private error"
-        assert data["completedAt"] is not None
+        assert data["now"] is not None
     if not expected:
         record = next(r for r in caplog.records if getattr(r, "transition_outcome", None) == "lost")
         assert record.levelname == "INFO"
@@ -1349,14 +1362,13 @@ async def test_status_transition_compares_running_and_clears_attempt(
 async def test_status_transition_gates_events_and_approval_email(
     monkeypatch: pytest.MonkeyPatch, method: str, status: str, updated: int
 ) -> None:
-    db = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(id="ex1", status="running")
-    )
-    db.workflowexecution.update = AsyncMock()
-    db.workflowexecution.update_many = AsyncMock(return_value=updated)
+    _fake = _install(_row(id="ex1", status="running"), won=bool(updated))
     store = _FakeEventStore()
-    executor = LangGraphExecutor(db, MemorySaver(), event_bus=store)  # pyright: ignore[reportArgumentType]
+    executor = LangGraphExecutor(
+        sessionmaker=_fake.sessionmaker,
+        checkpointer=MemorySaver(),
+        event_bus=cast("Any", store),
+    )
     pending_info = {"node_id": "ua", "prompt": "Approve?", "approver_email": "a@example.com"}
     snapshot = SimpleNamespace(
         next=("ua",) if status == "waiting_approval" else (),
@@ -1377,7 +1389,7 @@ async def test_status_transition_gates_events_and_approval_email(
     else:
         await executor.resume("ex1", "approved")
 
-    assert db.workflowexecution.update_many.await_count == 1
+    assert len(_fake.updates) == 1
     expected_events = [("workflow_started", "running")]
     if updated:
         event_type = "approval_required" if status == "waiting_approval" else "workflow_completed"
@@ -1391,26 +1403,20 @@ async def test_status_transition_gates_events_and_approval_email(
     else:
         send_email.assert_not_awaited()
     if status == "failed":
-        assert db.workflowexecution.update_many.await_args is not None
-        assert db.workflowexecution.update_many.await_args.kwargs["data"]["failureCode"] == (
-            "execution_error"
-        )
+        assert _fake.updates[0]["failure_code"] == "execution_error"
 
 
 @pytest.mark.parametrize("method", ["run", "resume"])
 async def test_cancellation_before_workflow_started_skips_graph_and_failure(
     monkeypatch: pytest.MonkeyPatch, method: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    db = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        side_effect=[
-            SimpleNamespace(id="ex1", status="running"),
-            SimpleNamespace(id="ex1", status="canceled"),
-        ]
-    )
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    _fake = _install(_row(id="ex1", status="running"), statuses=["canceled"])
     store = _FakeEventStore()
-    executor = LangGraphExecutor(db, MemorySaver(), event_bus=store)  # pyright: ignore[reportArgumentType]
+    executor = LangGraphExecutor(
+        sessionmaker=_fake.sessionmaker,
+        checkpointer=MemorySaver(),
+        event_bus=cast("Any", store),
+    )
     prepare = AsyncMock(return_value=(MagicMock(), {}, {}))
     monkeypatch.setattr(executor, "_prepare_compiled", prepare)
     send_email = AsyncMock()
@@ -1423,7 +1429,7 @@ async def test_cancellation_before_workflow_started_skips_graph_and_failure(
             await executor.resume("ex1", "approved")
 
     prepare.assert_not_awaited()
-    db.workflowexecution.update_many.assert_not_awaited()
+    assert _fake.updates == []
     send_email.assert_not_awaited()
     assert store.events == []
     assert any("canceled" in record.getMessage() for record in caplog.records)
@@ -1433,13 +1439,13 @@ async def test_cancellation_before_workflow_started_skips_graph_and_failure(
 async def test_graph_stop_does_not_mark_failed_or_emit_failure(
     monkeypatch: pytest.MonkeyPatch, method: str, caplog: pytest.LogCaptureFixture
 ) -> None:
-    db = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(id="ex1", status="running")
-    )
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    _fake = _install(_row(id="ex1", status="running"))
     store = _FakeEventStore()
-    executor = LangGraphExecutor(db, MemorySaver(), event_bus=store)  # pyright: ignore[reportArgumentType]
+    executor = LangGraphExecutor(
+        sessionmaker=_fake.sessionmaker,
+        checkpointer=MemorySaver(),
+        event_bus=cast("Any", store),
+    )
     compiled = SimpleNamespace(
         ainvoke=AsyncMock(side_effect=ExecutionStopped("ex1", "canceled")),
         aget_state=AsyncMock(),
@@ -1456,7 +1462,7 @@ async def test_graph_stop_does_not_mark_failed_or_emit_failure(
 
     compiled.ainvoke.assert_awaited_once()
     compiled.aget_state.assert_not_awaited()
-    db.workflowexecution.update_many.assert_not_awaited()
+    assert _fake.updates == []
     send_email.assert_not_awaited()
     assert [event.type for event in store.events] == ["workflow_started"]
     assert any("canceled" in record.getMessage() for record in caplog.records)
@@ -1466,18 +1472,16 @@ async def test_graph_stop_does_not_mark_failed_or_emit_failure(
 async def test_real_graph_cancellation_after_node_stops_downstream_progression(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    db = MagicMock()
-    running = SimpleNamespace(
-        id="ex1", status="running", workflowId="wf1", threadId="t1", input="hello", userId=None
-    )
-    db.workflowexecution.find_unique = AsyncMock(
-        side_effect=[running, running, running, SimpleNamespace(status="canceled")]
-    )
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    running = _row(id="ex1", status="running", workflow_id="wf1", thread_id="t1", input="hello")
+    _fake = _install(running, statuses=["running", "running", "canceled"])
     _set_workflow_get(AsyncMock(return_value=_workflow_row(_start_to_end_workflow_dict())))
     store = _FakeEventStore()
     monkeypatch.setattr("src.engine.events_wrapper.notify_execution_event", AsyncMock())
-    executor = LangGraphExecutor(db, MemorySaver(), event_bus=store)  # pyright: ignore[reportArgumentType]
+    executor = LangGraphExecutor(
+        sessionmaker=_fake.sessionmaker,
+        checkpointer=MemorySaver(),
+        event_bus=cast("Any", store),
+    )
 
     await executor.run("ex1")
 
@@ -1485,7 +1489,7 @@ async def test_real_graph_cancellation_after_node_stops_downstream_progression(
         ("workflow_started", None),
         ("node_started", "s"),
     ]
-    db.workflowexecution.update_many.assert_not_awaited()
+    assert _fake.updates == []
 
 
 @pytest.mark.parametrize("method", ["run", "resume"])
@@ -1494,13 +1498,13 @@ async def test_graph_timeout_persists_guarded_failure(
     monkeypatch: pytest.MonkeyPatch, method: str, updated: int
 ) -> None:
     """Both invocation paths time out; a lost failure transition emits no failure event."""
-    db = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(id="ex1", status="running")
-    )
-    db.workflowexecution.update_many = AsyncMock(return_value=updated)
+    _fake = _install(_row(id="ex1", status="running"), won=bool(updated))
     store = _FakeEventStore()
-    executor = LangGraphExecutor(db, MemorySaver(), event_bus=store)  # pyright: ignore[reportArgumentType]
+    executor = LangGraphExecutor(
+        sessionmaker=_fake.sessionmaker,
+        checkpointer=MemorySaver(),
+        event_bus=cast("Any", store),
+    )
     invocation_cancelled = False
 
     async def _blocking_invoke(*args: Any, **kwargs: Any) -> dict[str, Any]:
@@ -1536,12 +1540,10 @@ async def test_graph_timeout_persists_guarded_failure(
     assert mark_failed.await_args.kwargs == {"failure_code": "execution_timeout"}
     assert invocation_cancelled
     compiled.aget_state.assert_not_awaited()
-    db.workflowexecution.update_many.assert_awaited_once()
-    assert db.workflowexecution.update_many.await_args is not None
-    update = db.workflowexecution.update_many.await_args.kwargs
-    assert update["where"] == {"id": "ex1", "status": "running"}
-    assert update["data"]["status"] == "failed"
-    assert update["data"]["failureCode"] == "execution_timeout"
+    assert len(_fake.updates) == 1
+    assert _fake.updates[0]["execution_id"] == "ex1"
+    assert _fake.updates[0]["status"] == "failed"
+    assert _fake.updates[0]["failure_code"] == "execution_timeout"
     expected_events = [("workflow_started", "running")]
     if updated:
         expected_events.append(("workflow_completed", "failed"))
@@ -1554,13 +1556,13 @@ async def test_dependency_timeout_is_execution_error(
     monkeypatch: pytest.MonkeyPatch, method: str, stage: str
 ) -> None:
     """Only Composer's elapsed runtime budget may produce execution_timeout."""
-    db = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=SimpleNamespace(id="ex1", status="running")
-    )
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
+    _fake = _install(_row(id="ex1", status="running"))
     store = _FakeEventStore()
-    executor = LangGraphExecutor(db, MemorySaver(), event_bus=store)  # pyright: ignore[reportArgumentType]
+    executor = LangGraphExecutor(
+        sessionmaker=_fake.sessionmaker,
+        checkpointer=MemorySaver(),
+        event_bus=cast("Any", store),
+    )
     error = TimeoutError("dependency timed out")
     compiled = SimpleNamespace(
         ainvoke=AsyncMock(side_effect=error) if stage == "provider" else AsyncMock(return_value={}),
@@ -1577,9 +1579,8 @@ async def test_dependency_timeout_is_execution_error(
     else:
         await executor.resume("ex1", "approved")
 
-    assert db.workflowexecution.update_many.await_args is not None
-    data = db.workflowexecution.update_many.await_args.kwargs["data"]
-    assert data["failureCode"] == "execution_error"
+    data = _fake.updates[-1]
+    assert data["failure_code"] == "execution_error"
     assert data["error"] == "TimeoutError: dependency timed out"
     assert [(event.type, event.payload["status"]) for event in store.events] == [
         ("workflow_started", "running"),

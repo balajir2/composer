@@ -11,7 +11,7 @@ from langchain_core.tools import BaseTool, StructuredTool
 
 import src.executors.mcp as mcp_mod
 from src.db.runtime import register_sessionmaker, unregister_sessionmaker
-from src.engine.context import _current_db, set_current_db  # pyright: ignore[reportPrivateUsage]
+from src.engine.context import _current_sessionmaker  # pyright: ignore[reportPrivateUsage]
 from src.engine.state import initial_state
 from src.engine.workflow import McpNode
 from src.executors.mcp import McpExecutor, McpMaxIterationsError
@@ -25,9 +25,9 @@ if TYPE_CHECKING:
 
 @pytest.fixture(autouse=True)
 def _reset_db_ctx() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
-    token = _current_db.set(None)
+    token = _current_sessionmaker.set(None)
     yield
-    _current_db.reset(token)
+    _current_sessionmaker.reset(token)
 
 
 @pytest.fixture(autouse=True)
@@ -218,7 +218,6 @@ async def test_agent_mode_without_sessionmaker_raises_runtime_error(
     _registered_sessionmaker: FakeSessionmaker,
 ) -> None:
     unregister_sessionmaker(_registered_sessionmaker)  # pyright: ignore[reportArgumentType]
-    set_current_db(object())
     with pytest.raises(RuntimeError, match="set_current_db"):
         await McpExecutor(_node(instructions="do it")).arun(initial_state())
 
@@ -242,7 +241,6 @@ async def test_agent_mode_clamps_max_iterations_to_absolute_ceiling(
         "build_chat_model",
         _build_scripted_model,
     )
-    set_current_db(object())
     await McpExecutor(_node(instructions="go", maxIterations=10_000)).arun(initial_state())
     assert seen_caps == [mcp_mod.ABSOLUTE_MAX_ITERATIONS]
 
@@ -259,6 +257,5 @@ async def test_deterministic_mode_propagates_tool_failure(
         return object(), _tool("t", _boom)
 
     monkeypatch.setattr(mcp_mod, "resolve_single_mcp_tool", _fake_resolve)
-    set_current_db(object())
     with pytest.raises(ConnectionError, match="unreachable"):
         await McpExecutor(_node(toolName="t")).arun(initial_state())

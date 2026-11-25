@@ -11,11 +11,15 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.repos import executions as executions_repo
+from src.db.repos import users as users_repo
 from src.db.repos.workflows import WorkflowRecord
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
 from tests.unit.db_fakes import (
+    FakeSessionmaker,
     WorkflowRepoMocks,
+    make_user,
     make_workflow,
     override_session,
     patch_workflow_repos,
@@ -116,10 +120,10 @@ def test_execution_id_path_traversal_returns_404(
     get_settings.cache_clear()
     app = create_app()
 
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(return_value=None)
-    app.state.db = db
+    monkeypatch.setattr(executions_repo, "get", AsyncMock(return_value=None))
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=make_user(id="dev")))
+    app.state.db = MagicMock()
+    app.state.db_sessionmaker = FakeSessionmaker()
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus
 

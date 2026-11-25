@@ -68,8 +68,8 @@ def test_ws_two_user_authz(monkeypatch: pytest.MonkeyPatch) -> None:
     # thread/event loop, so a synchronous re-entrant call through the same
     # portal would deadlock waiting for a thread that's blocked on us.
     # Instead, call the claim-and-run route function directly in-process
-    # (same coroutine, same event loop, same Prisma client off
-    # app.state.db) bypassing FastAPI's HTTP/DI layer entirely.
+    # (same coroutine, same event loop, the sessionmaker off
+    # app.state.db_sessionmaker) bypassing FastAPI's HTTP/DI layer entirely.
     import types
     from typing import Literal
 
@@ -78,12 +78,10 @@ def test_ws_two_user_authz(monkeypatch: pytest.MonkeyPatch) -> None:
     async def _fake_enqueue(
         execution_id: str, *, kind: Literal["run", "resume"], db: object = None
     ) -> None:
-        db = app.state.db
         dummy_request = types.SimpleNamespace(client=None, app=app)
         await claim_and_run(
             payload=ClaimAndRunRequest(executionId=execution_id, kind=kind),
             request=dummy_request,  # type: ignore[arg-type]
-            db=db,
             _oidc=None,
         )
 

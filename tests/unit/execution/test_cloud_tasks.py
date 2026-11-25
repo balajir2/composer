@@ -16,6 +16,7 @@ from src.execution.cloud_tasks import (
     close_cloud_tasks_client,
     enqueue_execution,
 )
+from tests.unit.db_fakes import FakeSessionmaker
 
 
 @pytest.fixture(autouse=True)
@@ -149,6 +150,8 @@ async def test_enqueue_execution_dispatches_in_process_when_service_account_unse
     instead (fire-and-forget, matching Cloud Tasks' own "enqueue returns
     immediately" semantics -- the caller must not block on the execution
     actually finishing)."""
+    fake_sessionmaker = FakeSessionmaker()
+    monkeypatch.setattr("src.db.runtime.get_registered_sessionmaker", lambda: fake_sessionmaker)
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
     from src.config import get_settings
 
@@ -160,7 +163,7 @@ async def test_enqueue_execution_dispatches_in_process_when_service_account_unse
         async def _fake_claim_and_run_execution(
             execution_id: str,
             kind: str,
-            db: object,
+            sessionmaker: object,
             checkpointer: object,
             event_bus: object,
             *,
@@ -168,7 +171,7 @@ async def test_enqueue_execution_dispatches_in_process_when_service_account_unse
         ) -> dict[str, str]:
             captured["execution_id"] = execution_id
             captured["kind"] = kind
-            captured["db"] = db
+            captured["sessionmaker"] = sessionmaker
             captured["worker_id"] = worker_id
             return {"status": "completed"}
 
@@ -198,7 +201,9 @@ async def test_enqueue_execution_dispatches_in_process_when_service_account_unse
 
         assert captured["execution_id"] == "exec-1"
         assert captured["kind"] == "run"
-        assert captured["db"] is fake_db
+        # The claim runs on the registered SQLAlchemy sessionmaker; the Prisma `db` only
+        # feeds the dev-mode checkpointer (TODO(phase 5)).
+        assert captured["sessionmaker"] is fake_sessionmaker
 
     get_settings.cache_clear()
 
@@ -211,6 +216,7 @@ async def test_enqueue_execution_in_process_fallback_logs_but_does_not_raise(
     a failure inside the dispatched claim-and-run must be logged, not left
     to surface as an "asyncio: Task exception was never retrieved" warning
     with no caller able to observe or handle it."""
+    monkeypatch.setattr("src.db.runtime.get_registered_sessionmaker", lambda: FakeSessionmaker())
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
     from src.config import get_settings
 
@@ -219,7 +225,7 @@ async def test_enqueue_execution_in_process_fallback_logs_but_does_not_raise(
     async def _raising_claim_and_run_execution(
         execution_id: str,
         kind: str,
-        db: object,
+        sessionmaker: object,
         checkpointer: object,
         event_bus: object,
         *,
@@ -245,6 +251,42 @@ async def test_enqueue_execution_in_process_fallback_logs_but_does_not_raise(
     # dispatched coroutine itself.
     await created["coro"]  # type: ignore[misc]
 
+    get_settings.cache_clear()
+
+
+async def test_in_process_fallback_without_a_sessionmaker_logs_instead_of_failing_silently(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The missing-sessionmaker RuntimeError used to be raised before the `try`, so the
+    fire-and-forget task died with no log line (and the row stayed queued, unexplained).
+    Now the existing handler logs it."""
+    monkeypatch.setattr("src.db.runtime.get_registered_sessionmaker", lambda: None)
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    claim = AsyncMock()
+    monkeypatch.setattr("src.api.internal.claim_and_run_execution", claim)
+
+    created: dict[str, object] = {}
+
+    def _fake_create_task(coro: object) -> MagicMock:
+        created["coro"] = coro
+        return MagicMock()
+
+    monkeypatch.setattr("src.execution.cloud_tasks.asyncio.create_task", _fake_create_task)
+    await enqueue_execution("exec-1", kind="run", db=MagicMock())
+
+    with caplog.at_level("ERROR", logger="src.execution.cloud_tasks"):
+        await created["coro"]  # type: ignore[misc]  # must not raise
+
+    claim.assert_not_awaited()
+    assert any(
+        "in-process fallback failed for execution exec-1" in r.getMessage()
+        and r.exc_info is not None
+        and "no SQLAlchemy sessionmaker registered" in str(r.exc_info[1])
+        for r in caplog.records
+    )
     get_settings.cache_clear()
 
 

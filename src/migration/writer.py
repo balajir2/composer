@@ -1,9 +1,7 @@
 """Idempotent writer: inserts Composer rows, skips if already present by id.
 
-Wraps JSON-typed fields with `prisma.Json(...)` before `create`.  This keeps
-transformer functions pure (plain dicts for easy unit testing), while the
-writer handles the Prisma-Python-specific coercion for `Json` / `Json?`
-columns.
+Transformer functions stay pure (plain dicts for easy unit testing); the
+writer maps their camelCase keys onto the repo's column names.
 """
 
 from __future__ import annotations
@@ -11,7 +9,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, cast
 
-from prisma import Json  # pyright: ignore[reportAttributeAccessIssue]
+from src.db.repos import executions as executions_repo
 from src.db.repos import mcp_oauth as mcp_oauth_repo
 from src.db.repos import mcp_servers as mcp_servers_repo
 from src.db.repos import workflows as workflows_repo
@@ -19,31 +17,9 @@ from src.db.repos import workflows as workflows_repo
 if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession
 
-    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+    from src.db.repos.executions import ExecutionInsert
     from src.db.repos.mcp_servers import McpServerCreate
     from src.db.repos.workflows import WorkflowValues
-
-
-def _wrap_required(data: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
-    out = dict(data)
-    for key in keys:
-        out[key] = Json(out.get(key))
-    return out
-
-
-def _wrap_optional(data: dict[str, Any], keys: tuple[str, ...]) -> dict[str, Any]:
-    """Wrap nullable Json columns with Json() when set; drop the key when None.
-
-    Prisma Python rejects `None` for `Json?` columns — use the absence of
-    the key to represent NULL at the DB layer.
-    """
-    out = dict(data)
-    for key in keys:
-        if out.get(key) is None:
-            out.pop(key, None)
-        else:
-            out[key] = Json(out[key])
-    return out
 
 
 _WORKFLOW_COLUMNS = {
@@ -75,14 +51,37 @@ async def upsert_workflow(session: AsyncSession, data: dict[str, Any]) -> bool:
     return await workflows_repo.insert_if_absent(session, cast("WorkflowValues", values))
 
 
-async def upsert_execution(db: Prisma, data: dict[str, Any]) -> bool:  # pyright: ignore[reportUnknownParameterType]
-    existing = await db.workflowexecution.find_unique(where={"id": data["id"]})  # pyright: ignore[reportAttributeAccessIssue]
-    if existing is not None:
-        return False
-    wrapped = _wrap_required(data, ("nodeResults", "variables"))
-    wrapped = _wrap_optional(wrapped, ("input", "output"))
-    await db.workflowexecution.create(data=wrapped)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
-    return True
+_EXECUTION_COLUMNS = {
+    "id": "id",
+    "workflowId": "workflow_id",
+    "userId": "user_id",
+    "originalOwnerEmail": "original_owner_email",
+    "status": "status",
+    "currentNodeId": "current_node_id",
+    "nodeResults": "node_results",
+    "variables": "variables",
+    "input": "input",
+    "output": "output",
+    "error": "error",
+    "threadId": "thread_id",
+}
+
+
+async def upsert_execution(session: AsyncSession, data: dict[str, Any]) -> bool:
+    """Insert unless a row with this id exists. The caller commits.
+
+    ``input``/``output`` of ``None`` are left out so the columns stay SQL NULL.
+    """
+    unknown = sorted(set(data) - set(_EXECUTION_COLUMNS))
+    if unknown:
+        raise ValueError(f"unknown execution keys: {', '.join(unknown)}")
+    values: dict[str, Any] = {
+        column: data[key] for key, column in _EXECUTION_COLUMNS.items() if key in data
+    }
+    for column in ("input", "output"):
+        if values.get(column) is None:
+            values.pop(column, None)
+    return await executions_repo.insert_if_absent(session, cast("ExecutionInsert", values))
 
 
 _MCP_SERVER_COLUMNS = {

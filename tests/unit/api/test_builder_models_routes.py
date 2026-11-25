@@ -80,9 +80,6 @@ def _client(
     app.state.builder_sessions = {}
     app.state.db_sessionmaker = FakeSessionmaker()
 
-    async def fake_db() -> Any:
-        return None
-
     async def fake_role() -> tuple[str, str]:
         return "dev", role
 
@@ -94,7 +91,6 @@ def _client(
             raise HTTPException(status_code=403, detail="admin role required")
         return "dev"
 
-    app.dependency_overrides[builder_mod.get_db] = fake_db
     session = override_session(app)
     app.dependency_overrides[builder_mod.get_current_role] = fake_role
     app.dependency_overrides[builder_mod.get_current_user_id] = fake_user

@@ -7,15 +7,19 @@ confirmation page's form submission, triggered by a real user click)
 performs the actual approve/reject.
 """
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
-from src.engine.events import ExecutionEvent
+from src.db.models import ApprovalDecision
+from src.db.repos import approvals as approvals_repo
+from src.db.repos import executions as executions_repo
+from src.db.repos.executions import ExecutionRecord, PendingInstance
+from tests.unit.db_fakes import RecordingSessionmaker, assert_no_network_inside_session
 
 # Canonical pending-since timestamp shared by the "matching" fixtures below --
 # the token and the stored execution row's variables must carry the same
@@ -25,37 +29,48 @@ from src.engine.events import ExecutionEvent
 _PENDING_SINCE = "2026-07-11T10:00:00+00:00"
 
 
-class _FakeEventStore:
-    """In-memory stand-in for PostgresEventStore.append — the background
-    resume task calls event_bus.append(...); a real ExecutionEventBus has
-    no such method and NOTIFY needs a live Postgres connection, neither of
-    which this unit test has."""
-
-    def __init__(self) -> None:
-        self.events: list[ExecutionEvent] = []
-
-    async def append(self, event: ExecutionEvent) -> int:
-        seq = len(self.events) + 1
-        self.events.append(event)
-        return seq
-
-
-def _execution_row(**overrides: Any) -> SimpleNamespace:
+def _execution_row(**overrides: Any) -> ExecutionRecord:
     base: dict[str, Any] = {
         "id": "exec-1",
-        "workflowId": "wf-1",
-        "userId": "owner-1",
+        "workflow_id": "wf-1",
+        "user_id": "owner-1",
         "status": "waiting_approval",
+        "thread_id": "t1",
+        "node_results": {},
         "variables": {
             "_pending_approval_node": "approval-1",
             "_pending_approval_since": _PENDING_SINCE,
         },
+        "input": None,
+        "output": None,
+        "error": None,
+        "failure_code": None,
+        "current_node_id": None,
+        "started_at": datetime(2026, 4, 21, tzinfo=UTC),
+        "completed_at": None,
+        "original_owner_email": None,
+        "idempotency_key": None,
+        "lease_owner": None,
+        "lease_expires_at": None,
+        "running_since": None,
+        "delivery_attempts": 0,
     }
     base.update(overrides)
-    return SimpleNamespace(**base)
+    return ExecutionRecord(**base)
 
 
-def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MagicMock]:
+@dataclass
+class _Repos:
+    """The patched repo functions and enqueue the routes call."""
+
+    get: AsyncMock
+    resume: AsyncMock
+    approval_create: AsyncMock
+    enqueue: AsyncMock
+    events: list[str]
+
+
+def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _Repos]:
     from fastapi import FastAPI
 
     from src.api.approval_email import router as approval_email_router
@@ -69,38 +84,39 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MagicMock]:
     get_settings.cache_clear()
     app = FastAPI()
     app.include_router(approval_email_router)
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row())
-    # The endpoint's status transition is a single atomic `update_many` so
-    # the check-then-act race is closed; Prisma Python's update_many
-    # returns the affected-row count directly as an int. Default to the
-    # "it matched exactly one waiting_approval row" case -- individual
-    # tests override this to simulate the guard rejecting a stale/
-    # already-resolved row.
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
-    # Used by LangGraphExecutor._mark_failed on the background resume
-    # task's own error path (db.workflow.find_unique is intentionally
-    # left a bare MagicMock here since these tests don't exercise the
-    # graph itself) -- without this, that failure handler's own await
-    # raises TypeError and the exception propagates back through
-    # TestClient's synchronous background-task execution.
-    db.workflowexecution.update = AsyncMock(return_value=_execution_row(status="failed"))
-    db.approval = MagicMock()
-    db.approval.create = AsyncMock()
-    app.state.db = db
-    app.state.checkpointer = MagicMock()
+    events: list[str] = []
+    sessionmaker = RecordingSessionmaker(events)
+
+    async def _commit() -> None:
+        events.append("db:commit")
+
+    async def _resume(*_a: Any, **_k: Any) -> bool:
+        events.append("db:resume")
+        return True
+
+    async def _approve(*_a: Any, **_k: Any) -> None:
+        events.append("db:approval")
+
+    async def _enqueue(*_a: Any, **_k: Any) -> None:
+        events.append("net:enqueue")
+
+    sessionmaker.session.commit = AsyncMock(side_effect=_commit)
+    app.state.db_sessionmaker = sessionmaker
+    app.state.db = MagicMock()  # only handed to enqueue_execution (phase 5)
     app.state.rate_limiter = RateLimiter()
-    app.state.event_bus = _FakeEventStore()
-    monkeypatch.setattr("src.engine.langgraph_executor.notify_execution_event", AsyncMock())
-    # POST /confirm now enqueues a real Cloud Task (P1-2) instead of a
-    # BackgroundTask. Default-patch it to a no-op so tests that don't
-    # care about enqueueing don't trip over constructing a real
-    # `tasks_v2.CloudTasksAsyncClient()` (no ADC credentials in this test
-    # environment). Tests that DO care override this themselves via the
-    # same `monkeypatch` instance.
-    monkeypatch.setattr("src.api.approval_email.enqueue_execution", AsyncMock())
-    return TestClient(app), db
+    repos = _Repos(
+        get=AsyncMock(return_value=_execution_row()),
+        resume=AsyncMock(side_effect=_resume),
+        approval_create=AsyncMock(side_effect=_approve),
+        # POST /confirm enqueues a real Cloud Task (P1-2); patch it so no ADC client is built.
+        enqueue=AsyncMock(side_effect=_enqueue),
+        events=events,
+    )
+    monkeypatch.setattr(executions_repo, "get", repos.get)
+    monkeypatch.setattr(executions_repo, "resume_if_waiting", repos.resume)
+    monkeypatch.setattr(approvals_repo, "create", repos.approval_create)
+    monkeypatch.setattr("src.api.approval_email.enqueue_execution", repos.enqueue)
+    return TestClient(app), repos
 
 
 # ---------------------------------------------------------------------------
@@ -113,7 +129,7 @@ def test_get_valid_token_redirects_to_confirm_without_mutating(
 ) -> None:
     from src.security.jwt import create_approval_email_token
 
-    client, db = _client(monkeypatch)
+    client, repos = _client(monkeypatch)
     token = create_approval_email_token(
         "exec-1", "approval-1", "approved", "reviewer@example.com", _PENDING_SINCE
     )
@@ -125,12 +141,12 @@ def test_get_valid_token_redirects_to_confirm_without_mutating(
 
     # The whole point of P1-1: GET must not mutate anything, so a
     # scanner/preview service auto-following this link is harmless.
-    db.approval.create.assert_not_awaited()
-    db.workflowexecution.update_many.assert_not_awaited()
+    repos.approval_create.assert_not_awaited()
+    repos.resume.assert_not_awaited()
 
 
 def test_get_malformed_token_redirects_to_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, _db = _client(monkeypatch)
+    client, _repos = _client(monkeypatch)
     resp = client.get("/approvals/email/not-a-real-token", follow_redirects=False)
     assert resp.status_code == 303
     assert "approval-result" in resp.headers["location"]
@@ -142,15 +158,15 @@ def test_get_already_resolved_execution_redirects_to_invalid(
 ) -> None:
     from src.security.jwt import create_approval_email_token
 
-    client, db = _client(monkeypatch)
-    db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="completed"))
+    client, repos = _client(monkeypatch)
+    repos.get.return_value = _execution_row(status="completed")
     token = create_approval_email_token(
         "exec-1", "approval-1", "approved", "reviewer@example.com", _PENDING_SINCE
     )
     resp = client.get(f"/approvals/email/{token}", follow_redirects=False)
     assert resp.status_code == 303
     assert "status=invalid" in resp.headers["location"]
-    db.approval.create.assert_not_awaited()
+    repos.approval_create.assert_not_awaited()
 
 
 def test_get_node_mismatch_redirects_to_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -158,14 +174,12 @@ def test_get_node_mismatch_redirects_to_invalid(monkeypatch: pytest.MonkeyPatch)
     (e.g. a chained second user-approval node) resolving the wrong gate."""
     from src.security.jwt import create_approval_email_token
 
-    client, db = _client(monkeypatch)
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=_execution_row(
-            variables={
-                "_pending_approval_node": "approval-2",
-                "_pending_approval_since": _PENDING_SINCE,
-            }
-        )
+    client, repos = _client(monkeypatch)
+    repos.get.return_value = _execution_row(
+        variables={
+            "_pending_approval_node": "approval-2",
+            "_pending_approval_since": _PENDING_SINCE,
+        }
     )
     token = create_approval_email_token(
         "exec-1", "approval-1", "approved", "reviewer@example.com", _PENDING_SINCE
@@ -173,7 +187,7 @@ def test_get_node_mismatch_redirects_to_invalid(monkeypatch: pytest.MonkeyPatch)
     resp = client.get(f"/approvals/email/{token}", follow_redirects=False)
     assert resp.status_code == 303
     assert "status=invalid" in resp.headers["location"]
-    db.approval.create.assert_not_awaited()
+    repos.approval_create.assert_not_awaited()
 
 
 def test_get_stale_pending_since_redirects_to_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -181,14 +195,12 @@ def test_get_stale_pending_since_redirects_to_invalid(monkeypatch: pytest.Monkey
     token from the first pause must not resolve the second."""
     from src.security.jwt import create_approval_email_token
 
-    client, db = _client(monkeypatch)
-    db.workflowexecution.find_unique = AsyncMock(
-        return_value=_execution_row(
-            variables={
-                "_pending_approval_node": "approval-1",
-                "_pending_approval_since": "2026-07-11T12:00:00+00:00",
-            }
-        )
+    client, repos = _client(monkeypatch)
+    repos.get.return_value = _execution_row(
+        variables={
+            "_pending_approval_node": "approval-1",
+            "_pending_approval_since": "2026-07-11T12:00:00+00:00",
+        }
     )
     # Token issued for an EARLIER pause instance at the same node.
     token = create_approval_email_token(
@@ -197,14 +209,14 @@ def test_get_stale_pending_since_redirects_to_invalid(monkeypatch: pytest.Monkey
     resp = client.get(f"/approvals/email/{token}", follow_redirects=False)
     assert resp.status_code == 303
     assert "status=invalid" in resp.headers["location"]
-    db.approval.create.assert_not_awaited()
+    repos.approval_create.assert_not_awaited()
 
 
 def test_get_execution_not_found_redirects_to_invalid(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.security.jwt import create_approval_email_token
 
-    client, db = _client(monkeypatch)
-    db.workflowexecution.find_unique = AsyncMock(return_value=None)
+    client, repos = _client(monkeypatch)
+    repos.get.return_value = None
     token = create_approval_email_token(
         "exec-1", "approval-1", "approved", "reviewer@example.com", _PENDING_SINCE
     )
@@ -222,7 +234,7 @@ async def test_get_rate_limited(monkeypatch: pytest.MonkeyPatch) -> None:
     from src.config import get_settings
     from src.security.rate_limit import RateLimiter, per_minute_config
 
-    client, _db = _client(monkeypatch)
+    client, _repos = _client(monkeypatch)
 
     limiter = cast("RateLimiter", client.app.state.rate_limiter)  # type: ignore[attr-defined]
     config = per_minute_config(get_settings().rate_limit_approval_email_per_minute)
@@ -241,96 +253,88 @@ async def test_get_rate_limited(monkeypatch: pytest.MonkeyPatch) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _token(decision: str = "approved", since: str = _PENDING_SINCE) -> str:
+    from src.security.jwt import create_approval_email_token
+
+    return create_approval_email_token(
+        "exec-1", "approval-1", decision, "reviewer@example.com", since
+    )
+
+
+def test_get_does_not_open_a_write_transaction_or_enqueue(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, repos = _client(monkeypatch)
+    resp = client.get(f"/approvals/email/{_token()}", follow_redirects=False)
+    assert resp.status_code == 303
+    assert repos.events == ["session:enter", "session:exit"]
+
+
 def test_post_confirm_valid_token_records_approval_and_redirects(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from src.security.jwt import create_approval_email_token
-
-    client, db = _client(monkeypatch)
-    token = create_approval_email_token(
-        "exec-1", "approval-1", "approved", "reviewer@example.com", _PENDING_SINCE
-    )
-    resp = client.post(f"/approvals/email/{token}/confirm", follow_redirects=False)
+    client, repos = _client(monkeypatch)
+    resp = client.post(f"/approvals/email/{_token()}/confirm", follow_redirects=False)
     assert resp.status_code == 303
     assert "approval-result" in resp.headers["location"]
     assert "status=approved" in resp.headers["location"]
 
-    db.approval.create.assert_awaited_once()
-    approval_data = db.approval.create.await_args.kwargs["data"]
-    assert approval_data["approverUserId"] is None
-    assert approval_data["approverEmail"] == "reviewer@example.com"
-    assert approval_data["viaEmailLink"] is True
-    assert approval_data["decision"] == "approved"
+    repos.approval_create.assert_awaited_once()
+    assert repos.approval_create.await_args.kwargs == {
+        "execution_id": "exec-1",
+        "node_id": "approval-1",
+        "decision": ApprovalDecision.APPROVED,
+        "approver_user_id": None,
+        "approver_email": "reviewer@example.com",
+        "via_email_link": True,
+        "note": None,
+    }
 
-    db.workflowexecution.update_many.assert_awaited_once()
-    update_many_call = db.workflowexecution.update_many.await_args
-    assert update_many_call.kwargs["where"]["id"] == "exec-1"
-    assert update_many_call.kwargs["where"]["status"] == "waiting_approval"
-    assert update_many_call.kwargs["data"]["status"] == "running"
+    repos.resume.assert_awaited_once()
+    assert repos.resume.await_args.args[1] == "exec-1"
+    kwargs = repos.resume.await_args.kwargs
+    assert kwargs["decision"] == "approved"
+    # DB2: the guarded statement re-checks the pause instance the token was minted for.
+    assert kwargs["expected_pending"] == PendingInstance(node_id="approval-1", since=_PENDING_SINCE)
 
 
-def test_post_confirm_clears_stale_lease_in_same_update_many(
+def test_post_confirm_passes_resume_time_to_the_guarded_transition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """P1-2 fast-follow (2026-07-15 holistic review finding): same fix as
-    POST /executions/{id}/resume (tests/unit/api/test_executions_resume.py)
-    applied to the emailed-link confirm path -- the waiting_approval ->
-    running transition must clear leaseOwner/leaseExpiresAt in the SAME
-    atomic update_many that flips status, or the stale lease from the
-    original claim-and-run claim blocks the fresh Cloud Task delivery
-    enqueued right after this call. Mocked-DB regression coverage only;
-    see tests/integration/test_durable_execution.py's
-    test_resume_clears_stale_lease_and_reclaim_succeeds for the real-
-    Postgres proof."""
-    from src.security.jwt import create_approval_email_token
-
-    client, db = _client(monkeypatch)
-    token = create_approval_email_token(
-        "exec-1", "approval-1", "approved", "reviewer@example.com", _PENDING_SINCE
-    )
+    """Replaces test_post_confirm_clears_stale_lease_in_same_update_many: the lease clear and
+    runningSince stamp are the repo's job (phase 4b Task 2); the route must hand it the current
+    time. Real-DB proof: tests/integration/test_durable_execution.py."""
+    client, repos = _client(monkeypatch)
     frozen_now = datetime(2026, 11, 17, 12, tzinfo=UTC)
-    clock = MagicMock(wraps=datetime)
-    clock.now.return_value = frozen_now
-    monkeypatch.setattr("src.api.approval_email.datetime", clock, raising=False)
-    resp = client.post(f"/approvals/email/{token}/confirm", follow_redirects=False)
+    monkeypatch.setattr("src.api.approval_email.utcnow", lambda: frozen_now)
+    resp = client.post(f"/approvals/email/{_token()}/confirm", follow_redirects=False)
     assert resp.status_code == 303
-    db.workflowexecution.update_many.assert_awaited_once()
-    update_many_call = db.workflowexecution.update_many.await_args
-    assert update_many_call.kwargs["data"]["status"] == "running"
-    assert update_many_call.kwargs["data"]["leaseOwner"] is None
-    assert update_many_call.kwargs["data"]["leaseExpiresAt"] is None
-    assert update_many_call.kwargs["data"]["runningSince"] == frozen_now
-    clock.now.assert_called_once_with(UTC)
+    assert repos.resume.await_args.kwargs["now"] == frozen_now
 
 
-def test_post_confirm_race_loses_when_update_many_affects_zero_rows(
+def test_post_confirm_race_loses_when_the_guarded_transition_wins_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A second confirmation click (or a near-simultaneous duplicate
-    request) after the row has already flipped away from waiting_approval
-    must not resolve -- the atomic update_many's WHERE clause won't
-    match, so it updates 0 rows."""
-    from src.security.jwt import create_approval_email_token
-
-    client, db = _client(monkeypatch)
-    db.workflowexecution.update_many = AsyncMock(return_value=0)
-    token = create_approval_email_token(
-        "exec-1", "approval-1", "approved", "reviewer@example.com", _PENDING_SINCE
-    )
-    resp = client.post(f"/approvals/email/{token}/confirm", follow_redirects=False)
+    """A second confirmation click (or a near-simultaneous duplicate request), or a re-pause
+    after validation, must not resolve: the guarded UPDATE matches no row. No approval row, no
+    enqueue."""
+    client, repos = _client(monkeypatch)
+    repos.resume.side_effect = None
+    repos.resume.return_value = False
+    resp = client.post(f"/approvals/email/{_token()}/confirm", follow_redirects=False)
     assert resp.status_code == 303
     assert "status=invalid" in resp.headers["location"]
-    db.approval.create.assert_not_awaited()
+    repos.approval_create.assert_not_awaited()
+    repos.enqueue.assert_not_awaited()
 
 
 def test_post_confirm_malformed_token_redirects_to_invalid(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, db = _client(monkeypatch)
+    client, repos = _client(monkeypatch)
     resp = client.post("/approvals/email/not-a-real-token/confirm", follow_redirects=False)
     assert resp.status_code == 303
     assert "status=invalid" in resp.headers["location"]
-    db.approval.create.assert_not_awaited()
+    repos.resume.assert_not_awaited()
+    repos.approval_create.assert_not_awaited()
 
 
 def test_post_confirm_already_resolved_redirects_to_invalid(
@@ -338,52 +342,104 @@ def test_post_confirm_already_resolved_redirects_to_invalid(
 ) -> None:
     """Re-validates from scratch rather than trusting a GET that might
     have preceded it minutes earlier -- state can change in between."""
-    from src.security.jwt import create_approval_email_token
-
-    client, db = _client(monkeypatch)
-    db.workflowexecution.find_unique = AsyncMock(return_value=_execution_row(status="completed"))
-    token = create_approval_email_token(
-        "exec-1", "approval-1", "approved", "reviewer@example.com", _PENDING_SINCE
-    )
-    resp = client.post(f"/approvals/email/{token}/confirm", follow_redirects=False)
+    client, repos = _client(monkeypatch)
+    repos.get.return_value = _execution_row(status="completed")
+    resp = client.post(f"/approvals/email/{_token()}/confirm", follow_redirects=False)
     assert resp.status_code == 303
     assert "status=invalid" in resp.headers["location"]
-    db.approval.create.assert_not_awaited()
+    repos.resume.assert_not_awaited()
+    repos.approval_create.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "variables",
+    [
+        {"_pending_approval_node": "approval-2", "_pending_approval_since": _PENDING_SINCE},
+        {
+            "_pending_approval_node": "approval-1",
+            "_pending_approval_since": "2026-07-11T12:00:00+00:00",
+        },
+    ],
+)
+def test_post_confirm_stale_pause_redirects_to_invalid_without_writing(
+    monkeypatch: pytest.MonkeyPatch, variables: dict[str, Any]
+) -> None:
+    client, repos = _client(monkeypatch)
+    repos.get.return_value = _execution_row(variables=variables)
+    resp = client.post(f"/approvals/email/{_token()}/confirm", follow_redirects=False)
+    assert "status=invalid" in resp.headers["location"]
+    repos.resume.assert_not_awaited()
+    repos.approval_create.assert_not_awaited()
+
+
+def test_post_confirm_malformed_decision_claim_is_invalid_before_any_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DB6: a validly signed token whose decision claim is not a valid decision is `invalid`
+    (previously a 500 with the row stuck running). No session is even opened."""
+    client, repos = _client(monkeypatch)
+    resp = client.post(f"/approvals/email/{_token('maybe')}/confirm", follow_redirects=False)
+    assert resp.status_code == 303
+    assert "status=invalid" in resp.headers["location"]
+    repos.resume.assert_not_awaited()
+    repos.approval_create.assert_not_awaited()
+    repos.enqueue.assert_not_awaited()
+    assert repos.events == []
 
 
 def test_post_confirm_enqueues_cloud_task_instead_of_background_task(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """P1-2 full replacement: POST /approvals/email/{token}/confirm must
-    enqueue a Cloud Task (kind='resume') rather than scheduling a
-    request-bound BackgroundTask. The decision is stamped into
-    `variables._resume_decision` before enqueueing (same pattern as
-    POST /executions/{id}/resume) since enqueue_execution's Cloud Task
-    body has no room for the decision value."""
-    from src.security.jwt import create_approval_email_token
-
-    client, db = _client(monkeypatch)
-
-    enqueued: list[tuple[str, str]] = []
-
-    async def _fake_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
-        enqueued.append((execution_id, kind))
-
-    monkeypatch.setattr("src.api.approval_email.enqueue_execution", _fake_enqueue)
-
-    token = create_approval_email_token(
-        "exec-1", "approval-1", "approved", "reviewer@example.com", _PENDING_SINCE
-    )
-    resp = client.post(f"/approvals/email/{token}/confirm", follow_redirects=False)
+    """P1-2 full replacement: POST /approvals/email/{token}/confirm must enqueue a Cloud Task
+    (kind='resume') rather than scheduling a request-bound BackgroundTask. The decision is
+    stamped inside the guarded transition (repo-level), since enqueue_execution's task body has
+    no room for it."""
+    client, repos = _client(monkeypatch)
+    resp = client.post(f"/approvals/email/{_token()}/confirm", follow_redirects=False)
     assert resp.status_code == 303
-    assert enqueued == [("exec-1", "resume")]
+    repos.enqueue.assert_awaited_once()
+    assert repos.enqueue.await_args.args == ("exec-1",)
+    assert repos.enqueue.await_args.kwargs["kind"] == "resume"
 
-    db.workflowexecution.update.assert_awaited_once()
-    update_call = db.workflowexecution.update.await_args
-    assert update_call.kwargs["where"]["id"] == "exec-1"
-    stamped_variables = update_call.kwargs["data"]["variables"].data
-    assert stamped_variables["_resume_decision"] == "approved"
-    assert stamped_variables["_pending_approval_node"] == "approval-1"
+
+def test_post_confirm_enqueues_only_after_commit_and_after_the_session_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DB1 + short-session rule: guarded transition and approval row in one transaction, commit,
+    the session closes, THEN the Cloud Task is enqueued."""
+    client, repos = _client(monkeypatch)
+    resp = client.post(f"/approvals/email/{_token()}/confirm", follow_redirects=False)
+    assert resp.status_code == 303
+    assert repos.events == [
+        "session:enter",
+        "db:resume",
+        "db:approval",
+        "db:commit",
+        "session:exit",
+        "net:enqueue",
+    ]
+    assert_no_network_inside_session(repos.events)
+
+
+def test_post_confirm_rolls_back_and_does_not_enqueue_when_the_approval_insert_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, repos = _client(monkeypatch)
+    repos.approval_create.side_effect = RuntimeError("insert failed")
+    with pytest.raises(RuntimeError, match="insert failed"):
+        client.post(f"/approvals/email/{_token()}/confirm", follow_redirects=False)
+    assert "db:commit" not in repos.events
+    repos.enqueue.assert_not_awaited()
+
+
+@pytest.mark.parametrize("method", ["get", "post"])
+def test_routes_without_a_database_are_503(monkeypatch: pytest.MonkeyPatch, method: str) -> None:
+    client, _repos = _client(monkeypatch)
+    del client.app.state.db_sessionmaker  # type: ignore[attr-defined]
+    url = f"/approvals/email/{_token()}" + ("/confirm" if method == "post" else "")
+    resp = getattr(client, method)(url, follow_redirects=False)
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "database unavailable"
 
 
 async def test_post_confirm_rate_limited(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -392,7 +448,7 @@ async def test_post_confirm_rate_limited(monkeypatch: pytest.MonkeyPatch) -> Non
     from src.config import get_settings
     from src.security.rate_limit import RateLimiter, per_minute_config
 
-    client, _db = _client(monkeypatch)
+    client, _repos = _client(monkeypatch)
 
     limiter = cast("RateLimiter", client.app.state.rate_limiter)  # type: ignore[attr-defined]
     config = per_minute_config(get_settings().rate_limit_approval_email_per_minute)

@@ -9,6 +9,7 @@ from typing import Any, cast
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.builder.builder_tools import BuilderContext, make_builder_tools
 from src.builder.completeness import collect_completeness_issues
@@ -239,7 +240,7 @@ async def run_builder_turn(
     session: BuildSession,
     message: str,
     execution_id: str | None,
-    db: Any,
+    sessionmaker: async_sessionmaker[AsyncSession] | None,
     user_id: str,
     role: str = "user",
     model_catalog: ModelCatalog | None = None,
@@ -272,9 +273,9 @@ async def run_builder_turn(
 
     # 2. Diagnose turn: propose a patch, do NOT apply.
     if execution_id:
-        if db is not None:
+        if sessionmaker is not None:
             diag = await build_diagnosis(
-                db, execution_id, workflow_id=workflow_id, user_id=user_id, role=role
+                sessionmaker, execution_id, workflow_id=workflow_id, user_id=user_id, role=role
             )
             if diag is not None:
                 session.messages.append(

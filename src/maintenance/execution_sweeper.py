@@ -19,10 +19,15 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
-from prisma import Json
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from src.db.repos import events as events_repo
+from src.db.repos import executions as executions_repo
 
 if TYPE_CHECKING:
     from fastapi import FastAPI
+
+SessionMaker = async_sessionmaker[AsyncSession]
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +46,7 @@ class SweepResult:
 
 
 async def sweep_orphaned_running(
-    db: Any,
+    sessionmaker: SessionMaker,
     *,
     grace_seconds: int,
     now: datetime | None = None,
@@ -52,37 +57,31 @@ async def sweep_orphaned_running(
 
     current_time = now or datetime.now(UTC)
     cutoff = current_time - timedelta(seconds=grace_seconds)
-    predicates = {
-        "status": "running",
-        "leaseExpiresAt": None,
-        "runningSince": {"lt": cutoff},
-    }
-    rows: list[Any] = await db.workflowexecution.find_many(where=predicates)
+    async with sessionmaker() as session:
+        rows = await executions_repo.list_orphaned_running(session, cutoff=cutoff)
 
     marked = 0
     errored = 0
     for row in rows:
         try:
-            marked += await db.workflowexecution.update_many(
-                where={"id": row.id, **predicates},
-                data={
-                    "status": "failed",
-                    "failureCode": "orphaned_running",
-                    "error": (
+            async with sessionmaker() as session:
+                won = await executions_repo.fail_orphaned_if_unchanged(
+                    session,
+                    row.id,
+                    cutoff=cutoff,
+                    error=(
                         f"Execution remained running without a lease for more than {grace_seconds}s. "
                         "Marked failed by the orphaned-running sweeper."
                     ),
-                    "completedAt": current_time,
-                    "leaseOwner": None,
-                    "leaseExpiresAt": None,
-                    "runningSince": None,
-                },
-            )
+                    now=current_time,
+                )
+                await session.commit()
+            marked += 1 if won else 0
         except Exception:
             errored += 1
             logger.exception(
                 "execution_sweeper: failed to mark orphaned execution %s as failed",
-                getattr(row, "id", "<unknown>"),
+                row.id,
             )
 
     if rows:
@@ -102,7 +101,7 @@ _APPROVAL_TIMEOUT_ERROR_TEMPLATE = (
 
 
 async def sweep_expired_approvals(
-    db: Any,
+    sessionmaker: SessionMaker,
     *,
     timeout_hours: int,
     now: datetime | None = None,
@@ -115,14 +114,13 @@ async def sweep_expired_approvals(
 
     current_time = now or datetime.now(UTC)
     cutoff = current_time - timedelta(hours=timeout_hours)
-    rows: list[Any] = await db.workflowexecution.find_many(
-        where={"status": "waiting_approval"},
-    )
+    async with sessionmaker() as session:
+        rows = await executions_repo.list_waiting_approval(session)
 
     marked = 0
     errored = 0
     for row in rows:
-        variables: dict[str, Any] = getattr(row, "variables", None) or {}
+        variables: dict[str, Any] = row.variables or {}
         since_raw = (
             variables.get("_pending_approval_since")
             if isinstance(cast("Any", variables), dict)
@@ -137,26 +135,23 @@ async def sweep_expired_approvals(
         if since.tzinfo is None or since >= cutoff:
             continue
         try:
-            # Prisma Python's JSON filter supports equality, not a time
-            # comparison at a JSON path. Recheck the entire snapshot so a
-            # resumed execution or a newer approval pause cannot be expired.
-            marked += await db.workflowexecution.update_many(
-                where={
-                    "id": row.id,
-                    "status": "waiting_approval",
-                    "variables": {"equals": Json(variables)},
-                },
-                data={
-                    "status": "failed",
-                    "error": _APPROVAL_TIMEOUT_ERROR_TEMPLATE.format(hours=timeout_hours),
-                    "completedAt": current_time,
-                },
-            )
+            # Recheck the entire snapshot so a resumed execution or a newer
+            # approval pause cannot be expired.
+            async with sessionmaker() as session:
+                won = await executions_repo.fail_expired_approval_if_unchanged(
+                    session,
+                    row.id,
+                    variables_snapshot=variables,
+                    error=_APPROVAL_TIMEOUT_ERROR_TEMPLATE.format(hours=timeout_hours),
+                    now=current_time,
+                )
+                await session.commit()
+            marked += 1 if won else 0
         except Exception:
             errored += 1
             logger.exception(
                 "execution_sweeper: failed to mark expired approval %s as failed",
-                getattr(row, "id", "<unknown>"),
+                row.id,
             )
 
     if rows:
@@ -170,44 +165,39 @@ async def sweep_expired_approvals(
 
 
 async def sweep_expired_leases(
-    db: Any,
+    sessionmaker: SessionMaker,
     *,
     now: datetime | None = None,
 ) -> SweepResult:
     """Conditionally fail expired leased attempts; never restart their work."""
     current_time = now or datetime.now(UTC)
-    rows: list[Any] = await db.workflowexecution.find_many(
-        where={"status": "running", "leaseExpiresAt": {"lt": current_time}},
-    )
+    async with sessionmaker() as session:
+        rows = await executions_repo.list_expired_leases(session, now=current_time)
 
     marked = 0
     errored = 0
     for row in rows:
         try:
-            marked += await db.workflowexecution.update_many(
-                where={
-                    "id": row.id,
-                    "status": "running",
-                    "leaseExpiresAt": row.leaseExpiresAt,
-                },
-                data={
-                    "status": "failed",
-                    "failureCode": "lease_expired",
-                    "error": (
+            if row.lease_expires_at is None:  # unreachable: the scan filters on it
+                continue
+            async with sessionmaker() as session:
+                won = await executions_repo.fail_expired_lease_if_unchanged(
+                    session,
+                    row.id,
+                    lease_expires_at=row.lease_expires_at,
+                    error=(
                         "Execution's processing lease expired without completing. "
                         "Marked failed by the lease-expiry sweeper."
                     ),
-                    "completedAt": current_time,
-                    "leaseOwner": None,
-                    "leaseExpiresAt": None,
-                    "runningSince": None,
-                },
-            )
+                    now=current_time,
+                )
+                await session.commit()
+            marked += 1 if won else 0
         except Exception:
             errored += 1
             logger.exception(
                 "execution_sweeper: failed to mark expired-lease execution %s as failed",
-                getattr(row, "id", "<unknown>"),
+                row.id,
             )
 
     if rows:
@@ -221,7 +211,7 @@ async def sweep_expired_leases(
 
 
 async def sweep_old_execution_events(
-    db: Any,
+    sessionmaker: SessionMaker,
     *,
     retention_days: int,
     now: datetime | None = None,
@@ -231,15 +221,16 @@ async def sweep_old_execution_events(
         raise ValueError("retention_days must be > 0")
     current_time = now or datetime.now(UTC)
     cutoff = current_time - timedelta(days=retention_days)
-    result = await db.executionevent.delete_many(where={"createdAt": {"lt": cutoff}})
-    count = getattr(result, "count", result if isinstance(result, int) else 0)
+    async with sessionmaker() as session:
+        count = await events_repo.delete_older_than(session, cutoff)
+        await session.commit()
     if count:
         logger.info("execution_sweeper: deleted %d execution_events past retention", count)
     return count
 
 
 async def _sweeper_loop(
-    db: Any,
+    sessionmaker: SessionMaker,
     *,
     interval_seconds: int,
     orphaned_running_grace_seconds: int,
@@ -248,9 +239,9 @@ async def _sweeper_loop(
     """Run local maintenance until the lifespan cancels this task."""
     while True:
         try:
-            await sweep_orphaned_running(db, grace_seconds=orphaned_running_grace_seconds)
+            await sweep_orphaned_running(sessionmaker, grace_seconds=orphaned_running_grace_seconds)
             if approval_timeout_hours > 0:
-                await sweep_expired_approvals(db, timeout_hours=approval_timeout_hours)
+                await sweep_expired_approvals(sessionmaker, timeout_hours=approval_timeout_hours)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -260,7 +251,7 @@ async def _sweeper_loop(
 
 def start_sweeper(
     app: FastAPI,
-    db: Any,
+    sessionmaker: SessionMaker,
     *,
     interval_seconds: int,
     orphaned_running_grace_seconds: int,
@@ -273,7 +264,7 @@ def start_sweeper(
 
     task: asyncio.Task[None] = asyncio.create_task(
         _sweeper_loop(
-            db,
+            sessionmaker,
             interval_seconds=interval_seconds,
             orphaned_running_grace_seconds=orphaned_running_grace_seconds,
             approval_timeout_hours=approval_timeout_hours,

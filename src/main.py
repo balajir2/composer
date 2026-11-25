@@ -39,9 +39,11 @@ from src.api.workflows import router as workflows_router
 from src.config import get_settings
 from src.config_validation import validate_execution_timing, validate_production_config
 from src.db.lifespan import sqlalchemy_lifespan
+from src.engine.events_pg import PostgresEventStore
 from src.maintenance.execution_sweeper import start_sweeper, stop_sweeper
 from src.security.key_sync import sync_llm_keys_from_db
 from src.security.proxy_headers import TrustedProxyHeadersMiddleware
+from src.security.rate_limit_pg import PostgresRateLimiter
 from src.storage.db import prisma_lifespan
 from src.telemetry.context import CorrelationMiddleware
 from src.telemetry.logging import configure_logging
@@ -60,7 +62,10 @@ async def _service_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # src/config_validation.py for what this catches and why.
     validate_production_config(settings)
 
-    async with prisma_lifespan(app) as db, sqlalchemy_lifespan(app):
+    async with prisma_lifespan(app), sqlalchemy_lifespan(app):
+        sessionmaker = app.state.db_sessionmaker
+        app.state.event_bus = PostgresEventStore(sessionmaker)
+        app.state.rate_limiter = PostgresRateLimiter(sessionmaker)
         # Pull admin-UI-managed LLM keys into runtime Settings so workflow
         # execution (src/llm/providers.py reads from settings.*_api_key)
         # can see them.  Env-set values win; DB fills in the blanks.  A
@@ -70,7 +75,7 @@ async def _service_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
         sweeper_task = start_sweeper(
             app,
-            db,
+            sessionmaker,
             interval_seconds=settings.execution_sweeper_interval_seconds,
             orphaned_running_grace_seconds=settings.orphaned_running_grace_seconds,
             approval_timeout_hours=settings.approval_wait_timeout_hours,

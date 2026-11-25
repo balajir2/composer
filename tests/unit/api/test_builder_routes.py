@@ -36,9 +36,6 @@ def _make_client(
     app = FastAPI()
     app.include_router(router)
 
-    async def fake_db() -> Any:
-        return None
-
     async def fake_role() -> tuple[str, str]:
         return role
 
@@ -47,7 +44,6 @@ def _make_client(
     repos = patch_workflow_repos(monkeypatch)
     repos.get.return_value = workflow
     repos.exists.return_value = assigned
-    app.dependency_overrides[builder_mod.get_db] = fake_db
     override_session(app)  # the route resolves its SQLAlchemy session up front
     app.dependency_overrides[builder_mod.get_current_role] = fake_role
     app.dependency_overrides[builder_mod.get_rate_limiter] = lambda: _Limiter()

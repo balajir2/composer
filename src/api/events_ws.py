@@ -16,6 +16,7 @@ import asyncpg
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
 
 from src.config import Settings, get_settings
+from src.db.repos import executions as executions_repo
 from src.db.repos import users as users_repo
 from src.db.runtime import request_sessionmaker
 from src.engine.events import ExecutionEvent
@@ -88,8 +89,8 @@ async def events_ws(  # pyright: ignore[reportUnusedFunction]
     # Resolve app-level singletons directly from ws.app.state
     # (WebSocket is HTTPConnection, not Request — Depends(get_db) won't work here)
     settings: Settings = get_settings()
-    db = getattr(ws.app.state, "db", None)
-    if db is None:
+    sessionmaker = request_sessionmaker(ws)
+    if sessionmaker is None:
         await ws.close(code=4500, reason="server error")
         return
     event_store: PostgresEventStore | None = getattr(ws.app.state, "event_bus", None)
@@ -104,26 +105,21 @@ async def events_ws(  # pyright: ignore[reportUnusedFunction]
         return
 
     # 2) authorize
-    execution = await db.workflowexecution.find_unique(where={"id": execution_id})  # pyright: ignore[reportAttributeAccessIssue]
+    # Short session, closed before the socket is accepted or waited on.
+    async with sessionmaker() as session:
+        execution = await executions_repo.get(session, execution_id)
     if execution is None:
         await ws.close(code=4404, reason="not found")
         return
 
     # fetch role (admin bypass)
-    user = None
-    sessionmaker = request_sessionmaker(ws)
-    if sessionmaker is not None:
-        async with sessionmaker() as session:
-            user = await users_repo.get_by_id(session, user_id)
-    if sessionmaker is None and settings.environment != "development":
-        # Fail closed: no live user check available (e.g. during shutdown).
-        await ws.close(code=4401, reason="unauthenticated")
-        return
+    async with sessionmaker() as session:
+        user = await users_repo.get_by_id(session, user_id)
     if settings.deployment_mode == "standalone" and (user is None or not user.is_active):
         await ws.close(code=4401, reason="unauthenticated")
         return
     role_str = user.role.value if user is not None else "member"
-    if role_str != "admin" and execution.userId != user_id:
+    if role_str != "admin" and execution.user_id != user_id:
         await ws.close(code=4403, reason="forbidden")
         return
 
