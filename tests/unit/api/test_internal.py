@@ -35,7 +35,12 @@ def _client_with_fakes(
 
 
 def _claimed(variables: Any = None) -> ClaimedExecution:
-    return ClaimedExecution(id="exec-1", variables=variables if variables is not None else {})
+    return ClaimedExecution(
+        id="exec-1",
+        variables=variables if variables is not None else {},
+        attempt_id="attempt-1",
+        attempt_ordinal=1,
+    )
 
 
 def _scope_request(headers: list[tuple[bytes, bytes]]) -> Request:
@@ -171,10 +176,17 @@ async def test_claim_and_run_execution_runs_directly_without_a_request(
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    ran: list[str] = []
+    ran: list[tuple[str, str | None]] = []
 
-    async def _fake_run(self: LangGraphExecutor, execution_id: str) -> None:
-        ran.append(execution_id)
+    async def _fake_run(
+        self: LangGraphExecutor, execution_id: str, *, attempt_id: str | None = None
+    ) -> None:
+        from src.telemetry.context import current_correlation
+
+        correlation = current_correlation()
+        assert correlation.execution_id == execution_id
+        assert correlation.attempt_id == attempt_id
+        ran.append((execution_id, attempt_id))
 
     monkeypatch.setattr(LangGraphExecutor, "run", _fake_run)
 
@@ -190,7 +202,7 @@ async def test_claim_and_run_execution_runs_directly_without_a_request(
     )
 
     assert result == {"status": "completed"}
-    assert ran == ["exec-1"]
+    assert ran == [("exec-1", "attempt-1")]
     assert len(fake.claim_calls) == 1
 
 
@@ -208,7 +220,9 @@ async def test_claim_session_is_committed_and_closed_before_the_run_starts(
     from src.api.internal import claim_and_run_execution
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    async def _fake_run(self: LangGraphExecutor, execution_id: str) -> None:
+    async def _fake_run(
+        self: LangGraphExecutor, execution_id: str, *, attempt_id: str | None = None
+    ) -> None:
         events.append("net:run")
 
     monkeypatch.setattr(LangGraphExecutor, "run", _fake_run)
@@ -264,7 +278,9 @@ def test_claim_and_run_claims_and_dispatches_run(monkeypatch: pytest.MonkeyPatch
 
     ran: list[str] = []
 
-    async def _fake_run(self: LangGraphExecutor, execution_id: str) -> None:
+    async def _fake_run(
+        self: LangGraphExecutor, execution_id: str, *, attempt_id: str | None = None
+    ) -> None:
         ran.append(execution_id)
 
     monkeypatch.setattr(LangGraphExecutor, "run", _fake_run)
@@ -366,10 +382,21 @@ def test_claim_and_run_resume_dispatches_resume(monkeypatch: pytest.MonkeyPatch)
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    resumed: list[tuple[str, str]] = []
+    resumed: list[tuple[str, str, str | None]] = []
 
-    async def _fake_resume(self: LangGraphExecutor, execution_id: str, decision: str) -> None:
-        resumed.append((execution_id, decision))
+    async def _fake_resume(
+        self: LangGraphExecutor,
+        execution_id: str,
+        decision: str,
+        *,
+        attempt_id: str | None = None,
+    ) -> None:
+        from src.telemetry.context import current_correlation
+
+        correlation = current_correlation()
+        assert correlation.execution_id == execution_id
+        assert correlation.attempt_id == attempt_id
+        resumed.append((execution_id, decision, attempt_id))
 
     monkeypatch.setattr(LangGraphExecutor, "resume", _fake_resume)
 
@@ -378,7 +405,7 @@ def test_claim_and_run_resume_dispatches_resume(monkeypatch: pytest.MonkeyPatch)
         json={"executionId": "exec-1", "kind": "resume"},
     )
     assert resp.status_code == 200, resp.text
-    assert resumed == [("exec-1", "approved")]
+    assert resumed == [("exec-1", "approved", "attempt-1")]
     assert len(fake.claim_calls) == 1
 
 
@@ -396,10 +423,16 @@ def test_claim_and_run_resume_ignores_legacy_decision_field_in_request_body(
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    resumed: list[tuple[str, str]] = []
+    resumed: list[tuple[str, str, str | None]] = []
 
-    async def _fake_resume(self: LangGraphExecutor, execution_id: str, decision: str) -> None:
-        resumed.append((execution_id, decision))
+    async def _fake_resume(
+        self: LangGraphExecutor,
+        execution_id: str,
+        decision: str,
+        *,
+        attempt_id: str | None = None,
+    ) -> None:
+        resumed.append((execution_id, decision, attempt_id))
 
     monkeypatch.setattr(LangGraphExecutor, "resume", _fake_resume)
 
@@ -408,7 +441,7 @@ def test_claim_and_run_resume_ignores_legacy_decision_field_in_request_body(
         json={"executionId": "exec-1", "kind": "resume", "decision": "approved"},
     )
     assert resp.status_code == 200, resp.text
-    assert resumed == [("exec-1", "rejected")]
+    assert resumed == [("exec-1", "rejected", "attempt-1")]
 
 
 def test_claim_and_run_resume_without_decision_is_rejected(
@@ -496,7 +529,9 @@ def test_claim_and_run_crash_in_run_marks_row_failed_and_returns_error(
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    async def _crashing_run(self: LangGraphExecutor, execution_id: str) -> None:
+    async def _crashing_run(
+        self: LangGraphExecutor, execution_id: str, *, attempt_id: str | None = None
+    ) -> None:
         raise RuntimeError("simulated executor crash")
 
     monkeypatch.setattr(LangGraphExecutor, "run", _crashing_run)
@@ -538,7 +573,9 @@ def test_claim_and_run_crash_in_resume_marks_row_failed_and_returns_error(
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    async def _crashing_resume(self: LangGraphExecutor, execution_id: str, decision: str) -> None:
+    async def _crashing_resume(
+        self: LangGraphExecutor, execution_id: str, decision: str, *, attempt_id: str | None = None
+    ) -> None:
         raise RuntimeError("simulated resume crash")
 
     monkeypatch.setattr(LangGraphExecutor, "resume", _crashing_resume)
@@ -578,7 +615,9 @@ def test_claim_and_run_crash_does_not_clobber_concurrent_cancel(
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    async def _crashing_run(self: LangGraphExecutor, execution_id: str) -> None:
+    async def _crashing_run(
+        self: LangGraphExecutor, execution_id: str, *, attempt_id: str | None = None
+    ) -> None:
         raise RuntimeError("simulated executor crash")
 
     monkeypatch.setattr(LangGraphExecutor, "run", _crashing_run)
@@ -606,7 +645,9 @@ def test_claim_and_run_crash_when_the_failure_write_itself_fails_still_reports_5
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    async def _crashing_run(self: LangGraphExecutor, execution_id: str) -> None:
+    async def _crashing_run(
+        self: LangGraphExecutor, execution_id: str, *, attempt_id: str | None = None
+    ) -> None:
         raise RuntimeError("simulated executor crash")
 
     monkeypatch.setattr(LangGraphExecutor, "run", _crashing_run)
@@ -628,7 +669,9 @@ def test_crash_handler_runs_in_its_own_session_after_the_claim_session_closed(
 
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    async def _crashing_run(self: LangGraphExecutor, execution_id: str) -> None:
+    async def _crashing_run(
+        self: LangGraphExecutor, execution_id: str, *, attempt_id: str | None = None
+    ) -> None:
         events.append("net:run")
         raise RuntimeError("boom")
 
@@ -669,7 +712,9 @@ def test_claim_and_run_cancelled_error_is_not_caught_by_fast_fail_guard(
     from src.api.internal import ClaimAndRunRequest, claim_and_run
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    async def _cancelled_run(self: LangGraphExecutor, execution_id: str) -> None:
+    async def _cancelled_run(
+        self: LangGraphExecutor, execution_id: str, *, attempt_id: str | None = None
+    ) -> None:
         raise asyncio.CancelledError
 
     monkeypatch.setattr(LangGraphExecutor, "run", _cancelled_run)
@@ -715,7 +760,9 @@ def test_claim_and_run_accepts_valid_oidc_token(monkeypatch: pytest.MonkeyPatch)
 
     ran: list[str] = []
 
-    async def _fake_run(self: LangGraphExecutor, execution_id: str) -> None:
+    async def _fake_run(
+        self: LangGraphExecutor, execution_id: str, *, attempt_id: str | None = None
+    ) -> None:
         ran.append(execution_id)
 
     monkeypatch.setattr(LangGraphExecutor, "run", _fake_run)

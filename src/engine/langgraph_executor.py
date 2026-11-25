@@ -311,7 +311,7 @@ class LangGraphExecutor:
                 ) from exc
             raise
 
-    async def run(self, execution_id: str) -> None:
+    async def run(self, execution_id: str, *, attempt_id: str | None = None) -> None:
         """Drive the compiled graph to completion and persist results.
 
         Exceptions are caught here — they're recorded on the execution row so
@@ -389,7 +389,9 @@ class LangGraphExecutor:
                     {"status": "failed"},
                 )
 
-    async def resume(self, execution_id: str, decision: str) -> None:
+    async def resume(
+        self, execution_id: str, decision: str, *, attempt_id: str | None = None
+    ) -> None:
         """Continue a paused execution with a user decision (approved/rejected).
 
         Loads the checkpoint from the official Postgres saver, first copying it from the old tables

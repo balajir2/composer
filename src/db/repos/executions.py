@@ -18,8 +18,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.execution_status import ACTIVE_EXECUTION_STATUSES_SORTED
 from src.db.errors import add_or_already_exists
-from src.db.models import ExecutionEvent, WorkflowExecution
+from src.db.models import AttemptTriggerKind, ExecutionEvent, WorkflowExecution
 from src.db.repos import checkpoints as checkpoints_repo
+from src.db.repos import execution_attempts as execution_attempts_repo
 from src.db.repos._sql import in_array
 
 ACTIVE_STATUSES: tuple[str, ...] = tuple(ACTIVE_EXECUTION_STATUSES_SORTED)
@@ -53,6 +54,8 @@ class ExecutionRecord:
 class ClaimedExecution:
     id: str
     variables: Any
+    attempt_id: str
+    attempt_ordinal: int
 
 
 @dataclass(frozen=True)
@@ -280,11 +283,39 @@ async def claim(
                 running_since=now,
                 delivery_attempts=WorkflowExecution.delivery_attempts + 1,
             )
-            .returning(WorkflowExecution.id, WorkflowExecution.variables)
+            .returning(
+                WorkflowExecution.id,
+                WorkflowExecution.variables,
+                WorkflowExecution.pending_attempt_approval_id,
+            )
             .execution_options(synchronize_session=False)
         )
     ).one_or_none()
-    return None if row is None else ClaimedExecution(id=row.id, variables=row.variables)
+    if row is None:
+        return None
+    attempt = await execution_attempts_repo.open_for_claim(
+        session,
+        execution_id=row.id,
+        started_at=now,
+        lease_owner=worker_id,
+        lease_expires_at=lease_expires_at,
+        trigger_kind=AttemptTriggerKind(kind),
+        approval_id=row.pending_attempt_approval_id,
+        actor_user_id=None,
+    )
+    if row.pending_attempt_approval_id is not None:
+        await session.execute(
+            sa_update(WorkflowExecution)
+            .where(WorkflowExecution.id == row.id)
+            .values(pending_attempt_approval_id=None)
+            .execution_options(synchronize_session=False)
+        )
+    return ClaimedExecution(
+        id=row.id,
+        variables=row.variables,
+        attempt_id=attempt.id,
+        attempt_ordinal=attempt.ordinal,
+    )
 
 
 async def _guarded(

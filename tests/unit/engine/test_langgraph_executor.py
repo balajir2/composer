@@ -6,6 +6,7 @@ right fields on completion/failure.
 """
 
 import asyncio
+import inspect
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any, cast
@@ -1596,3 +1597,10 @@ async def test_dependency_timeout_is_execution_error(
         ("workflow_started", "running"),
         ("workflow_completed", "failed"),
     ]
+
+
+def test_worker_entrypoints_accept_keyword_only_attempt_identity() -> None:
+    for method in (LangGraphExecutor.run, LangGraphExecutor.resume):
+        parameter = inspect.signature(method).parameters["attempt_id"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.annotation == str | None

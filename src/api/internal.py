@@ -67,6 +67,7 @@ from src.maintenance.execution_sweeper import (
 )
 from src.storage_providers.google_drive import GoogleDriveProvider
 from src.storage_providers.text_extraction import extract_text
+from src.telemetry.context import bind_context
 from src.telemetry.propagation import extract_task_context
 
 if TYPE_CHECKING:
@@ -327,20 +328,21 @@ async def claim_and_run_execution(
             sessionmaker=sessionmaker, checkpointer=checkpointer, event_bus=event_bus
         )
 
-        if kind == "resume":
-            # P1-2 (Task 13): the decision travels via the claimed row's
-            # `variables._resume_decision`, stamped by the enqueueing call
-            # site BEFORE the Cloud Task fired (see ClaimAndRunRequest's
-            # docstring) — not via any request-body field.
-            decision = cast("dict[str, Any]", claimed.variables or {}).get("_resume_decision")
-            if not decision:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail="decision is required when kind='resume'",
-                )
-            await executor.resume(execution_id, decision)
-        else:
-            await executor.run(execution_id)
+        with bind_context(execution_id=execution_id, attempt_id=claimed.attempt_id):
+            if kind == "resume":
+                # P1-2 (Task 13): the decision travels via the claimed row's
+                # `variables._resume_decision`, stamped by the enqueueing call
+                # site BEFORE the Cloud Task fired (see ClaimAndRunRequest's
+                # docstring) — not via any request-body field.
+                decision = cast("dict[str, Any]", claimed.variables or {}).get("_resume_decision")
+                if not decision:
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail="decision is required when kind='resume'",
+                    )
+                await executor.resume(execution_id, decision, attempt_id=claimed.attempt_id)
+            else:
+                await executor.run(execution_id, attempt_id=claimed.attempt_id)
     except HTTPException:
         raise
     except Exception as exc:
