@@ -539,6 +539,7 @@ Sweeper rules: candidates in one short session; each row's guarded write in its 
 - `POST /api/run/{slug}` leaves a row `queued` when the enqueue raises; mark it failed as `POST /executions` does.
 - `list_executions` has no tiebreak; add `id DESC` (UUIDv7 ids are time-ordered).
 - `sweep_expired_approvals` loads every `waiting_approval` row and filters in Python; filter `variables->>'_pending_approval_since' < :cutoff` in SQL.
+- Claim timeout window: if `asyncio.timeout(10)` fires after the server commits the claim but before the reply is read, the row stays leased, the handler answers 500, the Cloud Tasks redelivery gets `already_claimed`, and the row fails at lease expiry (`lease_expired`). No duplicate execution; same window as the old Prisma `tx(timeout=10000)`.
 - **Phase 5 LISTEN/NOTIFY design note:** LISTEN on a dedicated, non-pooled `psycopg.AsyncConnection.connect(url, autocommit=True, prepare_threshold=None)` per WebSocket, `LISTEN composer_execution_events`, then `async for n in conn.notifies(timeout=15.0)` in place of the asyncpg listener; it must use a direct (non-pooler) Neon host, since LISTEN does not work through a transaction-mode pooler. Send NOTIFY with `SELECT pg_notify(…)` inside the append transaction (delivered only on commit, so ordering holds by construction) and drop `events_notify.py`'s asyncpg connection.
 
 

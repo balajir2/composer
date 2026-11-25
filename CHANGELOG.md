@@ -26,7 +26,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **Malformed decision claim is invalid (4b, DB6):** a signed token whose `decision` is neither approve nor reject used to 500 after the claim; it is now "invalid" before any write.
 - **503 without a database (4b):** resume, the emailed-link preview and confirm answer 503 `database unavailable` when the app has no sessionmaker (database-less test apps only).
 - **Kept as-is, listed as follow-ups (4b):** the approval token stays in the frontend query string (DB3); an enqueue failure after a resume is left to the orphan sweeper (DB4); resume's response carries the pre-transition row (DB5).
-- **Follow-ups:** rate-limit bucket row locks hold a pool connection while waiting, so add `SET LOCAL lock_timeout` to the limiter transaction if pool waits ever show up (see the plan's Outcome for the measurements); pool size stays at the defaults (`db_pool_size=2`, `db_max_overflow=3`) and is revisited in 4b or phase 6.
+- **Rate-limit lock wait is bounded:** the limiter transaction starts with `SET LOCAL lock_timeout = '2s'`; a timeout on a bucket's row lock is a deny (retry after 1 s), never a 500, and consumes no token.
+- **Pool sized for phase 4 traffic:** `db_pool_size` and `db_max_overflow` default to 5 and 5 (were 2 and 3), since SQLAlchemy now carries all execution traffic behind Neon's `-pooler` host (3 instances x 10 = 30 connections).
+- **Follow-ups:** pool raised to 5+5 in this PR; revisit after the production soak with real checkout-wait numbers.
 
 ### Changed — Dependabot version updates run monthly (2026-11-25)
 

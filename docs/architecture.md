@@ -256,7 +256,7 @@ WebSocket client
 
 ### Rate limiting
 
-`src/security/rate_limit_pg.py` implements the same token-bucket algorithm as the original in-memory `RateLimiter`, but state lives in the `rate_limit_buckets` table (atomic conditional `UPDATE`, the same pattern used elsewhere for conditional status transitions) instead of a process-local dict. The in-memory version was only ever correct for a single instance; with `--max-instances=3`, multi-instance concurrency is a real, not theoretical, case.
+`src/security/rate_limit_pg.py` implements the same token-bucket algorithm as the original in-memory `RateLimiter`, but state lives in the `rate_limit_buckets` table (`SELECT ... FOR UPDATE` in a short transaction that starts with a 2 s `lock_timeout`; a lock timeout is a deny, never a 500, and consumes no token) instead of a process-local dict. The in-memory version was only ever correct for a single instance; with `--max-instances=3`, multi-instance concurrency is a real, not theoretical, case.
 
 **Full design record:** ADR-0033 in [`decisions.md`](decisions.md); implementation plan: [`docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md`](superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md).
 
