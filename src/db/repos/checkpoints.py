@@ -221,27 +221,45 @@ class UnsyncedRun:
 # Newest checkpoint id per (thread, namespace) in each table set. Ids are time-ordered UUIDv6
 # strings, so the newest is the lexically largest; COLLATE "C" keeps the order independent of the
 # database collation (which can ignore dashes).
-_UNSYNCED_FROM = """
+_NEW_NEWEST = """
+        SELECT thread_id, checkpoint_ns, max(checkpoint_id COLLATE "C") AS cid
+        FROM checkpoints GROUP BY thread_id, checkpoint_ns
+"""
+# Before Alembic 0004 the official tables do not exist (the deploy guard runs before the
+# migration): the official side is then empty, so every old-table checkpoint is "ahead".
+_NEW_NEWEST_ABSENT = """
+        SELECT NULL::text AS thread_id, NULL::text AS checkpoint_ns, NULL::text AS cid
+        WHERE false
+"""
+
+
+def _unsynced_from(saver_tables_exist: bool) -> str:
+    return f"""
     FROM (
         SELECT thread_id, checkpoint_ns, max(checkpoint_id COLLATE "C") AS cid
         FROM langgraph_checkpoints GROUP BY thread_id, checkpoint_ns
     ) old
-    LEFT JOIN (
-        SELECT thread_id, checkpoint_ns, max(checkpoint_id COLLATE "C") AS cid
-        FROM checkpoints GROUP BY thread_id, checkpoint_ns
-    ) nw
+    LEFT JOIN ({_NEW_NEWEST if saver_tables_exist else _NEW_NEWEST_ABSENT}) nw
       ON nw.thread_id = old.thread_id AND nw.checkpoint_ns = old.checkpoint_ns
 """
+
+
+async def _unsynced_from_for(session: AsyncSession) -> str:
+    exists = (await session.execute(text("SELECT to_regclass('checkpoints') IS NOT NULL"))).scalar()
+    return _unsynced_from(bool(exists))
+
+
 _OLD_AHEAD = "(nw.cid IS NULL OR nw.cid < old.cid)"
 
 
 async def unsynced_active_runs(session: AsyncSession) -> list[UnsyncedRun]:
     """Active executions with a namespace whose newest old-table checkpoint is missing from, or
     newer than, the official tables. Ordered by execution id."""
+    from_ = await _unsynced_from_for(session)
     rows = await session.execute(
         text(
             "SELECT DISTINCT e.id, e.status, e.thread_id "
-            + _UNSYNCED_FROM
+            + from_
             + " JOIN workflow_executions e ON e.thread_id = old.thread_id"
             + f" WHERE e.status = ANY(:active) AND {_OLD_AHEAD} ORDER BY e.id"
         ),
@@ -253,10 +271,11 @@ async def unsynced_active_runs(session: AsyncSession) -> list[UnsyncedRun]:
 async def legacy_ahead_namespaces(session: AsyncSession, thread_id: str) -> list[str]:
     """Namespaces of the thread whose newest checkpoint is newer in (or only present in) the old
     tables. Same comparison as the deploy guard: newest ids, ``COLLATE "C"``."""
+    from_ = await _unsynced_from_for(session)
     rows = await session.execute(
         text(
             "SELECT old.checkpoint_ns "
-            + _UNSYNCED_FROM
+            + from_
             + f" WHERE old.thread_id = :t AND {_OLD_AHEAD} ORDER BY old.checkpoint_ns"
         ),
         {"t": thread_id},
@@ -266,8 +285,9 @@ async def legacy_ahead_namespaces(session: AsyncSession, thread_id: str) -> list
 
 async def legacy_ahead(session: AsyncSession, thread_id: str) -> bool:
     """True when any namespace of the thread is newer (or only present) in the old tables."""
+    from_ = await _unsynced_from_for(session)
     row = await session.execute(
-        text("SELECT 1 " + _UNSYNCED_FROM + f" WHERE old.thread_id = :t AND {_OLD_AHEAD} LIMIT 1"),
+        text("SELECT 1 " + from_ + f" WHERE old.thread_id = :t AND {_OLD_AHEAD} LIMIT 1"),
         {"t": thread_id},
     )
     return row.first() is not None

@@ -1,7 +1,11 @@
 """Deploy guard: which active runs have a newest checkpoint only in the old tables."""
 
+import os
 import secrets
+import subprocess
+import sys
 from collections.abc import AsyncIterator, Awaitable, Callable
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -173,3 +177,56 @@ async def test_run_only_in_new_tables_not_listed(
     eid, thread = await make_run("waiting_approval")
     await compile_graph(approval_graph, postgres).ainvoke(initial_state("x"), config=lg(thread))
     assert await listed(sessionmaker_, [eid]) == {}
+
+
+def _alembic_cli(*args: str) -> None:
+    done = subprocess.run(
+        [sys.executable, "-m", "alembic", *args],
+        cwd=Path(__file__).resolve().parents[4],
+        env={**os.environ, "DATABASE_URL": os.environ["TEST_DATABASE_URL"]},
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    assert done.returncode == 0, done.stdout + done.stderr
+
+
+def _downgrade_to_0003() -> None:
+    _alembic_cli("downgrade", "0003_assignment_user_fks")
+
+
+def _upgrade_head() -> None:
+    _alembic_cli("upgrade", "head")
+
+
+async def test_guard_works_on_a_pre_0004_database_without_saver_tables(
+    legacy: LegacyCheckpointSaver,
+    sessionmaker_: async_sessionmaker[AsyncSession],
+    make_run: MakeRun,
+) -> None:
+    """The deploy guard runs before `alembic upgrade head`: the saver tables may not exist."""
+    eid, thread = await make_run("waiting_approval")
+    await compile_graph(approval_graph, legacy).ainvoke(initial_state("x"), config=lg(thread))
+    # A second active run with no checkpoints at all must never be listed.
+    other, _ = await make_run("running")
+    try:
+        _downgrade_to_0003()
+        assert await listed(sessionmaker_, [eid, other]) == {eid: "waiting_approval"}
+        assert await legacy_ahead(sessionmaker_, thread)
+        async with sessionmaker_() as s:
+            assert await checkpoints_repo.legacy_ahead_namespaces(s, thread) == [""]
+    finally:
+        _upgrade_head()
+    assert await listed(sessionmaker_, [eid, other]) == {eid: "waiting_approval"}
+
+
+async def test_guard_is_ok_on_a_pre_0004_database_with_no_old_checkpoints(
+    sessionmaker_: async_sessionmaker[AsyncSession],
+    make_run: MakeRun,
+) -> None:
+    eid, _ = await make_run("running")
+    try:
+        _downgrade_to_0003()
+        assert await listed(sessionmaker_, [eid]) == {}
+    finally:
+        _upgrade_head()

@@ -17,7 +17,7 @@ def test_production_deploys_are_serialised_and_never_cancelled() -> None:
     assert concurrency["cancel-in-progress"] == "false"
 
 
-def test_checkpoint_guard_runs_after_alembic_and_before_deploy_without_override() -> None:
+def test_checkpoint_guard_runs_before_alembic_and_before_deploy_without_override() -> None:
     doc = yaml.load(WORKFLOW.read_text(encoding="utf-8"), Loader=yaml.BaseLoader)
     steps = doc["jobs"]["backend"]["steps"] if "backend" in doc["jobs"] else None
     if steps is None:
@@ -31,9 +31,9 @@ def test_checkpoint_guard_runs_after_alembic_and_before_deploy_without_override(
     lines = [ln.strip() for ln in migrate["run"].splitlines() if not ln.strip().startswith("#")]
 
     assert "uv run composer checkpoints guard" in lines
-    assert lines.index("uv run composer checkpoints guard") > lines.index(
-        "uv run alembic upgrade head"
-    )
+    guard = lines.index("uv run composer checkpoints guard")
+    assert guard > lines.index("uv run prisma migrate deploy")
+    assert guard < lines.index("uv run alembic upgrade head")
     assert names.index("Apply database migrations") < names.index("Deploy to Cloud Run")
     # Fail closed: no override, no tolerated failure, no `|| true`.
     assert "continue-on-error" not in migrate
