@@ -1113,6 +1113,8 @@ Without a listener (unit tests), the loop still delivers through the 15 s poll. 
 
 ---
 
+**Review gate (Task 8):** the listener's `aclose()` must close its psycopg connection directly, not just cancel the idle timer and rely on `idle_close_seconds`: the oracle's `test_no_listen_connection_is_open_while_no_socket_is_watching` assumes an app's lifespan exit closes its LISTEN connection within a few seconds.
+
 ### Task 9: Lock, docs, live checks, PR
 
 - [ ] **Step 1: Done-criterion greps** (from "Every remaining … use"); all print nothing, and `src/storage` does not exist.

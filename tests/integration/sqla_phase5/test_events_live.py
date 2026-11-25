@@ -155,17 +155,20 @@ def ws_env(phase4a_env: None) -> Iterator[LiveEnv]:
             env.cleanup()
 
 
-_READERS: dict[int, "queue.Queue[Any]"] = {}
+_QUEUE_ATTR = "_p5_reader_queue"
 
 
 def _reader(sock: Any) -> "queue.Queue[Any]":
     """One persistent reader thread per socket feeding a queue, so a receive that times out never
-    swallows the NEXT message (a blocked ``receive_text`` keeps its place in the queue)."""
-    existing = _READERS.get(id(sock))
+    swallows the NEXT message (a blocked ``receive_text`` keeps its place in the queue).
+
+    The queue lives on the socket object itself, not in a dict keyed by ``id(sock)``: CPython
+    reuses a freed object's id, so a later socket could otherwise pick up a dead reader's queue."""
+    existing: queue.Queue[Any] | None = sock.__dict__.get(_QUEUE_ATTR)
     if existing is not None:
         return existing
     q: queue.Queue[Any] = queue.Queue()
-    _READERS[id(sock)] = q
+    sock.__dict__[_QUEUE_ATTR] = q
 
     def _pump() -> None:
         while True:
@@ -354,6 +357,8 @@ def test_nothing_is_delivered_without_a_notify_and_one_notify_delivers_at_once(
         warm = ws_env.append(eid, "node_started", {"node_id": "warm"})
         with _Renotifier(ws_env, eid, warm):  # the listener is certainly registered afterwards
             assert _recv(sock)["seq"] == warm
+        # Let late wake-ups from the warm-up's repeated NOTIFYs drain (matters over Neon latency).
+        time.sleep(0.5)
         quiet = ws_env.append(eid, "node_started", {"node_id": "quiet"})
         _assert_silent(sock, 1.5)  # persisted, but no wake-up: only the 15 s poll would find it
         started = time.monotonic()
