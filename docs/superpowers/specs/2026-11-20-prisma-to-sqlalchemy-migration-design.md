@@ -93,7 +93,7 @@ The first Alembic revision is empty and is *stamped* on existing databases (prod
 | 1 | **Settings and admin (done, PR #27):** deployment settings, LLM models and keys, API keys, users | Low | 2 days |
 | 2 | **Integrations (done, PR #29):** MCP servers, MCP OAuth tokens and state, cloud-storage connections | Medium | 2 days |
 | 3 | **Workflows (done, PR #33):** CRUD, assignments, builder saves | Medium | 2 days |
-| 4 | **Executions core (4a done, PR pending; 4b next):** create, list, delete, resume, approvals, events, rate limiter, claim and sweep, all 15 guarded status updates | High | 3–4 days |
+| 4 | **Executions core (done: 4a and 4b in one PR, pending; phase 5 next):** create, list, delete, resume, approvals, events, rate limiter, claim and sweep, all 15 guarded status updates | High | 3–4 days |
 | 5 | **Checkpointer and notifications:** official saver, paused-run deploy guard, two-way copy tool, LISTEN/NOTIFY on psycopg | High | 2 days |
 | 6 | **Removal:** Prisma client and schema; Node.js and asyncpg out of the image; remaining Prisma-shaped mocks; squashed Alembic base | Low | 1 day |
 | 7 | **Cleanup (about two weeks after phase 5 is stable):** Alembic revision that drops `langgraph_checkpoints`, `langgraph_checkpoint_writes` and `_prisma_migrations` | Low | ½ day |
