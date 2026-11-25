@@ -56,3 +56,12 @@ def test_only_prisma_params_gives_no_trailing_question_mark() -> None:
 def test_space_in_value_stays_percent_20() -> None:
     url = to_sqlalchemy_url("postgresql://u:p@h/db?options=-c%20search_path%3Dx")
     assert url == "postgresql+psycopg://u:p@h/db?options=-c%20search_path%3Dx"
+
+
+def test_libpq_url_strips_prisma_params_and_uses_plain_scheme() -> None:
+    from src.db.url import to_libpq_url
+
+    url = to_libpq_url(
+        "postgres://u:p@h/db?schema=public&sslmode=require&pgbouncer=true&connection_limit=5"
+    )
+    assert url == "postgresql://u:p@h/db?sslmode=require"

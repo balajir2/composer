@@ -32,3 +32,8 @@ async def session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
         finally:
             await db_session.close()
             await transaction.rollback()
+
+
+@pytest.fixture
+def test_database_url() -> str:
+    return os.environ["TEST_DATABASE_URL"]

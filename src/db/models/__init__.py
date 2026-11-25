@@ -1,7 +1,14 @@
 """Every model, imported so ``Base.metadata`` describes the whole schema."""
 
 from src.db.models.base import Base
-from src.db.models.checkpoints import LangGraphCheckpoint, LangGraphCheckpointWrite
+from src.db.models.checkpoints import (
+    LangGraphCheckpoint,
+    LangGraphCheckpointWrite,
+    SaverCheckpoint,
+    SaverCheckpointBlob,
+    SaverCheckpointMigration,
+    SaverCheckpointWrite,
+)
 from src.db.models.cloud_storage import CloudStorageConnection
 from src.db.models.deployment import DeploymentSetting
 from src.db.models.enums import ApprovalDecision, UserRole
@@ -28,6 +35,10 @@ __all__ = [
     "McpOAuthToken",
     "McpServer",
     "RateLimitBucket",
+    "SaverCheckpoint",
+    "SaverCheckpointBlob",
+    "SaverCheckpointMigration",
+    "SaverCheckpointWrite",
     "User",
     "UserRole",
     "Workflow",

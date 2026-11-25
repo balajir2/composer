@@ -44,3 +44,8 @@ def to_sqlalchemy_url(database_url: str) -> str:
             parts.fragment,
         )
     )
+
+
+def to_libpq_url(database_url: str) -> str:
+    """``database_url`` as a plain libpq URL (``postgresql://``) without Prisma-only parameters."""
+    return to_sqlalchemy_url(database_url).replace("postgresql+psycopg://", "postgresql://", 1)

@@ -5,6 +5,11 @@ from src.db.models import Base
 EXPECTED_TABLES = {
     "api_keys",
     "approvals",
+    # Added by alembic 0004 (the official saver's tables; not in Prisma's frozen schema).
+    "checkpoint_blobs",
+    "checkpoint_migrations",
+    "checkpoint_writes",
+    "checkpoints",
     "cloud_storage_connections",
     "deployment_settings",
     "execution_events",
