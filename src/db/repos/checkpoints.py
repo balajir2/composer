@@ -3,11 +3,11 @@
 from dataclasses import dataclass
 
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.models import LangGraphCheckpoint, LangGraphCheckpointWrite
+from src.db.models import LangGraphCheckpoint, LangGraphCheckpointWrite, WorkflowExecution
 from src.db.repos._sql import in_array
 
 
@@ -172,3 +172,22 @@ async def legacy_namespaces(session: AsyncSession, thread_id: str) -> list[str]:
         .order_by(LangGraphCheckpoint.checkpoint_ns)
     )
     return list((await session.execute(stmt)).scalars())
+
+
+async def saver_namespaces(session: AsyncSession, thread_id: str) -> list[str]:
+    """Namespaces the official saver's ``checkpoints`` table holds for a thread."""
+    rows = await session.execute(
+        text("SELECT DISTINCT checkpoint_ns FROM checkpoints WHERE thread_id = :t ORDER BY 1"),
+        {"t": thread_id},
+    )
+    return [str(r[0]) for r in rows]
+
+
+async def waiting_threads(session: AsyncSession) -> list[tuple[str, str]]:
+    """``(execution_id, thread_id)`` of every ``waiting_approval`` execution."""
+    rows = await session.execute(
+        select(WorkflowExecution.id, WorkflowExecution.thread_id)
+        .where(WorkflowExecution.status == "waiting_approval")
+        .order_by(WorkflowExecution.id)
+    )
+    return [(str(r[0]), str(r[1])) for r in rows]

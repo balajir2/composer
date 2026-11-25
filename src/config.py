@@ -72,6 +72,23 @@ class Settings(BaseSettings):
         ge=1,
         description="Persistent SQLAlchemy connections per process.",
     )
+    # Official LangGraph checkpointer pool (psycopg_pool), separate from the SQLAlchemy pool so a
+    # long-running graph cannot starve request handlers. Budget (D4): SQLAlchemy 5+5 plus this
+    # pool's max (default 5) = at most 15 connections per instance; 3 max instances = 45, under
+    # the Neon pooler limit.
+    checkpointer_pool_min_size: int = Field(
+        default=1, ge=0, description="Idle connections the checkpointer pool keeps (D4 budget)."
+    )
+    checkpointer_pool_max_size: int = Field(
+        default=5, ge=1, description="Max checkpointer pool connections per process (D4 budget)."
+    )
+    checkpointer_pool_timeout_seconds: float = Field(
+        default=10.0, gt=0, description="Seconds to wait for a checkpointer pool connection."
+    )
+    checkpointer_use_direct_endpoint: bool = Field(
+        default=False,
+        description="Connect the checkpointer to Neon's direct (non-pooler) endpoint (D4).",
+    )
     db_max_overflow: int = Field(
         default=5,
         ge=0,

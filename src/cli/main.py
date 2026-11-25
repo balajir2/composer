@@ -4,6 +4,7 @@ Subcommands (one per Phase 9 sub-phase):
 - migrate:   OAB->Composer data migration (Phase 9b)
 - reconcile: post-migration user-ownership reconciliation (Phase 9b)
 - keys:      LLM API key management + Vercel sync (Phase 9e)
+- checkpoints: copy paused runs between the old and official checkpoint savers
 - watch:     poll a folder and trigger a production workflow (2026-07-11)
 """
 
@@ -50,6 +51,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--prune", action="store_true", help="remove tracked env vars not in Postgres"
     )
 
+    # checkpoints
+    p_cp = sub.add_parser("checkpoints", help="Checkpoint tools (phase 5)")
+    cp_sub = p_cp.add_subparsers(dest="checkpoints_cmd", required=True)
+    p_copy = cp_sub.add_parser("copy", help="copy paused runs between the two checkpoint savers")
+    p_copy.add_argument("--to", required=True, choices=["postgres", "legacy"])
+    group = p_copy.add_mutually_exclusive_group(required=True)
+    group.add_argument("--execution", action="append", default=[], help="execution id (repeatable)")
+    group.add_argument("--all-waiting", action="store_true", help="every waiting_approval run")
+    p_copy.add_argument("--force", action="store_true", help="copy runs in any status")
+
     # watch
     p_watch = sub.add_parser("watch", help="Poll a folder and trigger a production workflow")
     p_watch.add_argument(
@@ -93,6 +104,13 @@ def main(argv: list[str] | None = None) -> NoReturn:
             sys.exit(asyncio.run(keys_mod.keys_delete(args.provider)))
         if args.keys_cmd == "sync":
             sys.exit(asyncio.run(keys_mod.keys_sync(args.target, args.prune)))
+
+    if args.subcommand == "checkpoints":
+        from src.cli.checkpoints import checkpoints_copy
+
+        sys.exit(
+            asyncio.run(checkpoints_copy(args.to, args.execution, args.all_waiting, args.force))
+        )
 
     if args.subcommand == "watch":
         from src.cli.watch import WatchConfig, run_watch_loop
