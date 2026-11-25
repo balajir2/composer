@@ -258,3 +258,33 @@ async def test_a_stranger_with_a_stale_precondition_is_refused_without_a_conflic
         client, monkeypatch, second_member, created["id"], nodes, edges, expected=seen
     )
     assert built.status_code == 404 and "currentUpdatedAt" not in built.text
+
+
+async def test_a_builder_message_accepts_the_updated_at_a_designer_save_just_returned(
+    client: AsyncClient,
+    monkeypatch: pytest.MonkeyPatch,
+    member: Member,
+    wf_api: WorkflowApi,
+) -> None:
+    """The Designer's autosave chain (PUT -> PUT) followed by a builder send, with no backdating.
+
+    Autosave answers each PUT with the stamp the next request must send, and the builder
+    panel sends the last such stamp. Neither the PUT response nor a plain GET may disagree
+    with what the builder's pre-check reads.
+    """
+    created = await wf_api.create(member)
+    nodes, edges = chain(node("t", "transform"))
+    stamp = created["updatedAt"]
+    for name in ("one", "two", "three"):
+        r = await wf_api.put(
+            member, created["id"], edit(created, name=name, expectedUpdatedAt=stamp)
+        )
+        assert r.status_code == 200, r.text
+        stamp = jbody(r)["updatedAt"]
+        got = jbody(await wf_api.get(member, created["id"]))
+        assert got["updatedAt"] == stamp
+
+    built = await builder_post(
+        client, monkeypatch, member, created["id"], nodes, edges, expected=stamp
+    )
+    assert built.status_code == 200, built.text
