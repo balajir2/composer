@@ -14,7 +14,21 @@ import argparse
 import asyncio
 import contextlib
 import sys
-from typing import NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
+_T = TypeVar("_T")
+
+
+def _run(coro: Coroutine[Any, Any, _T]) -> _T:
+    """Run a command coroutine. psycopg async cannot use Windows' Proactor loop, so on win32 use a
+    selector loop (same pattern as the Alembic env)."""
+    if sys.platform == "win32":
+        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+            return runner.run(coro)
+    return asyncio.run(coro)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -85,32 +99,30 @@ def main(argv: list[str] | None = None) -> NoReturn:
     if args.subcommand == "migrate":
         from src.migration.runner import run_migration
 
-        exit_code = asyncio.run(run_migration(export_dir=args.export_dir, dry_run=args.dry_run))
+        exit_code = _run(run_migration(export_dir=args.export_dir, dry_run=args.dry_run))
         sys.exit(exit_code)
     if args.subcommand == "reconcile":
         from src.migration.reconcile import run_reconcile
 
-        exit_code = asyncio.run(run_reconcile(email=args.email))
+        exit_code = _run(run_reconcile(email=args.email))
         sys.exit(exit_code)
 
     if args.subcommand == "keys":
         from src.cli import keys as keys_mod
 
         if args.keys_cmd == "list":
-            sys.exit(asyncio.run(keys_mod.keys_list()))
+            sys.exit(_run(keys_mod.keys_list()))
         if args.keys_cmd == "set":
-            sys.exit(asyncio.run(keys_mod.keys_set(args.provider, args.value)))
+            sys.exit(_run(keys_mod.keys_set(args.provider, args.value)))
         if args.keys_cmd == "delete":
-            sys.exit(asyncio.run(keys_mod.keys_delete(args.provider)))
+            sys.exit(_run(keys_mod.keys_delete(args.provider)))
         if args.keys_cmd == "sync":
-            sys.exit(asyncio.run(keys_mod.keys_sync(args.target, args.prune)))
+            sys.exit(_run(keys_mod.keys_sync(args.target, args.prune)))
 
     if args.subcommand == "checkpoints":
         from src.cli.checkpoints import checkpoints_copy
 
-        sys.exit(
-            asyncio.run(checkpoints_copy(args.to, args.execution, args.all_waiting, args.force))
-        )
+        sys.exit(_run(checkpoints_copy(args.to, args.execution, args.all_waiting, args.force)))
 
     if args.subcommand == "watch":
         from src.cli.watch import WatchConfig, run_watch_loop
@@ -127,7 +139,7 @@ def main(argv: list[str] | None = None) -> NoReturn:
             poll_interval_seconds=args.interval,
         )
         with contextlib.suppress(KeyboardInterrupt):
-            asyncio.run(run_watch_loop(config))
+            _run(run_watch_loop(config))
         sys.exit(0)
 
     parser.error(f"unknown subcommand: {args.subcommand}")

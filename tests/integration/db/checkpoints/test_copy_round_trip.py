@@ -266,6 +266,7 @@ async def test_naive_copy_without_conversion_breaks_resume(
         )
 
 
+@pytest.mark.parametrize("completed", [False, True])
 @pytest.mark.parametrize("graph_fn", [approval_graph, fan_out_graph, two_approval_graph])
 @pytest.mark.parametrize("direction", ["postgres", "legacy"])
 async def test_history_shape_survives_copy(
@@ -274,14 +275,84 @@ async def test_history_shape_survives_copy(
     new_thread: Callable[[], str],
     graph_fn: GraphFn,
     direction: Target,
+    completed: bool,
 ) -> None:
+    """Includes COMPLETED runs: their tasks carry special and ordinary writes together."""
     t = new_thread()
     src, dst = (legacy, postgres) if direction == "postgres" else (postgres, legacy)
-    await compile_graph(graph_fn, src).ainvoke(initial_state("x"), config=lg(t))
+    graph = compile_graph(graph_fn, src)
+    await graph.ainvoke(initial_state("x"), config=lg(t))
+    if completed:
+        while (await graph.aget_state(lg(t))).next:
+            await graph.ainvoke(Command(resume="approved"), config=lg(t))
     await copy_thread(src, dst, t, to=direction, namespaces=[""])
     got, want = shape(await history(dst, t)), shape(await history(src, t))
     assert got == want
     assert len(want) > 1
+
+
+@pytest.mark.parametrize("failing", ["aput_writes", "aput"])
+async def test_crash_mid_copy_leaves_target_visibly_behind(
+    legacy: LegacyCheckpointSaver,
+    postgres: AsyncPostgresSaver,
+    new_thread: Callable[[], str],
+    ran: list[str],
+    monkeypatch: pytest.MonkeyPatch,
+    failing: str,
+) -> None:
+    """A copy that dies on the newest checkpoint must not look caught up (newest ids are what the
+    guard and copy-on-resume compare), and a re-copy must then finish the job."""
+    t = new_thread()
+    await compile_graph(fan_out_graph, legacy).ainvoke(initial_state("x"), config=lg(t))
+    ran_before = list(ran)
+    src_newest = (await history(legacy, t))[0].config.get("configurable", {})["checkpoint_id"]
+
+    original = getattr(postgres, failing)
+
+    async def boom(config: Any, *args: Any, **kwargs: Any) -> Any:
+        cid = (
+            config["configurable"].get("checkpoint_id")
+            if failing == "aput_writes"
+            else args[0]["id"]
+        )
+        if cid == src_newest:
+            raise RuntimeError("simulated crash")
+        return await original(config, *args, **kwargs)
+
+    with monkeypatch.context() as m:
+        m.setattr(postgres, failing, boom)
+        with pytest.raises(RuntimeError):
+            await copy_thread(legacy, postgres, t, to="postgres", namespaces=[""])
+    target = await history(postgres, t)
+    assert not target or target[0].config.get("configurable", {})["checkpoint_id"] != src_newest
+
+    await copy_thread(legacy, postgres, t, to="postgres", namespaces=[""])
+    resumed = compile_graph(fan_out_graph, postgres)
+    final = await resumed.ainvoke(Command(resume="approved"), config=lg(t))
+    assert final["variables"]["side"] == "done"
+    assert "side" not in ran[len(ran_before) :]
+
+
+async def test_postgres_to_legacy_leaves_official_tables_untouched(
+    legacy: LegacyCheckpointSaver,
+    postgres: AsyncPostgresSaver,
+    sessionmaker_: async_sessionmaker[AsyncSession],
+    new_thread: Callable[[], str],
+) -> None:
+    t = new_thread()
+    await compile_graph(fan_out_graph, postgres).ainvoke(initial_state("x"), config=lg(t))
+
+    async def snapshot() -> list[Any]:
+        async with sessionmaker_() as s:
+            out: list[Any] = []
+            for table in NEW_TABLES:
+                res = await s.execute(text(f"SELECT * FROM {table} WHERE thread_id = :t"), {"t": t})
+                out.append(sorted(repr(tuple(r)) for r in res))
+            return out
+
+    before = await snapshot()
+    await copy_thread(postgres, legacy, t, to="legacy", namespaces=[""])
+    assert await snapshot() == before
 
 
 async def test_one_shot_saver_reads_what_the_pool_saver_wrote(

@@ -61,6 +61,10 @@ def copies(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
         done.append((thread_id, to))
         return CopyReport(thread_id, 2, 3)
 
+    async def no_ids(_s: Any, _t: str, ns: list[str]) -> dict[str, str | None]:
+        return dict.fromkeys(ns)
+
+    monkeypatch.setattr(cli, "_newest_ids", no_ids)
     monkeypatch.setattr(cli, "_sessionmaker", sm)
     monkeypatch.setattr(cli, "open_one_shot_saver", saver)
     monkeypatch.setattr(cli, "copy_thread", fake_copy)
@@ -100,3 +104,53 @@ async def test_failure_prints_class_not_message(
     out = capsys.readouterr().out
     assert "RuntimeError" in out and "secret" not in out
     assert copies == [("t-wait", "postgres")]
+
+
+async def test_pre_loop_failure_prints_class_only(
+    copies: list[tuple[str, str]],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def get(_s: Any, _eid: str) -> Any:
+        raise ConnectionError("host=db.internal user=secret")
+
+    monkeypatch.setattr(executions_repo, "get", get)
+    assert await cli.checkpoints_copy("postgres", ["e-wait"], False, False) == 1
+    out = capsys.readouterr().out
+    assert "ConnectionError" in out and "secret" not in out
+
+
+async def test_zero_checkpoints_fails_unless_forced(
+    copies: list[tuple[str, str]],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def empty(*_a: Any, **_k: Any) -> CopyReport:
+        return CopyReport("t", 0, 0)
+
+    monkeypatch.setattr(cli, "copy_thread", empty)
+    assert await cli.checkpoints_copy("postgres", ["e-wait"], False, False) == 1
+    assert "0 checkpoints" in capsys.readouterr().out
+    assert await cli.checkpoints_copy("postgres", ["e-wait"], False, True) == 0
+
+
+async def test_refuses_when_target_is_ahead_unless_forced(
+    copies: list[tuple[str, str]],
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    official = object()
+
+    async def newest(saver: Any, _t: str, _ns: list[str]) -> dict[str, str | None]:
+        return {"": "9" if saver is official else "1"}
+
+    @asynccontextmanager
+    async def saver(_settings: Any) -> AsyncGenerator[object]:
+        yield official
+
+    monkeypatch.setattr(cli, "open_one_shot_saver", saver)
+    monkeypatch.setattr(cli, "_newest_ids", newest)
+    assert await cli.checkpoints_copy("legacy", ["e-wait"], False, False) == 0
+    assert await cli.checkpoints_copy("postgres", ["e-wait"], False, False) == 2
+    assert "ahead" in capsys.readouterr().out
+    assert await cli.checkpoints_copy("postgres", ["e-wait"], False, True) == 0
