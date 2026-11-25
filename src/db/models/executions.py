@@ -56,6 +56,14 @@ class WorkflowExecution(Base):
     lease_expires_at: Mapped[datetime | None] = mapped_column(UTCDateTime())
     running_since: Mapped[datetime | None] = mapped_column(UTCDateTime())
     failure_code: Mapped[str | None] = mapped_column(Text)
+    pending_attempt_approval_id: Mapped[str | None] = mapped_column(
+        Text,
+        ForeignKey(
+            "approvals.id",
+            name="workflow_executions_pending_attempt_approval_id_fkey",
+            ondelete="SET NULL",
+        ),
+    )
     delivery_attempts: Mapped[int] = mapped_column(
         Integer, nullable=False, default=0, server_default=text("0")
     )
