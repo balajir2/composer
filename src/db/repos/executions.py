@@ -389,6 +389,28 @@ async def _worker_transition(
     failure_code: str | None,
     now: datetime,
 ) -> bool:
+    if attempt_id is None:
+        # Claims serialize on the execution row. Lock it first, then use a new
+        # READ COMMITTED statement so an attempt committed by a claim we waited
+        # for is visible before the legacy transition decides it has no owner.
+        parent_id = await session.scalar(
+            select(WorkflowExecution.id)
+            .where(WorkflowExecution.id == execution_id)
+            .with_for_update()
+        )
+        if parent_id is None:
+            return False
+        open_attempt_id = await session.scalar(
+            select(ExecutionAttempt.id)
+            .where(
+                ExecutionAttempt.execution_id == execution_id,
+                ExecutionAttempt.ended_at.is_(None),
+            )
+            .limit(1)
+        )
+        if open_attempt_id is not None:
+            return False
+
     won = await _guarded(
         session,
         execution_id,

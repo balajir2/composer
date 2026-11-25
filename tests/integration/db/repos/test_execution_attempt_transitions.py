@@ -1,11 +1,13 @@
 """Worker outcomes are fenced to their own open attempt."""
 
+import asyncio
 from datetime import UTC, datetime, timedelta
 from typing import Any
+from uuid import uuid4
 
 import pytest
-from sqlalchemy import update
-from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy import delete, text, update
+from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, async_sessionmaker
 
 from src.db.models import AttemptResult, Workflow, WorkflowExecution
 from src.db.repos import execution_attempts as attempts_repo
@@ -185,3 +187,94 @@ async def test_legacy_running_row_without_open_attempt_can_transition(
     assert await _transition(session, execution_id, None, "completed")
     summary = await repo.get(session, execution_id)
     assert summary is not None and summary.status == "completed"
+
+
+async def test_legacy_outcome_waits_for_concurrent_claim_then_loses(
+    engine: AsyncEngine,
+) -> None:
+    """A None-ID outcome must see an attempt committed while it waits on the parent row."""
+    sm = async_sessionmaker(engine, expire_on_commit=False)
+    async with sm() as setup:
+        workflow = Workflow(name="legacy transition race", nodes=[], edges=[])
+        setup.add(workflow)
+        await setup.flush()
+        execution = WorkflowExecution(
+            workflow_id=workflow.id,
+            status="running",
+            node_results={},
+            variables={},
+            thread_id=f"legacy-transition-{uuid4()}",
+            delivery_attempts=0,
+        )
+        setup.add(execution)
+        await setup.commit()
+        workflow_id, execution_id = workflow.id, execution.id
+
+    outcome_pid: int | None = None
+    outcome_task: asyncio.Task[bool] | None = None
+    outcome_started = asyncio.Event()
+    try:
+        async with sm() as claim_session:
+            claimed = await repo.claim(
+                claim_session,
+                execution_id,
+                kind="resume",
+                worker_id="claimant",
+                now=NOW,
+                lease_expires_at=NOW + timedelta(minutes=5),
+            )
+            assert claimed is not None
+
+            async def legacy_outcome() -> bool:
+                nonlocal outcome_pid
+                async with sm() as legacy_session:
+                    outcome_pid = await legacy_session.scalar(text("SELECT pg_backend_pid()"))
+                    outcome_started.set()
+                    won = await repo.mark_completed_if_running(
+                        legacy_session,
+                        execution_id,
+                        attempt_id=None,
+                        output={"legacy": True},
+                        variables={},
+                        node_results={},
+                        now=END,
+                    )
+                    await legacy_session.commit()
+                    return won
+
+            outcome_task = asyncio.create_task(legacy_outcome())
+            await outcome_started.wait()
+
+            async def outcome_is_waiting_on_lock() -> bool:
+                async with sm() as observer:
+                    return bool(
+                        await observer.scalar(
+                            text(
+                                "SELECT wait_event_type = 'Lock' "
+                                "FROM pg_stat_activity WHERE pid = :pid"
+                            ),
+                            {"pid": outcome_pid},
+                        )
+                    )
+
+            async with asyncio.timeout(5):
+                while not await outcome_is_waiting_on_lock():
+                    await asyncio.sleep(0.01)
+
+            await claim_session.commit()
+            assert not await outcome_task
+
+        async with sm() as verify:
+            summary = await repo.get(verify, execution_id)
+            attempt = await attempts_repo.get(verify, claimed.attempt_id)
+            assert summary is not None
+            assert summary.status == "running" and summary.lease_owner == "claimant"
+            assert attempt is not None and attempt.result == AttemptResult.RUNNING
+            assert attempt.ended_at is None
+    finally:
+        if outcome_task is not None and not outcome_task.done():
+            outcome_task.cancel()
+            await asyncio.gather(outcome_task, return_exceptions=True)
+        async with sm() as cleanup:
+            await cleanup.execute(delete(Workflow).where(Workflow.id == workflow_id))
+            await cleanup.commit()
