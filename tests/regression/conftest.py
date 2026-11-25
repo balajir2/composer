@@ -4,10 +4,13 @@ Shared fixtures (`client`, `app`, `_require_test_database_url`) are defined
 in the top-level `tests/conftest.py` and automatically available here.
 """
 
+from collections.abc import AsyncIterator
+
 import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 
+from tests._checkpoint_reset import checkpoint_thread_ids, delete_checkpoint_threads_except
 from tests._rate_limit_reset import reset_rate_limit_buckets
 
 
@@ -15,6 +18,15 @@ from tests._rate_limit_reset import reset_rate_limit_buckets
 async def _reset_rate_limit_buckets() -> None:  # pyright: ignore[reportUnusedFunction]
     """Clear rate_limit_buckets before each test. See tests/_rate_limit_reset.py."""
     await reset_rate_limit_buckets()
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def _clean_checkpoint_rows() -> AsyncIterator[None]:  # pyright: ignore[reportUnusedFunction]
+    """Delete the checkpoint rows (all five tables) that a test created. See _checkpoint_reset.py."""
+    before = await checkpoint_thread_ids()
+    yield
+    if before is not None:
+        await delete_checkpoint_threads_except(before)
 
 
 @pytest.fixture(autouse=True)
