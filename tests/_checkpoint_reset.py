@@ -25,33 +25,50 @@ _TABLES = (
     "langgraph_checkpoints",
 )
 
-_THREADS_SQL = " UNION ".join(f"SELECT thread_id FROM {t}" for t in _TABLES)
+_SAVER_TABLES = _TABLES[:3]
+_LEGACY_TABLES = _TABLES[3:]
 
 
-async def checkpoint_thread_ids() -> set[str] | None:
-    """Thread ids present in any checkpoint table, or None when there is no test database."""
+async def _threads_in(conn: asyncpg.Connection, tables: tuple[str, ...]) -> set[str] | None:
+    """Thread ids in the table set, or None when its tables do not exist (an Alembic test may
+    have downgraded them away)."""
+    if await conn.fetchval("SELECT to_regclass($1)", tables[0]) is None:
+        return None
+    sql = " UNION ".join(f"SELECT thread_id FROM {t}" for t in tables)
+    return {r["thread_id"] for r in await conn.fetch(sql)}
+
+
+async def checkpoint_thread_ids() -> dict[str, set[str] | None] | None:
+    """Per table set ("saver", "legacy"), the thread ids present before the test (None when that
+    set's tables are absent), or None overall when there is no test database."""
     if not os.environ.get("TEST_DATABASE_URL"):
         return None
     conn = await asyncpg.connect(os.environ["TEST_DATABASE_URL"])
     try:
-        if await conn.fetchval("SELECT to_regclass('checkpoints')") is None:
-            return set()  # a test (Alembic downgrade) may leave the saver tables absent
-        return {r["thread_id"] for r in await conn.fetch(_THREADS_SQL)}
+        return {
+            "saver": await _threads_in(conn, _SAVER_TABLES),
+            "legacy": await _threads_in(conn, _LEGACY_TABLES),
+        }
     finally:
         await conn.close()
 
 
-async def delete_checkpoint_threads_except(keep: set[str]) -> None:
-    """Delete every checkpoint row whose thread is not in ``keep``."""
+async def delete_checkpoint_threads_except(keep: dict[str, set[str] | None]) -> None:
+    """Delete every checkpoint row whose thread was not present in that table set at snapshot
+    time. A set that did not exist then is left alone, so its pre-existing rows are never swept."""
     if not os.environ.get("TEST_DATABASE_URL"):
         return
     conn = await asyncpg.connect(os.environ["TEST_DATABASE_URL"])
     try:
-        for table in _TABLES:
-            if await conn.fetchval("SELECT to_regclass($1)", table) is None:
+        for name, tables in (("saver", _SAVER_TABLES), ("legacy", _LEGACY_TABLES)):
+            kept = keep.get(name)
+            if kept is None:
                 continue
-            await conn.execute(
-                f"DELETE FROM {table} WHERE thread_id <> ALL($1::text[])", list(keep)
-            )
+            for table in tables:
+                if await conn.fetchval("SELECT to_regclass($1)", table) is None:
+                    continue
+                await conn.execute(
+                    f"DELETE FROM {table} WHERE thread_id <> ALL($1::text[])", list(kept)
+                )
     finally:
         await conn.close()

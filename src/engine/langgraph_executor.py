@@ -116,7 +116,7 @@ class LangGraphExecutor:
         `run()`/`resume()` call this AFTER state-mutating writes (e.g.
         `_mark_completed`, `_mark_waiting_approval`) have already committed
         the real outcome to Postgres. A network hiccup on the event-log
-        side (event insert or the asyncpg NOTIFY call) must not propagate
+        side (event insert or the NOTIFY call) must not propagate
         into the outer `try/except`, which would overwrite an already-
         correct "completed"/"waiting_approval" status with "failed" —
         corrupting the real execution outcome over a telemetry failure.

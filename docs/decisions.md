@@ -1036,3 +1036,19 @@ Timeouts fail with `execution_timeout`, expired leases with `lease_expired`, aba
 **Consequences.** Composer gains a maintained ORM, one database driver, and no Node.js in the backend. For about three weeks two ORMs share the tables, guarded by a schema-parity test, a Prisma-schema freeze and an import boundary. Python 3.15 is unblocked from the ORM side once Prisma is removed.
 
 **Related.** ADR-0001, ADR-0033, ADR-0034.
+
+## ADR-0036: Official LangGraph checkpointer — Alembic-owned tables, split connections, legacy bridge
+
+**Date.** 2026-11-25. **Status.** Accepted. Implements phase 5 of ADR-0035; supersedes ADR-0001.
+
+**Context.** Phase 5 replaces the custom Prisma checkpointer with `langgraph-checkpoint-postgres`. The official saver wants its own autocommit, pipelined psycopg connections and creates its own tables, while the rest of the app is SQLAlchemy on a pooled Neon endpoint, and production has runs paused on the old tables.
+
+**Decision.**
+- **D3, schema ownership.** The saver's four tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`) are Alembic revision 0004. `AsyncPostgresSaver.setup()` is never called. Startup refuses to run on ANY difference between the recorded saver schema version and the library's (older or newer), so a library upgrade needs a matching Alembic revision first.
+- **D4, connections.** The saver has its own `psycopg_pool` on the pooler endpoint (`prepare_threshold=None`), separate from the SQLAlchemy pool. LISTEN uses one lazy psycopg connection per process on the direct endpoint (Neon's pooler does not support LISTEN); NOTIFY goes through the normal pool.
+- **D7, deletion.** Deleting executions removes their checkpoint rows from all five tables (three official, two old) in the caller's one SQLAlchemy transaction, because the saver's `adelete_thread` runs on its own autocommit connection and cannot join it.
+- **D9, legacy bridge.** `LegacyCheckpointSaver` is a SQLAlchemy port of the old saver over the old tables, kept until phase 7 for `composer checkpoints copy`, the deploy guard and copy-on-resume. "Newest" and the `before` bound use `checkpoint_id` order (time-ordered UUIDv6, `COLLATE "C"`), not `created_at`, which can tie. Writes: the old saver upserts (last wins) while the official saver keeps the first ordinary write at a given `(task, idx)`; the copy tool accounts for this by ordering writes per target. The deploy guard runs before `alembic upgrade head` and treats missing saver tables as empty.
+
+**Consequences.** Rollback is possible until phase 7 but needs the queue paused and two copies (runbook in `docs/operations/production-deployment.md`). A resume that finds no checkpoint fails the run (`checkpoint_missing`) instead of restarting it. A run that pauses on the new revision and resumes on a draining old instance is not copied back (small known window).
+
+**Related.** ADR-0001, ADR-0033, ADR-0035.
