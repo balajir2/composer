@@ -1,4 +1,5 @@
-"""`composer checkpoints` subcommand handlers: copy paused runs between the two savers.
+"""`composer checkpoints` subcommand handlers: copy paused runs between the two savers, and the
+deploy guard.
 
 Output carries ids and counts only, never checkpoint contents or exception messages.
 """
@@ -11,6 +12,7 @@ from typing import TYPE_CHECKING, Any
 from src.checkpoints.copy import copy_thread
 from src.checkpoints.legacy import LegacyCheckpointSaver
 from src.checkpoints.saver import open_one_shot_saver
+from src.checkpoints.sync import find_unsynced
 from src.config import get_settings
 from src.db.engine import build_engine
 from src.db.repos import checkpoints as checkpoints_repo
@@ -52,7 +54,9 @@ async def checkpoints_copy(
 ) -> int:
     """Copy each target execution's thread.
 
-    2 = refused (nothing copied), 1 = a copy failed or copied nothing. Only exception class names
+    2 = something was refused (an unknown execution or a status refusal stops the command before
+    any copy; a target-ahead refusal skips only that run, the others are still copied, then 2 is
+    returned), 1 = a copy failed or copied nothing. Only exception class names
     are printed: driver messages can carry host, database and user names.
     """
     try:
@@ -114,3 +118,27 @@ async def _copy(to: Target, executions: list[str], all_waiting: bool, force: boo
         if refused:
             return 2
         return 1 if failed else 0
+
+
+async def checkpoints_guard() -> int:
+    """Deploy guard. 0 = no active run is left only on the old tables, 1 = blocked (or the check
+    itself failed, which also blocks: fail closed). Prints execution ids, statuses and counts only."""
+    try:
+        async with _sessionmaker() as sm:
+            async with sm() as session:
+                counts = await checkpoints_repo.active_status_counts(session)
+            blocked = await find_unsynced(sm)
+    except Exception as exc:
+        print(f"failed: {type(exc).__name__}")
+        return 1
+    print(" ".join(["active runs:", *(f"{k}={counts[k]}" for k in sorted(counts))]))
+    if not blocked:
+        print("ok: no active run has checkpoints only in the old tables")
+        return 0
+    for run in blocked:
+        print(f"blocked: {run.execution_id} ({run.status})")
+    print(
+        "copy waiting runs with 'composer checkpoints copy --to postgres --all-waiting', "
+        "wait for running ones, or cancel them; then re-run the deploy"
+    )
+    return 1

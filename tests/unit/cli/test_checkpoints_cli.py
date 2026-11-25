@@ -154,3 +154,52 @@ async def test_refuses_when_target_is_ahead_unless_forced(
     assert await cli.checkpoints_copy("postgres", ["e-wait"], False, False) == 2
     assert "ahead" in capsys.readouterr().out
     assert await cli.checkpoints_copy("postgres", ["e-wait"], False, True) == 0
+
+
+@pytest.fixture
+def guard(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    state: dict[str, Any] = {"blocked": [], "boom": False}
+
+    @asynccontextmanager
+    async def sm() -> AsyncGenerator[Any]:
+        yield lambda: _Session()
+
+    async def counts(_s: Any) -> dict[str, int]:
+        if state["boom"]:
+            raise ConnectionError("host=db.internal user=secret")
+        return {"queued": 0, "running": 1, "waiting_approval": 2}
+
+    async def unsynced(_sm: Any) -> list[Any]:
+        return state["blocked"]
+
+    monkeypatch.setattr(cli, "_sessionmaker", sm)
+    monkeypatch.setattr(checkpoints_repo, "active_status_counts", counts)
+    monkeypatch.setattr(cli, "find_unsynced", unsynced)
+    return state
+
+
+async def test_guard_ok_exit_0(guard: dict[str, Any], capsys: pytest.CaptureFixture[str]) -> None:
+    assert await cli.checkpoints_guard() == 0
+    out = capsys.readouterr().out
+    assert "active runs: queued=0 running=1 waiting_approval=2" in out
+    assert "ok: no active run has checkpoints only in the old tables" in out
+
+
+async def test_guard_blocked_exit_1_lists_ids_only(
+    guard: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    guard["blocked"] = [checkpoints_repo.UnsyncedRun("e-1", "waiting_approval", "thread-secret")]
+    assert await cli.checkpoints_guard() == 1
+    out = capsys.readouterr().out
+    assert "blocked: e-1 (waiting_approval)" in out
+    assert "composer checkpoints copy --to postgres --all-waiting" in out
+    assert "thread-secret" not in out
+
+
+async def test_guard_fails_closed_without_leaking(
+    guard: dict[str, Any], capsys: pytest.CaptureFixture[str]
+) -> None:
+    guard["boom"] = True
+    assert await cli.checkpoints_guard() == 1
+    out = capsys.readouterr().out
+    assert "ConnectionError" in out and "secret" not in out and "db.internal" not in out

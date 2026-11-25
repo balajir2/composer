@@ -75,6 +75,8 @@ def _build_parser() -> argparse.ArgumentParser:
     group.add_argument("--all-waiting", action="store_true", help="every waiting_approval run")
     p_copy.add_argument("--force", action="store_true", help="copy runs in any status")
 
+    cp_sub.add_parser("guard", help="exit 1 while an active run has checkpoints only in old tables")
+
     # watch
     p_watch = sub.add_parser("watch", help="Poll a folder and trigger a production workflow")
     p_watch.add_argument(
@@ -120,8 +122,10 @@ def main(argv: list[str] | None = None) -> NoReturn:
             sys.exit(_run(keys_mod.keys_sync(args.target, args.prune)))
 
     if args.subcommand == "checkpoints":
-        from src.cli.checkpoints import checkpoints_copy
+        from src.cli.checkpoints import checkpoints_copy, checkpoints_guard
 
+        if args.checkpoints_cmd == "guard":
+            sys.exit(_run(checkpoints_guard()))
         sys.exit(_run(checkpoints_copy(args.to, args.execution, args.all_waiting, args.force)))
 
     if args.subcommand == "watch":

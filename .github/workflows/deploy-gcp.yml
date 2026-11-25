@@ -165,6 +165,12 @@ jobs:
           # On the first run this only records the empty baseline revision.
           uv run alembic upgrade head
           uv run alembic current
+          # SQLAlchemy phase 5 (until phase 7 drops the old checkpoint tables):
+          # refuse the cutover while an active run has checkpoints only in the
+          # old tables. Fails the job here, so the previous revision keeps
+          # serving. Runbook: docs/operations/production-deployment.md
+          # "Checkpointer cutover".
+          uv run composer checkpoints guard
 
       - name: Deploy to Cloud Run
         run: |

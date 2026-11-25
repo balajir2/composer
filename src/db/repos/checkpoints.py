@@ -3,12 +3,15 @@
 from dataclasses import dataclass
 
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.api.execution_status import ACTIVE_EXECUTION_STATUSES_SORTED
 from src.db.models import LangGraphCheckpoint, LangGraphCheckpointWrite, WorkflowExecution
 from src.db.repos._sql import in_array
+
+ACTIVE_STATUSES = tuple(ACTIVE_EXECUTION_STATUSES_SORTED)
 
 
 async def delete_threads(session: AsyncSession, thread_ids: list[str]) -> None:
@@ -191,3 +194,64 @@ async def waiting_threads(session: AsyncSession) -> list[tuple[str, str]]:
         .order_by(WorkflowExecution.id)
     )
     return [(str(r[0]), str(r[1])) for r in rows]
+
+
+@dataclass(frozen=True)
+class UnsyncedRun:
+    execution_id: str
+    status: str
+    thread_id: str
+
+
+# Newest checkpoint id per (thread, namespace) in each table set. Ids are time-ordered UUIDv6
+# strings, so the newest is the lexically largest; COLLATE "C" keeps the order independent of the
+# database collation (which can ignore dashes).
+_UNSYNCED_FROM = """
+    FROM (
+        SELECT thread_id, checkpoint_ns, max(checkpoint_id COLLATE "C") AS cid
+        FROM langgraph_checkpoints GROUP BY thread_id, checkpoint_ns
+    ) old
+    LEFT JOIN (
+        SELECT thread_id, checkpoint_ns, max(checkpoint_id COLLATE "C") AS cid
+        FROM checkpoints GROUP BY thread_id, checkpoint_ns
+    ) nw
+      ON nw.thread_id = old.thread_id AND nw.checkpoint_ns = old.checkpoint_ns
+"""
+_OLD_AHEAD = "(nw.cid IS NULL OR nw.cid < old.cid)"
+
+
+async def unsynced_active_runs(session: AsyncSession) -> list[UnsyncedRun]:
+    """Active executions with a namespace whose newest old-table checkpoint is missing from, or
+    newer than, the official tables. Ordered by execution id."""
+    rows = await session.execute(
+        text(
+            "SELECT DISTINCT e.id, e.status, e.thread_id "
+            + _UNSYNCED_FROM
+            + " JOIN workflow_executions e ON e.thread_id = old.thread_id"
+            + f" WHERE e.status = ANY(:active) AND {_OLD_AHEAD} ORDER BY e.id"
+        ),
+        {"active": list(ACTIVE_STATUSES)},
+    )
+    return [UnsyncedRun(str(r[0]), str(r[1]), str(r[2])) for r in rows]
+
+
+async def legacy_ahead(session: AsyncSession, thread_id: str) -> bool:
+    """True when any namespace of the thread is newer (or only present) in the old tables."""
+    row = await session.execute(
+        text("SELECT 1 " + _UNSYNCED_FROM + f" WHERE old.thread_id = :t AND {_OLD_AHEAD} LIMIT 1"),
+        {"t": thread_id},
+    )
+    return row.first() is not None
+
+
+async def active_status_counts(session: AsyncSession) -> dict[str, int]:
+    """Executions per active status (zero for statuses with none)."""
+    counts = dict.fromkeys(ACTIVE_STATUSES, 0)
+    rows = await session.execute(
+        select(WorkflowExecution.status, func.count())
+        .where(WorkflowExecution.status.in_(ACTIVE_STATUSES))
+        .group_by(WorkflowExecution.status)
+    )
+    for status, n in rows:
+        counts[str(status)] = int(n)
+    return counts
