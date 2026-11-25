@@ -10,16 +10,19 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
+from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.api._idempotency import find_execution_by_idempotency_key, require_same_caller
 from src.api.execution_status import ACTIVE_EXECUTION_STATUSES
 from src.config import get_settings
 from src.db.errors import AlreadyExists
+from src.db.models import ApprovalDecision
+from src.db.repos import approvals as approvals_repo
 from src.db.repos import executions as executions_repo
 from src.db.repos import workflow_assignments as workflow_assignments_repo
 from src.db.repos import workflows as workflows_repo
 from src.db.repos.executions import ExecutionRecord
 from src.db.runtime import require_sessionmaker
+from src.db.types import utcnow
 from src.engine.langgraph_executor import LangGraphExecutor
 from src.execution.cloud_tasks import enqueue_execution
 from src.security.auth import get_current_role
@@ -60,7 +63,7 @@ class ExecutionCreate(BaseModel):
 
 
 class ExecutionRead(BaseModel):
-    model_config = ConfigDict(populate_by_name=True, from_attributes=True)
+    model_config = ConfigDict(populate_by_name=True)
 
     id: str
     workflow_id: str = Field(alias="workflowId")
@@ -516,7 +519,8 @@ async def cancel_execution(  # pyright: ignore[reportUnusedFunction]
 async def resume_execution(
     execution_id: str,
     payload: ResumeRequest,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    request: Request,
+    db: Any = Depends(get_db),  # TODO(phase 5): only for enqueue_execution's dev-mode checkpointer
     _role: tuple[str, str] = Depends(get_current_role),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
@@ -527,103 +531,64 @@ async def resume_execution(
         client_key=user_id,
         config=per_minute_config(get_settings().rate_limit_resume_per_minute),
     )
-    execution = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": execution_id}
-    )
-    if execution is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Execution {execution_id!r} not found.",
-        )
-    if role != "admin" and execution.userId != user_id:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Execution {execution_id!r} not found.",
-        )
-    if execution.status != "waiting_approval":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Execution is {execution.status!r}, not 'waiting_approval'.",
-        )
-
-    variables = cast("dict[str, Any]", execution.variables or {})
-    # `cast(Any, ...)` below only defeats pyright's now-always-true narrowing
-    # (variables is annotated dict[str, Any] above); the isinstance check
-    # still runs at execution time as defensive handling of malformed JSON.
-    pending_node_id = (
-        variables.get("_pending_approval_node")
-        if isinstance(cast("Any", variables), dict)
-        else None
-    )
-    if pending_node_id is None:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Execution is waiting_approval but has no _pending_approval_node.",
-        )
-
-    # Atomic conditional status transition (P1-1) — the earlier status
-    # check above (`execution.status != "waiting_approval"`) is a
-    # separate find_unique and gives a friendly error for the common
-    # case, but two near-simultaneous in-app resume requests (a
-    # double-click, two reviewers racing) could both pass that check
-    # before either commits. update_many folds the guard into the same
-    # statement that performs the transition — at most one request can
-    # ever flip this row, matching the same pattern already used for the
-    # emailed-link path (src/api/approval_email.py).
-    # Start the new attempt's claim grace period, independent of the original
-    # execution creation time. Clear any legacy lease left on the approval
-    # pause so the fresh task can claim it and establish new ownership.
-    resume_time = datetime.now(UTC)
-    updated_count = await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": execution_id, "status": "waiting_approval"},
-        data={
-            "status": "running",
-            "runningSince": resume_time,
-            "leaseOwner": None,
-            "leaseExpiresAt": None,
-        },
-    )
-    if updated_count != 1:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Execution {execution_id!r} is no longer waiting_approval "
-            "(already resolved by a concurrent request).",
-        )
-
-    # Audit trail — only recorded once the atomic transition above
-    # confirms this request is the single winner.
-    approval_data: dict[str, Any] = {
-        "executionId": execution_id,
-        "nodeId": pending_node_id,
-        "approverUserId": user_id,
-        "decision": payload.decision.value,
-        "note": payload.note,
-    }
-    await db.approval.create(  # pyright: ignore[reportAttributeAccessIssue]
-        data=approval_data,  # pyright: ignore[reportArgumentType]
-    )
-
-    # P1-2 (Task 13): stamp the decision into `variables` BEFORE enqueueing
-    # the Cloud Task. enqueue_execution's Cloud Task body is hardcoded to
-    # {"executionId": ..., "kind": ...} — there is no room to carry the
-    # decision through the task payload itself — so it travels the same
-    # way `_pending_approval_node` already does: as row state that
-    # claim-and-run (src/api/internal.py) reads back AFTER claiming.
-    await db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": execution_id},
-        data={
-            "variables": Json(
-                {**(execution.variables or {}), "_resume_decision": payload.decision.value}
+    sessionmaker = require_sessionmaker(request)
+    async with sessionmaker() as session:
+        execution = await executions_repo.get(session, execution_id)
+        if execution is None or (role != "admin" and execution.user_id != user_id):
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Execution {execution_id!r} not found.",
             )
-        },
-    )
+        if execution.status != "waiting_approval":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Execution is {execution.status!r}, not 'waiting_approval'.",
+            )
+        variables = execution.variables
+        pending_node_id: Any = (
+            cast("dict[str, Any]", variables).get("_pending_approval_node")
+            if isinstance(variables, dict)
+            else None
+        )
+        if pending_node_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Execution is waiting_approval but has no _pending_approval_node.",
+            )
+
+        # Atomic conditional transition (P1-1): the earlier status check gives a friendly
+        # error for the common case, but two near-simultaneous resumes (a double-click, two
+        # reviewers racing) could both pass it. One guarded UPDATE folds the guard into the
+        # statement that flips the row, so at most one request wins. It also starts the new
+        # attempt's claim grace period, clears any legacy lease, and (P1-2, Task 13) stamps
+        # the decision into `variables`: enqueue_execution's Cloud Task body carries no room
+        # for it, so it travels as row state that claim-and-run reads back after claiming.
+        # The approval audit row commits in the same transaction (phase 4b, DB1).
+        won = await executions_repo.resume_if_waiting(
+            session, execution_id, decision=payload.decision.value, now=utcnow()
+        )
+        if not won:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=f"Execution {execution_id!r} is no longer waiting_approval "
+                "(already resolved by a concurrent request).",
+            )
+        await approvals_repo.create(
+            session,
+            execution_id=execution_id,
+            node_id=str(pending_node_id),
+            decision=ApprovalDecision(payload.decision.value),
+            approver_user_id=user_id,
+            approver_email=None,
+            via_email_link=False,
+            note=payload.note,
+        )
+        await session.commit()
+    # The session is closed: enqueue is network I/O (short-session rule).
     await enqueue_execution(execution_id, kind="resume", db=db)
 
-    # Reflect the transition we just made atomically without a second
-    # DB round-trip — `execution` is the row fetched above, still valid
-    # except for the status field update_many just applied.
-    execution.status = "running"
-    return ExecutionRead.model_validate(execution)
+    # Reflect the transition without a second round trip (DB5: pre-update row, status replaced).
+    return _to_execution_read(dataclasses.replace(execution, status="running"))
 
 
 __all__ = [

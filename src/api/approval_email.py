@@ -11,14 +11,14 @@ scanner-opened link silently make the decision before a human ever sees
 it. Only the POST /confirm step (triggered by a real user clicking
 "Confirm" on the frontend confirmation page) performs the mutation.
 
-Single-use is enforced explicitly via an atomic conditional `update_many`
-in the POST handler (see `confirm_approval_email` below) rather than a
-separate check-then-act pair, which would otherwise let two
-near-simultaneous requests (a duplicate click, or two reviewers racing)
-both pass the check before either commits.
+Single-use is enforced by one guarded `UPDATE` that also checks the pause
+instance (`executions_repo.resume_if_waiting`) rather than a separate
+check-then-act pair, which would otherwise let two near-simultaneous
+requests (a duplicate click, or two reviewers racing) both pass the check
+before either commits. The approval audit row commits in the same
+transaction; the Cloud Task is enqueued only after the session closes.
 """
 
-from datetime import UTC, datetime
 from typing import Any, cast
 from urllib.parse import urlencode
 
@@ -26,8 +26,13 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import RedirectResponse
 from starlette import status
 
-from prisma import Json, Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.config import get_settings
+from src.db.models import ApprovalDecision
+from src.db.repos import approvals as approvals_repo
+from src.db.repos import executions as executions_repo
+from src.db.repos.executions import ExecutionRecord, PendingInstance
+from src.db.runtime import require_sessionmaker
+from src.db.types import utcnow
 from src.execution.cloud_tasks import enqueue_execution
 from src.security.jwt import (
     ApprovalEmailTokenPayload,
@@ -63,55 +68,36 @@ def _redirect_confirm(token: str, decision: str) -> RedirectResponse:
     )
 
 
-async def _validate_token_and_execution(
-    token: str,
-    db: Prisma,  # pyright: ignore[reportUnknownParameterType]
-) -> tuple[ApprovalEmailTokenPayload, Any] | None:
-    """Shared, read-only validation for both GET and POST. Returns
-    (claims, execution_row) on success, None on any failure — never
-    mutates anything."""
+def _verify(token: str) -> ApprovalEmailTokenPayload | None:
     try:
-        claims = verify_approval_email_token(token)
+        return verify_approval_email_token(token)
     except TokenVerificationError:
         return None
 
-    execution = await db.workflowexecution.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": claims.sub}
-    )
-    if execution is None:
-        return None
-    if execution.status != "waiting_approval":
-        return None
 
-    # Bind the token to the specific pause *instance*, not just the node --
-    # a `while`-loop user-approval node can pause repeatedly at the same
-    # node_id, so a node_id-only check would let a stale token from an
-    # earlier iteration resolve a later one.
-    variables = cast("dict[str, Any]", execution.variables or {})
-    # Runtime defensiveness against malformed stored JSON: `cast(Any, ...)`
-    # only defeats pyright's now-always-true narrowing above, it does not
-    # change the isinstance check that still runs at execution time.
-    pending_node_id = (
-        variables.get("_pending_approval_node")
-        if isinstance(cast("Any", variables), dict)
-        else None
-    )
-    pending_since = (
-        variables.get("_pending_approval_since")
-        if isinstance(cast("Any", variables), dict)
-        else None
-    )
-    if pending_node_id != claims.node_id or pending_since != claims.pending_since:
-        return None
+def _matches_pause(execution: ExecutionRecord | None, claims: ApprovalEmailTokenPayload) -> bool:
+    """Read-only check shared by GET and POST: the row is still paused at the token's instance.
 
-    return claims, execution
+    Binds the token to the specific pause *instance*, not just the node: a `while`-loop
+    user-approval node can pause repeatedly at the same node_id, so a node_id-only check would
+    let a stale token from an earlier iteration resolve a later one.
+    """
+    if execution is None or execution.status != "waiting_approval":
+        return False
+    variables = execution.variables
+    if not isinstance(variables, dict):
+        return False
+    pause = cast("dict[str, Any]", variables)
+    return (
+        pause.get("_pending_approval_node") == claims.node_id
+        and pause.get("_pending_approval_since") == claims.pending_since
+    )
 
 
 @router.get("/approvals/email/{token}")
 async def resolve_approval_email(
     token: str,
     request: Request,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> RedirectResponse:  # pyright: ignore[reportUnusedFunction]
     """Read-only: validates the token and redirects to the confirmation
@@ -124,11 +110,14 @@ async def resolve_approval_email(
         client_key=ip,
         config=per_minute_config(get_settings().rate_limit_approval_email_per_minute),
     )
-
-    result = await _validate_token_and_execution(token, db)
-    if result is None:
+    sessionmaker = require_sessionmaker(request)
+    claims = _verify(token)
+    if claims is None:
         return _redirect_result("invalid")
-    claims, _execution = result
+    async with sessionmaker() as session:
+        execution = await executions_repo.get(session, claims.sub)
+    if not _matches_pause(execution, claims):
+        return _redirect_result("invalid")
     return _redirect_confirm(token, claims.decision)
 
 
@@ -136,7 +125,7 @@ async def resolve_approval_email(
 async def confirm_approval_email(
     token: str,
     request: Request,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
+    db: Any = Depends(get_db),  # TODO(phase 5): only for enqueue_execution's dev-mode checkpointer
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> RedirectResponse:  # pyright: ignore[reportUnusedFunction]
     """The actual mutation — only reached via a deliberate POST (the
@@ -156,63 +145,43 @@ async def confirm_approval_email(
         client_key=ip,
         config=per_minute_config(get_settings().rate_limit_approval_email_per_minute),
     )
-
-    result = await _validate_token_and_execution(token, db)
-    if result is None:
+    sessionmaker = require_sessionmaker(request)
+    claims = _verify(token)
+    if claims is None:
         return _redirect_result("invalid")
-    claims, execution = result
-
-    # Atomic conditional status transition -- closes the check-then-act race
-    # a separate find_unique + update pair would leave open. update_many (not
-    # update, which requires a unique-key where) lets us fold the guard
-    # (status must still be waiting_approval) into the same statement that
-    # performs the transition, so at most one of two near-simultaneous
-    # requests for the same pause can ever flip this row. Prisma Python's
-    # update_many returns the affected-row count directly as an int (see
-    # src/migration/reconcile.py for the same convention), not a BatchPayload
-    # wrapper object.
-    # Match in-app resume: start the new attempt's claim grace period and
-    # release any legacy lease so the fresh task can establish ownership.
-    resume_time = datetime.now(UTC)
-    updated_count = await db.workflowexecution.update_many(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": claims.sub, "status": "waiting_approval"},
-        data={
-            "status": "running",
-            "runningSince": resume_time,
-            "leaseOwner": None,
-            "leaseExpiresAt": None,
-        },
-    )
-    if updated_count != 1:
+    try:
+        decision = ApprovalDecision(claims.decision)  # DB6: unknown claim -> invalid, no write
+    except ValueError:
         return _redirect_result("invalid")
-
-    approval_data: dict[str, Any] = {
-        "executionId": claims.sub,
-        "nodeId": claims.node_id,
-        "approverUserId": None,
-        "approverEmail": claims.approver_email,
-        "viaEmailLink": True,
-        "decision": claims.decision,
-    }
-    await db.approval.create(  # pyright: ignore[reportAttributeAccessIssue]
-        data=approval_data,  # pyright: ignore[reportArgumentType]
-    )
-
-    # P1-2 (Task 13): stamp the decision into `variables` BEFORE enqueueing
-    # the Cloud Task — same pattern as POST /executions/{id}/resume
-    # (src/api/executions.py). enqueue_execution's Cloud Task body is
-    # hardcoded to {"executionId": ..., "kind": ...}, so the decision
-    # travels as row state that claim-and-run reads back after claiming,
-    # not as a Cloud Task payload field.
-    await db.workflowexecution.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"id": claims.sub},
-        data={
-            "variables": Json({**(execution.variables or {}), "_resume_decision": claims.decision})
-        },
-    )
+    async with sessionmaker() as session:
+        execution = await executions_repo.get(session, claims.sub)
+        if not _matches_pause(execution, claims):
+            return _redirect_result("invalid")
+        # Atomic conditional transition: status AND pause instance are re-checked in the
+        # statement that resumes (DB2), which also stamps the decision (P1-2, Task 13) so
+        # claim-and-run reads it back as row state; the audit row shares the transaction (DB1).
+        won = await executions_repo.resume_if_waiting(
+            session,
+            claims.sub,
+            decision=decision.value,
+            now=utcnow(),
+            expected_pending=PendingInstance(node_id=claims.node_id, since=claims.pending_since),
+        )
+        if not won:
+            return _redirect_result("invalid")
+        await approvals_repo.create(
+            session,
+            execution_id=claims.sub,
+            node_id=claims.node_id,
+            decision=decision,
+            approver_user_id=None,
+            approver_email=claims.approver_email,
+            via_email_link=True,
+            note=None,
+        )
+        await session.commit()
     await enqueue_execution(claims.sub, kind="resume", db=db)
-
-    return _redirect_result(claims.decision)
+    return _redirect_result(decision.value)
 
 
 __all__ = ["router"]

@@ -1,20 +1,26 @@
 """Tests for POST /executions/{id}/resume (Phase 5a)."""
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
-from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
+from src.db.models import ApprovalDecision
+from src.db.repos import approvals as approvals_repo
 from src.db.repos import executions as executions_repo
 from src.db.repos import users as users_repo
 from src.db.repos.executions import ExecutionRecord
 from src.engine.events import ExecutionEvent
 from src.main import create_app
 from src.security.rate_limit import RateLimiter
-from tests.unit.db_fakes import FakeSessionmaker, make_user
+from tests.unit.db_fakes import (
+    RecordingSessionmaker,
+    assert_no_network_inside_session,
+    make_user,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -50,14 +56,14 @@ class _FakeEventStore:
         return seq
 
 
-def _execution_row(**overrides: Any) -> SimpleNamespace:
+def _execution_row(**overrides: Any) -> ExecutionRecord:
     base: dict[str, Any] = {
         "id": "e1",
-        "workflowId": "w1",
-        "userId": "dev",
+        "workflow_id": "w1",
+        "user_id": "dev",
         "status": "waiting_approval",
-        "threadId": "t1",
-        "nodeResults": {},
+        "thread_id": "t1",
+        "node_results": {},
         "variables": {
             "_pending_approval_node": "ua",
             "_pending_approval_prompt": "Approve?",
@@ -65,71 +71,105 @@ def _execution_row(**overrides: Any) -> SimpleNamespace:
         "input": None,
         "output": None,
         "error": None,
-        "currentNodeId": None,
-        "startedAt": "2026-04-21T00:00:00Z",
-        "completedAt": None,
+        "failure_code": None,
+        "current_node_id": None,
+        "started_at": datetime(2026, 4, 21, tzinfo=UTC),
+        "completed_at": None,
+        "original_owner_email": None,
+        "idempotency_key": None,
+        "lease_owner": "stale-worker",
+        "lease_expires_at": None,
+        "running_since": None,
+        "delivery_attempts": 0,
     }
     base.update(overrides)
-    return SimpleNamespace(**base)
+    return ExecutionRecord(**base)
+
+
+@dataclass
+class _Repos:
+    """The patched repo functions the resume route calls."""
+
+    get: AsyncMock
+    resume: AsyncMock
+    approval_create: AsyncMock
 
 
 def _client_with_execution(
     monkeypatch: pytest.MonkeyPatch,
-    execution: Any | None,
-) -> tuple[TestClient, MagicMock]:
+    execution: ExecutionRecord | None,
+    *,
+    events: list[str] | None = None,
+) -> tuple[TestClient, _Repos]:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", "development")
     from src.config import get_settings
 
     get_settings.cache_clear()
     app = create_app()
-
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    db.workflowexecution.find_unique = AsyncMock(return_value=execution)
-    db.workflowexecution.update = AsyncMock(return_value=execution)
-    db.workflowexecution.update_many = AsyncMock(return_value=1)
-    db.approval = MagicMock()
-    db.approval.create = AsyncMock()
-    # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=None)
-    app.state.db = db
+    app.state.db = MagicMock()  # only handed to enqueue_execution (phase 5)
     app.state.checkpointer = MagicMock()
     app.state.event_bus = _FakeEventStore()
     app.state.rate_limiter = RateLimiter()
+    sessionmaker = RecordingSessionmaker(events if events is not None else [])
+    app.state.db_sessionmaker = sessionmaker
     monkeypatch.setattr("src.engine.langgraph_executor.notify_execution_event", AsyncMock())
-    return TestClient(app), db
+
+    log = events if events is not None else []
+
+    async def _resume(*_a: Any, **_k: Any) -> bool:
+        log.append("db:resume")
+        return True
+
+    async def _approve(*_a: Any, **_k: Any) -> None:
+        log.append("db:approval")
+
+    async def _commit() -> None:
+        log.append("db:commit")
+
+    sessionmaker.session.commit = AsyncMock(side_effect=_commit)
+    repos = _Repos(
+        get=AsyncMock(return_value=execution),
+        resume=AsyncMock(side_effect=_resume),
+        approval_create=AsyncMock(side_effect=_approve),
+    )
+    monkeypatch.setattr(executions_repo, "get", repos.get)
+    monkeypatch.setattr(executions_repo, "resume_if_waiting", repos.resume)
+    monkeypatch.setattr(approvals_repo, "create", repos.approval_create)
+    # Dev-mode user 'dev' resolves to a member (the live user check runs with a sessionmaker).
+    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=make_user(id="dev")))
+    return TestClient(app), repos
 
 
 def test_resume_approved_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _client_with_execution(monkeypatch, _execution_row())
+    client, repos = _client_with_execution(monkeypatch, _execution_row())
     resp = client.post(
         "/executions/e1/resume",
         json={"decision": "approved", "note": "lgtm"},
     )
     assert resp.status_code == 200, resp.text
-    db.approval.create.assert_awaited_once()
-    call = db.approval.create.await_args
-    created = call.kwargs["data"]
-    assert created["decision"] == "approved"
-    assert created["note"] == "lgtm"
-    assert created["nodeId"] == "ua"
-    assert created["executionId"] == "e1"
-    assert created["approverUserId"] == "dev"  # dev-mode fallback
+    repos.approval_create.assert_awaited_once()
+    assert repos.approval_create.await_args.kwargs == {
+        "execution_id": "e1",
+        "node_id": "ua",
+        "decision": ApprovalDecision.APPROVED,
+        "approver_user_id": "dev",  # dev-mode fallback
+        "approver_email": None,
+        "via_email_link": False,
+        "note": "lgtm",
+    }
 
 
 def test_resume_rejected_happy_path(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, db = _client_with_execution(monkeypatch, _execution_row())
+    client, repos = _client_with_execution(monkeypatch, _execution_row())
     resp = client.post(
         "/executions/e1/resume",
         json={"decision": "rejected"},
     )
     assert resp.status_code == 200
-    call = db.approval.create.await_args
-    created = call.kwargs["data"]
-    assert created["decision"] == "rejected"
-    assert created["note"] is None
+    kwargs = repos.approval_create.await_args.kwargs
+    assert kwargs["decision"] == ApprovalDecision.REJECTED
+    assert kwargs["note"] is None
 
 
 def test_resume_execution_not_found_404(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -172,107 +212,119 @@ def test_resume_invalid_decision_422(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_resume_marks_execution_running_before_scheduling_task(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """The endpoint flips status to 'running' via the atomic conditional
-    update_many BEFORE the background task, and returns a response that
-    reflects the transition (not the stale pre-transition row)."""
-    client, db = _client_with_execution(monkeypatch, _execution_row())
+    """The endpoint flips status via the guarded transition BEFORE enqueueing, and returns a
+    response that reflects the transition (not the stale pre-transition row)."""
+    client, repos = _client_with_execution(monkeypatch, _execution_row())
     resp = client.post("/executions/e1/resume", json={"decision": "approved"})
     assert resp.status_code == 200, resp.text
-    db.workflowexecution.update_many.assert_awaited_once()
-    call = db.workflowexecution.update_many.await_args
-    assert call.kwargs["data"]["status"] == "running"
-    assert call.kwargs["where"]["status"] == "waiting_approval"
+    repos.resume.assert_awaited_once()
+    assert repos.resume.await_args.args[1] == "e1"
+    assert repos.resume.await_args.kwargs["decision"] == "approved"
+    assert "expected_pending" not in repos.resume.await_args.kwargs  # in-app resume: status-only
     assert resp.json()["status"] == "running"
 
 
-def test_resume_clears_stale_lease_in_same_update_many(
+def test_resume_passes_resume_time_to_the_guarded_transition(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """P1-2 fast-follow (2026-07-15 holistic review finding): the
-    waiting_approval -> running transition must clear leaseOwner/
-    leaseExpiresAt in the SAME atomic update_many that flips status --
-    otherwise the stale lease set by the original POST
-    /internal/claim-and-run claim survives the approval-pending window
-    and blocks the fresh Cloud Task delivery (enqueued right after this
-    call) from re-claiming the row until the old lease naturally expires.
-    Mocked-DB regression coverage only -- this does NOT prove the fix
-    against the real claim-query predicate; see
-    tests/integration/test_durable_execution.py's
-    test_resume_clears_stale_lease_and_reclaim_succeeds for that."""
-    client, db = _client_with_execution(monkeypatch, _execution_row())
+    """Replaces test_resume_clears_stale_lease_in_same_update_many: the lease clear and
+    runningSince stamp are the repo's job (tests/integration/db/repos, phase 4b Task 2); the route
+    must hand it the current time. Real-DB proof of the lease clear:
+    tests/integration/test_durable_execution.py."""
+    client, repos = _client_with_execution(monkeypatch, _execution_row())
     frozen_now = datetime(2026, 11, 17, 12, tzinfo=UTC)
-    clock = MagicMock(wraps=datetime)
-    clock.now.return_value = frozen_now
-    monkeypatch.setattr("src.api.executions.datetime", clock)
+    monkeypatch.setattr("src.api.executions.utcnow", lambda: frozen_now)
     resp = client.post("/executions/e1/resume", json={"decision": "approved"})
     assert resp.status_code == 200, resp.text
-    db.workflowexecution.update_many.assert_awaited_once()
-    call = db.workflowexecution.update_many.await_args
-    assert call.kwargs["data"]["status"] == "running"
-    assert call.kwargs["data"]["leaseOwner"] is None
-    assert call.kwargs["data"]["leaseExpiresAt"] is None
-    assert call.kwargs["data"]["runningSince"] == frozen_now
-    assert call.kwargs["where"]["status"] == "waiting_approval"
-    clock.now.assert_called_once_with(UTC)
+    assert repos.resume.await_args.kwargs["now"] == frozen_now
 
 
-def test_resume_race_loses_when_update_many_affects_zero_rows(
+def test_resume_race_loses_when_the_guarded_transition_wins_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """P1-1: the atomic waiting_approval -> running transition is the real
-    concurrency guard. If a concurrent request already flipped the row
-    (update_many affects 0 rows), this request must not create a second
-    audit row or schedule a second resumption — 409, no side effects."""
-    client, db = _client_with_execution(monkeypatch, _execution_row())
-    db.workflowexecution.update_many = AsyncMock(return_value=0)
+    """P1-1: the atomic waiting_approval -> running transition is the real concurrency guard. If a
+    concurrent request already flipped the row, this request must not create a second audit row
+    or enqueue a second resumption: 409, no side effects."""
+    events: list[str] = []
+    client, repos = _client_with_execution(monkeypatch, _execution_row(), events=events)
+    repos.resume.side_effect = None
+    repos.resume.return_value = False
+    enqueue = AsyncMock()
+    monkeypatch.setattr("src.api.executions.enqueue_execution", enqueue)
     resp = client.post("/executions/e1/resume", json={"decision": "approved"})
     assert resp.status_code == 409
-    db.approval.create.assert_not_awaited()
+    repos.approval_create.assert_not_awaited()
+    enqueue.assert_not_awaited()
+
+
+def test_resume_without_a_database_is_503(monkeypatch: pytest.MonkeyPatch) -> None:
+    client, _ = _client_with_execution(monkeypatch, _execution_row())
+    del client.app.state.db_sessionmaker  # type: ignore[attr-defined]
+    resp = client.post("/executions/e1/resume", json={"decision": "approved"})
+    assert resp.status_code == 503
+    assert resp.json()["detail"] == "database unavailable"
+
+
+def test_resume_enqueues_only_after_commit_and_after_the_session_closes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DB1 + short-session rule: one transaction (guarded transition, approval row, commit), the
+    session closes, THEN the Cloud Task is enqueued."""
+    events: list[str] = []
+    client, _repos = _client_with_execution(monkeypatch, _execution_row(), events=events)
+
+    async def _enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
+        events.append("net:enqueue")
+
+    monkeypatch.setattr("src.api.executions.enqueue_execution", _enqueue)
+    resp = client.post("/executions/e1/resume", json={"decision": "approved"})
+    assert resp.status_code == 200, resp.text
+    # The auth dependency's live user check opens its own short session first.
+    assert events[-6:] == [
+        "session:enter",
+        "db:resume",
+        "db:approval",
+        "db:commit",
+        "session:exit",
+        "net:enqueue",
+    ]
+    assert_no_network_inside_session(events)
+
+
+def test_resume_rolls_back_and_does_not_enqueue_when_the_approval_insert_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The approval insert raising leaves the transition uncommitted (the session exits without
+    commit, so it rolls back) and nothing is enqueued."""
+    events: list[str] = []
+    client, repos = _client_with_execution(monkeypatch, _execution_row(), events=events)
+    repos.approval_create.side_effect = RuntimeError("insert failed")
+    enqueue = AsyncMock()
+    monkeypatch.setattr("src.api.executions.enqueue_execution", enqueue)
+    with pytest.raises(RuntimeError, match="insert failed"):
+        client.post("/executions/e1/resume", json={"decision": "approved"})
+    assert "db:commit" not in events
+    enqueue.assert_not_awaited()
 
 
 def test_get_execution_non_owner_returns_404(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Non-owner reading an execution gets 404 (info-leak tight)."""
-    client, _ = _client_with_execution(monkeypatch, _execution_row(id="e1", userId="someone-else"))
-    # GET is a 4a route on SQLAlchemy: the row comes from the repo, not the Prisma mock.
-    foreign = ExecutionRecord(
-        id="e1",
-        workflow_id="w1",
-        user_id="someone-else",
-        status="completed",
-        current_node_id=None,
-        node_results={},
-        variables={},
-        input=None,
-        output=None,
-        error=None,
-        failure_code=None,
-        started_at=datetime(2026, 4, 21, tzinfo=UTC),
-        completed_at=None,
-        thread_id="t1",
-        original_owner_email=None,
-        idempotency_key=None,
-        lease_owner=None,
-        lease_expires_at=None,
-        running_since=None,
-        delivery_attempts=0,
-    )
-    monkeypatch.setattr(executions_repo, "get", AsyncMock(return_value=foreign))
-    monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=make_user(id="dev")))
-    client.app.state.db_sessionmaker = FakeSessionmaker()  # type: ignore[attr-defined]
+    client, repos = _client_with_execution(monkeypatch, _execution_row(user_id="someone-else"))
     resp = client.get("/executions/e1")
     assert resp.status_code == 404
+    repos.resume.assert_not_awaited()
 
 
 def test_resume_non_owner_returns_404(monkeypatch: pytest.MonkeyPatch) -> None:
     """Non-owner resuming an execution gets 404 (info-leak tight)."""
-    client, _ = _client_with_execution(
-        monkeypatch,
-        _execution_row(id="e1", userId="someone-else", status="waiting_approval"),
+    client, repos = _client_with_execution(
+        monkeypatch, _execution_row(user_id="someone-else", status="waiting_approval")
     )
     resp = client.post("/executions/e1/resume", json={"decision": "approved"})
     assert resp.status_code == 404
+    repos.resume.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------
@@ -284,27 +336,24 @@ def test_admin_can_resume_other_users_execution(monkeypatch: pytest.MonkeyPatch)
     """Admin can resume an execution belonging to another user."""
     from src.security.auth import get_current_role
 
-    execution = _execution_row(userId="someone-else")
-    client, db = _client_with_execution(monkeypatch, execution)
+    client, repos = _client_with_execution(monkeypatch, _execution_row(user_id="someone-else"))
     client.app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")  # type: ignore[attr-defined]
     try:
         resp = client.post("/executions/e1/resume", json={"decision": "approved"})
     finally:
         client.app.dependency_overrides.pop(get_current_role, None)  # type: ignore[attr-defined]
     assert resp.status_code == 200
-    db.approval.create.assert_awaited_once()
+    repos.approval_create.assert_awaited_once()
+    assert repos.approval_create.await_args.kwargs["approver_user_id"] == "dev"
 
 
 def test_resume_enqueues_cloud_task_instead_of_background_task(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """P1-2 full replacement: POST /executions/{id}/resume must enqueue a
-    Cloud Task (kind='resume') rather than scheduling a request-bound
-    BackgroundTask — mirrors POST /executions' own Task 12 replacement.
-    The decision is stamped into `variables._resume_decision` BEFORE
-    enqueueing since enqueue_execution's Cloud Task body is hardcoded to
-    {"executionId": ..., "kind": ...} with no room for the decision value;
-    claim-and-run reads it back from the claimed row's variables."""
+    """P1-2 full replacement: POST /executions/{id}/resume must enqueue a Cloud Task
+    (kind='resume') rather than scheduling a request-bound BackgroundTask. The decision is
+    stamped inside the guarded transition (repo-level, covered by the integration oracle)
+    because enqueue_execution's task body has no room for it."""
     enqueued: list[tuple[str, str]] = []
 
     async def _fake_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
@@ -312,19 +361,11 @@ def test_resume_enqueues_cloud_task_instead_of_background_task(
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _fake_enqueue)
 
-    client, db = _client_with_execution(monkeypatch, _execution_row())
+    client, repos = _client_with_execution(monkeypatch, _execution_row())
     resp = client.post("/executions/e1/resume", json={"decision": "approved"})
     assert resp.status_code == 200, resp.text
     assert enqueued == [("e1", "resume")]
-
-    db.workflowexecution.update.assert_awaited_once()
-    update_call = db.workflowexecution.update.await_args
-    assert update_call.kwargs["where"]["id"] == "e1"
-    stamped_variables = update_call.kwargs["data"]["variables"].data
-    assert stamped_variables["_resume_decision"] == "approved"
-    # Original variables (the pending-approval bookkeeping) must survive
-    # the stamp, not be clobbered.
-    assert stamped_variables["_pending_approval_node"] == "ua"
+    assert repos.resume.await_args.kwargs["decision"] == "approved"
 
 
 def test_resume_does_not_emit_approval_resumed_event(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -333,7 +374,7 @@ def test_resume_does_not_emit_approval_resumed_event(monkeypatch: pytest.MonkeyP
     DES-007 covers the post-resume activity via the subsequent node_started event
     emitted by the LangGraphExecutor after resume() drives the graph.
     """
-    client, _db = _client_with_execution(monkeypatch, _execution_row())
+    client, _repos = _client_with_execution(monkeypatch, _execution_row())
     store: _FakeEventStore = getattr(client.app, "state").event_bus  # noqa: B009
 
     client.post(
