@@ -33,6 +33,7 @@ This is the binding **roadmap target**, not an inventory of emitted instruments.
       "orphaned_running",
       "lease_expired",
       "checkpoint_missing",
+      "checkpoint_sync_failed",
       "none",
       "other"
     ],

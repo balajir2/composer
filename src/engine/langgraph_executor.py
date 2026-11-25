@@ -54,6 +54,10 @@ class CheckpointMissing(Exception):
     """A resume found no checkpoint for the run in either store; it must not restart the graph."""
 
 
+class CheckpointSyncFailed(Exception):
+    """Bringing a thread forward or probing its checkpoint failed; old-table rows survive."""
+
+
 def _transition_succeeded(execution_id: str, intended_status: str, updated: int) -> bool:
     """Report a lost compare-and-set without exposing execution payloads."""
     if updated != 1:
@@ -403,8 +407,19 @@ class LangGraphExecutor:
             await ensure_execution_running(self.sessionmaker, execution_id)
             # No session is open here: bring_forward opens and closes its own around the SQL and
             # runs the saver calls without one.
-            await bring_forward(self.checkpointer, self.sessionmaker, execution.thread_id)
-            if not await self._has_checkpoint(execution.thread_id):
+            try:
+                await bring_forward(self.checkpointer, self.sessionmaker, execution.thread_id)
+                has_checkpoint = await self._has_checkpoint(execution.thread_id)
+            except Exception as sync_exc:
+                # Not "execution_error": the run's saved state is intact in the old tables, so
+                # an operator can recover it. Log the class only (messages may carry conninfo).
+                logger.error(
+                    "Execution %s checkpoint sync failed (%s)",
+                    execution_id,
+                    type(sync_exc).__name__,
+                )
+                raise CheckpointSyncFailed(type(sync_exc).__name__) from None
+            if not has_checkpoint:
                 raise CheckpointMissing(execution.id)
             await self._emit("workflow_started", execution_id, {"status": "running"})
             compiled, _state, lg_config = await self._prepare_compiled(execution)
@@ -462,6 +477,9 @@ class LangGraphExecutor:
         except CheckpointMissing as exc:
             logger.error("Execution %s has no checkpoint to resume", execution_id)
             if await self._mark_failed(execution_id, exc, failure_code="checkpoint_missing"):
+                await self._emit("workflow_completed", execution_id, {"status": "failed"})
+        except CheckpointSyncFailed as exc:
+            if await self._mark_failed(execution_id, exc, failure_code="checkpoint_sync_failed"):
                 await self._emit("workflow_completed", execution_id, {"status": "failed"})
         except _ExecutionDeadlineExceeded as exc:
             logger.warning("Execution %s timed out during resume", execution_id)

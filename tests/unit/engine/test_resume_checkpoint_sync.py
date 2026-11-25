@@ -130,15 +130,34 @@ async def test_missing_checkpoint_log_carries_the_id_only(
     assert not any(r.exc_info for r in caplog.records)
 
 
-async def test_a_failing_bring_forward_fails_the_run_instead_of_resuming(
-    monkeypatch: pytest.MonkeyPatch,
+async def test_a_failing_bring_forward_fails_the_run_with_its_own_code(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
     executor, events, fake, bring = _setup(monkeypatch)
-    bring.side_effect = RuntimeError("copy broke")
+    bring.side_effect = RuntimeError("postgresql://u:secret@host/db copy broke")
+    with caplog.at_level("INFO", logger="src.engine.langgraph_executor"):
+        await executor.resume("ex1", "approved")
+    assert "net:graph:ainvoke" not in events
+    assert [u["status"] for u in fake.updates] == ["failed"]
+    assert fake.updates[0]["failure_code"] == "checkpoint_sync_failed"
+    # Log: execution id and exception class only, never the message or a traceback.
+    assert any("ex1" in r.getMessage() and "RuntimeError" in r.getMessage() for r in caplog.records)
+    assert not any("secret" in r.getMessage() or r.exc_info for r in caplog.records)
+
+
+async def test_a_failing_checkpoint_probe_fails_the_run_with_its_own_code(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executor, events, fake, _bring = _setup(monkeypatch)
+
+    async def _boom(*_a: Any, **_k: Any) -> Any:
+        raise OSError("connection reset")
+
+    monkeypatch.setattr(executor.checkpointer, "aget_tuple", _boom)
     await executor.resume("ex1", "approved")
     assert "net:graph:ainvoke" not in events
     assert [u["status"] for u in fake.updates] == ["failed"]
-    assert fake.updates[0]["failure_code"] == "execution_error"
+    assert fake.updates[0]["failure_code"] == "checkpoint_sync_failed"
 
 
 # --------------------------------------------------------------------------- bring_forward
