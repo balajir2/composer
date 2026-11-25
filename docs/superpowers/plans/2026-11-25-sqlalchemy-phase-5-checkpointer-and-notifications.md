@@ -35,6 +35,8 @@ Additionally, for this phase:
 
 ## Decisions for Balaji (each with a recommendation)
 
+**Confirmed by Balaji on 2026-11-25:** all recommendations accepted, including **D1** (add `langgraph-checkpoint-postgres>=3.2.1,<4`, `psycopg-pool>=3.3.3,<4` and an explicit `langgraph-checkpoint>=4.3.2,<5`, locked so nothing else moves). The deploy guard (D5) has no override.
+
 **Status: awaiting Balaji.** Task 1 (the oracle) can start before these are confirmed. Task 2 needs D1. Tasks 3–9 assume the recommendations below; a different answer changes the named task only.
 
 | # | Topic | Recommendation |
