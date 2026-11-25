@@ -6,6 +6,7 @@ Nothing here calls ``cloud_tasks._run_in_process`` directly (its signature chang
 it is reached the way production code reaches it, through the routes' ``enqueue_execution``.
 """
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -29,6 +30,20 @@ from tests.integration.sqla_phase5.conftest import (
 )
 
 pytestmark = [pytest.mark.integration, HTTPX_MARK]
+
+
+async def _wait_last_event(db: Db, eid: str, type_: str, timeout: float = 30.0) -> None:
+    """The in-process task writes the status first and emits its event afterwards: wait for the
+    event so the test (and its teardown) never races the task's last writes."""
+    deadline = asyncio.get_running_loop().time() + timeout
+    last = ""
+    while asyncio.get_running_loop().time() < deadline:
+        events = await db.events(eid)
+        last = events[-1].type if events else ""
+        if last == type_:
+            return
+        await asyncio.sleep(0.1)
+    raise AssertionError(f"last event of {eid} is {last!r}, wanted {type_!r}")
 
 
 async def _create(client: AsyncClient, db: Db, who: Member) -> str:
@@ -62,6 +77,7 @@ async def test_in_process_fallback_pauses_and_resumes(
     eid = await _create(exec_api.client, db, member)
     sm = app.state.db_sessionmaker
     assert await wait_for_status(sm, eid, {"waiting_approval", "failed"}, 30) == "waiting_approval"
+    await _wait_last_event(db, eid, "approval_required")
     row = await db.must(eid)
     assert row.lease_owner is None and row.variables["_pending_approval_node"] == "ua"
     assert await checkpoint_row_count(sm, row.thread_id) > 0
@@ -72,9 +88,9 @@ async def test_in_process_fallback_pauses_and_resumes(
 
     assert (await resume(exec_api.client, member, eid, "approved")).status_code == 200
     assert await wait_for_status(sm, eid, {"completed", "failed"}, 30) == "completed"
+    await _wait_last_event(db, eid, "workflow_completed")
     row = await db.must(eid)
     assert row.variables["result"] == "approved" and row.variables["input"] == "x"
-    assert [e.type for e in await db.events(eid)][-1] == "workflow_completed"
 
 
 async def test_in_process_pause_then_restart_then_in_process_resume(
@@ -86,12 +102,15 @@ async def test_in_process_pause_then_restart_then_in_process_resume(
         assert await wait_for_status(a.sm, eid, {"waiting_approval", "failed"}, 30) == (
             "waiting_approval"
         )
+        # the fire-and-forget task also emits the approval event after the status write
+        await _wait_last_event(db, eid, "approval_required")
         thread = (await db.must(eid)).thread_id
         rows = await checkpoint_row_count(a.sm, thread)
 
     async with running_app(monkeypatch, dev_mode_enqueue=True) as b:
         assert (await resume(b.client, member, eid, "rejected")).status_code == 200
         assert await wait_for_status(b.sm, eid, {"completed", "failed"}, 30) == "completed"
+        await _wait_last_event(db, eid, "workflow_completed")
         row = await db.must(eid)
         assert row.variables["result"] == "rejected" and row.variables["input"] == "x"
         assert await checkpoint_row_count(b.sm, thread) > rows
@@ -120,4 +139,5 @@ async def test_in_process_run_to_completion_without_a_pause(
     track_thread(row.thread_id)
     sm = app.state.db_sessionmaker
     assert await wait_for_status(sm, eid, {"completed", "failed"}, 30) == "completed"
+    await _wait_last_event(db, eid, "workflow_completed")
     assert (await db.must(eid)).output == "hello"

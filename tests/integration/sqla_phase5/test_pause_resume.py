@@ -27,6 +27,7 @@ from tests.integration.sqla_phase4b.conftest import install_resume_enqueue, resu
 from tests.integration.sqla_phase5.conftest import (
     RunningApp,
     checkpoint_row_count,
+    fan_out_graph,
     running_app,
     start_paused,
     two_approval_graph,
@@ -68,12 +69,14 @@ async def test_resume_after_restart_continues_the_same_run(
     async with running_app(monkeypatch) as a:
         eid, thread = await start_paused(a.client, db, member, monkeypatch)
         paused = await db.must(eid)
+        cp_a = a.app.state.checkpointer
         head_before = (await _history_ids(a, thread))[0]
         rows_before = await checkpoint_row_count(a.sm, thread)
         events_before = await db.events(eid)
     assert [e.type for e in events_before][-1] == "approval_required"
 
     async with running_app(monkeypatch) as b:
+        assert b.app.state.checkpointer is not cp_a  # a genuinely fresh saver read the rows
         r = await resume(b.client, member, eid, decision)
         assert r.status_code == 200, r.text
         row = await db.must(eid)
@@ -212,6 +215,35 @@ async def test_chained_pause_survives_two_restarts(
     assert events.count(("node_started", "s")) == 1
     assert events.count(("node_started", "one")) == 1
     assert events.count(("node_started", "two")) == 1
+
+
+async def test_fan_out_sibling_pending_writes_survive_restart_and_are_not_rerun(
+    db: Db, member: Member, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """start fans out to the approval node and a sibling that completes in the SAME super-step.
+    The sibling's result lives only in the interrupted checkpoint's pending writes: after a
+    restart + resume the sibling must not run again and its state must still be there."""
+    async with running_app(monkeypatch) as a:
+        eid, thread = await start_paused(a.client, db, member, monkeypatch, graph=fan_out_graph)
+        assert (await db.must(eid)).status == "waiting_approval"
+        events = await _event_types(db, eid)
+        assert events.count(("node_started", "side")) == 1
+        head = await a.app.state.checkpointer.aget_tuple(
+            {"configurable": {"thread_id": thread, "checkpoint_ns": ""}}
+        )
+        assert head is not None
+        channels = {w[1] for w in head.pending_writes}
+        assert "__interrupt__" in channels and len(head.pending_writes) > 1  # the sibling's too
+
+    async with running_app(monkeypatch) as b:
+        assert (await resume(b.client, member, eid, "approved")).status_code == 200
+        row = await db.must(eid)
+        assert row.status == "completed", (row.status, row.error)
+        assert row.variables["side"] == "done" and row.variables["result"] == "approved"
+        await _assert_one_linear_chain(b, thread)
+    events = await _event_types(db, eid)
+    assert events.count(("node_started", "side")) == 1
+    assert events.count(("node_started", "s")) == 1
 
 
 async def test_rejected_decision_after_restart_takes_the_rejected_branch_only(

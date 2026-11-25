@@ -10,8 +10,8 @@ Seams used: ``app.state.event_bus.append``, ``notify_execution_event(execution_i
 WebSocket route and, for the end-to-end test, the real ``enqueue_execution`` (dev-mode fallback).
 """
 
-import concurrent.futures
 import json
+import queue
 import secrets
 import threading
 import time
@@ -46,6 +46,14 @@ LIVE_DEADLINE = 4.0  # seconds; the keepalive poll is 15 s
 def _drive_cloud_tasks_synchronously() -> None:  # pyright: ignore[reportUnusedFunction]
     """Shadow tests/integration/conftest.py's fixture of the same name: it requests the async
     ``app`` fixture, i.e. a second app on the pytest loop, which this module must not create."""
+    return None
+
+
+@pytest.fixture(autouse=True)
+def _purge_tracked_checkpoints() -> None:  # pyright: ignore[reportUnusedFunction]
+    """Shadow the package's autouse purge (it requests the async ``app`` fixture: a second app
+    with a full lifespan beside this module's TestClient app). ``LiveEnv.cleanup`` purges its own
+    threads instead."""
     return None
 
 
@@ -147,16 +155,48 @@ def ws_env(phase4a_env: None) -> Iterator[LiveEnv]:
             env.cleanup()
 
 
+_READERS: dict[int, "queue.Queue[Any]"] = {}
+
+
+def _reader(sock: Any) -> "queue.Queue[Any]":
+    """One persistent reader thread per socket feeding a queue, so a receive that times out never
+    swallows the NEXT message (a blocked ``receive_text`` keeps its place in the queue)."""
+    existing = _READERS.get(id(sock))
+    if existing is not None:
+        return existing
+    q: queue.Queue[Any] = queue.Queue()
+    _READERS[id(sock)] = q
+
+    def _pump() -> None:
+        while True:
+            try:
+                q.put(sock.receive_text())
+            except BaseException as exc:  # disconnect or closed session ends the reader
+                q.put(exc)
+                return
+
+    threading.Thread(target=_pump, daemon=True).start()
+    return q
+
+
 def _recv(sock: Any, timeout: float = LIVE_DEADLINE) -> dict[str, Any]:
-    """One JSON message, or an AssertionError after ``timeout`` seconds."""
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-    fut = pool.submit(sock.receive_text)
+    """One JSON message, or an AssertionError after ``timeout`` seconds. A disconnect is raised
+    as the original ``WebSocketDisconnect``."""
     try:
-        return cast("dict[str, Any]", json.loads(fut.result(timeout=timeout)))
-    except concurrent.futures.TimeoutError:
+        item = _reader(sock).get(timeout=timeout)
+    except queue.Empty:
         raise AssertionError(f"no WebSocket message within {timeout}s") from None
-    finally:
-        pool.shutdown(wait=False)
+    if isinstance(item, BaseException):
+        raise item
+    return cast("dict[str, Any]", json.loads(item))
+
+
+def _assert_silent(sock: Any, seconds: float) -> None:
+    try:
+        item = _reader(sock).get(timeout=seconds)
+    except queue.Empty:
+        return
+    raise AssertionError(f"unexpected WebSocket traffic: {item!r}"[:200])
 
 
 class _Renotifier:
@@ -210,6 +250,9 @@ def test_every_watcher_of_an_execution_gets_each_event(ws_env: LiveEnv) -> None:
 
 
 def test_other_executions_notifications_are_not_delivered(ws_env: LiveEnv) -> None:
+    """Another execution's events never reach this watcher. (That a notification only WAKES the
+    watchers of its own execution is a property of the new listener and is covered by phase 5
+    Task 8's unit test; over the socket the two are indistinguishable.)"""
     mine, token = ws_env.running_execution()
     theirs, _other_token = ws_env.running_execution()
     with ws_env.connect(mine, token) as sock:
@@ -300,3 +343,44 @@ def test_a_real_paused_and_resumed_run_streams_its_events_to_a_watcher(
     assert types[0] == "workflow_started" and types.count("approval_required") == 1
     assert types.count("workflow_started") == 2 and types[-1] == "workflow_completed"
     assert [m["nodeId"] for m in seen if m["type"] == "node_started"].count("s") == 1
+
+
+def test_nothing_is_delivered_without_a_notify_and_one_notify_delivers_at_once(
+    ws_env: LiveEnv,
+) -> None:
+    eid, token = ws_env.running_execution()
+    with ws_env.connect(eid, token) as sock:
+        assert _recv(sock)["type"] == "workflow_started"
+        warm = ws_env.append(eid, "node_started", {"node_id": "warm"})
+        with _Renotifier(ws_env, eid, warm):  # the listener is certainly registered afterwards
+            assert _recv(sock)["seq"] == warm
+        quiet = ws_env.append(eid, "node_started", {"node_id": "quiet"})
+        _assert_silent(sock, 1.5)  # persisted, but no wake-up: only the 15 s poll would find it
+        started = time.monotonic()
+        ws_env.notify(eid, quiet)
+        msg = _recv(sock)
+        assert msg["seq"] == quiet and msg["node_id"] == "quiet"
+        assert time.monotonic() - started < LIVE_DEADLINE
+
+
+def test_no_listen_connection_is_open_while_no_socket_is_watching(ws_env: LiveEnv) -> None:
+    from sqlalchemy import text
+
+    async def _listen_count() -> int:
+        async with ws_env.sm() as s:
+            return int(
+                await s.scalar(
+                    text(
+                        "SELECT count(*) FROM pg_stat_activity "
+                        "WHERE datname = current_database() AND query ILIKE 'LISTEN%'"
+                    )
+                )
+                or 0
+            )
+
+    deadline = time.monotonic() + 5.0  # connections of earlier tests may still be closing
+    count = ws_env.run(_listen_count)
+    while count and time.monotonic() < deadline:
+        time.sleep(0.2)
+        count = ws_env.run(_listen_count)
+    assert count == 0

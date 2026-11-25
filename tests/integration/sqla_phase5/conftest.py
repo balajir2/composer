@@ -253,6 +253,32 @@ def two_approval_graph() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     return nodes, edges
 
 
+def fan_out_graph() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """start fans out to an approval node AND a sibling set-state node (one super-step). The
+    sibling completes while the approval interrupts, so its writes are saved as PENDING WRITES of
+    the interrupted checkpoint and must not be re-run (or lost) on resume."""
+    nodes = [
+        start_node(),
+        node("ua", "user-approval", approvalMessage="Fan", approverEmail="a@example.com"),
+        node("side", "set-state", stateKey="side", stateValue="done"),
+        node("ok", "set-state", stateKey="result", stateValue="approved"),
+        node("no", "set-state", stateKey="result", stateValue="rejected"),
+        node("fin", "set-state", stateKey="fin", stateValue="yes"),
+        end_node(),
+    ]
+    edges = [
+        edge("s", "ua"),
+        edge("s", "side"),
+        edge("ua", "ok", branch="approved"),
+        edge("ua", "no", branch="rejected"),
+        edge("ok", "fin"),
+        edge("no", "fin"),
+        edge("side", "fin"),
+        edge("fin", "e"),
+    ]
+    return nodes, edges
+
+
 async def start_paused(
     client: AsyncClient,
     db: Db,

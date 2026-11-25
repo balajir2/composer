@@ -104,11 +104,13 @@ async def test_history_is_per_thread_and_empty_for_an_unknown_thread(
     assert await _history(app, "no-such-thread") == []
 
 
-async def test_pending_writes_are_idempotent_and_ordered_by_task_then_index(
+async def test_pending_writes_do_not_duplicate_and_are_ordered_by_task_then_index(
     app: Any, client: AsyncClient, db: Db, member: Member, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The executor re-writes a task's writes when a step is replayed: the same (task, index) must
-    update in place, never duplicate."""
+    """The executor re-writes a task's writes when a step is replayed: repeating exactly what was
+    written must not add entries. Entries come back ordered by task id, then index. (Whether a
+    repeated write with a DIFFERENT value for an ordinary channel overwrites is saver-specific
+    and deliberately not pinned.)"""
     _eid, thread = await start_paused(client, db, member, monkeypatch)
     saver = app.state.checkpointer
     head = await saver.aget_tuple(_cfg(thread))
@@ -117,15 +119,29 @@ async def test_pending_writes_are_idempotent_and_ordered_by_task_then_index(
     before = list(head.pending_writes)
     await saver.aput_writes(cfg, [("p5_chan_a", "one"), ("p5_chan_b", "two")], "task-b")
     await saver.aput_writes(cfg, [("p5_chan_c", "three")], "task-a")
-    await saver.aput_writes(cfg, [("p5_chan_a", "one-again"), ("p5_chan_b", "two")], "task-b")
+    await saver.aput_writes(cfg, [("p5_chan_a", "one"), ("p5_chan_b", "two")], "task-b")
     after = (await saver.aget_tuple(_cfg(thread))).pending_writes
     added = [w for w in after if w not in before]
     assert added == [
         ("task-a", "p5_chan_c", "three"),
-        ("task-b", "p5_chan_a", "one-again"),
+        ("task-b", "p5_chan_a", "one"),
         ("task-b", "p5_chan_b", "two"),
     ]
     assert len(after) == len(before) + 3
+
+
+async def test_a_repeated_special_channel_write_replaces_the_previous_one(
+    app: Any, client: AsyncClient, db: Db, member: Member, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Special channels (``__error__`` and friends) are upserted by both savers."""
+    _eid, thread = await start_paused(client, db, member, monkeypatch)
+    saver = app.state.checkpointer
+    head = await saver.aget_tuple(_cfg(thread))
+    assert head is not None
+    await saver.aput_writes(head.config, [("__error__", "e1")], "task-c")
+    await saver.aput_writes(head.config, [("__error__", "e2")], "task-c")
+    after = (await saver.aget_tuple(_cfg(thread))).pending_writes
+    assert [w for w in after if w[0] == "task-c"] == [("task-c", "__error__", "e2")]
 
 
 async def test_resume_adds_history_and_keeps_the_old_entries(
