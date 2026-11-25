@@ -550,6 +550,7 @@ def test_claim_and_run_crash_in_run_marks_row_failed_and_returns_error(
     assert len(fake.updates) == 1
     data = fake.updates[0]
     assert data["execution_id"] == "exec-1"
+    assert data["attempt_id"] == "attempt-1"
     assert data["status"] == "failed"
     assert "RuntimeError" in data["error"]
     assert "simulated executor crash" in data["error"]
@@ -594,6 +595,7 @@ def test_claim_and_run_crash_in_resume_marks_row_failed_and_returns_error(
     assert len(fake.updates) == 1
     data = fake.updates[0]
     assert data["execution_id"] == "exec-1"
+    assert data["attempt_id"] == "attempt-1"
     assert data["status"] == "failed"
     assert "RuntimeError" in data["error"]
     assert "simulated resume crash" in data["error"]

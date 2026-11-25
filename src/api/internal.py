@@ -360,6 +360,7 @@ async def claim_and_run_execution(
                     error=f"{type(exc).__name__}: {exc}",
                     failure_code="execution_error",
                     now=utcnow(),
+                    attempt_id=claimed.attempt_id,
                 )
                 await crash_session.commit()
             updated_count = 1 if won else 0

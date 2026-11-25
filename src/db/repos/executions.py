@@ -18,7 +18,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.execution_status import ACTIVE_EXECUTION_STATUSES_SORTED
 from src.db.errors import add_or_already_exists
-from src.db.models import AttemptTriggerKind, ExecutionEvent, WorkflowExecution
+from src.db.models import (
+    AttemptResult,
+    AttemptTriggerKind,
+    ExecutionAttempt,
+    ExecutionEvent,
+    WorkflowExecution,
+)
 from src.db.repos import checkpoints as checkpoints_repo
 from src.db.repos import execution_attempts as execution_attempts_repo
 from src.db.repos._sql import in_array
@@ -361,21 +367,72 @@ async def cancel_if_active(
     )
 
 
-async def mark_failed_if_running(
-    session: AsyncSession, execution_id: str, *, error: str, failure_code: str, now: datetime
+def _worker_attempt_guard(attempt_id: str | None) -> ColumnElement[bool]:
+    """Fence an outcome to its open attempt; allow old rows without one."""
+    open_attempt = select(ExecutionAttempt.id).where(
+        ExecutionAttempt.execution_id == WorkflowExecution.id,
+        ExecutionAttempt.ended_at.is_(None),
+    )
+    if attempt_id is not None:
+        open_attempt = open_attempt.where(ExecutionAttempt.id == attempt_id)
+        return open_attempt.exists()
+    return ~open_attempt.exists()
+
+
+async def _worker_transition(
+    session: AsyncSession,
+    execution_id: str,
+    *,
+    attempt_id: str | None,
+    values: dict[str, Any],
+    result: AttemptResult,
+    failure_code: str | None,
+    now: datetime,
 ) -> bool:
-    """G6/G9: running -> failed, dropping the lease."""
-    return await _guarded(
+    won = await _guarded(
         session,
         execution_id,
-        (WorkflowExecution.status == "running",),
-        {
+        (WorkflowExecution.status == "running", _worker_attempt_guard(attempt_id)),
+        values,
+    )
+    if won and attempt_id is not None:
+        closed = await execution_attempts_repo.close_open(
+            session,
+            execution_id=execution_id,
+            attempt_id=attempt_id,
+            result=result,
+            failure_code=failure_code,
+            ended_at=now,
+        )
+        if not closed:
+            raise RuntimeError("guarded worker outcome won but attempt closure lost")
+    return won
+
+
+async def mark_failed_if_running(
+    session: AsyncSession,
+    execution_id: str,
+    *,
+    error: str,
+    failure_code: str,
+    now: datetime,
+    attempt_id: str | None = None,
+) -> bool:
+    """G6/G9: running -> failed, dropping the lease."""
+    return await _worker_transition(
+        session,
+        execution_id,
+        attempt_id=attempt_id,
+        values={
             "status": "failed",
             "error": error,
             "failure_code": failure_code,
             "completed_at": now,
             **_NO_LEASE,
         },
+        result=AttemptResult.FAILED,
+        failure_code=failure_code,
+        now=now,
     )
 
 
@@ -387,13 +444,14 @@ async def mark_completed_if_running(
     variables: Any,
     node_results: Any,
     now: datetime,
+    attempt_id: str | None = None,
 ) -> bool:
     """G7: running -> completed. An absent output is stored as JSON null."""
-    return await _guarded(
+    return await _worker_transition(
         session,
         execution_id,
-        (WorkflowExecution.status == "running",),
-        {
+        attempt_id=attempt_id,
+        values={
             "status": "completed",
             "output": _json(output),
             "variables": variables,
@@ -401,18 +459,31 @@ async def mark_completed_if_running(
             "completed_at": now,
             **_NO_LEASE,
         },
+        result=AttemptResult.COMPLETED,
+        failure_code=None,
+        now=now,
     )
 
 
 async def mark_waiting_approval_if_running(
-    session: AsyncSession, execution_id: str, *, variables: Any
+    session: AsyncSession,
+    execution_id: str,
+    *,
+    variables: Any,
+    now: datetime | None = None,
+    attempt_id: str | None = None,
 ) -> bool:
     """G8: running -> waiting_approval with the pending markers; ``completed_at`` untouched."""
-    return await _guarded(
+    if attempt_id is not None and now is None:
+        raise ValueError("now is required when closing an attempt")
+    return await _worker_transition(
         session,
         execution_id,
-        (WorkflowExecution.status == "running",),
-        {"status": "waiting_approval", "variables": variables, **_NO_LEASE},
+        attempt_id=attempt_id,
+        values={"status": "waiting_approval", "variables": variables, **_NO_LEASE},
+        result=AttemptResult.PAUSED,
+        failure_code=None,
+        now=now or datetime.now().astimezone(),
     )
 
 

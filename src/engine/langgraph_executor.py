@@ -220,7 +220,9 @@ class LangGraphExecutor:
         probe: Any = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
         return await self.checkpointer.aget_tuple(probe) is not None
 
-    async def _mark_completed(self, execution_id: str, final_state: dict[str, Any]) -> bool:
+    async def _mark_completed(
+        self, execution_id: str, final_state: dict[str, Any], *, attempt_id: str | None = None
+    ) -> bool:
         """Persist completion results only while the execution is running."""
         final_vars: dict[str, Any] = final_state.get("variables") or {}
         final_outputs: dict[str, Any] = final_state.get("final_outputs") or {}
@@ -247,6 +249,7 @@ class LangGraphExecutor:
                 variables=final_vars,
                 node_results=final_state.get("node_results") or {},
                 now=utcnow(),
+                attempt_id=attempt_id,
             )
             await session.commit()
         updated = 1 if won else 0
@@ -258,6 +261,8 @@ class LangGraphExecutor:
         pending_info: dict[str, Any],
         existing_vars: dict[str, Any] | None,
         pending_since: str,
+        *,
+        attempt_id: str | None = None,
     ) -> bool:
         """Persist waiting_approval status + pending node/prompt into variables.
 
@@ -276,14 +281,19 @@ class LangGraphExecutor:
 
         async with self.sessionmaker() as session:
             won = await executions_repo.mark_waiting_approval_if_running(
-                session, execution_id, variables=merged
+                session, execution_id, variables=merged, now=utcnow(), attempt_id=attempt_id
             )
             await session.commit()
         updated = 1 if won else 0
         return _transition_succeeded(execution_id, "waiting_approval", updated)
 
     async def _mark_failed(
-        self, execution_id: str, exc: Exception, *, failure_code: str = "execution_error"
+        self,
+        execution_id: str,
+        exc: Exception,
+        *,
+        failure_code: str = "execution_error",
+        attempt_id: str | None = None,
     ) -> bool:
         """Persist failure details only while the execution is running."""
         async with self.sessionmaker() as session:
@@ -293,6 +303,7 @@ class LangGraphExecutor:
                 error=f"{type(exc).__name__}: {exc}",
                 failure_code=failure_code,
                 now=utcnow(),
+                attempt_id=attempt_id,
             )
             await session.commit()
         updated = 1 if won else 0
@@ -343,7 +354,7 @@ class LangGraphExecutor:
                     existing_vars = final_state["variables"]
                 pending_since = datetime.now(UTC).isoformat()
                 if await self._mark_waiting_approval(
-                    execution_id, pending_info, existing_vars, pending_since
+                    execution_id, pending_info, existing_vars, pending_since, attempt_id=attempt_id
                 ):
                     await send_approval_email(
                         execution_id=execution_id,
@@ -365,7 +376,7 @@ class LangGraphExecutor:
                     )
                 return
 
-            if await self._mark_completed(execution_id, final_state):
+            if await self._mark_completed(execution_id, final_state, attempt_id=attempt_id):
                 await self._emit(
                     "workflow_completed",
                     execution_id,
@@ -377,11 +388,13 @@ class LangGraphExecutor:
             return
         except _ExecutionDeadlineExceeded as exc:
             logger.warning("Execution %s timed out", execution_id)
-            if await self._mark_failed(execution_id, exc, failure_code="execution_timeout"):
+            if await self._mark_failed(
+                execution_id, exc, failure_code="execution_timeout", attempt_id=attempt_id
+            ):
                 await self._emit("workflow_completed", execution_id, {"status": "failed"})
         except Exception as exc:
             logger.exception("Execution %s failed", execution_id)
-            if await self._mark_failed(execution_id, exc):
+            if await self._mark_failed(execution_id, exc, attempt_id=attempt_id):
                 # _emit is self-guarding (never raises) — no outer try/except needed.
                 await self._emit(
                     "workflow_completed",
@@ -442,7 +455,7 @@ class LangGraphExecutor:
                     existing_vars = final_state["variables"]
                 pending_since = datetime.now(UTC).isoformat()
                 if await self._mark_waiting_approval(
-                    execution_id, pending_info, existing_vars, pending_since
+                    execution_id, pending_info, existing_vars, pending_since, attempt_id=attempt_id
                 ):
                     await send_approval_email(
                         execution_id=execution_id,
@@ -464,7 +477,7 @@ class LangGraphExecutor:
                     )
                 return
 
-            if await self._mark_completed(execution_id, final_state):
+            if await self._mark_completed(execution_id, final_state, attempt_id=attempt_id):
                 await self._emit(
                     "workflow_completed",
                     execution_id,
@@ -485,11 +498,13 @@ class LangGraphExecutor:
                 await self._emit("workflow_completed", execution_id, {"status": "failed"})
         except _ExecutionDeadlineExceeded as exc:
             logger.warning("Execution %s timed out during resume", execution_id)
-            if await self._mark_failed(execution_id, exc, failure_code="execution_timeout"):
+            if await self._mark_failed(
+                execution_id, exc, failure_code="execution_timeout", attempt_id=attempt_id
+            ):
                 await self._emit("workflow_completed", execution_id, {"status": "failed"})
         except Exception as exc:
             logger.exception("Execution %s failed during resume", execution_id)
-            if await self._mark_failed(execution_id, exc):
+            if await self._mark_failed(execution_id, exc, attempt_id=attempt_id):
                 # _emit is self-guarding (never raises) — no outer try/except needed.
                 await self._emit(
                     "workflow_completed",
