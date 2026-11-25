@@ -108,7 +108,7 @@ async def _fresh_notify_connection() -> AsyncIterator[None]:  # pyright: ignore[
     def _drop() -> Any:
         conn: Any = getattr(events_notify, "_notify_connection", None)
         if hasattr(events_notify, "_notify_connection"):
-            events_notify._notify_connection = None  # pyright: ignore[reportPrivateUsage]
+            events_notify._notify_connection = None  # pyright: ignore[reportPrivateUsage, reportAttributeAccessIssue]
         return conn
 
     _drop()

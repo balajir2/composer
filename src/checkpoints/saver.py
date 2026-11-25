@@ -21,7 +21,7 @@ from psycopg_pool import AsyncConnectionPool, PoolTimeout
 from src.checkpoints.runtime import register_checkpointer, unregister_checkpointer
 from src.checkpoints.schema import assert_saver_schema_current
 from src.config import Settings, get_settings
-from src.db.url import to_libpq_url
+from src.db.url import direct_endpoint_url, to_libpq_url
 
 logger = logging.getLogger(__name__)
 
@@ -36,7 +36,9 @@ SAVER_CONNECTION_KWARGS: dict[str, Any] = {
 
 def saver_conninfo(settings: Settings) -> str:
     if settings.checkpointer_use_direct_endpoint:
-        raise NotImplementedError("direct endpoint conninfo arrives with phase 5 Task 8")
+        if settings.database_direct_url:
+            return to_libpq_url(settings.database_direct_url)
+        return direct_endpoint_url(to_libpq_url(settings.database_url))
     return to_libpq_url(settings.database_url)
 
 

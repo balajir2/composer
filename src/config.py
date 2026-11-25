@@ -89,6 +89,21 @@ class Settings(BaseSettings):
         default=False,
         description="Connect the checkpointer to Neon's direct (non-pooler) endpoint (D4).",
     )
+    database_direct_url: str | None = Field(
+        default=None,
+        description=(
+            "Direct (non-pooler) Postgres URL for LISTEN and the checkpointer's direct mode; "
+            "derived from DATABASE_URL (the -pooler host suffix removed) when unset."
+        ),
+    )
+    event_listener_idle_close_seconds: float = Field(
+        default=30.0,
+        ge=0,
+        description=(
+            "Seconds after the last WebSocket stops watching before the process closes its "
+            "LISTEN connection, so an idle instance never keeps Neon compute awake."
+        ),
+    )
     db_max_overflow: int = Field(
         default=5,
         ge=0,

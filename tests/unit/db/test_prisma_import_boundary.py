@@ -2,8 +2,8 @@
 
 Phase 5 finished the move: the last Prisma client plumbing (``src/storage``, ``get_db``,
 ``prisma_lifespan``) is gone, so the whole of ``src`` is scanned instead of a growing list of
-migrated areas. Phase 5 Task 8 adds ``asyncpg`` to the forbidden roots once LISTEN/NOTIFY moves to
-psycopg; phase 6 removes Prisma from the dependencies and tests.
+migrated areas. ``asyncpg`` is forbidden too since LISTEN/NOTIFY moved to psycopg (phase 5
+Task 8); phase 6 removes Prisma and the asyncpg package from the dependencies and tests.
 
 Limits: relative imports (``from . import x``) are skipped, and transitive imports (a module
 importing a helper that imports Prisma) are not followed. Only direct absolute imports are
@@ -15,7 +15,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SCANNED_ROOTS = ["src"]
-FORBIDDEN_ROOTS = ("prisma", "src.storage")
+FORBIDDEN_ROOTS = ("prisma", "src.storage", "asyncpg")
 
 
 def _is_forbidden(name: str) -> bool:
@@ -39,16 +39,25 @@ def _forbidden_imports(source: str) -> list[str]:
     return found
 
 
-def test_src_does_not_import_prisma() -> None:
+def _offenders(*roots: str) -> list[str]:
     offenders: list[str] = []
     for relative in SCANNED_ROOTS:
         root = REPO_ROOT / relative
         assert root.exists(), f"SCANNED_ROOTS entry missing: {relative}"
         files = [root] if root.is_file() else sorted(root.rglob("*.py"))
         for path in files:
-            if _forbidden_imports(path.read_text(encoding="utf-8")):
+            found = _forbidden_imports(path.read_text(encoding="utf-8"))
+            if any(name == r or name.startswith(f"{r}.") for name in found for r in roots):
                 offenders.append(path.relative_to(REPO_ROOT).as_posix())
-    assert offenders == [], f"Prisma imported in src: {offenders}"
+    return offenders
+
+
+def test_src_does_not_import_prisma() -> None:
+    assert _offenders("prisma", "src.storage") == []
+
+
+def test_src_does_not_import_asyncpg() -> None:
+    assert _offenders("asyncpg") == []
 
 
 def test_the_prisma_storage_package_is_deleted() -> None:
@@ -61,6 +70,9 @@ def test_detector_catches_forbidden_imports() -> None:
     assert _forbidden_imports("import os, prisma") == ["prisma"]
     assert _forbidden_imports("from src.storage.db import get_db") == ["src.storage.db"]
     assert _forbidden_imports("import src.storage") == ["src.storage"]
+    assert _forbidden_imports("import asyncpg") == ["asyncpg"]
+    assert _forbidden_imports("from asyncpg import Connection") == ["asyncpg"]
+    assert _forbidden_imports("from asyncpg.exceptions import X") == ["asyncpg.exceptions"]
 
 
 def test_detector_ignores_lookalikes() -> None:

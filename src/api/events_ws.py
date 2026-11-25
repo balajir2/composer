@@ -12,7 +12,6 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-import asyncpg
 from fastapi import APIRouter, Query, WebSocket, WebSocketDisconnect, status
 
 from src.config import Settings, get_settings
@@ -20,7 +19,6 @@ from src.db.repos import executions as executions_repo
 from src.db.repos import users as users_repo
 from src.db.runtime import request_sessionmaker
 from src.engine.events import ExecutionEvent
-from src.engine.events_notify import NOTIFY_CHANNEL
 from src.security.auth import AuthError, verify_user_token
 from src.telemetry.providers import (
     websocket_connection,
@@ -30,6 +28,7 @@ from src.telemetry.providers import (
 
 if TYPE_CHECKING:
     from src.engine.events_pg import PostgresEventStore
+    from src.engine.notifications import ExecutionEventListener
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["events-ws"])
@@ -87,7 +86,7 @@ async def events_ws(  # pyright: ignore[reportUnusedFunction]
     after: int = Query(default=0, ge=0),  # reconnect cursor (P1-4): replay events with seq > after
 ) -> None:
     # Resolve app-level singletons directly from ws.app.state
-    # (WebSocket is HTTPConnection, not Request — Depends(get_db) won't work here)
+    # (a WebSocket is an HTTPConnection, not a Request, so request dependencies don't apply)
     settings: Settings = get_settings()
     sessionmaker = request_sessionmaker(ws)
     if sessionmaker is None:
@@ -156,74 +155,59 @@ async def events_ws(  # pyright: ignore[reportUnusedFunction]
                 await ws.close(code=status.WS_1000_NORMAL_CLOSURE, reason="terminal")
                 return
 
-        # 6) live delivery via Postgres LISTEN/NOTIFY: a dedicated connection
-        # per client wakes on any execution's event and re-polls the durable
-        # store for this execution_id (the channel is shared/global; a wake-up
-        # for another execution just costs a harmless empty list_since query).
-        #
-        # connect()/add_listener() live inside the try so a failure between
-        # them (e.g. add_listener raising after connect() already succeeded)
-        # still hits the finally block below instead of leaking the connection
-        # and the WebSocket (P1-4 code review, Important #1). `_on_notify` is
-        # defined up front (it only closes over `notified`, not `conn`) so it's
-        # always bound by the time `finally` runs, even if `connect()` itself
-        # raises before `conn` is ever assigned.
-        notified = asyncio.Event()
-
-        def _on_notify(*_args: object) -> None:
-            notified.set()
-
-        conn: asyncpg.Connection | None = None
-        try:
-            conn = await asyncpg.connect(get_settings().database_url)
-            await conn.add_listener(NOTIFY_CHANNEL, _on_notify)
-
-            while True:
-                got_notification = True
-                try:
-                    await asyncio.wait_for(notified.wait(), timeout=15.0)
-                    notified.clear()
-                except TimeoutError:
-                    got_notification = False
-
-                # The 15s timeout doubles as a poll trigger, not just a keepalive
-                # tick: events_notify.py's module docstring promises a missed
-                # NOTIFY is caught up "on the next notification or keepalive
-                # poll" — so query list_since on every iteration, timeout or not
-                # (P1-4 code review, Critical).
-                new_events = await event_store.list_since(execution_id, after_seq=last_seq)
-                for event in new_events:
-                    await _send_text(ws, json.dumps(event.as_json()))
-                    if event.seq is not None:
-                        last_seq = event.seq
-                    if _is_terminal_event(event):
-                        return
-
-                if not got_notification:
-                    # This send is the loop's only opportunity to detect a
-                    # disconnected client (it never calls ws.receive()). A
-                    # failure here means the client is gone — break instead of
-                    # swallowing the error and looping forever holding this
-                    # dedicated Postgres LISTEN connection open (P1-4 code
-                    # review, Important #3).
+        # 6) live delivery via Postgres LISTEN/NOTIFY: the process-wide listener
+        # (src/engine/notifications.py) sets `notified` when a NOTIFY names THIS
+        # execution, and on every (re)connect of its LISTEN connection; the loop
+        # then re-polls the durable store. Without a listener (unit tests) the
+        # 15 s poll below still delivers everything.
+        listener: ExecutionEventListener | None = getattr(ws.app.state, "event_listener", None)
+        with (
+            listener.subscribe(execution_id)
+            if listener is not None
+            else contextlib.nullcontext(asyncio.Event())
+        ) as notified:
+            try:
+                while True:
+                    got_notification = True
                     try:
-                        await _send_json(ws, {"type": "__keepalive__"})
-                    except Exception:
-                        logger.warning(
-                            "events_ws: keepalive send failed for execution %s, closing",
-                            execution_id,
-                        )
-                        return
-        except WebSocketDisconnect:
-            return
-        finally:
-            if conn is not None:
+                        await asyncio.wait_for(notified.wait(), timeout=15.0)
+                        notified.clear()
+                    except TimeoutError:
+                        got_notification = False
+
+                    # The 15s timeout doubles as a poll trigger, not just a keepalive
+                    # tick: events_notify.py's module docstring promises a missed
+                    # NOTIFY is caught up "on the next notification or keepalive
+                    # poll" — so query list_since on every iteration, timeout or not
+                    # (P1-4 code review, Critical).
+                    new_events = await event_store.list_since(execution_id, after_seq=last_seq)
+                    for event in new_events:
+                        await _send_text(ws, json.dumps(event.as_json()))
+                        if event.seq is not None:
+                            last_seq = event.seq
+                        if _is_terminal_event(event):
+                            return
+
+                    if not got_notification:
+                        # This send is the loop's only opportunity to detect a
+                        # disconnected client (it never calls ws.receive()). A
+                        # failure here means the client is gone — break instead of
+                        # swallowing the error and looping forever, which would keep
+                        # this subscription (and so the shared LISTEN connection) open
+                        # (P1-4 code review, Important #3).
+                        try:
+                            await _send_json(ws, {"type": "__keepalive__"})
+                        except Exception:
+                            logger.warning(
+                                "events_ws: keepalive send failed for execution %s, closing",
+                                execution_id,
+                            )
+                            return
+            except WebSocketDisconnect:
+                return
+            finally:
                 with contextlib.suppress(Exception):
-                    await conn.remove_listener(NOTIFY_CHANNEL, _on_notify)
-                with contextlib.suppress(Exception):
-                    await conn.close()
-            with contextlib.suppress(Exception):
-                await ws.close(code=status.WS_1000_NORMAL_CLOSURE)
+                    await ws.close(code=status.WS_1000_NORMAL_CLOSURE)
 
 
 __all__ = ["router"]

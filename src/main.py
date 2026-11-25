@@ -40,8 +40,8 @@ from src.checkpoints.saver import checkpointer_lifespan
 from src.config import get_settings
 from src.config_validation import validate_execution_timing, validate_production_config
 from src.db.lifespan import sqlalchemy_lifespan
-from src.engine.events_notify import close_notify_connection
 from src.engine.events_pg import PostgresEventStore
+from src.engine.notifications import notifications_lifespan
 from src.execution.cloud_tasks import close_cloud_tasks_client
 from src.maintenance.execution_sweeper import start_sweeper, stop_sweeper
 from src.security.key_sync import sync_llm_keys_from_db
@@ -64,7 +64,11 @@ async def _service_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # src/config_validation.py for what this catches and why.
     validate_production_config(settings)
 
-    async with sqlalchemy_lifespan(app), checkpointer_lifespan(app):
+    async with (
+        sqlalchemy_lifespan(app),
+        checkpointer_lifespan(app),
+        notifications_lifespan(app),
+    ):
         sessionmaker = app.state.db_sessionmaker
         app.state.event_bus = PostgresEventStore(sessionmaker)
         app.state.rate_limiter = PostgresRateLimiter(sessionmaker)
@@ -88,13 +92,9 @@ async def _service_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         finally:
             app.state.draining = True
             await stop_sweeper(sweeper_task)
-            # Moved from the Prisma lifespan. Each cleanup is independently guarded (a failure in
-            # one must not skip the other or the pool and engine shutdown), logged not raised.
-            # The NOTIFY connection goes away with the asyncpg code in phase 5 Task 8.
-            try:
-                await close_notify_connection()
-            except Exception:
-                logger.exception("lifespan: close_notify_connection() failed during shutdown")
+            # Each cleanup is independently guarded (a failure in one must not skip the other or
+            # the pool and engine shutdown), logged not raised. The LISTEN connection closes in
+            # notifications_lifespan's own exit.
             # The cached Cloud Tasks client's grpc transport.
             try:
                 await close_cloud_tasks_client()

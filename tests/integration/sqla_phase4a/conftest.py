@@ -24,7 +24,6 @@ Network is never real: ``httpx_mock`` is requested for every test. Loopback is e
 query engine is an HTTP server on localhost); the ASGI test client is never intercepted.
 """
 
-import contextlib
 import itertools
 import re
 import secrets
@@ -253,21 +252,6 @@ async def app(phase4a_env: None) -> AsyncIterator[FastAPI]:
 def _network_lock(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnusedFunction]
     """Request httpx_mock everywhere: any outbound request without a registered mock fails."""
     del httpx_mock
-
-
-@pytest_asyncio.fixture(autouse=True)
-async def _fresh_notify_connection() -> AsyncIterator[None]:  # pyright: ignore[reportUnusedFunction]
-    """The NOTIFY connection is a module global bound to one event loop; never reuse a stale
-    one across tests (each test has its own loop)."""
-    import src.engine.events_notify as events_notify
-
-    events_notify._notify_connection = None  # pyright: ignore[reportPrivateUsage]
-    yield
-    conn: Any = events_notify._notify_connection  # pyright: ignore[reportPrivateUsage]
-    events_notify._notify_connection = None  # pyright: ignore[reportPrivateUsage]
-    if conn is not None:
-        with contextlib.suppress(Exception):
-            await conn.close()
 
 
 @pytest_asyncio.fixture(autouse=True)
