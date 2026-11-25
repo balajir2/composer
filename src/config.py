@@ -62,15 +62,18 @@ class Settings(BaseSettings):
         default=0.5,
         description="Backoff before the 2nd connect attempt; doubles each retry after.",
     )
-    # SQLAlchemy pool. Kept small while Prisma also holds connections, so the
-    # two together stay within Neon's connection limit (migration spec 3.1).
+    # SQLAlchemy pool. SQLAlchemy carries all execution traffic (per-node event
+    # appends, claims, rate-limit checks) at Cloud Run concurrency 80, and the runtime
+    # URL is Neon's -pooler host, so 5+5 per instance (3 max instances x 10 = 30
+    # connections) is well under the pooler's limit. Prisma's separate pool still
+    # exists for the checkpointer until phase 5.
     db_pool_size: int = Field(
-        default=2,
+        default=5,
         ge=1,
         description="Persistent SQLAlchemy connections per process.",
     )
     db_max_overflow: int = Field(
-        default=3,
+        default=5,
         ge=0,
         description="Extra SQLAlchemy connections allowed under load.",
     )

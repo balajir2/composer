@@ -235,6 +235,10 @@ async def claim_and_run_execution(
     # repeat external effects. The claim is one statement (see executions_repo.claim); its
     # SET LOCAL timeouts last until this transaction ends, so it commits and its session
     # closes before anything else runs.
+    # If this timeout fires after the server committed the claim but before the reply was
+    # read, the row stays leased and the handler answers 500; Cloud Tasks redelivers, gets
+    # ``already_claimed``, and the row fails at lease expiry (``lease_expired``). There is
+    # no duplicate execution. The window is the same as the old Prisma tx(timeout=10000).
     async with asyncio.timeout(10), sessionmaker() as session:
         claimed = await executions_repo.claim(
             session,

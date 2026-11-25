@@ -7,7 +7,7 @@ so concurrent appends to one execution serialize and get seqs 1..N without gaps.
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, insert, select, text
@@ -17,6 +17,9 @@ from src.db.ids import new_id
 from src.db.models import ExecutionEvent
 from src.db.repos._sql import in_array
 from src.db.types import utcnow
+
+if TYPE_CHECKING:
+    from sqlalchemy.engine import CursorResult
 
 
 @dataclass(frozen=True)
@@ -79,10 +82,9 @@ async def delete_for_executions(session: AsyncSession, execution_ids: list[str])
     result = await session.execute(
         sa_delete(ExecutionEvent)
         .where(in_array(ExecutionEvent.execution_id, execution_ids))
-        .returning(ExecutionEvent.id)
         .execution_options(synchronize_session=False)
     )
-    return len(result.all())
+    return cast("CursorResult[Any]", result).rowcount
 
 
 async def delete_older_than(session: AsyncSession, cutoff: datetime) -> int:
@@ -90,7 +92,6 @@ async def delete_older_than(session: AsyncSession, cutoff: datetime) -> int:
     result = await session.execute(
         sa_delete(ExecutionEvent)
         .where(ExecutionEvent.created_at < cutoff)
-        .returning(ExecutionEvent.id)
         .execution_options(synchronize_session=False)
     )
-    return len(result.all())
+    return cast("CursorResult[Any]", result).rowcount

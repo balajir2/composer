@@ -22,6 +22,7 @@ class FakeSession:
     """Stands in for AsyncSession. Repo functions are patched, so only these are called."""
 
     def __init__(self) -> None:
+        self.execute = AsyncMock()
         self.commit = AsyncMock()
         self.rollback = AsyncMock()
         self.close = AsyncMock()

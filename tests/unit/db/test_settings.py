@@ -4,9 +4,9 @@ from pydantic import ValidationError
 from src.config import Settings, get_settings
 
 
-def test_sqlalchemy_pool_defaults_are_small_while_prisma_also_holds_connections() -> None:
-    assert Settings.model_fields["db_pool_size"].default == 2
-    assert Settings.model_fields["db_max_overflow"].default == 3
+def test_sqlalchemy_pool_defaults_fit_phase_4_traffic_behind_the_neon_pooler() -> None:
+    assert Settings.model_fields["db_pool_size"].default == 5
+    assert Settings.model_fields["db_max_overflow"].default == 5
 
 
 def test_connect_requires_at_least_one_attempt() -> None:

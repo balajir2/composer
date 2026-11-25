@@ -5,6 +5,8 @@ from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import HTTPException
+from psycopg.errors import LockNotAvailable
+from sqlalchemy.exc import DBAPIError, OperationalError
 
 from src.db.errors import AlreadyExists
 from src.db.repos import rate_limits as repo
@@ -98,3 +100,30 @@ async def test_enforce_raises_429_when_denied(r: _Repo) -> None:
             config=BucketConfig(capacity=1, refill_per_second=0.01),
         )
     assert exc_info.value.status_code == 429
+
+
+async def test_check_sets_a_lock_timeout_before_locking(r: _Repo) -> None:
+    limiter, sm = _limiter()
+    await limiter.check("executions", "user1", BucketConfig(capacity=5, refill_per_second=0.5))
+    sm.session.execute.assert_awaited_once()
+    assert sm.session.execute.await_args is not None
+    assert "lock_timeout" in str(sm.session.execute.await_args.args[0])
+
+
+async def test_lock_timeout_denies_without_consuming(r: _Repo) -> None:
+    limiter, sm = _limiter()
+    r.lock.side_effect = OperationalError("SELECT", {}, LockNotAvailable("canceling"))
+    allowed, retry_after = await limiter.check(
+        "executions", "user1", BucketConfig(capacity=5, refill_per_second=0.5)
+    )
+    assert (allowed, retry_after) == (False, 1.0)
+    r.insert.assert_not_awaited()
+    r.save.assert_not_awaited()
+    sm.session.commit.assert_not_awaited()
+
+
+async def test_other_database_errors_still_propagate(r: _Repo) -> None:
+    limiter, _ = _limiter()
+    r.lock.side_effect = DBAPIError("SELECT", {}, RuntimeError("boom"))
+    with pytest.raises(DBAPIError):
+        await limiter.check("executions", "user1", BucketConfig(capacity=5, refill_per_second=0.5))

@@ -2,6 +2,7 @@
 
 import asyncio
 import secrets
+import time
 from collections.abc import AsyncIterator
 from datetime import UTC, datetime
 
@@ -104,5 +105,35 @@ async def test_deny_leaves_last_refill_untouched(sm: async_sessionmaker[AsyncSes
             ).scalar_one()
         assert row.tokens == 0.0
         assert abs((row.last_refill - stale).total_seconds()) < 0.002
+    finally:
+        await _cleanup(sm, route)
+
+
+async def test_check_denies_within_the_lock_timeout_when_the_bucket_is_held(
+    sm: async_sessionmaker[AsyncSession],
+) -> None:
+    limiter = PostgresRateLimiter(sm)
+    route, client = _k(), _k()
+    cfg = BucketConfig(capacity=3, refill_per_second=1e-9)
+    stamp = datetime.now(UTC)
+    try:
+        async with sm() as s:
+            await repo.insert_bucket(s, route, client, tokens=3.0, last_refill=stamp)
+            await s.commit()
+        async with sm() as holder:
+            assert await repo.lock_bucket(holder, route, client) is not None  # row lock held
+            started = time.monotonic()
+            ok, retry = await limiter.check(route, client, cfg)
+            waited = time.monotonic() - started
+            await holder.rollback()
+        assert ok is False and retry == 1.0
+        assert 1.5 < waited < 4.0
+        async with sm() as s:
+            row = (
+                await s.execute(select(RateLimitBucket).where(RateLimitBucket.route_key == route))
+            ).scalar_one()
+        assert row.tokens == 3.0  # the timed-out check consumed nothing
+        ok_after, _ = await limiter.check(route, client, cfg)
+        assert ok_after is True
     finally:
         await _cleanup(sm, route)
