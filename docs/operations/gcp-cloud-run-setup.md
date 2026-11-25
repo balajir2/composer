@@ -250,8 +250,9 @@ Any push to `main` triggers `.github/workflows/deploy-gcp.yml`. It:
 
 1. Authenticates as `composer-deployer` using the JSON key.
 2. Builds + pushes both images to Artifact Registry, tagged with the commit SHA + `latest`.
-3. Deploys both Cloud Run services (frontend depends on backend so it picks up the right API URL).
-4. Uses `/ready` for the startup probe and deployment smoke test, with `/health` for liveness.
+3. Applies database migrations: `prisma migrate deploy`, then the checkpointer deploy guard (`uv run composer checkpoints guard`, which fails the job while an active run has checkpoints only in the old tables; see "Checkpointer cutover" in [production-deployment.md](production-deployment.md)), then `alembic upgrade head`.
+4. Deploys both Cloud Run services (frontend depends on backend so it picks up the right API URL).
+5. The live backend service uses the default TCP startup probe on port 8080 (not `/ready`) and `/health` for liveness; `/ready` is used by the deployment smoke test. Do not make `/ready` the startup probe while a rollback or mixed-version window is possible: an old revision on a migrated database reports a schema mismatch there. See the rollback runbook in [production-deployment.md](production-deployment.md).
 
 You can also trigger manually via the Actions tab → Deploy to GCP Cloud Run → Run workflow.
 

@@ -555,7 +555,6 @@ class Phase3Adapter:
         self._app = app
         self._client = client
         self._monkeypatch = monkeypatch
-        self._db: Any = app.state.db
         self._sm = cast("async_sessionmaker[AsyncSession]", app.state.db_sessionmaker)
         self.builder_calls: list[dict[str, Any]] = []
 

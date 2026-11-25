@@ -1,6 +1,6 @@
 # Handoff: telemetry roadmap Phase 5 on the merged execution repositories
 
-Date: 2026-11-25. Applies once the combined SQLAlchemy phase 4 PR (4a + 4b) is merged. Read `docs/superpowers/plans/2026-11-20-telemetry-roadmap.md` Phase 5 first; this note names the exact paths to build on. Do not revive Prisma paths from older commits.
+Date: 2026-11-25 (updated after SQLAlchemy phase 5). Applies once the combined SQLAlchemy phase 4 PR (4a + 4b) and the phase 5 PR are merged. Read `docs/superpowers/plans/2026-11-20-telemetry-roadmap.md` Phase 5 first; this note names the exact paths to build on. Do not revive Prisma paths from older commits.
 
 ## Build on these
 
@@ -21,12 +21,18 @@ Add recovery transitions (telemetry Task 7.2) as another guarded function of the
 
 - Callers own the transaction: repos never commit. Write the attempt row in the SAME transaction as the transition, and only when the guarded function returned a winner (that is what makes "at most one winning attempt" true).
 - Short-session rule: no session is held across a graph run, LLM call, Cloud Tasks enqueue, email, or WebSocket wait. Resume commits first, then enqueues. Outside a request, get sessions from `src/db/runtime.py`; executors take a `sessionmaker`.
-- Alembic: `src/db/migrations/versions/`, next revision after `0003_assignment_user_fks`. Copy the `_bound_locks()` helper style from 0002/0003 (bounded `lock_timeout`/`statement_timeout`), and create before drop. Schema changes never go through `prisma/` (frozen). Generate models from the Alembic schema, not `schema.prisma`.
+- Alembic: `src/db/migrations/versions/`, the Alembic head is now `0004_langgraph_saver_tables` (phase 5), so your `execution_attempts` revision must chain after it (`down_revision = "0004_langgraph_saver_tables"`); check `uv run alembic heads` shows one head before and after. Copy the `_bound_locks()` helper style from 0002/0003 (bounded `lock_timeout`/`statement_timeout`), and create before drop. Schema changes never go through `prisma/` (frozen). Generate models from the Alembic schema, not `schema.prisma`.
 - Tests: real-Postgres repo tests live in `tests/integration/db/repos/`; behaviour oracles in `tests/integration/sqla_phase4a` and `sqla_phase4b` must stay green.
 
-## Still on Prisma (our SQLAlchemy phase 5, not yours)
+## Checkpointer after phase 5 (replaces the old "Still on Prisma" section)
 
-The LangGraph checkpointer (`PrismaCheckpointSaver`) and its plumbing: `get_db`/`prisma_lifespan`/`get_checkpointer` and `enqueue_execution(db=)`. Do not touch until our phase 5 lands: `src/storage/**`, the checkpointer wiring in `src/engine/langgraph_executor.py`, and the dev-mode fallback in `src/execution/cloud_tasks.py`. LISTEN/NOTIFY (`src/engine/events_notify.py`, `src/api/events_ws.py`) is also phase 5.
+The checkpointer is the official `langgraph-checkpoint-postgres` saver (`src/checkpoints/saver.py`, own psycopg pool, tables from Alembic 0004). `src/storage/**`, `get_db`, `prisma_lifespan` and `enqueue_execution(db=)` no longer exist; nothing in `src` imports Prisma or asyncpg (`tests/unit/db/test_prisma_import_boundary.py` enforces it). LISTEN/NOTIFY is on psycopg (`src/engine/notifications.py`, `src/engine/events_notify.py`).
+
+Files you may now touch: `src/engine/langgraph_executor.py` (keep the resume-time `bring_forward` and the `checkpoint_missing` / `checkpoint_sync_failed` handling intact), `src/execution/cloud_tasks.py` (its dev-mode fallback uses the registered checkpointer), `src/api/events_ws.py` and the notification modules. Still off limits until phase 7: `src/checkpoints/legacy.py`, `copy.py`, `versions.py`, `sync.py`, the `composer checkpoints` CLI and the old `langgraph_checkpoint*` tables (rollback depends on them).
+
+Two new `failure_code` values exist: `checkpoint_missing` (a resume found no saved state; the run fails instead of restarting) and `checkpoint_sync_failed` (copy-forward or read failed during a resume; old-table rows intact, recoverable). They are already in `src/telemetry/attributes.py` and `docs/telemetry/signal-catalog.md` (phase 5 added them there; no change needed from you, but account for them in dashboards, attempt results and recovery logic, and in `docs/api-reference.md`'s failure-code table, where they are listed).
+
+Rollback and cutover runbook: `docs/operations/production-deployment.md` "Checkpointer cutover".
 
 ## Operational note
 

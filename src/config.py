@@ -40,7 +40,8 @@ class Settings(BaseSettings):
         default="postgresql://composer:composer@localhost:5432/composer",
         description="Postgres connection string. Required.",
     )
-    # Startup circuit breaker (src/storage/db.py's _connect_with_retry): if
+    # Startup circuit breaker (src/db/engine.py's connect_with_retry and the checkpointer pool's
+    # open-with-retry in src/checkpoints/saver.py): if
     # the database is genuinely down (not just cold-starting), a container
     # that spends ~90s retrying before Cloud Run kills its failed boot and
     # respawns a new one turns an outage into a runaway compute-burning
@@ -52,11 +53,11 @@ class Settings(BaseSettings):
     db_connect_max_attempts: int = Field(
         default=3,
         ge=1,
-        description="Max db.connect() attempts during startup before giving up.",
+        description="Max connect attempts during startup before giving up.",
     )
     db_connect_timeout_seconds: float = Field(
         default=3.0,
-        description="Per-attempt timeout for the Prisma engine to become reachable.",
+        description="Per-attempt timeout for the database to become reachable.",
     )
     db_connect_initial_backoff_seconds: float = Field(
         default=0.5,
@@ -65,12 +66,43 @@ class Settings(BaseSettings):
     # SQLAlchemy pool. SQLAlchemy carries all execution traffic (per-node event
     # appends, claims, rate-limit checks) at Cloud Run concurrency 80, and the runtime
     # URL is Neon's -pooler host, so 5+5 per instance (3 max instances x 10 = 30
-    # connections) is well under the pooler's limit. Prisma's separate pool still
-    # exists for the checkpointer until phase 5.
+    # connections) is well under the pooler's limit. The checkpointer has its own pool (below).
     db_pool_size: int = Field(
         default=5,
         ge=1,
         description="Persistent SQLAlchemy connections per process.",
+    )
+    # Official LangGraph checkpointer pool (psycopg_pool), separate from the SQLAlchemy pool so a
+    # long-running graph cannot starve request handlers. Budget (D4): SQLAlchemy 5+5 plus this
+    # pool's max (default 5) = at most 15 connections per instance; 3 max instances = 45, under
+    # the Neon pooler limit.
+    checkpointer_pool_min_size: int = Field(
+        default=1, ge=0, description="Idle connections the checkpointer pool keeps (D4 budget)."
+    )
+    checkpointer_pool_max_size: int = Field(
+        default=5, ge=1, description="Max checkpointer pool connections per process (D4 budget)."
+    )
+    checkpointer_pool_timeout_seconds: float = Field(
+        default=10.0, gt=0, description="Seconds to wait for a checkpointer pool connection."
+    )
+    checkpointer_use_direct_endpoint: bool = Field(
+        default=False,
+        description="Connect the checkpointer to Neon's direct (non-pooler) endpoint (D4).",
+    )
+    database_direct_url: str | None = Field(
+        default=None,
+        description=(
+            "Direct (non-pooler) Postgres URL for LISTEN and the checkpointer's direct mode; "
+            "derived from DATABASE_URL (the -pooler host suffix removed) when unset."
+        ),
+    )
+    event_listener_idle_close_seconds: float = Field(
+        default=30.0,
+        ge=0,
+        description=(
+            "Seconds after the last WebSocket stops watching before the process closes its "
+            "LISTEN connection, so an idle instance never keeps Neon compute awake."
+        ),
     )
     db_max_overflow: int = Field(
         default=5,

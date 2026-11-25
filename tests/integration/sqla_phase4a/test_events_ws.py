@@ -86,8 +86,6 @@ class WsEnv:
         return self.client.websocket_connect(url, subprotocols=["bearer", token] if token else None)
 
     def cleanup(self) -> None:
-        from src.engine.events_notify import close_notify_connection
-
         async def _clean() -> None:
             await purge_execution_artifacts(self.sm, user_ids=self.users)
             async with self.sm() as s:
@@ -97,7 +95,6 @@ class WsEnv:
                 )
                 await s.execute(delete(User).where(User.id.in_(self.users)))
                 await s.commit()
-            await close_notify_connection()
 
         self.run(_clean)
 

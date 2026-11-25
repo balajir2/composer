@@ -48,7 +48,7 @@ import asyncio
 import json
 import logging
 from datetime import timedelta
-from typing import Any, Literal
+from typing import Literal
 
 from google.cloud import tasks_v2
 
@@ -93,36 +93,36 @@ async def close_cloud_tasks_client() -> None:
     _client = None
 
 
-async def _run_in_process(execution_id: str, kind: _TaskKind, db: Any) -> None:
+async def _run_in_process(execution_id: str, kind: _TaskKind) -> None:
     """Dev-mode fallback: run `claim_and_run_execution` directly instead of
     enqueueing a real Cloud Task. See this module's docstring.
 
     Deferred import avoids a module-level cycle risk between the api and
     execution layers (mirrors the existing deferred-import pattern used
-    for this exact function elsewhere: src/storage/db.py's
-    prisma_lifespan, src/maintenance/execution_sweeper.py's
+    for this exact function elsewhere: src/maintenance/execution_sweeper.py's
     sweep_expired_leases).
 
-    checkpointer/event_bus are constructed fresh here rather than fetched
-    off `app.state` (what the HTTP endpoint does) without requiring this
-    module to carry a FastAPI `Request`/`app` reference it otherwise has no
-    use for. The event store wraps the registered SQLAlchemy sessionmaker
-    (the app lifespan registers it). The checkpointer still wraps the Prisma
-    client `db` (TODO(phase 5): the checkpointer moves to SQLAlchemy and `db`
-    leaves this signature).
+    The checkpointer and sessionmaker are the ones the app lifespan registered
+    (src/checkpoints/runtime.py, src/db/runtime.py) rather than fetched off
+    `app.state` (what the HTTP endpoint does), without requiring this module
+    to carry a FastAPI `Request`/`app` reference it otherwise has no use for.
+    The event store is constructed fresh around the registered sessionmaker.
 
-    The sessionmaker lookup and the event-store construction are inside the
-    `try` below: with no sessionmaker registered the RuntimeError is logged by
-    the handler instead of escaping the fire-and-forget task silently (the row
-    then stays `queued` for the operator to see in the log).
+    The registry lookups and the event-store construction are inside the
+    `try` below: with no sessionmaker or checkpointer registered the
+    RuntimeError is logged by the handler instead of escaping the
+    fire-and-forget task silently (the row then stays `queued` for the
+    operator to see in the log).
     """
     from src.api.internal import claim_and_run_execution
+    from src.checkpoints.runtime import get_registered_checkpointer
     from src.db.runtime import get_registered_sessionmaker
     from src.engine.events_pg import PostgresEventStore
-    from src.storage.checkpointer import PrismaCheckpointSaver
 
     try:
-        checkpointer = PrismaCheckpointSaver(db)
+        checkpointer = get_registered_checkpointer()
+        if checkpointer is None:
+            raise RuntimeError("no checkpointer registered; is the app lifespan running?")
         sessionmaker = get_registered_sessionmaker()
         if sessionmaker is None:
             raise RuntimeError(
@@ -153,20 +153,16 @@ async def _run_in_process(execution_id: str, kind: _TaskKind, db: Any) -> None:
         )
 
 
-async def enqueue_execution(execution_id: str, *, kind: _TaskKind, db: Any) -> None:
+async def enqueue_execution(execution_id: str, *, kind: _TaskKind) -> None:
     """Enqueue a Cloud Task that will trigger claim-and-run for `execution_id`.
 
     `kind` distinguishes a fresh run from an approval-resume so the
     claim-and-run endpoint knows which LangGraphExecutor method to call —
     both still go through the same claim (FOR UPDATE SKIP LOCKED) guard.
-
-    `db` (the Prisma client) now only feeds the dev-mode fallback's
-    `PrismaCheckpointSaver` (see module docstring); real Cloud Tasks delivery
-    never uses it. TODO(phase 5): drop it with the checkpointer move.
     """
     settings = get_settings()
     if not settings.cloud_tasks_service_account:
-        fallback_task = asyncio.create_task(_run_in_process(execution_id, kind, db))
+        fallback_task = asyncio.create_task(_run_in_process(execution_id, kind))
         _background_tasks.add(fallback_task)
         fallback_task.add_done_callback(_background_tasks.discard)
         return

@@ -315,6 +315,80 @@ After go-live:
 - **Week 1**: run the [disaster-recovery.md](disaster-recovery.md) full drill. You want to know the recovery path works before you need it.
 - **Month 1**: run the [scaling.md](scaling.md) capacity review. Adjust the backend replica count + Postgres plan as needed.
 
+## Checkpointer cutover (phase 5 to phase 7)
+
+SQLAlchemy phase 5 replaces the Prisma LangGraph saver with the official `langgraph-checkpoint-postgres` saver, which reads and writes new tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`; Alembic revision `0004_langgraph_saver_tables`). The old tables (`langgraph_checkpoints`, `langgraph_checkpoint_writes`) are kept until phase 7 so a rollback is possible. A run paused on the old saver cannot resume on the new revision unless its snapshots exist in the new tables.
+
+### What the deploy guard checks
+
+The deploy workflow runs `uv run composer checkpoints guard` after `prisma migrate deploy`, BEFORE `alembic upgrade head`, and before the Cloud Run deploy, so a refusal leaves the database untouched. On a database that has not yet reached revision 0004 the new saver tables do not exist; the guard then treats them as empty, so every active run with old-table checkpoints is blocked. It fails the job (so the previous revision keeps serving) while any `queued`, `running` or `waiting_approval` run has checkpoints only in the old tables: the old tables' newest checkpoint id for its thread is newer than the new tables', or the new tables have none. It prints `active runs: <status>=<n> ...`, then either `ok: ...` (exit 0) or one `blocked: <execution id> (<status>)` line per run (exit 1). A failure of the check itself (for example no database) also exits 1: the guard fails closed. Output carries ids, statuses and counts only.
+
+### Clearing the guard
+
+1. Copy the paused runs forward: `uv run composer checkpoints copy --to postgres --all-waiting` (or `--execution <id>`, repeatable). The `copy` commands need the DIRECT (non-pooler) `DATABASE_URL`, the one the deploy uses:
+
+   ```bash
+   export DATABASE_URL="$(gcloud secrets versions access latest \
+     --secret=composer-database-url --project=<PROJECT> | sed 's/-pooler\././')"
+   ```
+   (Run `copy --to postgres` only once the database is at revision 0004, i.e. after a deploy that applied the migration; before that, the guard's refusal is expected and the runs should finish or be cancelled.)
+2. Runs still `running`/`queued` cannot be copied (only `waiting_approval` runs are, unless `--force`): wait for them to finish or pause, then copy; or cancel them.
+3. Re-run the deploy.
+
+Copy exit codes: 0 all copied; 1 a copy failed or copied nothing; 2 some run was refused (unknown execution, wrong status, or the target is already ahead of the source) while the others were still copied. Exit 2 is an expected outcome, not an error: read the `refused` lines. A copy that reports `nothing to copy` for a run (it has no checkpoints in the source) is harmless. If it happens during `--to legacy --all-waiting`, the run has no official checkpoints, so there is nothing to roll back for it, and the command exits 1.
+
+Safety net: when a run is resumed, the executor first copies its thread from the old tables to the new ones if the old ones are ahead (`bring_forward`). A run that paused on the old revision after the guard ran (the window while Cloud Run shifts traffic) therefore still resumes. Roll-forward needs no manual step.
+
+### Failure codes after the cutover
+
+- `checkpoint_missing`: a resume found no saved state for the run. The run fails closed instead of restarting from scratch.
+- `checkpoint_sync_failed`: copying the run's state forward (or reading it) failed during a resume. The run was not restarted and the old-table rows are intact, so it is recoverable: fix the cause (database reachability, a stale lock), confirm with `composer checkpoints guard` that the run is listed as blocked or copy it with `copy --to postgres --execution <id> --force`, then resume or re-queue it.
+
+### Rollback runbook
+
+Rolling back means the previous revision (which reads only the old tables) must find every paused run's state there. Placeholders: `<REGION>`, `<PROJECT>`, `<BACKEND_SERVICE>` (the Cloud Run service name), `<previous-rev>` (the revision name from `gcloud run revisions list --service=<BACKEND_SERVICE> --region=<REGION> --project=<PROJECT>`). The queue is `composer-executions` (`scripts/gcp-bootstrap.ps1`, `CLOUD_TASKS_QUEUE` default in `src/config.py`). Do it in this order:
+
+1. Pause the Cloud Tasks queue:
+   ```bash
+   gcloud tasks queues pause composer-executions --location=<REGION> --project=<PROJECT>
+   ```
+2. Copy state back, with the direct (non-pooler) `DATABASE_URL` (same `sed` as the deploy):
+   ```bash
+   export DATABASE_URL="$(gcloud secrets versions access latest \
+     --secret=composer-database-url --project=<PROJECT> | sed 's/-pooler\././')"
+   uv run composer checkpoints copy --to legacy --all-waiting
+   ```
+3. Shift traffic to the previous revision:
+   ```bash
+   gcloud run services update-traffic <BACKEND_SERVICE> \
+     --to-revisions=<previous-rev>=100 --region=<REGION> --project=<PROJECT>
+   ```
+4. Wait for the new revision's instances to drain (its in-flight requests finish).
+5. Copy again (runs that paused during the drain exist only in the new tables):
+   ```bash
+   uv run composer checkpoints copy --to legacy --all-waiting
+   ```
+6. Resume the queue:
+   ```bash
+   gcloud tasks queues resume composer-executions --location=<REGION> --project=<PROJECT>
+   ```
+
+The startup probe on the live service is the default TCP probe on port 8080, not `/ready`. An old revision therefore still starts and serves on a database already at 0004; only its `/ready` reports a schema mismatch, which is expected during a rollback. Do NOT switch the startup probe to `/ready` while a rollback or a mixed-version window is possible: the old revision would fail its probe and never take traffic.
+
+Risk: a run resumed on the old revision without its checkpoint in the old tables does not fail. The old revision finds no checkpoint and restarts the graph from scratch with empty input, repeating side effects (emails, HTTP calls, LLM calls). That is why the queue is paused first and the copy runs twice.
+
+Known gap: during a traffic shift, a run that pauses on the new revision and is resumed on a still-draining old instance is not copied back, so the old saver restarts it from scratch. The window is small; pausing the queue (step 1) is what keeps it small.
+
+Startup budget: the SQLAlchemy connect retry and the saver pool open retry run in series at boot, about 21 s worst case with the defaults. Keep that in mind before tightening any startup probe or timeout.
+
+### Notifications and connections
+
+- LISTEN for live WebSocket updates uses one lazy connection per process on the direct (non-pooler) Neon endpoint. `DATABASE_DIRECT_URL` is optional; when unset it is derived from `DATABASE_URL` by removing `-pooler` from the host's first label (what the deploy workflow's `sed` does). The connection opens when the first WebSocket watches and closes `EVENT_LISTENER_IDLE_CLOSE_SECONDS` (default 30) after the last one leaves, so it never keeps Neon compute awake. NOTIFY goes through the normal pool.
+- Before phase 5, LISTEN went through whatever `DATABASE_URL` pointed at, which in production is the pooler host; Neon documents that LISTEN does not work through its PgBouncer transaction-mode pooler, so live updates probably fell back to the 15 s poll (not confirmed against production). After phase 5 they should arrive within seconds; verify on a run page after the first deploy.
+- Saver pool: its own `psycopg_pool` (`CHECKPOINTER_POOL_MIN_SIZE`=1, `CHECKPOINTER_POOL_MAX_SIZE`=5, `CHECKPOINTER_POOL_TIMEOUT_SECONDS`=10) on the pooler host with `prepare_threshold=None`. Budget per instance: SQLAlchemy 5+5, saver 5, so at most 15 pooler connections (45 at 3 instances) and 1 direct connection (3 at 3 instances), plus one-shot direct connections during deploys. Escape hatch: `CHECKPOINTER_USE_DIRECT_ENDPOINT=true` points the saver pool at the direct endpoint without a code change.
+- Never run `AsyncPostgresSaver.setup()`; the saver's tables are Alembic revision 0004, and the app checks the saver schema version at startup.
+- Never point a 2 s Cloud Run startup probe at `/ready`. Occasional Neon cold-start 503s from `/ready` are accepted; a short probe would turn them into restart loops.
+
 ## Rollback
 
 If the deployment misbehaves materially:

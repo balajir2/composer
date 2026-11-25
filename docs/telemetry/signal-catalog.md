@@ -32,6 +32,8 @@ This is the binding **roadmap target**, not an inventory of emitted instruments.
       "execution_timeout",
       "orphaned_running",
       "lease_expired",
+      "checkpoint_missing",
+      "checkpoint_sync_failed",
       "none",
       "other"
     ],

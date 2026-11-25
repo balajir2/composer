@@ -300,12 +300,12 @@ async def test_telemetry_wraps_both_database_lifecycles_even_on_failure(
             raise RuntimeError("failure")
 
     @asynccontextmanager
-    async def prisma(app: object):
-        events.append("prisma start")
+    async def checkpointer(app: object):
+        events.append("checkpointer start")
         try:
             yield object()
         finally:
-            events.append("prisma stop")
+            events.append("checkpointer stop")
 
     @asynccontextmanager
     async def sqlalchemy(app: object):
@@ -321,7 +321,7 @@ async def test_telemetry_wraps_both_database_lifecycles_even_on_failure(
     async def stop(task: object) -> None:
         events.append("sweeper stop")
 
-    monkeypatch.setattr(main, "prisma_lifespan", prisma)
+    monkeypatch.setattr(main, "checkpointer_lifespan", checkpointer)
     monkeypatch.setattr(main, "sqlalchemy_lifespan", sqlalchemy)
     monkeypatch.setattr(main, "sync_llm_keys_from_db", sync)
     monkeypatch.setattr(
@@ -343,15 +343,70 @@ async def test_telemetry_wraps_both_database_lifecycles_even_on_failure(
         assert app.state.rate_limiter.sessionmaker is session
     assert events == [
         "telemetry start",
-        "prisma start",
         "sql start",
+        "checkpointer start",
         "sync",
         "sweeper start",
         "serving",
         "sweeper stop",
+        "checkpointer stop",
         "sql stop",
-        "prisma stop",
         "telemetry stop",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_closes_cloud_tasks_and_survives_its_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The cached Cloud Tasks client moved here from the Prisma lifespan: it is closed while the
+    pool and engine are still up, and a failure closing it never skips their shutdown."""
+    from contextlib import asynccontextmanager
+
+    import src.main as main
+
+    events: list[str] = []
+
+    def _lifespan(name: str):
+        @asynccontextmanager
+        async def _cm(app: object):
+            events.append(f"{name} start")
+            try:
+                yield
+            finally:
+                events.append(f"{name} stop")
+
+        return _cm
+
+    async def _noop(*_a: object, **_k: object) -> None:
+        return None
+
+    async def _close_cloud_tasks() -> None:
+        events.append("cloud tasks close")
+        raise RuntimeError("grpc transport already closed")
+
+    monkeypatch.setattr(main, "sqlalchemy_lifespan", _lifespan("sql"))
+    monkeypatch.setattr(main, "checkpointer_lifespan", _lifespan("checkpointer"))
+    monkeypatch.setattr(main, "close_cloud_tasks_client", _close_cloud_tasks)
+    monkeypatch.setattr(main, "sync_llm_keys_from_db", _noop)
+    monkeypatch.setattr(main, "start_sweeper", lambda *a, **k: None)
+    monkeypatch.setattr(main, "stop_sweeper", _noop)
+    monkeypatch.setattr(main, "validate_production_config", lambda settings: None)
+    app = main.create_app()
+
+    @asynccontextmanager
+    async def session():
+        yield object()
+
+    app.state.db_sessionmaker = session
+    async with main.lifespan(app):
+        pass
+    assert events == [
+        "sql start",
+        "checkpointer start",
+        "cloud tasks close",
+        "checkpointer stop",
+        "sql stop",
     ]
 
 

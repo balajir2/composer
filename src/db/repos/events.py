@@ -63,6 +63,13 @@ async def append(session: AsyncSession, *, execution_id: str, type: str, payload
     return seq
 
 
+async def notify(session: AsyncSession, channel: str, payload: str) -> None:
+    """``pg_notify(channel, payload)``; delivered when the caller's transaction commits."""
+    await session.execute(
+        text("SELECT pg_notify(:channel, :payload)"), {"channel": channel, "payload": payload}
+    )
+
+
 async def list_since(
     session: AsyncSession, execution_id: str, *, after_seq: int
 ) -> list[EventRecord]:

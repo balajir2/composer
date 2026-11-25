@@ -21,6 +21,7 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Command  # pyright: ignore[reportUnknownVariableType]
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from src.checkpoints.sync import bring_forward
 from src.config import get_settings
 from src.db.repos import executions as executions_repo
 from src.db.repos import workflows as workflows_repo
@@ -47,6 +48,14 @@ logger = logging.getLogger(__name__)
 
 class _ExecutionDeadlineExceeded(TimeoutError):
     """Composer's graph-invocation budget expired."""
+
+
+class CheckpointMissing(Exception):
+    """A resume found no checkpoint for the run in either store; it must not restart the graph."""
+
+
+class CheckpointSyncFailed(Exception):
+    """Bringing a thread forward or probing its checkpoint failed; old-table rows survive."""
 
 
 def _transition_succeeded(execution_id: str, intended_status: str, updated: int) -> bool:
@@ -107,7 +116,7 @@ class LangGraphExecutor:
         `run()`/`resume()` call this AFTER state-mutating writes (e.g.
         `_mark_completed`, `_mark_waiting_approval`) have already committed
         the real outcome to Postgres. A network hiccup on the event-log
-        side (event insert or the asyncpg NOTIFY call) must not propagate
+        side (event insert or the NOTIFY call) must not propagate
         into the outer `try/except`, which would overwrite an already-
         correct "completed"/"waiting_approval" status with "failed" —
         corrupting the real execution outcome over a telemetry failure.
@@ -205,6 +214,11 @@ class LangGraphExecutor:
 
         lg_config: dict[str, Any] = {"configurable": {"thread_id": execution.thread_id}}
         return compiled, state, lg_config
+
+    async def _has_checkpoint(self, thread_id: str) -> bool:
+        """Whether the saver holds any checkpoint for the thread (a resume needs one)."""
+        probe: Any = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+        return await self.checkpointer.aget_tuple(probe) is not None
 
     async def _mark_completed(self, execution_id: str, final_state: dict[str, Any]) -> bool:
         """Persist completion results only while the execution is running."""
@@ -378,9 +392,11 @@ class LangGraphExecutor:
     async def resume(self, execution_id: str, decision: str) -> None:
         """Continue a paused execution with a user decision (approved/rejected).
 
-        Loads the execution checkpoint via the checkpointer (TODO(phase 5): still Prisma-backed) and
-        feeds the decision via Command(resume=decision).  If another user-approval
-        node is hit during resume, the execution is marked waiting_approval again.
+        Loads the checkpoint from the official Postgres saver, first copying it from the old tables
+        if a pre-cutover pause left it there (src/checkpoints/sync.py, until phase 7), and feeds the
+        decision via Command(resume=decision).  A run with no checkpoint in either store fails with
+        ``failure_code="checkpoint_missing"`` instead of restarting from scratch.  If another
+        user-approval node is hit during resume, the execution is marked waiting_approval again.
         """
         execution = await self._load_execution(execution_id)
         if execution is None:
@@ -389,6 +405,22 @@ class LangGraphExecutor:
 
         try:
             await ensure_execution_running(self.sessionmaker, execution_id)
+            # No session is open here: bring_forward opens and closes its own around the SQL and
+            # runs the saver calls without one.
+            try:
+                await bring_forward(self.checkpointer, self.sessionmaker, execution.thread_id)
+                has_checkpoint = await self._has_checkpoint(execution.thread_id)
+            except Exception as sync_exc:
+                # Not "execution_error": the run's saved state is intact in the old tables, so
+                # an operator can recover it. Log the class only (messages may carry conninfo).
+                logger.error(
+                    "Execution %s checkpoint sync failed (%s)",
+                    execution_id,
+                    type(sync_exc).__name__,
+                )
+                raise CheckpointSyncFailed(type(sync_exc).__name__) from None
+            if not has_checkpoint:
+                raise CheckpointMissing(execution.id)
             await self._emit("workflow_started", execution_id, {"status": "running"})
             compiled, _state, lg_config = await self._prepare_compiled(execution)
 
@@ -442,6 +474,13 @@ class LangGraphExecutor:
                 "Execution %s stopped during resume with status %s", execution_id, stopped.status
             )
             return
+        except CheckpointMissing as exc:
+            logger.error("Execution %s has no checkpoint to resume", execution_id)
+            if await self._mark_failed(execution_id, exc, failure_code="checkpoint_missing"):
+                await self._emit("workflow_completed", execution_id, {"status": "failed"})
+        except CheckpointSyncFailed as exc:
+            if await self._mark_failed(execution_id, exc, failure_code="checkpoint_sync_failed"):
+                await self._emit("workflow_completed", execution_id, {"status": "failed"})
         except _ExecutionDeadlineExceeded as exc:
             logger.warning("Execution %s timed out during resume", execution_id)
             if await self._mark_failed(execution_id, exc, failure_code="execution_timeout"):

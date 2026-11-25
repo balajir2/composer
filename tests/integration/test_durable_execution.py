@@ -29,6 +29,9 @@ from httpx import AsyncClient
 from prisma import Base64, Json  # pyright: ignore[reportAttributeAccessIssue]
 
 pytestmark = pytest.mark.integration
+NEEDS_LEGACY_PRISMA = (
+    True  # tests/conftest.py gives this module a test-only Prisma client (phase 6 removes it)
+)
 
 
 def _terminal_race_graph(outcome: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -728,7 +731,7 @@ async def test_resume_clears_stale_lease_and_reclaim_succeeds(
             json={"decision": "approved"},
         )
         assert resume.status_code == 200, resume.text
-        mock_enqueue.assert_awaited_once_with(execution.id, kind="resume", db=db)
+        mock_enqueue.assert_awaited_once_with(execution.id, kind="resume")
 
         resumed_row = await db.workflowexecution.find_unique(where={"id": execution.id})
         assert resumed_row is not None

@@ -44,7 +44,7 @@ async def _persist_and_notify(
 
     By the time this is called, the executor has already produced its real
     output (or the wrapper has already decided a node failed) — a telemetry
-    hiccup here (the SQLAlchemy event-store insert or the asyncpg NOTIFY call) must not abort
+    hiccup here (the SQLAlchemy event-store insert or the NOTIFY call) must not abort
     the node and discard real, possibly expensive work that actually
     succeeded. Mirrors `LangGraphExecutor._emit`'s self-guarding contract.
 

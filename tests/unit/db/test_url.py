@@ -56,3 +56,42 @@ def test_only_prisma_params_gives_no_trailing_question_mark() -> None:
 def test_space_in_value_stays_percent_20() -> None:
     url = to_sqlalchemy_url("postgresql://u:p@h/db?options=-c%20search_path%3Dx")
     assert url == "postgresql+psycopg://u:p@h/db?options=-c%20search_path%3Dx"
+
+
+def test_libpq_url_strips_prisma_params_and_uses_plain_scheme() -> None:
+    from src.db.url import to_libpq_url
+
+    url = to_libpq_url(
+        "postgres://u:p@h/db?schema=public&sslmode=require&pgbouncer=true&connection_limit=5"
+    )
+    assert url == "postgresql://u:p@h/db?sslmode=require"
+
+
+def test_direct_endpoint_url_strips_the_neon_pooler_suffix() -> None:
+    from src.db.url import direct_endpoint_url
+
+    assert (
+        direct_endpoint_url("postgresql://u:p@ep-cool-123-pooler.us-east-2.aws.neon.tech/db?x=1")
+        == "postgresql://u:p@ep-cool-123.us-east-2.aws.neon.tech/db?x=1"
+    )
+
+
+def test_direct_endpoint_url_keeps_port_and_credentials() -> None:
+    from src.db.url import direct_endpoint_url
+
+    assert (
+        direct_endpoint_url("postgresql://u:p%40w@ep-a-pooler.r.aws.neon.tech:5432/db")
+        == "postgresql://u:p%40w@ep-a.r.aws.neon.tech:5432/db"
+    )
+
+
+def test_direct_endpoint_url_leaves_other_hosts_unchanged() -> None:
+    from src.db.url import direct_endpoint_url
+
+    for url in (
+        "postgresql://u:p@localhost:55441/db",
+        "postgresql://u:p@ep-a.r.aws.neon.tech/db",
+        "postgresql://u:p@my-pooler-db.example.com/db",  # first label is `my-pooler-db`
+        "postgresql://u:p@db.ep-a-pooler.example.com/db",  # `-pooler` is not on the first label
+    ):
+        assert direct_endpoint_url(url) == url

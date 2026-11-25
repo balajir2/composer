@@ -11,6 +11,7 @@ from opentelemetry import context, trace
 from opentelemetry.trace import NonRecordingSpan, SpanContext, TraceFlags
 
 import src.execution.cloud_tasks as cloud_tasks_module
+from src.checkpoints.runtime import register_checkpointer
 from src.execution.cloud_tasks import (
     _get_client,  # pyright: ignore[reportPrivateUsage]
     close_cloud_tasks_client,
@@ -23,8 +24,10 @@ from tests.unit.db_fakes import FakeSessionmaker
 def _reset_client_global() -> Iterator[None]:  # pyright: ignore[reportUnusedFunction]
     """Module-level client cache leaks across tests without this."""
     cloud_tasks_module._client = None  # pyright: ignore[reportPrivateUsage]
+    register_checkpointer(None)
     yield
     cloud_tasks_module._client = None  # pyright: ignore[reportPrivateUsage]
+    register_checkpointer(None)
 
 
 async def test_enqueue_execution_builds_oidc_http_task(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -58,7 +61,7 @@ async def test_enqueue_execution_builds_oidc_http_task(monkeypatch: pytest.Monke
                 return_value="projects/test-project/locations/us-central1/queues/composer-executions"
             )
 
-            await enqueue_execution("exec-123", kind="run", db=MagicMock())
+            await enqueue_execution("exec-123", kind="run")
 
             mock_client.create_task.assert_called_once()
             call_kwargs = mock_client.create_task.call_args.kwargs
@@ -105,8 +108,8 @@ async def test_enqueue_execution_reuses_cached_client_across_calls(
         )
         mock_client_cls.return_value = mock_client
 
-        await enqueue_execution("exec-123", kind="run", db=MagicMock())
-        await enqueue_execution("exec-456", kind="resume", db=MagicMock())
+        await enqueue_execution("exec-123", kind="run")
+        await enqueue_execution("exec-456", kind="resume")
 
         mock_client_cls.assert_called_once()
         assert mock_client.create_task.await_count == 2
@@ -130,7 +133,7 @@ async def test_enqueue_execution_sets_processing_dispatch_deadline(
     client = MagicMock()
     client.create_task = AsyncMock(return_value=None)
     with patch("src.execution.cloud_tasks.tasks_v2.CloudTasksAsyncClient", return_value=client):
-        await enqueue_execution("exec-deadline", kind="run", db=MagicMock())
+        await enqueue_execution("exec-deadline", kind="run")
 
     assert client.create_task.await_args is not None
     task = client.create_task.await_args.kwargs["request"]["task"]
@@ -172,6 +175,7 @@ async def test_enqueue_execution_dispatches_in_process_when_service_account_unse
             captured["execution_id"] = execution_id
             captured["kind"] = kind
             captured["sessionmaker"] = sessionmaker
+            captured["checkpointer"] = checkpointer
             captured["worker_id"] = worker_id
             return {"status": "completed"}
 
@@ -187,8 +191,9 @@ async def test_enqueue_execution_dispatches_in_process_when_service_account_unse
 
         monkeypatch.setattr("src.execution.cloud_tasks.asyncio.create_task", _fake_create_task)
 
-        fake_db = MagicMock()
-        await enqueue_execution("exec-1", kind="run", db=fake_db)
+        fake_checkpointer = MagicMock()
+        register_checkpointer(fake_checkpointer)
+        await enqueue_execution("exec-1", kind="run")
 
         # The real Cloud Tasks client must never be constructed -- there's
         # no service account to mint an OIDC token for, and (in a real
@@ -201,9 +206,9 @@ async def test_enqueue_execution_dispatches_in_process_when_service_account_unse
 
         assert captured["execution_id"] == "exec-1"
         assert captured["kind"] == "run"
-        # The claim runs on the registered SQLAlchemy sessionmaker; the Prisma `db` only
-        # feeds the dev-mode checkpointer (TODO(phase 5)).
+        # The claim runs on the registered SQLAlchemy sessionmaker and the registered saver.
         assert captured["sessionmaker"] is fake_sessionmaker
+        assert captured["checkpointer"] is fake_checkpointer
 
     get_settings.cache_clear()
 
@@ -217,6 +222,7 @@ async def test_enqueue_execution_in_process_fallback_logs_but_does_not_raise(
     to surface as an "asyncio: Task exception was never retrieved" warning
     with no caller able to observe or handle it."""
     monkeypatch.setattr("src.db.runtime.get_registered_sessionmaker", lambda: FakeSessionmaker())
+    register_checkpointer(MagicMock())
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
     from src.config import get_settings
 
@@ -245,7 +251,7 @@ async def test_enqueue_execution_in_process_fallback_logs_but_does_not_raise(
 
     monkeypatch.setattr("src.execution.cloud_tasks.asyncio.create_task", _fake_create_task)
 
-    await enqueue_execution("exec-1", kind="run", db=MagicMock())
+    await enqueue_execution("exec-1", kind="run")
 
     # Must not raise -- the exception is caught and logged inside the
     # dispatched coroutine itself.
@@ -261,6 +267,7 @@ async def test_in_process_fallback_without_a_sessionmaker_logs_instead_of_failin
     fire-and-forget task died with no log line (and the row stayed queued, unexplained).
     Now the existing handler logs it."""
     monkeypatch.setattr("src.db.runtime.get_registered_sessionmaker", lambda: None)
+    register_checkpointer(MagicMock())
     monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
     from src.config import get_settings
 
@@ -275,7 +282,7 @@ async def test_in_process_fallback_without_a_sessionmaker_logs_instead_of_failin
         return MagicMock()
 
     monkeypatch.setattr("src.execution.cloud_tasks.asyncio.create_task", _fake_create_task)
-    await enqueue_execution("exec-1", kind="run", db=MagicMock())
+    await enqueue_execution("exec-1", kind="run")
 
     with caplog.at_level("ERROR", logger="src.execution.cloud_tasks"):
         await created["coro"]  # type: ignore[misc]  # must not raise
@@ -285,6 +292,42 @@ async def test_in_process_fallback_without_a_sessionmaker_logs_instead_of_failin
         "in-process fallback failed for execution exec-1" in r.getMessage()
         and r.exc_info is not None
         and "no SQLAlchemy sessionmaker registered" in str(r.exc_info[1])
+        for r in caplog.records
+    )
+    get_settings.cache_clear()
+
+
+async def test_in_process_fallback_without_a_checkpointer_logs_and_leaves_the_row_alone(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """No registered saver (the app lifespan is not running): the failure is logged, the claim
+    never starts, so the execution row stays ``queued`` exactly as for a missing sessionmaker."""
+    monkeypatch.setattr("src.db.runtime.get_registered_sessionmaker", lambda: FakeSessionmaker())
+    register_checkpointer(None)
+    monkeypatch.setenv("CLOUD_TASKS_SERVICE_ACCOUNT", "")
+    from src.config import get_settings
+
+    get_settings.cache_clear()
+    claim = AsyncMock()
+    monkeypatch.setattr("src.api.internal.claim_and_run_execution", claim)
+
+    created: dict[str, object] = {}
+
+    def _fake_create_task(coro: object) -> MagicMock:
+        created["coro"] = coro
+        return MagicMock()
+
+    monkeypatch.setattr("src.execution.cloud_tasks.asyncio.create_task", _fake_create_task)
+    await enqueue_execution("exec-1", kind="run")
+
+    with caplog.at_level("ERROR", logger="src.execution.cloud_tasks"):
+        await created["coro"]  # type: ignore[misc]  # must not raise
+
+    claim.assert_not_awaited()
+    assert any(
+        "in-process fallback failed for execution exec-1" in r.getMessage()
+        and r.exc_info is not None
+        and "no checkpointer registered" in str(r.exc_info[1])
         for r in caplog.records
     )
     get_settings.cache_clear()

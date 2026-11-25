@@ -49,7 +49,7 @@ def build_engine(settings: Settings, *, for_migrations: bool = False) -> AsyncEn
 async def connect_with_retry(engine: AsyncEngine, settings: Settings) -> None:
     """Prove the database is reachable, retrying briefly for Neon cold starts.
 
-    Mirrors Prisma's startup policy in ``src/storage/db.py``: a few fast
+    Mirrors the startup policy the Prisma client used: a few fast
     attempts with doubling backoff, so a genuinely down database fails a
     boot in seconds instead of crash-looping (2026-08 incident).
     """

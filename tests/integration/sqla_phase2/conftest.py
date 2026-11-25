@@ -636,7 +636,7 @@ class Phase2Adapter:
         self._app = app
         self._client = client
         self._monkeypatch = monkeypatch
-        self._db: Any = app.state.db
+        self._db: Any = app.state.db_sessionmaker
         self._sm = cast("async_sessionmaker[AsyncSession]", app.state.db_sessionmaker)
         self.bound_tool_names: list[str] = []  # tool names the scripted model was bound to
 

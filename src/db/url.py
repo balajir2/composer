@@ -44,3 +44,28 @@ def to_sqlalchemy_url(database_url: str) -> str:
             parts.fragment,
         )
     )
+
+
+def to_libpq_url(database_url: str) -> str:
+    """``database_url`` as a plain libpq URL (``postgresql://``) without Prisma-only parameters."""
+    return to_sqlalchemy_url(database_url).replace("postgresql+psycopg://", "postgresql://", 1)
+
+
+def direct_endpoint_url(libpq_url: str) -> str:
+    """Neon's direct (non-pooler) endpoint for a libpq URL.
+
+    LISTEN needs a session-level connection, which Neon's transaction-mode pooler (the
+    ``-pooler`` host) does not provide. The first DNS label loses its ``-pooler`` suffix
+    (``ep-x-pooler.region.aws.neon.tech`` becomes ``ep-x.region.aws.neon.tech``, the same swap
+    ``.github/workflows/deploy-gcp.yml`` makes for migrations); any other URL is returned as is.
+    """
+    parts = urlsplit(libpq_url)
+    host = parts.hostname
+    if host is None:
+        return libpq_url
+    first, dot, rest = host.partition(".")
+    if not first.endswith("-pooler"):
+        return libpq_url
+    new_host = first.removesuffix("-pooler") + dot + rest
+    netloc = parts.netloc.replace(host, new_host, 1)
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))

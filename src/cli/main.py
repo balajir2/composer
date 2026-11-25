@@ -4,6 +4,7 @@ Subcommands (one per Phase 9 sub-phase):
 - migrate:   OAB->Composer data migration (Phase 9b)
 - reconcile: post-migration user-ownership reconciliation (Phase 9b)
 - keys:      LLM API key management + Vercel sync (Phase 9e)
+- checkpoints: copy paused runs between the old and official checkpoint savers
 - watch:     poll a folder and trigger a production workflow (2026-07-11)
 """
 
@@ -13,7 +14,21 @@ import argparse
 import asyncio
 import contextlib
 import sys
-from typing import NoReturn
+from typing import TYPE_CHECKING, Any, NoReturn, TypeVar
+
+if TYPE_CHECKING:
+    from collections.abc import Coroutine
+
+_T = TypeVar("_T")
+
+
+def _run(coro: Coroutine[Any, Any, _T]) -> _T:
+    """Run a command coroutine. psycopg async cannot use Windows' Proactor loop, so on win32 use a
+    selector loop (same pattern as the Alembic env)."""
+    if sys.platform == "win32":
+        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+            return runner.run(coro)
+    return asyncio.run(coro)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -50,6 +65,18 @@ def _build_parser() -> argparse.ArgumentParser:
         "--prune", action="store_true", help="remove tracked env vars not in Postgres"
     )
 
+    # checkpoints
+    p_cp = sub.add_parser("checkpoints", help="Checkpoint tools (phase 5)")
+    cp_sub = p_cp.add_subparsers(dest="checkpoints_cmd", required=True)
+    p_copy = cp_sub.add_parser("copy", help="copy paused runs between the two checkpoint savers")
+    p_copy.add_argument("--to", required=True, choices=["postgres", "legacy"])
+    group = p_copy.add_mutually_exclusive_group(required=True)
+    group.add_argument("--execution", action="append", default=[], help="execution id (repeatable)")
+    group.add_argument("--all-waiting", action="store_true", help="every waiting_approval run")
+    p_copy.add_argument("--force", action="store_true", help="copy runs in any status")
+
+    cp_sub.add_parser("guard", help="exit 1 while an active run has checkpoints only in old tables")
+
     # watch
     p_watch = sub.add_parser("watch", help="Poll a folder and trigger a production workflow")
     p_watch.add_argument(
@@ -74,25 +101,32 @@ def main(argv: list[str] | None = None) -> NoReturn:
     if args.subcommand == "migrate":
         from src.migration.runner import run_migration
 
-        exit_code = asyncio.run(run_migration(export_dir=args.export_dir, dry_run=args.dry_run))
+        exit_code = _run(run_migration(export_dir=args.export_dir, dry_run=args.dry_run))
         sys.exit(exit_code)
     if args.subcommand == "reconcile":
         from src.migration.reconcile import run_reconcile
 
-        exit_code = asyncio.run(run_reconcile(email=args.email))
+        exit_code = _run(run_reconcile(email=args.email))
         sys.exit(exit_code)
 
     if args.subcommand == "keys":
         from src.cli import keys as keys_mod
 
         if args.keys_cmd == "list":
-            sys.exit(asyncio.run(keys_mod.keys_list()))
+            sys.exit(_run(keys_mod.keys_list()))
         if args.keys_cmd == "set":
-            sys.exit(asyncio.run(keys_mod.keys_set(args.provider, args.value)))
+            sys.exit(_run(keys_mod.keys_set(args.provider, args.value)))
         if args.keys_cmd == "delete":
-            sys.exit(asyncio.run(keys_mod.keys_delete(args.provider)))
+            sys.exit(_run(keys_mod.keys_delete(args.provider)))
         if args.keys_cmd == "sync":
-            sys.exit(asyncio.run(keys_mod.keys_sync(args.target, args.prune)))
+            sys.exit(_run(keys_mod.keys_sync(args.target, args.prune)))
+
+    if args.subcommand == "checkpoints":
+        from src.cli.checkpoints import checkpoints_copy, checkpoints_guard
+
+        if args.checkpoints_cmd == "guard":
+            sys.exit(_run(checkpoints_guard()))
+        sys.exit(_run(checkpoints_copy(args.to, args.execution, args.all_waiting, args.force)))
 
     if args.subcommand == "watch":
         from src.cli.watch import WatchConfig, run_watch_loop
@@ -109,7 +143,7 @@ def main(argv: list[str] | None = None) -> NoReturn:
             poll_interval_seconds=args.interval,
         )
         with contextlib.suppress(KeyboardInterrupt):
-            asyncio.run(run_watch_loop(config))
+            _run(run_watch_loop(config))
         sys.exit(0)
 
     parser.error(f"unknown subcommand: {args.subcommand}")

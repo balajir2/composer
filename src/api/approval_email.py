@@ -45,7 +45,6 @@ from src.security.rate_limit import (
     get_rate_limiter,
     per_minute_config,
 )
-from src.storage.db import get_db
 
 router = APIRouter(tags=["approvals"])
 
@@ -125,7 +124,6 @@ async def resolve_approval_email(
 async def confirm_approval_email(
     token: str,
     request: Request,
-    db: Any = Depends(get_db),  # TODO(phase 5): only for enqueue_execution's dev-mode checkpointer
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> RedirectResponse:  # pyright: ignore[reportUnusedFunction]
     """The actual mutation — only reached via a deliberate POST (the
@@ -180,7 +178,7 @@ async def confirm_approval_email(
             note=None,
         )
         await session.commit()
-    await enqueue_execution(claims.sub, kind="resume", db=db)
+    await enqueue_execution(claims.sub, kind="resume")
     return _redirect_result(decision.value)
 
 

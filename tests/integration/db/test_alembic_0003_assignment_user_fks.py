@@ -19,7 +19,7 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 USER_FK = "workflow_assignments_user_id_fkey"
 BY_FK = "workflow_assignments_assigned_by_id_fkey"
 BY_INDEX = "workflow_assignments_assigned_by_id_idx"
-PREV = "0002_idempotency_per_user"
+PREV = "0002_idempotency_per_user"  # 0004 sits above 0003, so "-1" would undo 0004 instead
 
 
 def _run_alembic(*args: str) -> subprocess.CompletedProcess[str]:
@@ -160,7 +160,7 @@ def test_upgrade_cleans_orphans_adds_fks_and_downgrade_restores() -> None:
         # Downgrade (no NULL granters left to violate NOT NULL) restores the old shape.
         with _conn() as conn:
             conn.execute("DELETE FROM workflow_assignments WHERE assigned_by_id IS NULL")
-        _alembic("downgrade", "-1")
+        _alembic("downgrade", PREV)
         assert _constraints().keys() == {"workflow_assignments_workflow_id_fkey"}
         assert not _assigned_by_nullable()
         assert BY_INDEX not in _indexes()
@@ -184,7 +184,7 @@ def test_downgrade_fails_honestly_when_a_granter_is_null() -> None:
             _seed_user(conn, uid)
             _seed_workflow(conn, wid)
             _seed_assignment(conn, f"a-{t}", wid, uid, None)
-        failed = _run_alembic("downgrade", "-1")
+        failed = _run_alembic("downgrade", PREV)
         assert failed.returncode != 0
         # Nothing was half-applied: still at head with the FKs.
         assert {USER_FK, BY_FK} <= _constraints().keys()
@@ -239,7 +239,7 @@ def test_downgrade_fails_fast_when_users_is_locked() -> None:
     try:
         _alembic("upgrade", "head")
         blocker.execute("LOCK TABLE users IN ROW EXCLUSIVE MODE")
-        blocked = _run_alembic("downgrade", "-1")
+        blocked = _run_alembic("downgrade", PREV)
         assert blocked.returncode != 0
         assert "lock timeout" in (blocked.stdout + blocked.stderr).lower()
         assert {USER_FK, BY_FK} <= _constraints().keys()

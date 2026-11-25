@@ -24,7 +24,6 @@ Network is never real: ``httpx_mock`` is requested for every test. Loopback is e
 query engine is an HTTP server on localhost); the ASGI test client is never intercepted.
 """
 
-import contextlib
 import itertools
 import re
 import secrets
@@ -256,21 +255,6 @@ def _network_lock(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnuse
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _fresh_notify_connection() -> AsyncIterator[None]:  # pyright: ignore[reportUnusedFunction]
-    """The NOTIFY connection is a module global bound to one event loop; never reuse a stale
-    one across tests (each test has its own loop)."""
-    import src.engine.events_notify as events_notify
-
-    events_notify._notify_connection = None  # pyright: ignore[reportPrivateUsage]
-    yield
-    conn: Any = events_notify._notify_connection  # pyright: ignore[reportPrivateUsage]
-    events_notify._notify_connection = None  # pyright: ignore[reportPrivateUsage]
-    if conn is not None:
-        with contextlib.suppress(Exception):
-            await conn.close()
-
-
-@pytest_asyncio.fixture(autouse=True)
 async def _clean_buckets_after() -> AsyncIterator[None]:  # pyright: ignore[reportUnusedFunction]
     """The integration conftest clears buckets BEFORE each test; clear after the last one too."""
     yield
@@ -310,12 +294,10 @@ async def purge_execution_artifacts(
         ids = {r.id for r in rows} | set(execution_ids or [])
         threads = {r.thread_id for r in rows} | set(thread_ids or [])
         await s.execute(delete(ExecutionEventRow).where(ExecutionEventRow.execution_id.in_(ids)))
-        await s.execute(
-            delete(LangGraphCheckpointWrite).where(LangGraphCheckpointWrite.thread_id.in_(threads))
-        )
-        await s.execute(
-            delete(LangGraphCheckpoint).where(LangGraphCheckpoint.thread_id.in_(threads))
-        )
+        # All five checkpoint tables (runs now write the official saver's tables too).
+        from src.db.repos import checkpoints as checkpoints_repo
+
+        await checkpoints_repo.delete_threads(s, list(threads))
         await s.execute(delete(Approval).where(Approval.execution_id.in_(ids)))
         await s.execute(delete(WorkflowExecution).where(WorkflowExecution.id.in_(ids)))
         await s.commit()
@@ -672,12 +654,10 @@ async def db(sessionmaker_: async_sessionmaker[AsyncSession]) -> AsyncIterator[D
     threads = list(helper.tracked_threads)
     async with sessionmaker_() as s:
         await s.execute(delete(ExecutionEventRow).where(ExecutionEventRow.execution_id.in_(ids)))
-        await s.execute(
-            delete(LangGraphCheckpointWrite).where(LangGraphCheckpointWrite.thread_id.in_(threads))
-        )
-        await s.execute(
-            delete(LangGraphCheckpoint).where(LangGraphCheckpoint.thread_id.in_(threads))
-        )
+        # All five checkpoint tables (runs now write the official saver's tables too).
+        from src.db.repos import checkpoints as checkpoints_repo
+
+        await checkpoints_repo.delete_threads(s, list(threads))
         await s.execute(delete(Approval).where(Approval.execution_id.in_(ids)))
         await s.execute(delete(WorkflowExecution).where(WorkflowExecution.id.in_(ids)))
         await s.commit()
@@ -855,7 +835,6 @@ class Phase4aAdapter:
         self._app = app
         self._client = client
         self._monkeypatch = monkeypatch
-        self._db: Any = app.state.db
         self._sm = cast("async_sessionmaker[AsyncSession]", app.state.db_sessionmaker)
 
     # ---- executor ---------------------------------------------------------------------------

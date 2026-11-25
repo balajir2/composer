@@ -26,6 +26,9 @@ from httpx import AsyncClient
 from prisma import Json  # pyright: ignore[reportAttributeAccessIssue]
 from src.security.encryption import encrypt
 
+NEEDS_LEGACY_PRISMA = (
+    True  # tests/conftest.py gives this module a test-only Prisma client (phase 6 removes it)
+)
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.live,

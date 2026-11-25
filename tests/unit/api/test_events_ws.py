@@ -1,7 +1,10 @@
 """Unit tests for WebSocket event streaming (Phase 9a)."""
 
+import asyncio
+import contextlib
 import json
-from collections.abc import Iterator
+import time
+from collections.abc import Generator, Iterator
 from types import SimpleNamespace
 from typing import Any, cast
 from unittest.mock import AsyncMock, MagicMock
@@ -80,6 +83,33 @@ def _fake_execution_repo(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(executions_repo, "get", _get)
     # No persisted events by default.
     monkeypatch.setattr(events_repo, "list_since", AsyncMock(return_value=[]))
+
+
+class _FakeListener:
+    """Stands in for ``ExecutionEventListener``: records subscriptions, hands out events."""
+
+    def __init__(self) -> None:
+        self.subscribed: list[str] = []
+        self.active = 0
+        self.events: list[asyncio.Event] = []
+        self.loop: asyncio.AbstractEventLoop | None = None
+
+    def wake(self) -> None:
+        """Set the first subscription's event from the test thread (what a NOTIFY does)."""
+        assert self.loop is not None
+        self.loop.call_soon_threadsafe(self.events[0].set)
+
+    @contextlib.contextmanager
+    def subscribe(self, execution_id: str) -> Generator[asyncio.Event, None, None]:
+        event = asyncio.Event()
+        self.loop = asyncio.get_running_loop()
+        self.subscribed.append(execution_id)
+        self.events.append(event)
+        self.active += 1
+        try:
+            yield event
+        finally:
+            self.active -= 1
 
 
 def _build_app(execution: SimpleNamespace, user_role: str = "member") -> tuple[TestClient, Any]:
@@ -183,11 +213,7 @@ async def test_ws_replays_events_since_client_cursor(
 
     # Replay can reach the live-listener setup before TestClient closes.
     # Keep this cursor-replay unit test independent of a real Postgres socket.
-    listener = MagicMock()
-    listener.add_listener = AsyncMock()
-    listener.remove_listener = AsyncMock()
-    listener.close = AsyncMock()
-    monkeypatch.setattr("src.api.events_ws.asyncpg.connect", AsyncMock(return_value=listener))
+    app.state.event_listener = _FakeListener()
 
     token = _token_for("u1")
     with client.websocket_connect(
@@ -267,11 +293,7 @@ async def test_ws_timeout_triggers_list_since_poll(monkeypatch: pytest.MonkeyPat
     store.list_since = AsyncMock(side_effect=[[], [terminal_event]])
     app.state.event_bus = store
 
-    fake_conn = MagicMock()
-    fake_conn.add_listener = AsyncMock()
-    fake_conn.remove_listener = AsyncMock()
-    fake_conn.close = AsyncMock()
-    monkeypatch.setattr("src.api.events_ws.asyncpg.connect", AsyncMock(return_value=fake_conn))
+    app.state.event_listener = _FakeListener()
 
     async def _raise_timeout(coro: Any, *_args: Any, **_kwargs: Any) -> None:
         # Close (don't await) the passed-in `notified.wait()` coroutine to
@@ -300,7 +322,7 @@ async def test_ws_keepalive_send_failure_closes_loop(
 ) -> None:
     """If sending the keepalive ping fails (dead client that never sent a
     clean close), the live loop must give up rather than swallow the error
-    and hold the WebSocket + its dedicated Postgres LISTEN connection open
+    and hold the WebSocket + its listener subscription open
     forever (P1-4 code review, Important #3)."""
     execution = _execution_row(status="running", userId="u1")
     client, app = _build_app(execution)
@@ -309,11 +331,8 @@ async def test_ws_keepalive_send_failure_closes_loop(
     store.list_since = AsyncMock(return_value=[])
     app.state.event_bus = store
 
-    fake_conn = MagicMock()
-    fake_conn.add_listener = AsyncMock()
-    fake_conn.remove_listener = AsyncMock()
-    fake_conn.close = AsyncMock()
-    monkeypatch.setattr("src.api.events_ws.asyncpg.connect", AsyncMock(return_value=fake_conn))
+    listener = _FakeListener()
+    app.state.event_listener = listener
 
     async def _raise_timeout(coro: Any, *_args: Any, **_kwargs: Any) -> None:
         coro.close()
@@ -334,7 +353,8 @@ async def test_ws_keepalive_send_failure_closes_loop(
         with pytest.raises(WebSocketDisconnect):
             ws.receive_text()
 
-    fake_conn.close.assert_awaited()
+    assert listener.subscribed == ["exec-1"]
+    assert listener.active == 0  # the subscription was released when the loop gave up
     metric_data = websocket_metric_reader.get_metrics_data()
     assert metric_data is not None
     metrics = [
@@ -386,11 +406,7 @@ def test_ws_holds_no_session_during_the_wait_or_a_send(monkeypatch: pytest.Monke
 
     app.state.event_bus = _Store()
 
-    fake_conn = MagicMock()
-    fake_conn.add_listener = AsyncMock()
-    fake_conn.remove_listener = AsyncMock()
-    fake_conn.close = AsyncMock()
-    monkeypatch.setattr("src.api.events_ws.asyncpg.connect", AsyncMock(return_value=fake_conn))
+    app.state.event_listener = _FakeListener()
 
     async def _wait(coro: Any, *_a: Any, **_k: Any) -> None:
         coro.close()
@@ -422,3 +438,33 @@ def test_ws_holds_no_session_during_the_wait_or_a_send(monkeypatch: pytest.Monke
         elif event.startswith("ws:"):
             assert open_sessions == 0, f"{event} ran inside an open session: {events}"
     assert open_sessions == 0
+
+
+def test_ws_subscribes_to_its_own_execution_and_releases_on_close() -> None:
+    from src.engine.events import ExecutionEvent
+
+    execution = _execution_row(status="running", userId="u1")
+    client, app = _build_app(execution)
+    terminal = ExecutionEvent(
+        type="workflow_completed", execution_id="exec-1", seq=1, payload={"status": "completed"}
+    )
+    store = MagicMock()
+    # replay: nothing; first live poll (after the listener wakes the loop): the terminal event.
+    store.list_since = AsyncMock(side_effect=[[], [terminal]])
+    app.state.event_bus = store
+    listener = _FakeListener()
+    app.state.event_listener = listener
+
+    token = _token_for("u1")
+    with client.websocket_connect("/executions/exec-1/ws", subprotocols=["bearer", token]) as ws:
+        assert json.loads(ws.receive_text())["type"] == "workflow_started"
+        for _ in range(300):
+            if listener.events:
+                break
+            time.sleep(0.01)
+        assert listener.subscribed == ["exec-1"]
+        # Waking the subscription (what a NOTIFY for exec-1 does) triggers a prompt poll.
+        listener.wake()
+        assert json.loads(ws.receive_text())["type"] == "workflow_completed"
+
+    assert listener.active == 0

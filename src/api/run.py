@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.api._idempotency import find_execution_by_idempotency_key, require_same_caller
+from src.api.app_state import get_event_bus
 from src.config import get_settings
 from src.db.errors import AlreadyExists
 from src.db.repos import executions as executions_repo
@@ -32,10 +33,8 @@ from src.security.rate_limit import (
     get_rate_limiter,
     per_minute_config,
 )
-from src.storage.db import get_db, get_event_bus
 
 if TYPE_CHECKING:
-    from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
     from src.db.repos.executions import ExecutionRecord
     from src.engine.events_pg import PostgresEventStore
 
@@ -96,7 +95,6 @@ async def run_external(
     slug: str,
     payload: RunRequest,
     request: Request,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     event_bus: PostgresEventStore = Depends(get_event_bus),
     auth: ApiKeyAuthResult = Depends(get_current_api_key_user),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
@@ -199,7 +197,7 @@ async def run_external(
         # why that in-process wrapper became redundant once claim-and-run
         # (a real, lease-tracked inbound request) replaced the detached
         # asyncio task it used to wrap.
-        await enqueue_execution(execution.id, kind="run", db=db)
+        await enqueue_execution(execution.id, kind="run")
 
     if not payload.sync:
         return RunAsyncResponse(

@@ -73,19 +73,6 @@ def _network_lock(httpx_mock: HTTPXMock) -> None:  # pyright: ignore[reportUnuse
 
 
 @pytest_asyncio.fixture(autouse=True)
-async def _fresh_notify_connection() -> AsyncIterator[None]:  # pyright: ignore[reportUnusedFunction]
-    import src.engine.events_notify as events_notify
-
-    events_notify._notify_connection = None  # pyright: ignore[reportPrivateUsage]
-    yield
-    conn: Any = events_notify._notify_connection  # pyright: ignore[reportPrivateUsage]
-    events_notify._notify_connection = None  # pyright: ignore[reportPrivateUsage]
-    if conn is not None:
-        with contextlib.suppress(Exception):
-            await conn.close()
-
-
-@pytest_asyncio.fixture(autouse=True)
 async def _clean_buckets_after() -> AsyncIterator[None]:  # pyright: ignore[reportUnusedFunction]
     yield
     await reset_rate_limit_buckets()

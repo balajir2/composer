@@ -48,6 +48,7 @@ from google.oauth2 import id_token
 from opentelemetry import context as otel_context
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.api.app_state import get_checkpointer, get_event_bus
 from src.config import get_settings
 from src.db.repos import cloud_storage as cloud_storage_repo
 from src.db.repos import executions as executions_repo
@@ -64,7 +65,6 @@ from src.maintenance.execution_sweeper import (
     sweep_old_execution_events,
     sweep_orphaned_running,
 )
-from src.storage.db import get_checkpointer, get_db, get_event_bus
 from src.storage_providers.google_drive import GoogleDriveProvider
 from src.storage_providers.text_extraction import extract_text
 from src.telemetry.propagation import extract_task_context
@@ -506,7 +506,6 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
 @router.post("/internal/poll-file-triggers", status_code=status.HTTP_200_OK)
 async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
     request: Request,
-    db: Any = Depends(get_db),
     _oidc: None = Depends(_verify_internal_oidc),
 ) -> dict[str, int]:
     """Cloud-Scheduler-triggered poll of every production workflow's
@@ -524,7 +523,7 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
     isolate-failures-per-item contract.
     """
     settings = get_settings()
-    # Up-front 503 without a database. Only executions are still on Prisma (phase 4).
+    # Up-front 503 without a database.
     sessionmaker = require_sessionmaker(request)
     # Short session: closed before any Drive call below.
     async with sessionmaker() as session:
@@ -682,7 +681,7 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
                         input=input_payload,
                         user_id=connection.user_id,
                     )
-                    await enqueue_execution(execution.id, kind="run", db=db)
+                    await enqueue_execution(execution.id, kind="run")
                 except Exception:
                     logger.exception(
                         "poll_file_triggers: failed to process file %s (workflow %s)",

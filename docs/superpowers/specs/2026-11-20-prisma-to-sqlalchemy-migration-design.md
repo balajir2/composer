@@ -57,13 +57,13 @@ alembic/           migrations from now on; first revision is an empty baseline
 | `PrismaCheckpointSaver` + `langgraph_checkpoints` / `langgraph_checkpoint_writes` | `AsyncPostgresSaver` from `langgraph-checkpoint-postgres` on the shared psycopg pool; the old tables are retired after cutover (see 3.4) |
 | `PostgresEventStore`, `PostgresRateLimiter` | Repository modules `repos/events.py` and `repos/rate_limits.py` |
 | asyncpg LISTEN/NOTIFY (`src/engine/events_notify.py`) | psycopg notifications on a dedicated connection |
-| `prisma migrate deploy` (CI, deploy workflow) | `alembic upgrade head` + `AsyncPostgresSaver.setup()` |
+| `prisma migrate deploy` (CI, deploy workflow) | `alembic upgrade head` (the saver's tables are an Alembic revision, not `setup()`; see the phase 5 plan D3) |
 | Node.js in the backend image (Prisma CLI and engines) | Removed |
 | `prisma.errors.UniqueViolationError` (8 catch sites) | Repository-level `AlreadyExists` naming the violated constraint |
 
 ### 2.3 Dependencies
 
-Added in phase 0: `sqlalchemy[asyncio]` (2.1), `alembic`, `psycopg[binary]` 3. Added in phase 5: `psycopg-pool` and `langgraph-checkpoint-postgres` (which needs `langgraph-checkpoint` ≥ 4.3; currently 4.1.1). Removed at the end: `prisma`, `asyncpg`, `asyncpg-stubs`.
+Added in phase 0: `sqlalchemy[asyncio]` (2.1), `alembic`, `psycopg[binary]` 3. Added in phase 5: `psycopg-pool` and `langgraph-checkpoint-postgres` (which needs `langgraph-checkpoint` ≥ 4.3; it was already 4.3.2 when phase 5 started). Removed at the end: `prisma`, `asyncpg`, `asyncpg-stubs`.
 
 ### 2.4 Documentation updates (in the foundation PR)
 
@@ -94,7 +94,7 @@ The first Alembic revision is empty and is *stamped* on existing databases (prod
 | 2 | **Integrations (done, PR #29):** MCP servers, MCP OAuth tokens and state, cloud-storage connections | Medium | 2 days |
 | 3 | **Workflows (done, PR #33):** CRUD, assignments, builder saves | Medium | 2 days |
 | 4 | **Executions core (done: 4a and 4b in one PR, pending; phase 5 next):** create, list, delete, resume, approvals, events, rate limiter, claim and sweep, all 15 guarded status updates | High | 3–4 days |
-| 5 | **Checkpointer and notifications:** official saver, paused-run deploy guard, two-way copy tool, LISTEN/NOTIFY on psycopg | High | 2 days |
+| 5 | **Checkpointer and notifications (done, PR pending):** official saver, paused-run deploy guard, two-way copy tool, LISTEN/NOTIFY on psycopg | High | 2 days |
 | 6 | **Removal:** Prisma client and schema; Node.js and asyncpg out of the image; remaining Prisma-shaped mocks; squashed Alembic base | Low | 1 day |
 | 7 | **Cleanup (about two weeks after phase 5 is stable):** Alembic revision that drops `langgraph_checkpoints`, `langgraph_checkpoint_writes` and `_prisma_migrations` | Low | ½ day |
 

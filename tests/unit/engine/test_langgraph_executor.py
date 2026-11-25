@@ -39,6 +39,16 @@ class _FakeEventStore:
 
 
 @pytest.fixture(autouse=True)
+def _resume_finds_a_checkpoint(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: ignore[reportUnusedFunction]
+    """These tests drive ``resume`` with fake graphs and in-memory savers that hold no checkpoint.
+    Copy-on-resume and the fail-closed probe are covered in test_resume_checkpoint_sync.py."""
+    monkeypatch.setattr(
+        "src.engine.langgraph_executor.bring_forward", AsyncMock(return_value=False)
+    )
+    monkeypatch.setattr(LangGraphExecutor, "_has_checkpoint", AsyncMock(return_value=True))
+
+
+@pytest.fixture(autouse=True)
 def _patch_notify(monkeypatch: pytest.MonkeyPatch) -> AsyncMock:  # pyright: ignore[reportUnusedFunction]
     """LangGraphExecutor._emit calls notify_execution_event(execution_id, seq=seq)
     after every append — patch it to a no-op so unit tests never attempt a

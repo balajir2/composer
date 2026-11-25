@@ -11,6 +11,9 @@ from fastapi import FastAPI
 from httpx import AsyncClient
 
 pytestmark = pytest.mark.integration
+NEEDS_LEGACY_PRISMA = (
+    True  # tests/conftest.py gives this module a test-only Prisma client (phase 6 removes it)
+)
 
 _MINIMAL_BODY: dict[str, Any] = {
     "name": "Assignment integration test",

@@ -99,6 +99,8 @@ Failed executions expose `failureCode` alongside `error`:
 | `lease_expired` | A claimed worker's lease expired before the attempt finished. |
 | `orphaned_running` | A running attempt has no lease and exceeded its claim grace. |
 | `execution_error` | An executor or worker error ended the attempt. |
+| `checkpoint_missing` | A resume found no saved state for the run; it was not restarted. |
+| `checkpoint_sync_failed` | Copying the run's saved state forward (or reading it) failed during a resume; the run was not restarted and its saved state is untouched. |
 
 Expired leases become terminal failures. Maintenance never automatically replays the workflow or its external side effects.
 

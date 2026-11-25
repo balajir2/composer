@@ -294,6 +294,14 @@ $backendDeployArgs += @(
     "--cpu=1",
     "--memory=1Gi",
     "--port=8080",
+    # NOTE: the LIVE composer-backend service uses the default TCP startup probe
+    # on port 8080, not this /ready probe (it was never applied there). Keep it
+    # that way during SQLAlchemy phases 5-7: an old revision rolled back onto a
+    # database already at Alembic 0004 must still start, and its /ready reports
+    # a saver-schema mismatch. Do not apply /ready as the startup probe while a
+    # rollback or mixed-version window is possible. This script's behaviour is
+    # intentionally unchanged; see docs/operations/production-deployment.md
+    # "Rollback runbook".
     "--startup-probe=initialDelaySeconds=0,timeoutSeconds=2,periodSeconds=10,failureThreshold=3,httpGet.path=/ready,httpGet.port=8080",
     "--liveness-probe=timeoutSeconds=2,periodSeconds=30,failureThreshold=3,httpGet.path=/health,httpGet.port=8080",
     # EXECUTION_SWEEPER_INTERVAL_SECONDS=0 disables the in-process sweeper

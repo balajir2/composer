@@ -10,7 +10,7 @@ performs the actual approve/reject.
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -102,7 +102,6 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _Repos]:
 
     sessionmaker.session.commit = AsyncMock(side_effect=_commit)
     app.state.db_sessionmaker = sessionmaker
-    app.state.db = MagicMock()  # only handed to enqueue_execution (phase 5)
     app.state.rate_limiter = RateLimiter()
     repos = _Repos(
         get=AsyncMock(return_value=_execution_row()),
