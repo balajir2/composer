@@ -40,7 +40,8 @@ class Settings(BaseSettings):
         default="postgresql://composer:composer@localhost:5432/composer",
         description="Postgres connection string. Required.",
     )
-    # Startup circuit breaker (src/storage/db.py's _connect_with_retry): if
+    # Startup circuit breaker (src/db/engine.py's connect_with_retry and the checkpointer pool's
+    # open-with-retry in src/checkpoints/saver.py): if
     # the database is genuinely down (not just cold-starting), a container
     # that spends ~90s retrying before Cloud Run kills its failed boot and
     # respawns a new one turns an outage into a runaway compute-burning
@@ -52,11 +53,11 @@ class Settings(BaseSettings):
     db_connect_max_attempts: int = Field(
         default=3,
         ge=1,
-        description="Max db.connect() attempts during startup before giving up.",
+        description="Max connect attempts during startup before giving up.",
     )
     db_connect_timeout_seconds: float = Field(
         default=3.0,
-        description="Per-attempt timeout for the Prisma engine to become reachable.",
+        description="Per-attempt timeout for the database to become reachable.",
     )
     db_connect_initial_backoff_seconds: float = Field(
         default=0.5,
@@ -65,8 +66,7 @@ class Settings(BaseSettings):
     # SQLAlchemy pool. SQLAlchemy carries all execution traffic (per-node event
     # appends, claims, rate-limit checks) at Cloud Run concurrency 80, and the runtime
     # URL is Neon's -pooler host, so 5+5 per instance (3 max instances x 10 = 30
-    # connections) is well under the pooler's limit. Prisma's separate pool still
-    # exists for the checkpointer until phase 5.
+    # connections) is well under the pooler's limit. The checkpointer has its own pool (below).
     db_pool_size: int = Field(
         default=5,
         ge=1,

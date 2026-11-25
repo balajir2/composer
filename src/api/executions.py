@@ -10,7 +10,6 @@ from typing import Any, cast
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
-from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
 from src.api._idempotency import find_execution_by_idempotency_key, require_same_caller
 from src.api.execution_status import ACTIVE_EXECUTION_STATUSES
 from src.config import get_settings
@@ -32,7 +31,6 @@ from src.security.rate_limit import (
     get_rate_limiter,
     per_minute_config,
 )
-from src.storage.db import get_db
 
 logger = logging.getLogger(__name__)
 
@@ -138,7 +136,6 @@ def _get_executor(request: Request) -> LangGraphExecutor:
 async def create_execution(
     payload: ExecutionCreate,
     request: Request,
-    db: Prisma = Depends(get_db),  # pyright: ignore[reportUnknownParameterType]
     _role: tuple[str, str] = Depends(get_current_role),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
@@ -233,7 +230,7 @@ async def create_execution(
     # becomes 'running' once claim-and-run actually claims it. Poll
     # GET /executions/{id} for completion.
     try:
-        await enqueue_execution(row.id, kind="run", db=db)
+        await enqueue_execution(row.id, kind="run")
     except Exception as exc:
         # The row already committed as 'queued' above. If enqueueing raises
         # here (un-retried gRPC error, transient network blip, IAM/ADC
@@ -520,7 +517,6 @@ async def resume_execution(
     execution_id: str,
     payload: ResumeRequest,
     request: Request,
-    db: Any = Depends(get_db),  # TODO(phase 5): only for enqueue_execution's dev-mode checkpointer
     _role: tuple[str, str] = Depends(get_current_role),
     limiter: RateLimiterProtocol = Depends(get_rate_limiter),
 ) -> ExecutionRead:  # pyright: ignore[reportUnusedFunction]
@@ -585,7 +581,7 @@ async def resume_execution(
         )
         await session.commit()
     # The session is closed: enqueue is network I/O (short-session rule).
-    await enqueue_execution(execution_id, kind="resume", db=db)
+    await enqueue_execution(execution_id, kind="resume")
 
     # Reflect the transition without a second round trip (DB5: pre-update row, status replaced).
     return _to_execution_read(dataclasses.replace(execution, status="running"))

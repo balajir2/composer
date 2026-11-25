@@ -198,7 +198,7 @@ def test_post_execution_enqueues_cloud_task_instead_of_background_task(
     /internal/claim-and-run is immune to (ADR-0033)."""
     enqueued: list[tuple[str, str]] = []
 
-    async def _fake_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
+    async def _fake_enqueue(execution_id: str, *, kind: str) -> None:
         enqueued.append((execution_id, kind))
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _fake_enqueue)
@@ -218,7 +218,7 @@ def test_post_execution_marks_row_failed_when_enqueue_raises(
     'failed' through the status-guarded repo transition (G1) in its own session, commits,
     and returns a handled 500."""
 
-    async def _raise_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
+    async def _raise_enqueue(execution_id: str, *, kind: str) -> None:
         raise RuntimeError("Cloud Tasks unavailable")
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _raise_enqueue)
@@ -246,7 +246,7 @@ def test_post_execution_enqueue_failure_does_not_clobber_concurrent_cancel(
     guarded transition (status = 'queued') then affects zero rows, so the cancellation is
     left alone; the caller still gets the informative 500 for the enqueue failure."""
 
-    async def _raise_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
+    async def _raise_enqueue(execution_id: str, *, kind: str) -> None:
         raise RuntimeError("Cloud Tasks unavailable")
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _raise_enqueue)
@@ -269,7 +269,7 @@ def test_post_execution_enqueue_failure_survives_nested_mark_failed_error(
     successful create), that secondary exception must NOT mask the original, informative
     enqueue-failure HTTPException."""
 
-    async def _raise_enqueue(execution_id: str, *, kind: str, db: object = None) -> None:
+    async def _raise_enqueue(execution_id: str, *, kind: str) -> None:
         raise RuntimeError("Cloud Tasks unavailable")
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _raise_enqueue)

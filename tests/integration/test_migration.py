@@ -15,6 +15,9 @@ from src.migration.reconcile import reconcile_by_email
 from src.migration.runner import run_migration
 
 pytestmark = pytest.mark.integration
+NEEDS_LEGACY_PRISMA = (
+    True  # tests/conftest.py gives this module a test-only Prisma client (phase 6 removes it)
+)
 
 
 def _write_export(

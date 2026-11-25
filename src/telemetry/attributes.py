@@ -20,6 +20,7 @@ VOCABULARIES = {
             "orphaned_running",
             "execution_error",
             "lease_expired",
+            "checkpoint_missing",
         }
     ),
     "result": frozenset(

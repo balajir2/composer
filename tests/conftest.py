@@ -58,7 +58,7 @@ def pytest_collection_modifyitems(
 
 
 @pytest_asyncio.fixture
-async def app() -> AsyncIterator[FastAPI]:
+async def app(request: pytest.FixtureRequest) -> AsyncIterator[FastAPI]:
     # The app reads DATABASE_URL; point it at the test DB for this process.
     os.environ["DATABASE_URL"] = os.environ["TEST_DATABASE_URL"]
     # Settings are cached at import time by several modules; drop the cache so
@@ -66,7 +66,23 @@ async def app() -> AsyncIterator[FastAPI]:
     get_settings.cache_clear()
     _app = create_app()
     async with _app.router.lifespan_context(_app):
-        yield _app
+        if getattr(request.module, "NEEDS_LEGACY_PRISMA", False):
+            # The app no longer has a Prisma client (phase 5). Older integration modules that
+            # still seed and inspect rows through Prisma's query API set NEEDS_LEGACY_PRISMA and
+            # get a test-only client on ``app.state.db``. Phase 6 rewrites them onto SQLAlchemy and
+            # removes this.
+            from prisma import Prisma  # pyright: ignore[reportAttributeAccessIssue]
+
+            prisma_client = Prisma()
+            await prisma_client.connect()
+            _app.state.db = prisma_client
+            try:
+                yield _app
+            finally:
+                await prisma_client.disconnect()
+                del _app.state.db
+        else:
+            yield _app
 
 
 @pytest_asyncio.fixture

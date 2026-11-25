@@ -5,9 +5,9 @@ Real graphs (a user-approval node, real LangGraph, the app's own checkpointer) d
 run: same execution row, same thread, state carried by the checkpoint, nodes before the pause
 never re-executed.
 
-The one test named ``..._today_...`` pins behaviour phase 5 Task 7 changes on purpose (a resume
-that finds no checkpoint fails the run with ``checkpoint_missing`` instead of restarting the graph
-from scratch). It is the only test in this package a later task may change.
+The one test that pinned behaviour phase 5 Task 7 changed on purpose (a resume that finds no
+checkpoint now fails the run with ``checkpoint_missing`` instead of restarting the graph from
+scratch) was flipped in place: ``test_resume_without_a_checkpoint_fails_closed``.
 """
 
 import asyncio
@@ -25,6 +25,7 @@ from tests.integration.sqla_phase4a.conftest import (
 )
 from tests.integration.sqla_phase4b.conftest import install_resume_enqueue, resume
 from tests.integration.sqla_phase5.conftest import (
+    CHECKPOINT_TABLES,
     RunningApp,
     checkpoint_row_count,
     fan_out_graph,
@@ -259,21 +260,18 @@ async def test_rejected_decision_after_restart_takes_the_rejected_branch_only(
     assert "no" in started and "ok" not in started
 
 
-async def test_resume_without_a_checkpoint_restarts_the_graph_from_scratch_today(
+async def test_resume_without_a_checkpoint_fails_closed(
     db: Db, member: Member, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """TODAY: a resume that finds no checkpoint does not fail. The graph silently starts over on a
-    fresh thread state with an EMPTY input, runs the start node again and pauses again at the
-    same approval node (status ``waiting_approval``, no error, a second ``approval_required``).
-    Phase 5 Task 7 (decision D2: fail closed) changes this to ``failed`` with
-    ``failure_code="checkpoint_missing"``; the same rollback situation (a run that paused only in
-    the other saver's tables) shows up exactly like this on the old revision. LATER TASK MAY
-    CHANGE THIS TEST."""
+    """A resume that finds no checkpoint in either store does not restart the graph (it did, from
+    an EMPTY input, before phase 5 Task 7): the run is failed with ``checkpoint_missing``, no node
+    runs again and nothing is written. (Flipped from
+    ``test_resume_without_a_checkpoint_restarts_the_graph_from_scratch_today``.)"""
     async with running_app(monkeypatch) as a:
         eid, thread = await start_paused(a.client, db, member, monkeypatch)
         paused_events = len(await db.events(eid))
         async with a.sm() as s:
-            for table in ("langgraph_checkpoint_writes", "langgraph_checkpoints"):
+            for table in CHECKPOINT_TABLES:
                 await s.execute(text(f"DELETE FROM {table} WHERE thread_id = :t"), {"t": thread})
             await s.commit()
         assert await checkpoint_row_count(a.sm, thread) == 0
@@ -281,12 +279,13 @@ async def test_resume_without_a_checkpoint_restarts_the_graph_from_scratch_today
         r = await resume(a.client, member, eid, "approved")
         assert r.status_code == 200, r.text
         row = await db.must(eid)
-        assert (row.status, row.error, row.failure_code) == ("waiting_approval", None, None)
-        assert row.variables["_pending_approval_node"] == "ua"
-        assert row.variables["input"] == ""  # the original input "x" was lost with the checkpoint
+        assert (row.status, row.failure_code) == ("failed", "checkpoint_missing")
+        assert row.error is not None and eid in row.error
+        assert row.variables["_pending_approval_node"] == "ua"  # the paused row is left as it was
         assert "result" not in row.variables  # the decision was never applied
-        assert await checkpoint_row_count(a.sm, thread) > 0  # a brand-new chain was written
+        assert await checkpoint_row_count(a.sm, thread) == 0  # no brand-new chain was written
     events = await _event_types(db, eid)
-    assert len(events) > paused_events
-    assert events.count(("node_started", "s")) == 2  # the start node ran a second time
-    assert [t for t, _ in events].count("approval_required") == 2
+    assert events.count(("node_started", "s")) == 1  # the start node did not run a second time
+    assert [t for t, _ in events].count("approval_required") == 1
+    assert events[-1] == ("workflow_completed", None)
+    assert len(events) > paused_events  # workflow_started and workflow_completed were emitted

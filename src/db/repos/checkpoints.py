@@ -1,4 +1,4 @@
-"""LangGraph checkpoint rows (phase 5 replaces this with the saver's own delete)."""
+"""LangGraph checkpoint rows: deletes across every checkpoint table, and the old tables' SQL."""
 
 from dataclasses import dataclass
 
@@ -8,30 +8,45 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.execution_status import ACTIVE_EXECUTION_STATUSES_SORTED
-from src.db.models import LangGraphCheckpoint, LangGraphCheckpointWrite, WorkflowExecution
+from src.db.models import (
+    LangGraphCheckpoint,
+    LangGraphCheckpointWrite,
+    SaverCheckpoint,
+    SaverCheckpointBlob,
+    SaverCheckpointWrite,
+    WorkflowExecution,
+)
 from src.db.repos._sql import in_array
 
 ACTIVE_STATUSES = tuple(ACTIVE_EXECUTION_STATUSES_SORTED)
 
 
-async def delete_threads(session: AsyncSession, thread_ids: list[str]) -> None:
-    """Delete every checkpoint and pending write of ``thread_ids``.
+# The official saver's tables that carry a thread_id, in deletion order (writes first). A drift
+# test parses the library's own migrations and fails if it ever adds one that is not listed.
+SAVER_THREAD_TABLES = ("checkpoint_writes", "checkpoint_blobs", "checkpoints")
+_SAVER_MODELS = (SaverCheckpointWrite, SaverCheckpointBlob, SaverCheckpoint)
 
-    Writes go first, then checkpoints, as the Prisma code did. Runs in the caller's
-    transaction, so it commits or rolls back together with the execution delete.
+
+async def delete_threads(session: AsyncSession, thread_ids: list[str]) -> None:
+    """Delete every checkpoint, blob and pending write of ``thread_ids`` from all five tables.
+
+    The official saver's ``adelete_thread`` takes one thread and runs on the saver's own autocommit
+    connection, so it cannot join the SQLAlchemy transaction that deletes the execution rows
+    (decision D7). This clears the saver's three tables and the old two (history until phase 7)
+    in the caller's transaction, so it commits or rolls back together with the execution delete.
     """
     if not thread_ids:
         return
-    await session.execute(
-        sa_delete(LangGraphCheckpointWrite)
-        .where(in_array(LangGraphCheckpointWrite.thread_id, thread_ids))
-        .execution_options(synchronize_session=False)
-    )
-    await session.execute(
-        sa_delete(LangGraphCheckpoint)
-        .where(in_array(LangGraphCheckpoint.thread_id, thread_ids))
-        .execution_options(synchronize_session=False)
-    )
+    for model in (
+        *_SAVER_MODELS,
+        LangGraphCheckpointWrite,
+        LangGraphCheckpoint,
+    ):
+        await session.execute(
+            sa_delete(model)
+            .where(in_array(model.thread_id, thread_ids))
+            .execution_options(synchronize_session=False)
+        )
 
 
 @dataclass(frozen=True)
@@ -233,6 +248,20 @@ async def unsynced_active_runs(session: AsyncSession) -> list[UnsyncedRun]:
         {"active": list(ACTIVE_STATUSES)},
     )
     return [UnsyncedRun(str(r[0]), str(r[1]), str(r[2])) for r in rows]
+
+
+async def legacy_ahead_namespaces(session: AsyncSession, thread_id: str) -> list[str]:
+    """Namespaces of the thread whose newest checkpoint is newer in (or only present in) the old
+    tables. Same comparison as the deploy guard: newest ids, ``COLLATE "C"``."""
+    rows = await session.execute(
+        text(
+            "SELECT old.checkpoint_ns "
+            + _UNSYNCED_FROM
+            + f" WHERE old.thread_id = :t AND {_OLD_AHEAD} ORDER BY old.checkpoint_ns"
+        ),
+        {"t": thread_id},
+    )
+    return [str(r[0]) for r in rows]
 
 
 async def legacy_ahead(session: AsyncSession, thread_id: str) -> bool:

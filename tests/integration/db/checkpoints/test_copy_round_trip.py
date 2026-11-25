@@ -10,7 +10,6 @@ from typing import Any
 
 import pytest
 import pytest_asyncio
-from fastapi import FastAPI
 from langgraph.checkpoint.base import BaseCheckpointSaver, CheckpointTuple
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.types import Command
@@ -27,7 +26,6 @@ from src.engine.graph_builder import build_graph
 from src.engine.state import initial_state
 from src.engine.workflow import Workflow
 from src.executors.set_state import SetStateExecutor
-from src.storage.checkpointer import PrismaCheckpointSaver
 from tests.integration.sqla_phase4a.conftest import approval_graph
 from tests.integration.sqla_phase5.conftest import fan_out_graph, two_approval_graph
 
@@ -109,11 +107,6 @@ async def old_rows(sm: async_sessionmaker[AsyncSession], thread: str) -> list[An
         return out
 
 
-@pytest.fixture
-def prisma(app: FastAPI) -> PrismaCheckpointSaver:
-    return PrismaCheckpointSaver(app.state.db)
-
-
 @pytest.mark.parametrize("graph_fn", [approval_graph, fan_out_graph])
 async def test_legacy_to_postgres_then_resume(
     legacy: LegacyCheckpointSaver,
@@ -143,43 +136,26 @@ async def test_legacy_to_postgres_then_resume(
 
 
 @pytest.mark.parametrize("graph_fn", [approval_graph, fan_out_graph])
-async def test_postgres_to_legacy_then_resume_on_prisma(
+async def test_postgres_to_legacy_then_resume(
     legacy: LegacyCheckpointSaver,
-    prisma: PrismaCheckpointSaver,
     postgres: AsyncPostgresSaver,
     new_thread: Callable[[], str],
     ran: list[str],
     graph_fn: GraphFn,
 ) -> None:
-    """Rollback: the old revision's saver resumes what the new revision paused."""
+    """Rollback: the old revision's saver (byte-compatible with ``LegacyCheckpointSaver``, proven
+    against the Prisma saver in phase 5 Task 4) resumes what the new revision paused."""
     t = new_thread()
     await compile_graph(graph_fn, postgres).ainvoke(initial_state("x"), config=lg(t))
     ran_before = list(ran)
     await copy_thread(postgres, legacy, t, to="legacy", namespaces=[""])
 
-    resumed = compile_graph(graph_fn, prisma)
+    resumed = compile_graph(graph_fn, legacy)
     final = await resumed.ainvoke(Command(resume="approved"), config=lg(t))
     assert final["variables"]["result"] == "approved"
     assert (await resumed.aget_state(lg(t))).next == ()
     if graph_fn is fan_out_graph:
         assert final["variables"]["side"] == "done"
-    assert not set(ran_before) & set(ran[len(ran_before) :])
-
-
-async def test_postgres_to_legacy_then_resume_on_legacy_saver(
-    legacy: LegacyCheckpointSaver,
-    postgres: AsyncPostgresSaver,
-    new_thread: Callable[[], str],
-    ran: list[str],
-) -> None:
-    t = new_thread()
-    await compile_graph(fan_out_graph, postgres).ainvoke(initial_state("x"), config=lg(t))
-    ran_before = list(ran)
-    await copy_thread(postgres, legacy, t, to="legacy", namespaces=[""])
-    final = await compile_graph(fan_out_graph, legacy).ainvoke(
-        Command(resume="approved"), config=lg(t)
-    )
-    assert final["variables"]["result"] == "approved" and final["variables"]["side"] == "done"
     assert not set(ran_before) & set(ran[len(ran_before) :])
 
 

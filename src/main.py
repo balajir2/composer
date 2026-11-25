@@ -36,15 +36,17 @@ from src.api.test_cleanup import router as test_cleanup_router
 from src.api.uploads import router as uploads_router
 from src.api.users import router as users_router
 from src.api.workflows import router as workflows_router
+from src.checkpoints.saver import checkpointer_lifespan
 from src.config import get_settings
 from src.config_validation import validate_execution_timing, validate_production_config
 from src.db.lifespan import sqlalchemy_lifespan
+from src.engine.events_notify import close_notify_connection
 from src.engine.events_pg import PostgresEventStore
+from src.execution.cloud_tasks import close_cloud_tasks_client
 from src.maintenance.execution_sweeper import start_sweeper, stop_sweeper
 from src.security.key_sync import sync_llm_keys_from_db
 from src.security.proxy_headers import TrustedProxyHeadersMiddleware
 from src.security.rate_limit_pg import PostgresRateLimiter
-from src.storage.db import prisma_lifespan
 from src.telemetry.context import CorrelationMiddleware
 from src.telemetry.logging import configure_logging
 from src.telemetry.runtime import TelemetryRuntime
@@ -62,7 +64,7 @@ async def _service_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # src/config_validation.py for what this catches and why.
     validate_production_config(settings)
 
-    async with prisma_lifespan(app), sqlalchemy_lifespan(app):
+    async with sqlalchemy_lifespan(app), checkpointer_lifespan(app):
         sessionmaker = app.state.db_sessionmaker
         app.state.event_bus = PostgresEventStore(sessionmaker)
         app.state.rate_limiter = PostgresRateLimiter(sessionmaker)
@@ -86,6 +88,18 @@ async def _service_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         finally:
             app.state.draining = True
             await stop_sweeper(sweeper_task)
+            # Moved from the Prisma lifespan. Each cleanup is independently guarded (a failure in
+            # one must not skip the other or the pool and engine shutdown), logged not raised.
+            # The NOTIFY connection goes away with the asyncpg code in phase 5 Task 8.
+            try:
+                await close_notify_connection()
+            except Exception:
+                logger.exception("lifespan: close_notify_connection() failed during shutdown")
+            # The cached Cloud Tasks client's grpc transport.
+            try:
+                await close_cloud_tasks_client()
+            except Exception:
+                logger.exception("lifespan: close_cloud_tasks_client() failed during shutdown")
 
     logger.info("Shutting down Composer")
 
