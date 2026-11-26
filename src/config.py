@@ -109,6 +109,14 @@ class Settings(BaseSettings):
         ge=0,
         description="Extra SQLAlchemy connections allowed under load.",
     )
+    # Whole-lifespan deadline (src/main.py). Uvicorn binds the port only after startup, and
+    # Cloud Run's TCP startup probe gives up after 240 s; a startup stuck on a database that
+    # stopped answering must raise (so Cloud Run starts another instance) well before that.
+    startup_timeout_seconds: float = Field(
+        default=60.0,
+        gt=0,
+        description="Seconds the database-facing startup steps may take before startup fails.",
+    )
 
     # ─── Auth ─────────────────────────────────────
     jwt_secret: str = Field(

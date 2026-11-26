@@ -1,8 +1,9 @@
 """Composer — FastAPI application entrypoint."""
 
+import asyncio
 import logging
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager, suppress
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -54,6 +55,49 @@ from src.telemetry.runtime import TelemetryRuntime
 logger = logging.getLogger(__name__)
 
 
+async def _start_database_services(
+    app: FastAPI, stack: AsyncExitStack, timeout_seconds: float
+) -> None:
+    """Enter the database-facing lifespans on ``stack`` and sync LLM keys, within one deadline.
+
+    Uvicorn binds the port only after startup, so a step stuck on a database that stopped
+    answering (a TCP connection that is open but silent) used to hang the instance until Cloud
+    Run's 240 s startup probe killed it (2026-11-26). Each step has its own bound where the
+    library allows one; this deadline catches any that do not, so startup raises and Cloud Run
+    starts another instance. The exit stack unwinds whatever was entered.
+    """
+    phase = "sqlalchemy"
+    deadline = asyncio.timeout(timeout_seconds)
+    try:
+        async with deadline:
+            await stack.enter_async_context(sqlalchemy_lifespan(app))
+            logger.info("startup: sqlalchemy ready")
+            phase = "checkpointer"
+            await stack.enter_async_context(checkpointer_lifespan(app))
+            logger.info("startup: checkpointer ready")
+            phase = "notifications"
+            await stack.enter_async_context(notifications_lifespan(app))
+            logger.info("startup: notifications ready")
+            sessionmaker = app.state.db_sessionmaker
+            app.state.event_bus = PostgresEventStore(sessionmaker)
+            app.state.rate_limiter = PostgresRateLimiter(sessionmaker)
+            # Pull admin-UI-managed LLM keys into runtime Settings so workflow
+            # execution (src/llm/providers.py reads from settings.*_api_key)
+            # can see them.  Env-set values win; DB fills in the blanks.  A
+            # revision restart picks up edits made via the admin UI.
+            phase = "llm key sync"
+            async with sessionmaker() as session:
+                await sync_llm_keys_from_db(session)
+            logger.info("startup: llm key sync done")
+    except TimeoutError as exc:
+        if not deadline.expired():
+            raise  # a step's own bound fired first; its error says which
+        logger.error("startup: deadline exceeded")
+        raise TimeoutError(
+            f"startup did not finish within {timeout_seconds:g}s (stuck in: {phase})"
+        ) from exc
+
+
 @asynccontextmanager
 async def _service_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Application startup and shutdown hooks."""
@@ -64,21 +108,9 @@ async def _service_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # src/config_validation.py for what this catches and why.
     validate_production_config(settings)
 
-    async with (
-        sqlalchemy_lifespan(app),
-        checkpointer_lifespan(app),
-        notifications_lifespan(app),
-    ):
+    async with AsyncExitStack() as stack:
+        await _start_database_services(app, stack, settings.startup_timeout_seconds)
         sessionmaker = app.state.db_sessionmaker
-        app.state.event_bus = PostgresEventStore(sessionmaker)
-        app.state.rate_limiter = PostgresRateLimiter(sessionmaker)
-        # Pull admin-UI-managed LLM keys into runtime Settings so workflow
-        # execution (src/llm/providers.py reads from settings.*_api_key)
-        # can see them.  Env-set values win; DB fills in the blanks.  A
-        # revision restart picks up edits made via the admin UI.
-        async with app.state.db_sessionmaker() as session:
-            await sync_llm_keys_from_db(session)
-
         sweeper_task = start_sweeper(
             app,
             sessionmaker,
@@ -87,6 +119,7 @@ async def _service_lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             approval_timeout_hours=settings.approval_wait_timeout_hours,
         )
         app.state.runtime_initialized = True
+        logger.info("startup: complete")
         try:
             yield
         finally:

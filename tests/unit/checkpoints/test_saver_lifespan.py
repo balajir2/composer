@@ -1,5 +1,6 @@
 """``checkpointer_lifespan`` with a fake pool: open-with-retry, schema check, clean shutdown."""
 
+import asyncio
 from collections.abc import AsyncGenerator, Iterator
 from contextlib import asynccontextmanager
 from typing import ClassVar
@@ -155,3 +156,39 @@ async def test_unregister_leaves_a_newer_registration_in_place() -> None:
     assert runtime.get_registered_checkpointer() is newer
     runtime.unregister_checkpointer(newer)
     assert runtime.get_registered_checkpointer() is None
+
+
+async def _forever(*_args: object) -> None:
+    await asyncio.Event().wait()
+
+
+async def test_a_schema_check_that_never_answers_times_out_and_closes_the_pool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 2026-11-26 startup hang: the query on a silent connection waited forever."""
+    monkeypatch.setenv("CHECKPOINTER_POOL_TIMEOUT_SECONDS", "0.05")
+    get_settings.cache_clear()
+    monkeypatch.setattr(saver, "assert_saver_schema_current", _forever)
+    app = FastAPI()
+    with pytest.raises(TimeoutError):
+        async with saver.checkpointer_lifespan(app):
+            pytest.fail("the body must not run")
+    assert FakePool.instances[0].closed == 1
+    assert runtime.get_registered_checkpointer() is None
+
+
+async def test_a_checkout_that_never_returns_times_out(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The pool's checkout timeout does not cover its liveness check; the lifespan bound does."""
+    monkeypatch.setenv("CHECKPOINTER_POOL_TIMEOUT_SECONDS", "0.05")
+    get_settings.cache_clear()
+
+    @asynccontextmanager
+    async def _stuck(_self: FakePool) -> AsyncGenerator[object]:
+        await _forever()
+        yield object()
+
+    monkeypatch.setattr(FakePool, "connection", _stuck)
+    with pytest.raises(TimeoutError):
+        async with saver.checkpointer_lifespan(FastAPI()):
+            pytest.fail("the body must not run")
+    assert FakePool.instances[0].closed == 1

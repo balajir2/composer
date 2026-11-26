@@ -379,7 +379,7 @@ Risk: a run resumed on the old revision without its checkpoint in the old tables
 
 Known gap: during a traffic shift, a run that pauses on the new revision and is resumed on a still-draining old instance is not copied back, so the old saver restarts it from scratch. The window is small; pausing the queue (step 1) is what keeps it small.
 
-Startup budget: the SQLAlchemy connect retry and the saver pool open retry run in series at boot, about 21 s worst case with the defaults. Keep that in mind before tightening any startup probe or timeout.
+Startup budget: the SQLAlchemy connect retry and the saver pool open retry run in series at boot, about 21 s worst case with the defaults. The saver schema check is bounded by `CHECKPOINTER_POOL_TIMEOUT_SECONDS` (10 s), and every database-facing startup step (both of those, the listener setup and the LLM key sync) runs under one deadline, `STARTUP_TIMEOUT_SECONDS` (60 s), after which startup raises and Cloud Run starts another instance; cancelling a query on a connection that stopped answering adds up to about 10 s. Keep the deadline well under the 240 s TCP startup probe, and keep it above the retry budget, before tightening any startup probe or timeout. Every connection also carries libpq `connect_timeout`, TCP keepalives and `tcp_user_timeout` (`src/db/libpq.py`), so a silent peer cannot hold a connection for the kernel's ~15 minute retransmission timeout.
 
 ### Notifications and connections
 

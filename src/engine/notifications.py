@@ -27,8 +27,10 @@ from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 import psycopg
+from psycopg.conninfo import make_conninfo
 
 from src.config import get_settings
+from src.db.libpq import bounded_connect_params
 from src.db.url import direct_endpoint_url, to_libpq_url
 from src.engine.events_notify import NOTIFY_CHANNEL
 
@@ -205,6 +207,8 @@ async def notifications_lifespan(app: FastAPI) -> AsyncGenerator[None]:
         if settings.database_direct_url
         else direct_endpoint_url(to_libpq_url(settings.database_url))
     )
+    # The LISTEN connection idles for long stretches: keepalives notice a peer that went away.
+    conninfo = make_conninfo(conninfo, **bounded_connect_params(settings))
     listener = ExecutionEventListener(
         conninfo, idle_close_seconds=settings.event_listener_idle_close_seconds
     )
