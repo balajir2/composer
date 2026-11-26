@@ -2,7 +2,6 @@
 
 import asyncio
 import logging
-import math
 
 from sqlalchemy import text
 from sqlalchemy.exc import OperationalError
@@ -10,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 from sqlalchemy.pool import NullPool
 
 from src.config import Settings
+from src.db.libpq import bounded_connect_params
 from src.db.url import to_sqlalchemy_url
 
 logger = logging.getLogger(__name__)
@@ -24,15 +24,15 @@ def build_engine(settings: Settings, *, for_migrations: bool = False) -> AsyncEn
     compute and drops its connections.
 
     ``asyncio.timeout`` in ``connect_with_retry`` is the authoritative bound
-    on a connect; libpq's ``connect_timeout`` is only a backstop.
+    on a connect; libpq's ``connect_timeout`` and TCP keepalives
+    (``src/db/libpq.py``) are backstops for every connection the pool opens.
 
     ``for_migrations=True`` is for one-shot runs (Alembic): connections are
     not pooled (``NullPool``), so the pool settings do not apply.
     """
     connect_args: dict[str, object] = {
         "prepare_threshold": None,
-        # libpq takes whole seconds and treats anything below 2 as 2.
-        "connect_timeout": max(2, math.ceil(settings.db_connect_timeout_seconds)),
+        **bounded_connect_params(settings),
     }
     url = to_sqlalchemy_url(settings.database_url)
     if for_migrations:

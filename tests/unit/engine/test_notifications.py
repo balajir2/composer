@@ -229,3 +229,38 @@ async def test_subscribe_after_aclose_does_not_reconnect(factory: Factory) -> No
         await asyncio.sleep(0.05)
         assert not event.is_set()
     assert factory.conns == []
+
+
+async def test_lifespan_listener_connects_with_connect_timeout_and_keepalives(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The LISTEN connection idles for long stretches; a silent peer must not hang it forever."""
+    from fastapi import FastAPI
+    from psycopg.conninfo import conninfo_to_dict
+
+    from src.config import get_settings
+
+    seen: list[str] = []
+
+    async def _connect(conninfo: str, **_kwargs: Any) -> FakeConn:
+        seen.append(conninfo)
+        return FakeConn()
+
+    monkeypatch.setattr(notifications.psycopg.AsyncConnection, "connect", _connect)
+    monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@ep-x-pooler.example.com/db")
+    monkeypatch.delenv("DATABASE_DIRECT_URL", raising=False)
+    monkeypatch.setenv("DB_CONNECT_TIMEOUT_SECONDS", "3")
+    get_settings.cache_clear()
+    try:
+        app = FastAPI()
+        async with notifications.notifications_lifespan(app):
+            with app.state.event_listener.subscribe("e1"):
+                await _until(lambda: bool(seen))
+    finally:
+        get_settings.cache_clear()
+    params = conninfo_to_dict(seen[0])
+    assert params["host"] == "ep-x.example.com"  # still the direct endpoint
+    assert params["connect_timeout"] == "3"
+    assert params["keepalives"] == "1"
+    assert params["keepalives_idle"] == "30"
+    assert params["tcp_user_timeout"] == "30000"

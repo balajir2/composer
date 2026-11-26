@@ -21,6 +21,7 @@ from psycopg_pool import AsyncConnectionPool, PoolTimeout
 from src.checkpoints.runtime import register_checkpointer, unregister_checkpointer
 from src.checkpoints.schema import assert_saver_schema_current
 from src.config import Settings, get_settings
+from src.db.libpq import bounded_connect_params
 from src.db.url import direct_endpoint_url, to_libpq_url
 
 logger = logging.getLogger(__name__)
@@ -32,6 +33,11 @@ SAVER_CONNECTION_KWARGS: dict[str, Any] = {
     "row_factory": dict_row,
     "prepare_threshold": None,
 }
+
+
+def saver_connection_kwargs(settings: Settings) -> dict[str, Any]:
+    """The saver's connection kwargs plus the libpq bounds on its network waits."""
+    return {**SAVER_CONNECTION_KWARGS, **bounded_connect_params(settings)}
 
 
 def saver_conninfo(settings: Settings) -> str:
@@ -50,7 +56,7 @@ def build_saver_pool(settings: Settings) -> AsyncConnectionPool[AsyncConnection[
         max_size=settings.checkpointer_pool_max_size,
         timeout=settings.checkpointer_pool_timeout_seconds,
         max_idle=300,
-        kwargs=SAVER_CONNECTION_KWARGS,
+        kwargs=saver_connection_kwargs(settings),
         check=AsyncConnectionPool.check_connection,  # Neon drops idle connections
         name="checkpointer",
         open=False,
@@ -63,7 +69,9 @@ async def open_one_shot_saver(settings: Settings) -> AsyncGenerator[AsyncPostgre
     """One connection and a saver on it, for CLI commands; schema version checked first."""
     conn = cast(
         "AsyncConnection[DictRow]",
-        await AsyncConnection.connect(saver_conninfo(settings), **SAVER_CONNECTION_KWARGS),
+        await AsyncConnection.connect(
+            saver_conninfo(settings), **saver_connection_kwargs(settings)
+        ),
     )
     try:
         await assert_saver_schema_current(conn)
@@ -127,8 +135,12 @@ async def checkpointer_lifespan(app: FastAPI) -> AsyncGenerator[AsyncPostgresSav
     pool = await _open_pool_with_retry(settings)
     saver: AsyncPostgresSaver | None = None
     try:
-        async with pool.connection() as conn:
-            await assert_saver_schema_current(conn)
+        # Bounded as a whole: the pool's checkout timeout does not cover its liveness check on
+        # the connection, and the query itself has none. A connection the database stopped
+        # answering hung startup here until Cloud Run's 240 s probe killed the instance.
+        async with asyncio.timeout(settings.checkpointer_pool_timeout_seconds):
+            async with pool.connection() as conn:
+                await assert_saver_schema_current(conn)
         saver = AsyncPostgresSaver(pool)
         app.state.checkpointer = saver
         register_checkpointer(saver)

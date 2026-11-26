@@ -134,4 +134,12 @@ def test_build_engine_passes_connect_args(monkeypatch: pytest.MonkeyPatch) -> No
 
     monkeypatch.setattr("src.db.engine.create_async_engine", fake_create)
     build_engine(_settings(db_connect_timeout_seconds=3.0))
-    assert captured["connect_args"] == {"prepare_threshold": None, "connect_timeout": 3}
+    assert captured["connect_args"] == {
+        "prepare_threshold": None,
+        "connect_timeout": 3,
+        "keepalives": 1,
+        "keepalives_idle": 30,
+        "keepalives_interval": 10,
+        "keepalives_count": 3,
+        "tcp_user_timeout": 30_000,
+    }
