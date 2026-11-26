@@ -1,6 +1,6 @@
 """Seed and inspect rows in integration tests that drive the real app.
 
-Replaces the test-only Prisma client that tests/conftest.py gave NEEDS_LEGACY_PRISMA modules
+Replaces the test-only Prisma client that tests/conftest.py once gave legacy-Prisma modules
 until phase 6. Uses the app's own sessionmaker, so rows are committed before the code under
 test reads them. ORM objects come back detached with their columns loaded; relationships are
 lazy="raise", so read only columns.

@@ -15,7 +15,6 @@ if TYPE_CHECKING:
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 BASELINE = REPO_ROOT / "src" / "db" / "migrations" / "versions" / "0001_baseline.py"
-PRISMA_DIR = REPO_ROOT / "prisma" / "migrations"
 FROZEN_FINGERPRINT = "4dfba090a9bb39db3fceac405ddc057d5328ac8e8ca2ee95a533f76e2deb72cd"
 
 
@@ -68,16 +67,3 @@ def test_statement_split_skips_comment_only_chunks() -> None:
     assert split("-- CreateTable\nCREATE TABLE a (x int);\n\n-- tail\n") == [
         "-- CreateTable\nCREATE TABLE a (x int)"
     ]
-
-
-# Removed in Task 6 together with prisma/: proves the copy is byte-for-byte while both exist.
-def test_baseline_sql_equals_the_prisma_migration_files() -> None:
-    files = sorted(p for p in PRISMA_DIR.iterdir() if (p / "migration.sql").is_file())
-    expected = tuple(
-        (
-            p.name,
-            (p / "migration.sql").read_bytes().replace(b"\r\n", b"\n").decode().rstrip() + "\n",
-        )
-        for p in files
-    )
-    assert _migrations() == expected
