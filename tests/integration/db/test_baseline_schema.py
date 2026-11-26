@@ -327,22 +327,24 @@ def test_unknown_migration_advice_says_drop_or_restore(scratch_db: str) -> None:
     assert "prisma migrate deploy" not in out
 
 
-def test_base_tables_land_in_public_even_if_a_role_schema_exists(scratch_db: str) -> None:
-    """With a schema named after the role, "$user" leads the search_path. The baseline pins
-    public for its check and DDL, and restores the path so Alembic finds alembic_version."""
+def test_everything_lands_in_public_even_if_a_role_schema_exists(scratch_db: str) -> None:
+    """With a schema named after the role, "$user" leads the search_path. env.py pins public,
+    so alembic_version, the base tables and 0004's saver tables all land there."""
     role = make_url(scratch_db).username
     assert role
     with psycopg.connect(scratch_db, autocommit=True) as conn:
         conn.execute(f'CREATE SCHEMA "{role}"')  # pyright: ignore[reportCallIssue, reportArgumentType]
-    _ok(scratch_db, "upgrade", "0001_baseline")
+    _ok(scratch_db, "upgrade", "head")
     with psycopg.connect(scratch_db, autocommit=True) as conn:
-        in_role = {
-            r[0]
-            for r in conn.execute("SELECT tablename FROM pg_tables WHERE schemaname = %s", (role,))
-        }
-    assert in_role <= {"alembic_version"}
-    assert {"workflows", "users", "workflow_executions"} <= _tables(scratch_db)
-    assert snapshot(scratch_db) == _golden("0001_baseline")
+        in_role = conn.execute(
+            "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"
+            " WHERE n.nspname = %s",
+            (role,),
+        ).fetchone()
+    assert in_role == (0,)
+    public = _tables(scratch_db)
+    assert {"alembic_version", "workflows", "checkpoints", "checkpoint_migrations"} <= public
+    assert snapshot(scratch_db) == _golden("0004_langgraph_saver_tables")
 
 
 def test_leftover_types_without_tables_are_refused(scratch_db: str) -> None:

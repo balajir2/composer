@@ -14,7 +14,7 @@ shows: each of the 20 has a finished, not-rolled-back row; no unresolved (unfini
 rolled back) rows; no unknown migrations. Nothing runs and Alembic records this revision, as
 the old empty baseline did. Anything else is refused rather than guessed at.
 
-The revision pins ``search_path`` to ``public`` (as Prisma did). "Empty" means: no table in
+env.py pins ``search_path`` to ``public`` (as Prisma did); so does this revision. "Empty" means: no table in
 ``public`` other than ``alembic_version``, and no enum, domain or standalone composite type.
 Other schemas are ignored. Lock and statement timeouts are not set here (unlike 0002/0003): the
 create path only ever runs against an empty schema, where no other session can hold a
@@ -611,17 +611,13 @@ def _base_state(bind: Connection) -> Literal["create", "adopt"]:
 
 def upgrade() -> None:
     bind = op.get_bind()
-    # Prisma always worked in `public`. Pin it for the check and the DDL so a "$user" schema
-    # (one named after the role) cannot receive the tables while the check looked at `public`.
-    # Then restore the caller's path: Alembic created alembic_version where that path points
-    # and must find it there when it records the new revision.
-    original = bind.exec_driver_sql("SHOW search_path").scalar_one()
+    # env.py already pins `public` for the session; repeating it here is defensive, so the
+    # check and the DDL can never look at different schemas.
     bind.exec_driver_sql("SET LOCAL search_path TO public")
     if _base_state(bind) == "create":
         for _, sql in PRISMA_MIGRATIONS:
             for statement in _statements(sql):
                 bind.exec_driver_sql(statement)
-    bind.exec_driver_sql("SELECT set_config('search_path', %s, true)", (original,))
 
 
 def downgrade() -> None:
