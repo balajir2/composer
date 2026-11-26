@@ -1,15 +1,15 @@
 """Add durable execution attempts without backfilling legacy summaries.
 
-Revision ID: 0004_execution_attempts
-Revises: 0003_assignment_user_fks
+Revision ID: 0005_execution_attempts
+Revises: 0004_langgraph_saver_tables
 """
 
 import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import TIMESTAMP
 
-revision: str = "0004_execution_attempts"
-down_revision: str | None = "0003_assignment_user_fks"
+revision: str = "0005_execution_attempts"
+down_revision: str | None = "0004_langgraph_saver_tables"
 branch_labels: str | tuple[str, ...] | None = None
 depends_on: str | tuple[str, ...] | None = None
 

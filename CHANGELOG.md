@@ -36,6 +36,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 - **New settings:** `CHECKPOINTER_POOL_MIN_SIZE`, `CHECKPOINTER_POOL_MAX_SIZE`, `CHECKPOINTER_POOL_TIMEOUT_SECONDS`, `CHECKPOINTER_USE_DIRECT_ENDPOINT`, `DATABASE_DIRECT_URL` (optional; derived by stripping `-pooler`), `EVENT_LISTENER_IDLE_CLOSE_SECONDS`.
 - **Tests:** cleanup of every test that runs a graph now clears all five checkpoint tables, so the Alembic down-revision tests no longer see leftover saver rows when the whole suite shares one database.
 
+### Changed — durable execution attempt history (2026-11-25)
+
+- A successful worker claim creates an opaque `attempt_id` and an immutable history row in the same transaction as the lease. The first real post-migration claim starts at ordinal 1; later resume claims append a new ordinal and retain the exact approval reference.
+- Attempts record paused, completed, failed, and canceled outcomes. A paused attempt remains unchanged when its execution is later canceled or an approval expires.
+- Executions with no persisted attempts expose empty history; delivery counters and summary timestamps do not synthesize rows. An empty history page is distinct from a missing execution.
+- Real-Postgres integration coverage verifies claim → pause → approval → resume claim → complete and observes the committed claim from a separate session before graph execution.
+- Owner/admin history APIs and UI are Tasks 5.2/5.3. Recovery eligibility and recovery transitions remain deferred to Task 7.2.
+
 ### Changed — SQLAlchemy migration phase 4: executions, events, rate limits, approvals and resume (2026-11-25)
 
 - **What moved (4a and 4b ship as one change):** every read and write of `workflow_executions`, plus `execution_events`, `rate_limit_buckets` and `approvals`, now go through repository modules in `src/db/repos/` (`executions.py`, `events.py`, `rate_limits.py`, `approvals.py`, `checkpoints.py`). That covers the execution routes (create, list, get, delete, bulk delete, cancel, resume), external invoke, the executor and cooperative stop, the work claim, the stuck-execution and lease sweepers, the event WebSocket, the builder's failed-run diagnosis, the in-app resume and the emailed approval link (4b); and the migration CLI and reconcile. The checkpointer and LISTEN/NOTIFY stay as they are until phase 5. No Alembic migration.

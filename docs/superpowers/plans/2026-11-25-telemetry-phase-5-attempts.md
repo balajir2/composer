@@ -28,16 +28,16 @@
 ### Task 1: Define the Alembic schema and SQLAlchemy model
 
 **Files:**
-- Create: `src/db/migrations/versions/0004_execution_attempts.py`
+- Create: `src/db/migrations/versions/0005_execution_attempts.py`
 - Create: `src/db/models/execution_attempts.py`
 - Modify: `src/db/models/executions.py`
 - Modify: `src/db/models/__init__.py`
 - Modify: `tests/unit/db/test_models_metadata.py`
-- Create: `tests/integration/db/test_alembic_0004_execution_attempts.py`
+- Create: `tests/integration/db/test_alembic_0005_execution_attempts.py`
 
 **Interfaces:**
 - Produces: `ExecutionAttempt`, `AttemptResult`, `AttemptTriggerKind`, and nullable `WorkflowExecution.pending_attempt_approval_id`.
-- Consumes: `Base`, `id_column`, `created_at_column`, `UTCDateTime`, `WorkflowExecution`, `Approval`, and Alembic revision `0003_assignment_user_fks`.
+- Consumes: `Base`, `id_column`, `created_at_column`, `UTCDateTime`, `WorkflowExecution`, `Approval`, and Alembic revision `0004_langgraph_saver_tables`.
 
 - [ ] **Step 1: Write failing metadata tests**
 
@@ -67,7 +67,7 @@
 
 - [ ] **Step 3: Write migration tests before the migration**
 
-  In a dedicated test database, downgrade explicitly to `0003_assignment_user_fks`, seed queued/running/waiting/terminal legacy executions, upgrade to `0004_execution_attempts`, and assert:
+  In a dedicated test database, downgrade explicitly to `0004_langgraph_saver_tables`, seed queued/running/waiting/terminal legacy executions, upgrade to `0005_execution_attempts`, and assert:
 
   - legacy summaries are unchanged and `execution_attempts` is empty;
   - invalid ordinal (`0`), result, trigger kind, open attempt with `ended_at`, and `ended_at < started_at` are rejected;
@@ -76,7 +76,7 @@
   - downgrade/upgrade round-trip works on an empty attempt table;
   - catalog inspection verifies the partial-index predicate `ended_at IS NULL`.
 
-- [ ] **Step 4: Implement revision `0004_execution_attempts`**
+- [ ] **Step 4: Implement revision `0005_execution_attempts`**
 
   Create an empty table with no backfill:
 
@@ -109,7 +109,7 @@
 
   ```powershell
   .venv\Scripts\python -m pytest tests/unit/db/test_models_metadata.py -q -o addopts=''
-  .venv\Scripts\python -m pytest tests/integration/db/test_alembic_0004_execution_attempts.py -q --no-cov
+  .venv\Scripts\python -m pytest tests/integration/db/test_alembic_0005_execution_attempts.py -q --no-cov
   .venv\Scripts\python -m pytest tests/integration/db/test_schema_parity.py -q --no-cov
   ```
 

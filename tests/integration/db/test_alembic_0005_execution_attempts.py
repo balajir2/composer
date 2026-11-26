@@ -1,4 +1,4 @@
-"""Revision 0004 preserves legacy execution summaries and enforces attempt invariants."""
+"""Revision 0005 preserves legacy execution summaries and enforces attempt invariants."""
 
 import os
 import secrets
@@ -15,8 +15,8 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[3]
-PREV = "0003_assignment_user_fks"
-HEAD = "0004_execution_attempts"
+PREV = "0004_langgraph_saver_tables"
+HEAD = "0005_execution_attempts"
 
 
 def _alembic(*args: str) -> None:
