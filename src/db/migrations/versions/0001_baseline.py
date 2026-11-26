@@ -9,13 +9,14 @@ the two deliberate divergences from prisma/schema.prisma (0002, 0003), stay in t
 revisions.
 
 Existing databases are never re-run: one with an alembic_version row is already past this
-revision. A database that only Prisma built (no alembic_version, all 20 migrations recorded in
-_prisma_migrations) is adopted: nothing runs and Alembic records this revision, as the old
-empty baseline did. Anything else (a partial Prisma history, unknown Prisma migrations, or
-tables without a Prisma history) is refused rather than guessed at.
+revision. A database that only Prisma built (no alembic_version) is adopted when _prisma_migrations
+shows: each of the 20 has a finished, not-rolled-back row; no unresolved (unfinished, not
+rolled back) rows; no unknown migrations. Nothing runs and Alembic records this revision, as
+the old empty baseline did. Anything else is refused rather than guessed at.
 
-"Empty" means: no table in the ``public`` schema other than ``alembic_version``. Other
-schemas are ignored. Lock and statement timeouts are not set here (unlike 0002/0003): the
+The revision pins ``search_path`` to ``public`` (as Prisma did). "Empty" means: no table in
+``public`` other than ``alembic_version``, and no enum, domain or standalone composite type.
+Other schemas are ignored. Lock and statement timeouts are not set here (unlike 0002/0003): the
 create path only ever runs against an empty schema, where no other session can hold a
 conflicting lock, and env.py already serialises runs with an advisory lock.
 
@@ -535,45 +536,92 @@ def _statements(sql: str) -> list[str]:
     return out
 
 
+def _fail(problem: str, advice: str) -> RuntimeError:
+    return RuntimeError(f"0001_baseline: {problem} {advice}")
+
+
 def _base_state(bind: Connection) -> Literal["create", "adopt"]:
+    """Decide what to do with the ``public`` schema. The caller has already set
+    ``search_path`` to ``public``, so the check and the DDL look at the same schema."""
+    schema = bind.exec_driver_sql("SELECT current_schema()").scalar()
+    if schema != "public":
+        raise _fail(
+            f"the current schema is {schema!r}, not 'public'.",
+            "Create the public schema (and grant the migration role CREATE on it), or restore "
+            "the database.",
+        )
     tables = {
         r[0]
         for r in bind.exec_driver_sql("SELECT tablename FROM pg_tables WHERE schemaname = 'public'")
     } - {"alembic_version"}
-    if not tables:
-        return "create"
-    if "_prisma_migrations" not in tables:
-        raise RuntimeError(
-            "0001_baseline: the public schema has tables but no Prisma history "
-            "(_prisma_migrations); refusing to adopt a schema of unknown shape. Restore the "
-            "database or build it from an empty one."
-        )
-    applied = {
+    # Enums, domains and standalone composite types (not the row types of tables and views).
+    types = {
         r[0]
         for r in bind.exec_driver_sql(
-            "SELECT migration_name FROM _prisma_migrations "
-            "WHERE finished_at IS NOT NULL AND rolled_back_at IS NULL"
+            "SELECT t.typname FROM pg_type t JOIN pg_namespace n ON n.oid = t.typnamespace "
+            "WHERE n.nspname = 'public' AND ("
+            "t.typtype IN ('e', 'd') OR (t.typtype = 'c' AND EXISTS ("
+            "SELECT 1 FROM pg_class c WHERE c.oid = t.typrelid AND c.relkind = 'c')))"
         )
     }
+    if not tables and not types:
+        return "create"
+    if "_prisma_migrations" not in tables:
+        leftovers = ", ".join(sorted(tables | types))
+        raise _fail(
+            f"the public schema has tables or types ({leftovers}) but no Prisma history "
+            "(_prisma_migrations); refusing to adopt a schema of unknown shape.",
+            "Restore the database or build it from an empty one.",
+        )
+    rows = bind.exec_driver_sql(
+        "SELECT migration_name, finished_at IS NOT NULL, rolled_back_at IS NOT NULL "
+        "FROM _prisma_migrations"
+    ).all()
+    # Prisma itself refuses a database with an unfinished, unresolved migration (P3009).
+    unresolved = sorted(
+        {n for n, finished, rolled_back in rows if not finished and not rolled_back}
+    )
+    if unresolved:
+        raise _fail(
+            f"unresolved Prisma migrations (started, never finished): {', '.join(unresolved)}.",
+            "Resolve them with `prisma migrate resolve` from commit 58d2829 "
+            "(git checkout 58d2829), or restore the database.",
+        )
+    applied = {n for n, finished, rolled_back in rows if finished and not rolled_back}
+    known = set(PRISMA_MIGRATION_NAMES)
     missing = [n for n in PRISMA_MIGRATION_NAMES if n not in applied]
-    unknown = sorted(applied - set(PRISMA_MIGRATION_NAMES))
-    if missing or unknown:
-        raise RuntimeError(
-            "0001_baseline: this database was built by Prisma but is not at its final "
-            f"migration; missing Prisma migrations: {', '.join(missing) or 'none'}; unknown: "
-            f"{', '.join(unknown) or 'none'}. Finish it from a pre-phase-6 checkout "
-            "(git checkout 58d2829 && uv run prisma migrate deploy) or restore it."
+    # A rolled-back row is a retracted attempt; any other row is a migration that happened.
+    unknown = sorted({n for n, _, rolled_back in rows if not rolled_back} - known)
+    if unknown:
+        raise _fail(
+            f"unknown Prisma migrations recorded (probably from another branch): "
+            f"{', '.join(unknown)}.",
+            "Drop that migration's objects and its _prisma_migrations rows, or restore the "
+            "database from a backup.",
+        )
+    if missing:
+        raise _fail(
+            f"built by Prisma but not at its final migration; missing Prisma migrations: "
+            f"{', '.join(missing)}.",
+            "Finish it from a pre-phase-6 checkout (git checkout 58d2829 && uv run prisma "
+            "migrate deploy), or restore the database.",
         )
     return "adopt"
 
 
 def upgrade() -> None:
     bind = op.get_bind()
-    if _base_state(bind) == "adopt":
-        return
-    for _, sql in PRISMA_MIGRATIONS:
-        for statement in _statements(sql):
-            bind.exec_driver_sql(statement)
+    # Prisma always worked in `public`. Pin it for the check and the DDL so a "$user" schema
+    # (one named after the role) cannot receive the tables while the check looked at `public`.
+    # Then restore the caller's path: Alembic created alembic_version where that path points
+    # and must find it there when it records the new revision.
+    original = bind.exec_driver_sql("SHOW search_path").scalar_one()
+    bind.exec_driver_sql("SET LOCAL search_path TO public")
+    if _base_state(bind) == "create":
+        for _, sql in PRISMA_MIGRATIONS:
+            for statement in _statements(sql):
+                bind.exec_driver_sql(statement)
+    bind.exec_driver_sql("SELECT set_config('search_path', %s, true)", (original,))
 
 
 def downgrade() -> None:

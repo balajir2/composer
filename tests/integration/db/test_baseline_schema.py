@@ -203,7 +203,7 @@ def test_an_unfinished_prisma_migration_is_refused(scratch_db: str) -> None:
     names = _names()
     _prisma_built(scratch_db, unfinished=names[5])
     out = _refused(scratch_db, "upgrade", "head")
-    assert "missing Prisma migrations" in out
+    assert "unresolved Prisma migrations" in out
     assert names[5] in out
     assert _versions(scratch_db) == []
 
@@ -262,3 +262,93 @@ def test_downgrade_below_the_baseline_is_refused(scratch_db: str) -> None:
     assert "0001 is the base schema" in out
     with psycopg.connect(scratch_db, autocommit=True) as conn:
         assert conn.execute("SELECT to_regclass('public.workflows')").fetchone() == ("workflows",)
+
+
+def _history_row(url: str, name: str, *, finished: bool = True, rolled_back: bool = False) -> None:
+    with psycopg.connect(url, autocommit=True) as conn:
+        conn.execute(
+            "INSERT INTO _prisma_migrations (id, checksum, finished_at, rolled_back_at,"
+            " migration_name, applied_steps_count) VALUES (%s, %s,"
+            " CASE WHEN %s THEN now() END, CASE WHEN %s THEN now() END, %s, 1)",
+            (str(uuid.uuid4()), "0" * 64, finished, rolled_back, name),
+        )
+
+
+def test_an_unfinished_unknown_row_beside_all_twenty_is_refused(scratch_db: str) -> None:
+    _prisma_built(scratch_db)
+    _history_row(scratch_db, "20261201000000_feature_branch", finished=False)
+    with psycopg.connect(scratch_db, autocommit=True) as conn:
+        conn.execute("CREATE TABLE stray (id int)")
+    out = _refused(scratch_db, "upgrade", "head")
+    assert "unresolved Prisma migrations" in out
+    assert "20261201000000_feature_branch" in out
+    assert "prisma migrate resolve" in out
+    assert _versions(scratch_db) == []
+
+
+def test_an_unfinished_known_row_is_refused_even_after_a_finished_retry(scratch_db: str) -> None:
+    names = _names()
+    _prisma_built(scratch_db)
+    _history_row(scratch_db, names[3], finished=False)  # Prisma refuses this state (P3009)
+    out = _refused(scratch_db, "upgrade", "head")
+    assert "unresolved Prisma migrations" in out
+    assert names[3] in out
+    assert _versions(scratch_db) == []
+
+
+def test_a_rolled_back_row_followed_by_a_successful_retry_is_adopted(scratch_db: str) -> None:
+    names = _names()
+    _prisma_built(scratch_db)
+    _history_row(scratch_db, names[3], finished=False, rolled_back=True)
+    _ok(scratch_db, "upgrade", "head")
+    assert snapshot(scratch_db) == _golden("0004_langgraph_saver_tables")
+
+
+def test_a_rolled_back_unknown_row_is_ignored(scratch_db: str) -> None:
+    _prisma_built(scratch_db)
+    _history_row(scratch_db, "20261201000000_abandoned", finished=False, rolled_back=True)
+    _ok(scratch_db, "upgrade", "head")
+    assert snapshot(scratch_db) == _golden("0004_langgraph_saver_tables")
+
+
+def test_refusal_advice_matches_the_case(scratch_db: str) -> None:
+    names = _names()
+    _prisma_built(scratch_db, names[:-1])
+    out = _refused(scratch_db, "upgrade", "head")
+    assert "prisma migrate deploy" in out
+    assert "58d2829" in out
+    assert "postgresql://" not in out
+
+
+def test_unknown_migration_advice_says_drop_or_restore(scratch_db: str) -> None:
+    _prisma_built(scratch_db, extra=("20270101000000_from_the_future",))
+    out = _refused(scratch_db, "upgrade", "head")
+    assert "drop" in out.lower() and "restore" in out
+    assert "prisma migrate deploy" not in out
+
+
+def test_base_tables_land_in_public_even_if_a_role_schema_exists(scratch_db: str) -> None:
+    """With a schema named after the role, "$user" leads the search_path. The baseline pins
+    public for its check and DDL, and restores the path so Alembic finds alembic_version."""
+    role = make_url(scratch_db).username
+    assert role
+    with psycopg.connect(scratch_db, autocommit=True) as conn:
+        conn.execute(f'CREATE SCHEMA "{role}"')  # pyright: ignore[reportCallIssue, reportArgumentType]
+    _ok(scratch_db, "upgrade", "0001_baseline")
+    with psycopg.connect(scratch_db, autocommit=True) as conn:
+        in_role = {
+            r[0]
+            for r in conn.execute("SELECT tablename FROM pg_tables WHERE schemaname = %s", (role,))
+        }
+    assert in_role <= {"alembic_version"}
+    assert {"workflows", "users", "workflow_executions"} <= _tables(scratch_db)
+    assert snapshot(scratch_db) == _golden("0001_baseline")
+
+
+def test_leftover_types_without_tables_are_refused(scratch_db: str) -> None:
+    with psycopg.connect(scratch_db, autocommit=True) as conn:
+        conn.execute("CREATE TYPE \"UserRole\" AS ENUM ('admin', 'member')")
+    out = _refused(scratch_db, "upgrade", "head")
+    assert "no Prisma history" in out
+    assert "already exists" not in out
+    assert _versions(scratch_db) == []
