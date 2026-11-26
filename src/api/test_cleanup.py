@@ -62,15 +62,14 @@ async def delete_own_test_account(  # pyright: ignore[reportUnusedFunction]
 ) -> None:
     """Hard-delete the calling account and everything it owns.
 
-    Deletion order matters: workflows first, since their `onDelete:
-    Cascade` FK (schema.prisma's WorkflowExecution/Approval relations)
-    takes their executions and approvals with them at the DB level; then
-    the `userId`-scoped tables that have no FK relation to User at all
-    (workflows.userId itself included -- see schema.prisma's comment
-    that it is a loose string, not a `@relation`) and so need an
-    explicit delete rather than relying on cascade; then the user row
-    itself, whose own `onDelete: Cascade` FK from ApiKey takes any
-    remaining API keys with it.
+    Deletion order matters: workflows first, since the database's
+    `ON DELETE CASCADE` foreign keys (Alembic `0001_baseline`) take their
+    executions and approvals with them; then the user-scoped tables that
+    have no foreign key to users at all (workflows.user_id itself
+    included, a loose string) and so need an explicit delete rather than
+    relying on cascade; then the user row itself, whose own
+    `ON DELETE CASCADE` foreign key from api_keys takes any remaining API
+    keys with it.
     """
     settings = get_settings()
     if settings.environment == "production":

@@ -887,7 +887,7 @@ If any of those trigger, the recommended path is **incremental, not big-bang**: 
 - Future work that touches the persistence layer (P1-2 durable workers in particular) should read this ADR first — the row-locking pattern it validated is the one to reuse, via `db.tx()` + `query_raw`/`execute_raw`, rather than re-litigating whether Prisma can support it.
 - This finding should be revisited periodically (e.g., alongside P2-4's dependency-reproducibility work) even absent a trigger condition, since "archived repo, still works" is a risk that only ever gets worse with time, never better.
 
-**Implemented by.** `scripts/poc_persistence_row_lock.py` (the row-locking POC; safe to re-run against any dev database — writes and cleans up only its own scratch rows). No other code changes.
+**Implemented by.** `scripts/poc_persistence_row_lock.py` (the row-locking POC; safe to re-run against any dev database — writes and cleans up only its own scratch rows). No other code changes. (Removed in SQLAlchemy migration phase 6, 2026-11-26: it exercised Prisma's raw-SQL API, which no longer exists; see git history before the phase 6 merge.)
 
 **Related.** `docs/claude-improvement-backlog.md` §P3-1 (the source backlog item); `docs/deferred-backlog.md` (P3-1's entry, now resolved by this ADR); ADR-0001 (the checkpoint-saver escape-hatch precedent this ADR's incremental-migration recommendation reuses); `docs/claude-improvement-backlog.md` §P1-2 (durable workers — the backlog item most likely to trigger revisiting this decision) and §P2-4 (dependency reproducibility — the audit's own recommended sequencing put this persistence decision ahead of routine dependency upgrades).
 
