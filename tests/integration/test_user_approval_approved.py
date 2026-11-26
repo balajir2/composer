@@ -9,13 +9,12 @@ import asyncio
 from typing import Any, cast
 
 import pytest
-from fastapi import FastAPI
 from httpx import AsyncClient
 
+from src.db.models import Approval, ApprovalDecision
+from tests.integration._rows import Rows
+
 pytestmark = pytest.mark.integration
-NEEDS_LEGACY_PRISMA = (
-    True  # tests/conftest.py gives this module a test-only Prisma client (phase 6 removes it)
-)
 
 
 async def _poll_until_status(
@@ -34,9 +33,7 @@ async def _poll_until_status(
     raise AssertionError(f"Execution {execution_id} did not reach {target} within {timeout}s")
 
 
-async def test_user_approval_approved_path(client: AsyncClient, app: FastAPI) -> None:
-    db: Any = app.state.db
-
+async def test_user_approval_approved_path(client: AsyncClient, rows: Rows) -> None:
     wf = await client.post(
         "/workflows",
         json={
@@ -98,8 +95,8 @@ async def test_user_approval_approved_path(client: AsyncClient, app: FastAPI) ->
     assert isinstance(final_vars, dict)
     assert final_vars.get("result") == "approved"
 
-    approvals = await db.approval.find_many(where={"executionId": execution_id})
+    approvals = await rows.where(Approval, Approval.execution_id == execution_id)
     assert len(approvals) == 1
-    assert approvals[0].decision == "approved"
+    assert approvals[0].decision == ApprovalDecision.APPROVED
     assert approvals[0].note == "looks good"
-    assert approvals[0].nodeId == "ua"
+    assert approvals[0].node_id == "ua"

@@ -5,13 +5,12 @@ import secrets
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
 from httpx import AsyncClient
 
+from src.db.models import User, Workflow
+from tests.integration._rows import Rows
+
 pytestmark = pytest.mark.integration
-NEEDS_LEGACY_PRISMA = (
-    True  # tests/conftest.py gives this module a test-only Prisma client (phase 6 removes it)
-)
 
 _MINIMAL: dict[str, Any] = {
     "nodes": [
@@ -22,8 +21,7 @@ _MINIMAL: dict[str, Any] = {
 }
 
 
-async def test_publish_and_external_invoke(client: AsyncClient, app: FastAPI) -> None:
-    db: Any = app.state.db
+async def test_publish_and_external_invoke(client: AsyncClient, rows: Rows) -> None:
     email = f"p10a-{secrets.token_hex(6)}@example.com"
     password = "correct-horse-battery-staple"
     user_id: str | None = None
@@ -91,7 +89,7 @@ async def test_publish_and_external_invoke(client: AsyncClient, app: FastAPI) ->
     finally:
         if wf_id:
             with contextlib.suppress(Exception):
-                await db.workflow.delete(where={"id": wf_id})
+                await rows.remove(Workflow, Workflow.id == wf_id)
         if user_id:
             with contextlib.suppress(Exception):
-                await db.user.delete(where={"id": user_id})
+                await rows.remove(User, User.id == user_id)
