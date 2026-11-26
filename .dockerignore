@@ -54,9 +54,5 @@ scripts/
 pyrightconfig.json
 ruff.toml
 
-# Prisma migration history (only the schema is needed at runtime —
-# the Dockerfile copies prisma/schema.prisma explicitly)
-prisma/migrations/
-
 # Claude Code workspace
 .claude/

@@ -97,7 +97,7 @@ jobs:
           # GHA cache: scoped per image so backend + frontend don't clobber each
           # other.  `mode=max` exports intermediate layers too — important
           # because our Dockerfile is single-stage with several expensive
-          # layers (apt+node install, uv sync, prisma generate).
+          # layers (uv sync).
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
           # Supply-chain evidence (audit P1-5): BuildKit attaches an SPDX SBOM
@@ -126,19 +126,15 @@ jobs:
             exit 1
           fi
 
-      # Apply pending Prisma migrations BEFORE the new revision takes
-      # traffic. The generated Prisma client selects every column in the
-      # schema, so code that is ahead of the database breaks even plain
-      # reads. On 2026-11-19 the image for 20261117000000_execution_attempt_timing
-      # shipped without its migration and every GET/POST /executions returned
-      # 500 ("column workflow_executions.running_since does not exist").
-      # A failed migration fails the job here, so the previous revision keeps
-      # serving. Migrations must stay additive/backward-compatible, because
-      # the old revision runs against the new schema until the deploy finishes.
-      # The URL comes from the same Secret Manager entry the backend uses
-      # (deployer SA has secretmanager.secretAccessor); the Neon "-pooler"
-      # host is swapped for the direct endpoint, since migrations need a
-      # session-level advisory lock that PgBouncer transaction pooling breaks.
+      # Apply pending Alembic migrations BEFORE the new revision takes traffic. The
+      # models select every mapped column, so code that is ahead of the database breaks
+      # even plain reads (2026-11-19: GET/POST /executions returned 500 for a missing
+      # column). A failed migration fails the job here, so the previous revision keeps
+      # serving. Migrations must stay additive/backward-compatible, because the old
+      # revision runs against the new schema until the deploy finishes. The URL comes
+      # from the same Secret Manager entry the backend uses; the Neon "-pooler" host is
+      # swapped for the direct endpoint, since migrations take a lock that PgBouncer
+      # transaction pooling breaks.
       - name: Set up Python (for migrations)
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
@@ -159,8 +155,6 @@ jobs:
           echo "::add-mask::$DATABASE_URL"
           export DATABASE_URL
           uv sync --frozen
-          uv run prisma migrate deploy
-          uv run prisma migrate status
           # SQLAlchemy phase 5 (until phase 7 drops the old checkpoint tables):
           # refuse the cutover while an active run has checkpoints only in the
           # old tables. Runs BEFORE the Alembic upgrade so a refusal leaves the
@@ -169,8 +163,7 @@ jobs:
           # Runbook: docs/operations/production-deployment.md
           # "Checkpointer cutover".
           uv run composer checkpoints guard
-          # Alembic owns schema changes from 2026-11-20 (prisma/ is frozen).
-          # On the first run this only records the empty baseline revision.
+          # Alembic is the only migration tool (phase 6). On an empty database 0001 creates the base schema.
           uv run alembic upgrade head
           uv run alembic current
 

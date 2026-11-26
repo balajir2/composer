@@ -32,8 +32,10 @@ def test_checkpoint_guard_runs_before_alembic_and_before_deploy_without_override
 
     assert "uv run composer checkpoints guard" in lines
     guard = lines.index("uv run composer checkpoints guard")
-    assert guard > lines.index("uv run prisma migrate deploy")
+    assert lines.index("uv sync --frozen") < guard
     assert guard < lines.index("uv run alembic upgrade head")
+    assert lines.index("uv run alembic upgrade head") < lines.index("uv run alembic current")
+    assert not any("prisma" in ln for ln in lines)
     assert names.index("Apply database migrations") < names.index("Deploy to Cloud Run")
     # Fail closed: no override, no tolerated failure, no `|| true`.
     assert "continue-on-error" not in migrate
