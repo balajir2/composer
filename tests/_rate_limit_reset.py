@@ -15,25 +15,25 @@ tests with 429s once enough earlier tests have hit them.
 Used by tests/integration/conftest.py and tests/regression/conftest.py
 (not the top-level tests/conftest.py) so tests/unit/ -- which never
 touches a real database -- isn't slowed down by a real network
-round-trip per test. Takes a bare asyncpg connection rather than the
-`app`/Prisma-engine fixture deliberately: this must apply uniformly to
-every test in tests/integration/ and tests/regression/, including
+round-trip per test. Takes a bare psycopg connection rather than the
+`app` fixture deliberately: this must apply uniformly to every test in
+tests/integration/ and tests/regression/, including
 test_events_ws_hardening.py, which overrides fixtures that depend on the
-shared `app` fixture to avoid a cross-event-loop Prisma deadlock (see
-that file's module docstring). A fixture with no dependency on `app`
-can't reintroduce that problem.
+shared `app` fixture. A fixture with no dependency on `app` can't
+interfere with those overrides.
 """
 
 import os
 
-import asyncpg
+import psycopg
+
+from src.db.url import to_libpq_url
 
 
 async def reset_rate_limit_buckets() -> None:
     if not os.environ.get("TEST_DATABASE_URL"):
         return
-    conn = await asyncpg.connect(os.environ["TEST_DATABASE_URL"])
-    try:
+    async with await psycopg.AsyncConnection.connect(
+        to_libpq_url(os.environ["TEST_DATABASE_URL"]), autocommit=True, prepare_threshold=None
+    ) as conn:
         await conn.execute("DELETE FROM rate_limit_buckets")
-    finally:
-        await conn.close()

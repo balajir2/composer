@@ -14,8 +14,12 @@ fixture, because some modules override fixtures that depend on ``app`` (see
 """
 
 import os
+from typing import Any
 
-import asyncpg
+import psycopg
+from psycopg import sql
+
+from src.db.url import to_libpq_url
 
 _TABLES = (
     "checkpoint_writes",
@@ -25,17 +29,34 @@ _TABLES = (
     "langgraph_checkpoints",
 )
 
+
 _SAVER_TABLES = _TABLES[:3]
 _LEGACY_TABLES = _TABLES[3:]
 
 
-async def _threads_in(conn: asyncpg.Connection, tables: tuple[str, ...]) -> set[str] | None:
+async def _connect() -> psycopg.AsyncConnection[Any]:
+    return await psycopg.AsyncConnection.connect(
+        to_libpq_url(os.environ["TEST_DATABASE_URL"]), autocommit=True, prepare_threshold=None
+    )
+
+
+async def _exists(conn: psycopg.AsyncConnection[Any], table: str) -> bool:
+    row = await (await conn.execute("SELECT to_regclass(%s)", (table,))).fetchone()
+    return row is not None and row[0] is not None
+
+
+async def _threads_in(
+    conn: psycopg.AsyncConnection[Any], tables: tuple[str, ...]
+) -> set[str] | None:
     """Thread ids in the table set, or None when its tables do not exist (an Alembic test may
     have downgraded them away)."""
-    if await conn.fetchval("SELECT to_regclass($1)", tables[0]) is None:
+    if not await _exists(conn, tables[0]):
         return None
-    sql = " UNION ".join(f"SELECT thread_id FROM {t}" for t in tables)
-    return {r["thread_id"] for r in await conn.fetch(sql)}
+    query = sql.SQL(" UNION ").join(
+        sql.SQL("SELECT thread_id FROM {}").format(sql.Identifier(t)) for t in tables
+    )
+    cur = await conn.execute(query)
+    return {str(r[0]) for r in await cur.fetchall()}
 
 
 async def checkpoint_thread_ids() -> dict[str, set[str] | None] | None:
@@ -43,14 +64,11 @@ async def checkpoint_thread_ids() -> dict[str, set[str] | None] | None:
     set's tables are absent), or None overall when there is no test database."""
     if not os.environ.get("TEST_DATABASE_URL"):
         return None
-    conn = await asyncpg.connect(os.environ["TEST_DATABASE_URL"])
-    try:
+    async with await _connect() as conn:
         return {
             "saver": await _threads_in(conn, _SAVER_TABLES),
             "legacy": await _threads_in(conn, _LEGACY_TABLES),
         }
-    finally:
-        await conn.close()
 
 
 async def delete_checkpoint_threads_except(keep: dict[str, set[str] | None]) -> None:
@@ -58,17 +76,17 @@ async def delete_checkpoint_threads_except(keep: dict[str, set[str] | None]) -> 
     time. A set that did not exist then is left alone, so its pre-existing rows are never swept."""
     if not os.environ.get("TEST_DATABASE_URL"):
         return
-    conn = await asyncpg.connect(os.environ["TEST_DATABASE_URL"])
-    try:
+    async with await _connect() as conn:
         for name, tables in (("saver", _SAVER_TABLES), ("legacy", _LEGACY_TABLES)):
             kept = keep.get(name)
             if kept is None:
                 continue
             for table in tables:
-                if await conn.fetchval("SELECT to_regclass($1)", table) is None:
+                if not await _exists(conn, table):
                     continue
                 await conn.execute(
-                    f"DELETE FROM {table} WHERE thread_id <> ALL($1::text[])", list(kept)
+                    sql.SQL("DELETE FROM {} WHERE thread_id <> ALL(%s)").format(
+                        sql.Identifier(table)
+                    ),
+                    (list(kept),),
                 )
-    finally:
-        await conn.close()
