@@ -9,29 +9,54 @@ lease-column behavior the whole subsystem depends on.
 
 Requires a real, reachable Postgres (TEST_DATABASE_URL) -- run via
 `.venv/Scripts/python -m pytest -m integration tests/integration/test_durable_execution.py`.
-Uses the shared `app`/`client` fixtures from tests/conftest.py (real
-FastAPI lifespan, real Prisma client, real checkpointer/event bus wired
-via `app.state`) rather than hand-rolling a second `Prisma()` connection
-or a second `create_app()` call, matching every other file in this
-directory (e.g. test_user_approval_approved.py's `db: Any = app.state.db`
-pattern).
+Uses the shared `app`/`client` fixtures (real lifespan, real sessionmaker,
+checkpointer and event bus on `app.state`) and seeds rows through
+`tests/integration/_rows.py`.
 """
 
 import asyncio
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 from unittest.mock import AsyncMock
 
 import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
+from langgraph.checkpoint.base import empty_checkpoint
+from sqlalchemy import CursorResult, update
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from prisma import Base64, Json  # pyright: ignore[reportAttributeAccessIssue]
+from src.db.models import (
+    Approval,
+    ApprovalDecision,
+    ExecutionEvent,
+    LangGraphCheckpoint,
+    LangGraphCheckpointWrite,
+    Workflow,
+    WorkflowExecution,
+)
+from tests.integration._rows import Rows
 
 pytestmark = pytest.mark.integration
-NEEDS_LEGACY_PRISMA = (
-    True  # tests/conftest.py gives this module a test-only Prisma client (phase 6 removes it)
-)
+
+
+async def _set_running_to_canceled(session: AsyncSession, execution_id: str) -> int:
+    """The guarded cancel the race test competes with: one UPDATE ... WHERE status = 'running'."""
+    result = cast(
+        "CursorResult[Any]",
+        await session.execute(
+            update(WorkflowExecution)
+            .where(WorkflowExecution.id == execution_id, WorkflowExecution.status == "running")
+            .values(
+                status="canceled",
+                completed_at=datetime.now(UTC),
+                running_since=None,
+                lease_owner=None,
+                lease_expires_at=None,
+            )
+        ),
+    )
+    return result.rowcount
 
 
 def _terminal_race_graph(outcome: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -73,7 +98,11 @@ def _terminal_race_graph(outcome: str) -> tuple[list[dict[str, Any]], list[dict[
 @pytest.mark.parametrize("outcome", ["completed", "failed", "waiting_approval"])
 @pytest.mark.parametrize("first_writer", ["cancel", "executor", "simultaneous"])
 async def test_running_cancel_competes_with_executor_transition_in_postgres(
-    app: FastAPI, monkeypatch: pytest.MonkeyPatch, outcome: str, first_writer: str
+    app: FastAPI,
+    rows: Rows,
+    monkeypatch: pytest.MonkeyPatch,
+    outcome: str,
+    first_writer: str,
 ) -> None:
     """Removing a running-state CAS or its event/email guard must fail this test.
 
@@ -83,28 +112,27 @@ async def test_running_cancel_competes_with_executor_transition_in_postgres(
     """
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    db: Any = app.state.db
     nodes, edges = _terminal_race_graph(outcome)
-    workflow = await db.workflow.create(
-        data={
-            "userId": "dev",
-            "name": "itest-terminal-race",
-            "nodes": Json(nodes),
-            "edges": Json(edges),
-        }
+    workflow = await rows.add(
+        Workflow(
+            user_id="dev",
+            name="itest-terminal-race",
+            nodes=nodes,
+            edges=edges,
+        )
     )
-    execution = await db.workflowexecution.create(
-        data={
-            "workflowId": workflow.id,
-            "userId": "dev",
-            "status": "running",
-            "threadId": f"itest-terminal-race-{workflow.id}",
-            "nodeResults": Json({}),
-            "variables": Json({}),
-            "runningSince": datetime.now(UTC),
-            "leaseOwner": "race-worker",
-            "leaseExpiresAt": datetime.now(UTC) + timedelta(minutes=20),
-        }
+    execution = await rows.add(
+        WorkflowExecution(
+            workflow_id=workflow.id,
+            user_id="dev",
+            status="running",
+            thread_id=f"itest-terminal-race-{workflow.id}",
+            node_results={},
+            variables={},
+            running_since=datetime.now(UTC),
+            lease_owner="race-worker",
+            lease_expires_at=datetime.now(UTC) + timedelta(minutes=20),
+        )
     )
     try:
         executor = LangGraphExecutor(
@@ -125,7 +153,7 @@ async def test_running_cancel_competes_with_executor_transition_in_postgres(
         sent_emails: list[dict[str, Any]] = []
 
         async def _competing_transition(*args: Any, **kwargs: Any) -> bool:
-            # Control scheduling only. The original executor's Prisma update
+            # Control scheduling only. The original executor's SQLAlchemy update
             # and the cancel transaction both execute their real SQL predicates.
             executor_ready.set()
             await start_updates.wait()
@@ -142,17 +170,9 @@ async def test_running_cancel_competes_with_executor_transition_in_postgres(
             start_updates.set()
             if first_writer == "executor":
                 await first_committed.wait()
-            async with db.tx() as tx:
-                updated: int = await tx.workflowexecution.update_many(
-                    where={"id": execution.id, "status": "running"},
-                    data={
-                        "status": "canceled",
-                        "completedAt": datetime.now(UTC),
-                        "runningSince": None,
-                        "leaseOwner": None,
-                        "leaseExpiresAt": None,
-                    },
-                )
+            async with rows.sessionmaker() as s:
+                updated = await _set_running_to_canceled(s, execution.id)
+                await s.commit()
             if first_writer == "cancel":
                 first_committed.set()
             return updated
@@ -174,17 +194,19 @@ async def test_running_cancel_competes_with_executor_transition_in_postgres(
         assert int(executor_won) + cancel_count == 1
         if first_writer != "simultaneous":
             assert executor_won == (first_writer == "executor")
-        refreshed = await db.workflowexecution.find_unique(where={"id": execution.id})
+        refreshed = await rows.get(WorkflowExecution, execution.id)
         assert refreshed is not None
         assert refreshed.status == (outcome if executor_won else "canceled")
-        assert refreshed.runningSince is None
-        assert refreshed.leaseOwner is None
-        assert refreshed.leaseExpiresAt is None
-        assert refreshed.failureCode == (
+        assert refreshed.running_since is None
+        assert refreshed.lease_owner is None
+        assert refreshed.lease_expires_at is None
+        assert refreshed.failure_code == (
             "execution_error" if executor_won and outcome == "failed" else None
         )
 
-        events: list[Any] = await db.executionevent.find_many(where={"executionId": execution.id})
+        events: list[Any] = await rows.where(
+            ExecutionEvent, ExecutionEvent.execution_id == execution.id
+        )
         outcome_events = [
             e for e in events if e.type in {"workflow_completed", "approval_required"}
         ]
@@ -199,37 +221,35 @@ async def test_running_cancel_competes_with_executor_transition_in_postgres(
             assert sent_emails[0]["execution_id"] == execution.id
             assert sent_emails[0]["approver_email"] == "race@example.com"
     finally:
-        await db.langgraphcheckpointwrite.delete_many(where={"threadId": execution.threadId})
-        await db.langgraphcheckpoint.delete_many(where={"threadId": execution.threadId})
-        await db.executionevent.delete_many(where={"executionId": execution.id})
-        await db.workflowexecution.delete(where={"id": execution.id})
-        await db.workflow.delete(where={"id": workflow.id})
+        await rows.drop_threads([execution.thread_id])
+        await rows.remove(ExecutionEvent, ExecutionEvent.execution_id == execution.id)
+        await rows.remove(WorkflowExecution, WorkflowExecution.id == execution.id)
+        await rows.remove(Workflow, Workflow.id == workflow.id)
 
 
 async def test_public_cancel_accepts_an_already_committed_approval_pause(
-    app: FastAPI, client: AsyncClient
+    app: FastAPI, client: AsyncClient, rows: Rows
 ) -> None:
     """A pause winner remains cancellable in a subsequent public request."""
     from src.engine.langgraph_executor import LangGraphExecutor
 
-    db: Any = app.state.db
-    workflow = await db.workflow.create(
-        data={
-            "userId": "dev",
-            "name": "itest-cancel-after-pause",
-            "nodes": Json([]),
-            "edges": Json([]),
-        }
+    workflow = await rows.add(
+        Workflow(
+            user_id="dev",
+            name="itest-cancel-after-pause",
+            nodes=[],
+            edges=[],
+        )
     )
-    execution = await db.workflowexecution.create(
-        data={
-            "workflowId": workflow.id,
-            "userId": "dev",
-            "status": "running",
-            "threadId": f"itest-paused-{workflow.id}",
-            "nodeResults": Json({}),
-            "variables": Json({}),
-        }
+    execution = await rows.add(
+        WorkflowExecution(
+            workflow_id=workflow.id,
+            user_id="dev",
+            status="running",
+            thread_id=f"itest-paused-{workflow.id}",
+            node_results={},
+            variables={},
+        )
     )
     try:
         executor = LangGraphExecutor(
@@ -245,40 +265,38 @@ async def test_public_cancel_accepts_an_already_committed_approval_pause(
         )
         response = await client.post(f"/executions/{execution.id}/cancel")
         assert response.status_code == 200, response.text
-        refreshed = await db.workflowexecution.find_unique(where={"id": execution.id})
+        refreshed = await rows.get(WorkflowExecution, execution.id)
         assert refreshed is not None
         assert refreshed.status == "canceled"
     finally:
-        await db.workflowexecution.delete(where={"id": execution.id})
-        await db.workflow.delete(where={"id": workflow.id})
+        await rows.remove(WorkflowExecution, WorkflowExecution.id == execution.id)
+        await rows.remove(Workflow, Workflow.id == workflow.id)
 
 
 async def test_expired_lease_fails_without_replaying_execution(
-    client: AsyncClient, app: FastAPI, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, app: FastAPI, rows: Rows, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A dead worker's expired attempt fails without replaying side effects."""
-    db: Any = app.state.db
-
-    workflow = await db.workflow.create(
-        data={
-            "userId": "itest-user",
-            "name": "itest-durable-exec",
-            "nodes": Json([]),
-            "edges": Json([]),
-        }
+    workflow = await rows.add(
+        Workflow(
+            user_id="itest-user",
+            name="itest-durable-exec",
+            nodes=[],
+            edges=[],
+        )
     )
-    execution = await db.workflowexecution.create(
-        data={
-            "workflowId": workflow.id,
-            "status": "running",
-            "threadId": f"itest-thread-{workflow.id}",
-            "nodeResults": Json({}),
-            "variables": Json({}),
-            "leaseOwner": "dead-worker-1",
-            "leaseExpiresAt": datetime.now(UTC) - timedelta(seconds=30),
-            "runningSince": datetime.now(UTC) - timedelta(minutes=31),
-            "deliveryAttempts": 1,
-        }
+    execution = await rows.add(
+        WorkflowExecution(
+            workflow_id=workflow.id,
+            status="running",
+            thread_id=f"itest-thread-{workflow.id}",
+            node_results={},
+            variables={},
+            lease_owner="dead-worker-1",
+            lease_expires_at=datetime.now(UTC) - timedelta(seconds=30),
+            running_since=datetime.now(UTC) - timedelta(minutes=31),
+            delivery_attempts=1,
+        )
     )
 
     try:
@@ -295,99 +313,98 @@ async def test_expired_lease_fails_without_replaying_execution(
             )
             assert delivery.status_code == 200, delivery.text
             assert delivery.json() == {"status": "already_claimed"}
-        untouched = await db.workflowexecution.find_unique(where={"id": execution.id})
+        untouched = await rows.get(WorkflowExecution, execution.id)
         assert untouched is not None
         assert untouched.status == "running"
-        assert untouched.leaseOwner == "dead-worker-1"
-        assert untouched.deliveryAttempts == 1
+        assert untouched.lease_owner == "dead-worker-1"
+        assert untouched.delivery_attempts == 1
 
         result = await sweep_expired_leases(app.state.db_sessionmaker)
 
         assert result.marked_failed >= 1
-        refreshed = await db.workflowexecution.find_unique(where={"id": execution.id})
+        refreshed = await rows.get(WorkflowExecution, execution.id)
         assert refreshed is not None
         assert refreshed.status == "failed"
-        assert refreshed.failureCode == "lease_expired"
-        assert refreshed.leaseOwner is None
-        assert refreshed.leaseExpiresAt is None
-        assert refreshed.runningSince is None
+        assert refreshed.failure_code == "lease_expired"
+        assert refreshed.lease_owner is None
+        assert refreshed.lease_expires_at is None
+        assert refreshed.running_since is None
         mock_enqueue.assert_not_awaited()
     finally:
-        await db.workflowexecution.delete(where={"id": execution.id})
-        await db.workflow.delete(where={"id": workflow.id})
+        await rows.remove(WorkflowExecution, WorkflowExecution.id == execution.id)
+        await rows.remove(Workflow, Workflow.id == workflow.id)
 
 
 async def test_months_old_execution_with_recent_attempt_and_live_lease_survives_sweeps(
     app: FastAPI,
+    rows: Rows,
 ) -> None:
     from src.maintenance.execution_sweeper import sweep_expired_leases, sweep_orphaned_running
 
-    db: Any = app.state.db
     now = datetime.now(UTC)
-    workflow = await db.workflow.create(
-        data={
-            "userId": "itest-user",
-            "name": "itest-recent-attempt",
-            "nodes": Json([]),
-            "edges": Json([]),
-        }
+    workflow = await rows.add(
+        Workflow(
+            user_id="itest-user",
+            name="itest-recent-attempt",
+            nodes=[],
+            edges=[],
+        )
     )
-    execution = await db.workflowexecution.create(
-        data={
-            "workflowId": workflow.id,
-            "status": "running",
-            "threadId": f"itest-recent-{workflow.id}",
-            "nodeResults": Json({}),
-            "variables": Json({}),
-            "startedAt": now - timedelta(days=180),
-            "runningSince": now - timedelta(seconds=10),
-            "leaseOwner": "live-worker",
-            "leaseExpiresAt": now + timedelta(minutes=20),
-        }
+    execution = await rows.add(
+        WorkflowExecution(
+            workflow_id=workflow.id,
+            status="running",
+            thread_id=f"itest-recent-{workflow.id}",
+            node_results={},
+            variables={},
+            started_at=now - timedelta(days=180),
+            running_since=now - timedelta(seconds=10),
+            lease_owner="live-worker",
+            lease_expires_at=now + timedelta(minutes=20),
+        )
     )
     try:
         await sweep_orphaned_running(app.state.db_sessionmaker, grace_seconds=120, now=now)
         await sweep_expired_leases(app.state.db_sessionmaker, now=now)
 
-        refreshed = await db.workflowexecution.find_unique(where={"id": execution.id})
+        refreshed = await rows.get(WorkflowExecution, execution.id)
         assert refreshed is not None
         assert refreshed.status == "running"
-        assert refreshed.runningSince == execution.runningSince
-        assert refreshed.leaseOwner == "live-worker"
-        assert refreshed.leaseExpiresAt == execution.leaseExpiresAt
-        assert refreshed.failureCode is None
+        assert refreshed.running_since == execution.running_since
+        assert refreshed.lease_owner == "live-worker"
+        assert refreshed.lease_expires_at == execution.lease_expires_at
+        assert refreshed.failure_code is None
     finally:
-        await db.workflowexecution.delete(where={"id": execution.id})
-        await db.workflow.delete(where={"id": workflow.id})
+        await rows.remove(WorkflowExecution, WorkflowExecution.id == execution.id)
+        await rows.remove(Workflow, Workflow.id == workflow.id)
 
 
 @pytest.mark.parametrize("sweep_kind", ["lease", "orphan"])
 async def test_sweeper_stale_read_cannot_fail_attempt_claimed_after_selection(
-    app: FastAPI, sweep_kind: str, monkeypatch: pytest.MonkeyPatch
+    app: FastAPI, rows: Rows, sweep_kind: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from src.maintenance.execution_sweeper import sweep_expired_leases, sweep_orphaned_running
 
-    db: Any = app.state.db
     now = datetime.now(UTC)
-    workflow = await db.workflow.create(
-        data={
-            "userId": "itest-user",
-            "name": "itest-sweep-race",
-            "nodes": Json([]),
-            "edges": Json([]),
-        }
+    workflow = await rows.add(
+        Workflow(
+            user_id="itest-user",
+            name="itest-sweep-race",
+            nodes=[],
+            edges=[],
+        )
     )
-    execution = await db.workflowexecution.create(
-        data={
-            "workflowId": workflow.id,
-            "status": "running",
-            "threadId": f"itest-sweep-race-{workflow.id}",
-            "nodeResults": Json({}),
-            "variables": Json({}),
-            "runningSince": now - timedelta(minutes=31),
-            "leaseOwner": "dead-worker" if sweep_kind == "lease" else None,
-            "leaseExpiresAt": now - timedelta(seconds=30) if sweep_kind == "lease" else None,
-        }
+    execution = await rows.add(
+        WorkflowExecution(
+            workflow_id=workflow.id,
+            status="running",
+            thread_id=f"itest-sweep-race-{workflow.id}",
+            node_results={},
+            variables={},
+            running_since=now - timedelta(minutes=31),
+            lease_owner="dead-worker" if sweep_kind == "lease" else None,
+            lease_expires_at=now - timedelta(seconds=30) if sweep_kind == "lease" else None,
+        )
     )
     try:
         from src.db.repos import executions as executions_repo
@@ -398,17 +415,16 @@ async def test_sweeper_stale_read_cannot_fail_attempt_claimed_after_selection(
         async def _select_then_claim(*args: Any, **kwargs: Any) -> list[Any]:
             # The seam controls timing only: selection, renewal, and the
             # sweeper's conditional update all execute against Postgres.
-            rows = [r for r in await real_list(*args, **kwargs) if r.id == execution.id]
-            assert len(rows) == 1
-            await db.workflowexecution.update(
-                where={"id": execution.id},
-                data={
-                    "runningSince": now,
-                    "leaseOwner": "renewed-worker",
-                    "leaseExpiresAt": now + timedelta(minutes=20),
-                },
+            listed = [r for r in await real_list(*args, **kwargs) if r.id == execution.id]
+            assert len(listed) == 1
+            await rows.set(
+                WorkflowExecution,
+                WorkflowExecution.id == execution.id,
+                running_since=now,
+                lease_owner="renewed-worker",
+                lease_expires_at=now + timedelta(minutes=20),
             )
-            return rows
+            return listed
 
         monkeypatch.setattr(executions_repo, target, _select_then_claim)
         sweep_db = app.state.db_sessionmaker
@@ -420,88 +436,103 @@ async def test_sweeper_stale_read_cannot_fail_attempt_claimed_after_selection(
         assert result.scanned == 1
         assert result.marked_failed == 0
         assert result.errored == 0
-        refreshed = await db.workflowexecution.find_unique(where={"id": execution.id})
+        refreshed = await rows.get(WorkflowExecution, execution.id)
         assert refreshed is not None
         assert refreshed.status == "running"
-        assert refreshed.leaseOwner == "renewed-worker"
-        assert refreshed.leaseExpiresAt > now
-        assert refreshed.runningSince >= now - timedelta(milliseconds=1)
-        assert refreshed.failureCode is None
+        assert refreshed.lease_owner == "renewed-worker"
+        assert refreshed.lease_expires_at is not None
+        assert refreshed.lease_expires_at > now
+        assert refreshed.running_since is not None
+        assert refreshed.running_since >= now - timedelta(milliseconds=1)
+        assert refreshed.failure_code is None
     finally:
-        await db.workflowexecution.delete(where={"id": execution.id})
-        await db.workflow.delete(where={"id": workflow.id})
+        await rows.remove(WorkflowExecution, WorkflowExecution.id == execution.id)
+        await rows.remove(Workflow, Workflow.id == workflow.id)
 
 
 async def test_cancel_retains_checkpoint_and_pending_writes(
-    client: AsyncClient, app: FastAPI
+    client: AsyncClient, app: FastAPI, rows: Rows
 ) -> None:
-    db: Any = app.state.db
     now = datetime.now(UTC)
-    workflow = await db.workflow.create(
-        data={
-            "userId": "dev",
-            "name": "itest-cancel-retention",
-            "nodes": Json([]),
-            "edges": Json([]),
-        }
+    workflow = await rows.add(
+        Workflow(
+            user_id="dev",
+            name="itest-cancel-retention",
+            nodes=[],
+            edges=[],
+        )
     )
-    execution = await db.workflowexecution.create(
-        data={
-            "workflowId": workflow.id,
-            "userId": "dev",
-            "status": "running",
-            "threadId": f"itest-cancel-{workflow.id}",
-            "nodeResults": Json({}),
-            "variables": Json({}),
-            "runningSince": now,
-            "leaseOwner": "active-worker",
-            "leaseExpiresAt": now + timedelta(minutes=20),
-        }
+    execution = await rows.add(
+        WorkflowExecution(
+            workflow_id=workflow.id,
+            user_id="dev",
+            status="running",
+            thread_id=f"itest-cancel-{workflow.id}",
+            node_results={},
+            variables={},
+            running_since=now,
+            lease_owner="active-worker",
+            lease_expires_at=now + timedelta(minutes=20),
+        )
     )
     try:
-        await db.langgraphcheckpoint.create(
-            data={
-                "threadId": execution.threadId,
-                "checkpointId": "checkpoint-1",
-                "checkpoint": Base64.encode(b"retained-checkpoint"),
-                "metadata": Base64.encode(b"retained-metadata"),
-            }
+        await rows.add(
+            LangGraphCheckpoint(
+                thread_id=execution.thread_id,
+                checkpoint_ns="",
+                checkpoint_id="checkpoint-1",
+                checkpoint=b"retained-checkpoint",
+                metadata_=b"retained-metadata",
+            )
         )
-        await db.langgraphcheckpointwrite.create(
-            data={
-                "threadId": execution.threadId,
-                "checkpointId": "checkpoint-1",
-                "taskId": "task-1",
-                "idx": 0,
-                "channel": "result",
-                "value": Base64.encode(b"retained-write"),
-            }
+        await rows.add(
+            LangGraphCheckpointWrite(
+                thread_id=execution.thread_id,
+                checkpoint_ns="",
+                checkpoint_id="checkpoint-1",
+                task_id="task-1",
+                idx=0,
+                channel="result",
+                value=b"retained-write",
+            )
         )
+        # Real runs write through the official saver now; its checkpoint must survive too.
+        saver_config: Any = {
+            "configurable": {"thread_id": execution.thread_id, "checkpoint_ns": ""}
+        }
+        await app.state.checkpointer.aput(saver_config, empty_checkpoint(), {}, {})
 
         response = await client.post(f"/executions/{execution.id}/cancel")
 
         assert response.status_code == 200, response.text
-        refreshed = await db.workflowexecution.find_unique(where={"id": execution.id})
+        refreshed = await rows.get(WorkflowExecution, execution.id)
         assert refreshed is not None
         assert refreshed.status == "canceled"
-        assert refreshed.runningSince is None
-        assert refreshed.leaseOwner is None
-        assert refreshed.leaseExpiresAt is None
-        checkpoints = await db.langgraphcheckpoint.find_many(where={"threadId": execution.threadId})
-        writes = await db.langgraphcheckpointwrite.find_many(where={"threadId": execution.threadId})
+        assert refreshed.running_since is None
+        assert refreshed.lease_owner is None
+        assert refreshed.lease_expires_at is None
+        checkpoints = await rows.where(
+            LangGraphCheckpoint, LangGraphCheckpoint.thread_id == execution.thread_id
+        )
+        writes = await rows.where(
+            LangGraphCheckpointWrite, LangGraphCheckpointWrite.thread_id == execution.thread_id
+        )
         assert len(checkpoints) == 1
-        assert checkpoints[0].checkpoint.decode() == b"retained-checkpoint"
+        assert checkpoints[0].checkpoint == b"retained-checkpoint"
         assert len(writes) == 1
-        assert writes[0].value.decode() == b"retained-write"
+        assert writes[0].value == b"retained-write"
+        retained = await app.state.checkpointer.aget_tuple(
+            {"configurable": {"thread_id": execution.thread_id}}
+        )
+        assert retained is not None
     finally:
-        await db.langgraphcheckpointwrite.delete_many(where={"threadId": execution.threadId})
-        await db.langgraphcheckpoint.delete_many(where={"threadId": execution.threadId})
-        await db.executionevent.delete_many(where={"executionId": execution.id})
-        await db.workflowexecution.delete(where={"id": execution.id})
-        await db.workflow.delete(where={"id": workflow.id})
+        await rows.drop_threads([execution.thread_id])
+        await rows.remove(ExecutionEvent, ExecutionEvent.execution_id == execution.id)
+        await rows.remove(WorkflowExecution, WorkflowExecution.id == execution.id)
+        await rows.remove(Workflow, Workflow.id == workflow.id)
 
 
-async def test_two_concurrent_claims_only_one_succeeds(client: AsyncClient, app: FastAPI) -> None:
+async def test_two_concurrent_claims_only_one_succeeds(client: AsyncClient, rows: Rows) -> None:
     """Real end-to-end version of scripts/poc_persistence_row_lock.py's
     row-locking finding, exercised through the actual `claim_and_run` code
     path (via POST /internal/claim-and-run) rather than a standalone
@@ -512,7 +543,7 @@ async def test_two_concurrent_claims_only_one_succeeds(client: AsyncClient, app:
     fixture (httpx `AsyncClient` over `ASGITransport`, this repo's
     established integration-test convention — see every other file in
     this directory) rather than constructing a second, separate
-    `TestClient`/`create_app()`. `app.state.db`/`checkpointer`/`event_bus`
+    `TestClient`/`create_app()`. `app.state.db_sessionmaker`/`checkpointer`/`event_bus`
     are already the real Postgres-backed instances here because the
     `app` fixture runs the full `create_app()` + lifespan (see
     tests/conftest.py), so there was nothing left to wire up by hand.
@@ -542,39 +573,35 @@ async def test_two_concurrent_claims_only_one_succeeds(client: AsyncClient, app:
     scripts/poc_persistence_row_lock.py; this test proves the guarantee
     survives being wired into the real `claim_and_run` handler.
     """
-    db: Any = app.state.db
-
-    workflow = await db.workflow.create(
-        data={
-            "userId": "itest-user",
-            "name": "itest-claim-race",
-            "nodes": Json(
-                [
-                    {
-                        "id": "s",
-                        "type": "start",
-                        "position": {"x": 0, "y": 0},
-                        "data": {"label": "S"},
-                    },
-                    {
-                        "id": "e",
-                        "type": "end",
-                        "position": {"x": 1, "y": 0},
-                        "data": {"label": "E"},
-                    },
-                ]
-            ),
-            "edges": Json([{"id": "e1", "source": "s", "target": "e"}]),
-        }
+    workflow = await rows.add(
+        Workflow(
+            user_id="itest-user",
+            name="itest-claim-race",
+            nodes=[
+                {
+                    "id": "s",
+                    "type": "start",
+                    "position": {"x": 0, "y": 0},
+                    "data": {"label": "S"},
+                },
+                {
+                    "id": "e",
+                    "type": "end",
+                    "position": {"x": 1, "y": 0},
+                    "data": {"label": "E"},
+                },
+            ],
+            edges=[{"id": "e1", "source": "s", "target": "e"}],
+        )
     )
-    execution = await db.workflowexecution.create(
-        data={
-            "workflowId": workflow.id,
-            "status": "queued",
-            "threadId": f"itest-race-{workflow.id}",
-            "nodeResults": Json({}),
-            "variables": Json({}),
-        }
+    execution = await rows.add(
+        WorkflowExecution(
+            workflow_id=workflow.id,
+            status="queued",
+            thread_id=f"itest-race-{workflow.id}",
+            node_results={},
+            variables={},
+        )
     )
 
     try:
@@ -593,78 +620,72 @@ async def test_two_concurrent_claims_only_one_succeeds(client: AsyncClient, app:
         assert statuses.count("completed") == 1, statuses
         assert statuses.count("already_claimed") == 1, statuses
 
-        refreshed = await db.workflowexecution.find_unique(where={"id": execution.id})
+        refreshed = await rows.get(WorkflowExecution, execution.id)
         assert refreshed is not None
         assert refreshed.status == "completed"
     finally:
-        await db.workflowexecution.delete(where={"id": execution.id})
-        await db.workflow.delete(where={"id": workflow.id})
+        await rows.remove(WorkflowExecution, WorkflowExecution.id == execution.id)
+        await rows.remove(Workflow, Workflow.id == workflow.id)
 
 
 async def test_resume_clears_stale_lease_and_reclaim_succeeds(
-    client: AsyncClient, app: FastAPI, monkeypatch: pytest.MonkeyPatch
+    client: AsyncClient, app: FastAPI, rows: Rows, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Pause releases ownership; resume starts a fresh, immediately claimable attempt."""
-    db: Any = app.state.db
-
-    workflow = await db.workflow.create(
-        data={
-            "userId": "dev",
-            "name": "itest-stale-lease-resume",
-            "nodes": Json(
-                [
-                    {
-                        "id": "s",
-                        "type": "start",
-                        "position": {"x": 0, "y": 0},
-                        "data": {"label": "S"},
-                    },
-                    {
-                        "id": "ua",
-                        "type": "user-approval",
-                        "position": {"x": 100, "y": 0},
-                        "data": {"label": "UA", "approvalMessage": "Please approve"},
-                    },
-                    {
-                        "id": "ok",
-                        "type": "set-state",
-                        "position": {"x": 200, "y": 0},
-                        "data": {"label": "ok", "stateKey": "result", "stateValue": "approved"},
-                    },
-                    {
-                        "id": "no",
-                        "type": "set-state",
-                        "position": {"x": 200, "y": 100},
-                        "data": {"label": "no", "stateKey": "result", "stateValue": "rejected"},
-                    },
-                    {
-                        "id": "e",
-                        "type": "end",
-                        "position": {"x": 300, "y": 0},
-                        "data": {"label": "E"},
-                    },
-                ]
-            ),
-            "edges": Json(
-                [
-                    {"id": "e1", "source": "s", "target": "ua"},
-                    {"id": "e2", "source": "ua", "target": "ok", "branch": "approved"},
-                    {"id": "e3", "source": "ua", "target": "no", "branch": "rejected"},
-                    {"id": "e4", "source": "ok", "target": "e"},
-                    {"id": "e5", "source": "no", "target": "e"},
-                ]
-            ),
-        }
+    workflow = await rows.add(
+        Workflow(
+            user_id="dev",
+            name="itest-stale-lease-resume",
+            nodes=[
+                {
+                    "id": "s",
+                    "type": "start",
+                    "position": {"x": 0, "y": 0},
+                    "data": {"label": "S"},
+                },
+                {
+                    "id": "ua",
+                    "type": "user-approval",
+                    "position": {"x": 100, "y": 0},
+                    "data": {"label": "UA", "approvalMessage": "Please approve"},
+                },
+                {
+                    "id": "ok",
+                    "type": "set-state",
+                    "position": {"x": 200, "y": 0},
+                    "data": {"label": "ok", "stateKey": "result", "stateValue": "approved"},
+                },
+                {
+                    "id": "no",
+                    "type": "set-state",
+                    "position": {"x": 200, "y": 100},
+                    "data": {"label": "no", "stateKey": "result", "stateValue": "rejected"},
+                },
+                {
+                    "id": "e",
+                    "type": "end",
+                    "position": {"x": 300, "y": 0},
+                    "data": {"label": "E"},
+                },
+            ],
+            edges=[
+                {"id": "e1", "source": "s", "target": "ua"},
+                {"id": "e2", "source": "ua", "target": "ok", "branch": "approved"},
+                {"id": "e3", "source": "ua", "target": "no", "branch": "rejected"},
+                {"id": "e4", "source": "ok", "target": "e"},
+                {"id": "e5", "source": "no", "target": "e"},
+            ],
+        )
     )
-    execution = await db.workflowexecution.create(
-        data={
-            "workflowId": workflow.id,
-            "userId": "dev",
-            "status": "queued",
-            "threadId": f"itest-stale-lease-{workflow.id}",
-            "nodeResults": Json({}),
-            "variables": Json({}),
-        }
+    execution = await rows.add(
+        WorkflowExecution(
+            workflow_id=workflow.id,
+            user_id="dev",
+            status="queued",
+            thread_id=f"itest-stale-lease-{workflow.id}",
+            node_results={},
+            variables={},
+        )
     )
 
     try:
@@ -684,12 +705,12 @@ async def test_resume_clears_stale_lease_and_reclaim_succeeds(
         assert claim1.status_code == 200, claim1.text
         assert claim1.json()["status"] == "completed", claim1.json()
 
-        paused = await db.workflowexecution.find_unique(where={"id": execution.id})
+        paused = await rows.get(WorkflowExecution, execution.id)
         assert paused is not None
         assert paused.status == "waiting_approval", paused.status
-        assert paused.runningSince is None
-        assert paused.leaseOwner is None
-        assert paused.leaseExpiresAt is None
+        assert paused.running_since is None
+        assert paused.lease_owner is None
+        assert paused.lease_expires_at is None
 
         # Original deliveries and unauthorized resume deliveries cannot
         # claim an approval pause, whose ownership has correctly been cleared.
@@ -699,21 +720,20 @@ async def test_resume_clears_stale_lease_and_reclaim_succeeds(
             )
             assert duplicate.status_code == 200, duplicate.text
             assert duplicate.json() == {"status": "already_claimed"}
-        still_paused = await db.workflowexecution.find_unique(where={"id": execution.id})
+        still_paused = await rows.get(WorkflowExecution, execution.id)
         assert still_paused is not None
         assert still_paused.status == "waiting_approval"
         assert still_paused.variables == paused.variables
-        assert still_paused.deliveryAttempts == paused.deliveryAttempts
+        assert still_paused.delivery_attempts == paused.delivery_attempts
 
         # Legacy paused rows may still have a lease from an older worker.
         # Resume must also clear those fields in its guarded transition.
-        await db.workflowexecution.update(
-            where={"id": execution.id},
-            data={
-                "leaseOwner": "legacy-worker",
-                "leaseExpiresAt": datetime.now(UTC) + timedelta(minutes=20),
-                "startedAt": datetime.now(UTC) - timedelta(days=180),
-            },
+        await rows.set(
+            WorkflowExecution,
+            WorkflowExecution.id == execution.id,
+            lease_owner="legacy-worker",
+            lease_expires_at=datetime.now(UTC) + timedelta(minutes=20),
+            started_at=datetime.now(UTC) - timedelta(days=180),
         )
 
         # Step 2: resolve the approval through the real, public resume
@@ -733,22 +753,22 @@ async def test_resume_clears_stale_lease_and_reclaim_succeeds(
         assert resume.status_code == 200, resume.text
         mock_enqueue.assert_awaited_once_with(execution.id, kind="resume")
 
-        resumed_row = await db.workflowexecution.find_unique(where={"id": execution.id})
+        resumed_row = await rows.get(WorkflowExecution, execution.id)
         assert resumed_row is not None
         assert resumed_row.status == "running"
         # The actual fix, verified directly against real Postgres: the
         # stale lease from the original claim must be gone.
-        assert resumed_row.leaseOwner is None, "fix did not clear leaseOwner"
-        assert resumed_row.leaseExpiresAt is None, "fix did not clear leaseExpiresAt"
-        assert resumed_row.runningSince is not None
-        assert resumed_row.runningSince >= resumed_at - timedelta(milliseconds=1)
-        assert resumed_row.runningSince <= datetime.now(UTC)
+        assert resumed_row.lease_owner is None, "fix did not clear leaseOwner"
+        assert resumed_row.lease_expires_at is None, "fix did not clear leaseExpiresAt"
+        assert resumed_row.running_since is not None
+        assert resumed_row.running_since >= resumed_at - timedelta(milliseconds=1)
+        assert resumed_row.running_since <= datetime.now(UTC)
 
         from src.maintenance.execution_sweeper import sweep_expired_leases, sweep_orphaned_running
 
         await sweep_orphaned_running(app.state.db_sessionmaker, grace_seconds=120)
         await sweep_expired_leases(app.state.db_sessionmaker)
-        awaiting_claim = await db.workflowexecution.find_unique(where={"id": execution.id})
+        awaiting_claim = await rows.get(WorkflowExecution, execution.id)
         assert awaiting_claim is not None
         assert awaiting_claim.status == "running"
 
@@ -777,22 +797,21 @@ async def test_resume_clears_stale_lease_and_reclaim_succeeds(
             "bug the fix closes"
         )
 
-        final_row = await db.workflowexecution.find_unique(where={"id": execution.id})
+        final_row = await rows.get(WorkflowExecution, execution.id)
         assert final_row is not None
         assert final_row.status == "completed", final_row.status
-        assert final_row.runningSince is None
-        assert final_row.leaseOwner is None
-        assert final_row.leaseExpiresAt is None
+        assert final_row.running_since is None
+        assert final_row.lease_owner is None
+        assert final_row.lease_expires_at is None
         final_vars: dict[str, Any] = final_row.variables or {}
         assert final_vars.get("result") == "approved"
 
-        approvals = await db.approval.find_many(where={"executionId": execution.id})
+        approvals = await rows.where(Approval, Approval.execution_id == execution.id)
         assert len(approvals) == 1
-        assert approvals[0].decision == "approved"
+        assert approvals[0].decision == ApprovalDecision.APPROVED
     finally:
-        thread_id = execution.threadId
-        await db.langgraphcheckpointwrite.delete_many(where={"threadId": thread_id})
-        await db.langgraphcheckpoint.delete_many(where={"threadId": thread_id})
-        await db.executionevent.delete_many(where={"executionId": execution.id})
-        await db.workflowexecution.delete(where={"id": execution.id})
-        await db.workflow.delete(where={"id": workflow.id})
+        thread_id = execution.thread_id
+        await rows.drop_threads([thread_id])
+        await rows.remove(ExecutionEvent, ExecutionEvent.execution_id == execution.id)
+        await rows.remove(WorkflowExecution, WorkflowExecution.id == execution.id)
+        await rows.remove(Workflow, Workflow.id == workflow.id)

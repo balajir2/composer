@@ -9,15 +9,14 @@ from typing import Any
 import pytest
 from fastapi import FastAPI
 from httpx import AsyncClient
+from sqlalchemy import text
 
-from prisma import Json  # pyright: ignore[reportAttributeAccessIssue]
+from src.db.models import User, Workflow, WorkflowExecution
 from src.migration.reconcile import reconcile_by_email
 from src.migration.runner import run_migration
+from tests.integration._rows import Rows
 
 pytestmark = pytest.mark.integration
-NEEDS_LEGACY_PRISMA = (
-    True  # tests/conftest.py gives this module a test-only Prisma client (phase 6 removes it)
-)
 
 
 def _write_export(
@@ -44,8 +43,8 @@ async def test_migration_and_reconciliation_cycle(
     tmp_path: Path,
     client: AsyncClient,
     app: FastAPI,
+    rows: Rows,
 ) -> None:
-    db: Any = app.state.db
     email_a = f"phase9-a-{secrets.token_hex(6)}@example.com"
 
     oab_users = [
@@ -95,55 +94,65 @@ async def test_migration_and_reconciliation_cycle(
     try:
         # Verify rows exist with user_id=None + original_owner_email set
         for wf in oab_wfs:
-            row = await db.workflow.find_unique(where={"id": wf["_id"]})
+            row = await rows.get(Workflow, wf["_id"])
             assert row is not None
-            assert row.userId is None
-            assert row.originalOwnerEmail == email_a.lower()
-            assert row.isPublic == wf["isPublic"]
+            assert row.user_id is None
+            assert row.original_owner_email == email_a.lower()
+            assert row.is_public == wf["isPublic"]
         for exec_ in oab_execs:
-            row = await db.workflowexecution.find_unique(where={"id": exec_["_id"]})
+            row = await rows.get(WorkflowExecution, exec_["_id"])
             assert row is not None
-            assert row.userId is None
-            assert row.originalOwnerEmail == email_a.lower()
+            assert row.user_id is None
+            assert row.original_owner_email == email_a.lower()
 
         # Phase 4a oracle: the migration writer inserts an execution only if it is absent. A
         # second run must not overwrite it, and reconcile must claim only unowned rows whose
         # original owner is this email.
         exec_id = oab_execs[0]["_id"]
-        await db.workflowexecution.update(where={"id": exec_id}, data={"error": "local edit"})
-        owned = await db.workflowexecution.create(
-            data={
-                "workflowId": oab_wfs[0]["_id"],
-                "userId": "someone-else",
-                "status": "completed",
-                "threadId": f"p4a-owned-{secrets.token_hex(4)}",
-                "originalOwnerEmail": email_a.lower(),
-                "nodeResults": Json({}),
-                "variables": Json({}),
-            }
+        await rows.set(WorkflowExecution, WorkflowExecution.id == exec_id, error="local edit")
+        owned = await rows.add(
+            WorkflowExecution(
+                workflow_id=oab_wfs[0]["_id"],
+                user_id="someone-else",
+                status="completed",
+                thread_id=f"p4a-owned-{secrets.token_hex(4)}",
+                original_owner_email=email_a.lower(),
+                node_results={},
+                variables={},
+            )
         )
-        stranger = await db.workflowexecution.create(
-            data={
-                "workflowId": oab_wfs[0]["_id"],
-                "status": "completed",
-                "threadId": f"p4a-stranger-{secrets.token_hex(4)}",
-                "originalOwnerEmail": f"other-{secrets.token_hex(4)}@example.com",
-                "nodeResults": Json({}),
-                "variables": Json({}),
-            }
+        stranger = await rows.add(
+            WorkflowExecution(
+                workflow_id=oab_wfs[0]["_id"],
+                status="completed",
+                thread_id=f"p4a-stranger-{secrets.token_hex(4)}",
+                original_owner_email=f"other-{secrets.token_hex(4)}@example.com",
+                node_results={},
+                variables={},
+            )
         )
         assert await run_migration(export_dir=str(export_dir), dry_run=False) == 0
-        again = await db.workflowexecution.find_unique(where={"id": exec_id})
-        assert again is not None and again.error == "local edit" and again.userId is None
-        assert await db.workflowexecution.count(where={"id": exec_id}) == 1
+        again = await rows.get(WorkflowExecution, exec_id)
+        assert again is not None and again.error == "local edit" and again.user_id is None
+        assert await rows.count(WorkflowExecution, WorkflowExecution.id == exec_id) == 1
 
         # Phase 4a oracle: an absent input/output stays SQL NULL (not JSON null) when migrated,
         # unlike an execution started through the API, whose absent input is stored as JSON null.
-        nulls = await db.query_raw(
-            "SELECT input IS NULL AS i, output IS NULL AS o FROM workflow_executions WHERE id = $1",
-            exec_id,
-        )
-        assert nulls == [{"i": True, "o": True}]
+        async with rows.sessionmaker() as s:
+            nulls = (
+                (
+                    await s.execute(
+                        text(
+                            "SELECT input IS NULL AS i, output IS NULL AS o "
+                            "FROM workflow_executions WHERE id = :id"
+                        ),
+                        {"id": exec_id},
+                    )
+                )
+                .mappings()
+                .all()
+            )
+        assert [dict(r) for r in nulls] == [{"i": True, "o": True}]
 
         # Register a Composer user with the same email
         reg = await client.post(
@@ -159,19 +168,19 @@ async def test_migration_and_reconciliation_cycle(
             await session.commit()  # run_reconcile commits; reconcile_by_email does not
         assert result["workflows"] == 2
         assert result["executions"] == 1
-        claimed = await db.workflowexecution.find_unique(where={"id": exec_id})
-        assert claimed is not None and claimed.userId == user_id
-        untouched_owned = await db.workflowexecution.find_unique(where={"id": owned.id})
-        assert untouched_owned is not None and untouched_owned.userId == "someone-else"
-        untouched_stranger = await db.workflowexecution.find_unique(where={"id": stranger.id})
-        assert untouched_stranger is not None and untouched_stranger.userId is None
+        claimed = await rows.get(WorkflowExecution, exec_id)
+        assert claimed is not None and claimed.user_id == user_id
+        untouched_owned = await rows.get(WorkflowExecution, owned.id)
+        assert untouched_owned is not None and untouched_owned.user_id == "someone-else"
+        untouched_stranger = await rows.get(WorkflowExecution, stranger.id)
+        assert untouched_stranger is not None and untouched_stranger.user_id is None
 
         # Verify user_id is now set + original_owner_email preserved
         for wf in oab_wfs:
-            row = await db.workflow.find_unique(where={"id": wf["_id"]})
+            row = await rows.get(Workflow, wf["_id"])
             assert row is not None
-            assert row.userId == user_id
-            assert row.originalOwnerEmail == email_a.lower()
+            assert row.user_id == user_id
+            assert row.original_owner_email == email_a.lower()
 
         # Re-running reconcile is a no-op (user_id no longer NULL)
         async with app.state.db_sessionmaker() as session:
@@ -181,6 +190,6 @@ async def test_migration_and_reconciliation_cycle(
     finally:
         for wf in oab_wfs:
             with contextlib.suppress(Exception):
-                await db.workflow.delete(where={"id": wf["_id"]})
+                await rows.remove(Workflow, Workflow.id == wf["_id"])
         with contextlib.suppress(Exception):
-            await db.user.delete(where={"email": email_a.lower()})
+            await rows.remove(User, User.email == email_a.lower())
