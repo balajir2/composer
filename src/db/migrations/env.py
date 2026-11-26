@@ -42,10 +42,11 @@ def _run_migrations(connection: Connection) -> None:
     with context.begin_transaction():
         # Prisma always forced `public`, and Alembic now builds fresh databases on its own.
         # A "$user" schema (one named after the role) must not capture the version table or
-        # any revision's tables, so pin `public` for the whole session. Session-level (not
-        # LOCAL) so the version table and every revision see it. Nothing above this line
-        # queries the database, so the pin precedes the first catalog lookup.
-        connection.execute(text("SET search_path TO public"))
+        # any revision's tables, so pin `public`. LOCAL is enough: every revision and the
+        # version table run inside this one transaction, and LOCAL cannot leak onto a shared
+        # server connection if someone migrates through a PgBouncer (`-pooler`) URL. Nothing
+        # above this line queries the database, so the pin precedes the first catalog lookup.
+        connection.execute(text("SET LOCAL search_path TO public"))
         connection.execute(text("SELECT pg_advisory_xact_lock(:key)"), {"key": MIGRATION_LOCK_KEY})
         context.run_migrations()
 
