@@ -5,7 +5,15 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from sqlalchemy import update
 
-from src.db.models import AttemptResult, AttemptTriggerKind, ExecutionAttempt, User, UserRole
+from src.db.models import (
+    Approval,
+    ApprovalDecision,
+    AttemptResult,
+    AttemptTriggerKind,
+    ExecutionAttempt,
+    User,
+    UserRole,
+)
 from tests.integration.sqla_phase4a.conftest import Db, ExecApi, Member
 
 pytestmark = pytest.mark.integration
@@ -51,10 +59,51 @@ async def test_unrelated_member_cannot_read_observability(
 
 
 async def test_exact_runner_can_read_summary_and_attempts(
-    db: Db, member: Member, exec_api: ExecApi
+    db: Db, member: Member, exec_api: ExecApi, sessionmaker_
 ) -> None:
     workflow_id = await db.seed_workflow(member)
     execution_id = await db.seed_execution(workflow_id, member, status="completed")
+    started = datetime.now(UTC)
+    async with sessionmaker_() as session:
+        approval = Approval(
+            execution_id=execution_id,
+            node_id="approval-node",
+            approver_user_id=member.id,
+            decision=ApprovalDecision.APPROVED,
+        )
+        session.add(approval)
+        await session.flush()
+        source = ExecutionAttempt(
+            execution_id=execution_id,
+            ordinal=1,
+            started_at=started,
+            ended_at=started,
+            result=AttemptResult.FAILED,
+            failure_code="execution_error",
+            lease_owner="source-lease-secret",
+            lease_expires_at=started + timedelta(minutes=1),
+            trigger_kind=AttemptTriggerKind.RUN,
+        )
+        session.add(source)
+        await session.flush()
+        session.add(
+            ExecutionAttempt(
+                execution_id=execution_id,
+                ordinal=2,
+                started_at=started + timedelta(seconds=1),
+                ended_at=started + timedelta(seconds=2),
+                result=AttemptResult.FAILED,
+                failure_code="execution_error",
+                lease_owner="lease-owner-secret",
+                lease_expires_at=started + timedelta(minutes=2),
+                trigger_kind=AttemptTriggerKind.RECOVERY,
+                recovery_source_attempt_id=source.id,
+                approval_id=approval.id,
+                actor_user_id=member.id,
+                reason_ref="reason-secret",
+            )
+        )
+        await session.commit()
     summary = await exec_api.client.get(
         f"/executions/{execution_id}/observability", headers=member.headers
     )
@@ -63,6 +112,30 @@ async def test_exact_runner_can_read_summary_and_attempts(
     )
     assert summary.status_code == attempts.status_code == 200
     assert "adminDiagnostics" not in summary.json()
+    item = attempts.json()["items"][1]
+    assert set(item) == {
+        "id",
+        "ordinal",
+        "startedAt",
+        "endedAt",
+        "result",
+        "triggerKind",
+        "failureGuidance",
+        "hasApproval",
+    }
+    assert item["hasApproval"] is True
+    assert item["failureGuidance"] == (
+        "The execution failed. Contact an administrator if the problem continues."
+    )
+    assert all(
+        secret not in str(attempts.json())
+        for secret in (
+            "lease-owner-secret",
+            "source-lease-secret",
+            "reason-secret",
+            approval.id,
+        )
+    )
 
 
 async def test_admin_receives_diagnostics_and_admin_attempt_fields(

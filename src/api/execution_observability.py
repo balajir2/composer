@@ -16,9 +16,12 @@ from src.security.auth import get_current_role
 router = APIRouter(tags=["execution observability"])
 
 _GUIDANCE = {
-    "node_timeout": "A workflow step took too long. Try again later or contact an administrator.",
-    "node_error": "A workflow step could not complete. Contact an administrator if the problem continues.",
-    "worker_lost": "Processing stopped unexpectedly. Contact an administrator if the problem continues.",
+    "execution_timeout": "The execution timed out. Try again later or contact an administrator.",
+    "execution_error": "The execution failed. Contact an administrator if the problem continues.",
+    "lease_expired": "Processing stopped after its lease expired. Contact an administrator if the problem continues.",
+    "orphaned_running": "Processing stopped unexpectedly. Contact an administrator if the problem continues.",
+    "checkpoint_missing": "Execution state is unavailable. Contact an administrator.",
+    "checkpoint_sync_failed": "Execution state could not be saved. Contact an administrator.",
 }
 _GENERIC_GUIDANCE = "This execution failed. Contact an administrator if the problem continues."
 
@@ -85,7 +88,7 @@ class ExecutionAttemptPage(BaseModel):
 
 
 def _failure_guidance(code: str | None) -> str | None:
-    return None if code is None else _GUIDANCE.get(code, _GENERIC_GUIDANCE)
+    return _GENERIC_GUIDANCE if code is None else _GUIDANCE.get(code, _GENERIC_GUIDANCE)
 
 
 def _recovery_state(execution_status: str) -> RecoveryAssessmentState:
@@ -106,9 +109,9 @@ def _base_observability(record: ExecutionRecord, count: int, history: bool) -> d
         "completedAt": record.completed_at,
         "historyAvailable": history,
         "attemptCount": count,
-        "failureGuidance": _failure_guidance(record.failure_code)
-        if record.status == "failed"
-        else None,
+        "failureGuidance": (
+            _failure_guidance(record.failure_code) if record.status == "failed" else None
+        ),
         "recoveryState": _recovery_state(record.status),
         "observedAt": datetime.now(UTC),
     }
@@ -142,7 +145,9 @@ def _attempt(record: AttemptRecord, *, admin: bool) -> ExecutionAttemptRead:
         "endedAt": record.ended_at,
         "result": record.result.value,
         "triggerKind": record.trigger_kind.value,
-        "failureGuidance": _failure_guidance(record.failure_code),
+        "failureGuidance": (
+            _failure_guidance(record.failure_code) if record.result.value == "failed" else None
+        ),
         "hasApproval": record.approval_id is not None,
     }
     if admin:
