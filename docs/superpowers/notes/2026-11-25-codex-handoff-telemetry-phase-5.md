@@ -37,3 +37,22 @@ Rollback and cutover runbook: `docs/operations/production-deployment.md` "Checkp
 ## Operational note
 
 Never point a 2 s Cloud Run startup probe at `/ready`. Balaji accepted occasional Neon cold-start 503s from `/ready`; a short probe would turn them into restart loops.
+
+## Phase 6 (Prisma removal), 2026-11-26
+
+Phase 6 (branch `feat/sqlalchemy-phase-6`, plan `docs/superpowers/plans/2026-11-26-sqlalchemy-phase-6-removal.md`) removes Prisma, asyncpg and `prisma/`, and makes `0001_baseline` build the base schema on an empty database. Balaji confirmed D9: **your `0005_execution_attempts` merges first; phase 6 rebases onto it.** `0005`'s `down_revision = "0004_langgraph_saver_tables"` stays valid in either order (existing databases never re-run 0001; fresh ones run 0001 to 0005 in order).
+
+**Phase 6 avoids** (until the rebase, then only comment-only cleanups): `src/db/migrations/versions/0005_execution_attempts.py`; `src/db/models/{__init__,execution_attempts,executions}.py`; `src/db/repos/{execution_attempts,executions}.py`; `src/api/{approval_email,executions,internal}.py`; `src/engine/langgraph_executor.py`; the sweepers; `tests/integration/db/test_alembic_0005_execution_attempts.py`; `tests/integration/db/repos/test_execution_attempt_*.py`; `tests/integration/execution_attempts/`; `tests/integration/sqla_phase4a/conftest.py`; `tests/integration/sqla_phase4b/{test_approval_email,test_resume_route}.py`; `tests/unit/api/{test_approval_email,test_executions_resume,test_internal}.py`; `tests/unit/db/test_models_metadata.py`; `tests/unit/engine/test_langgraph_executor.py`; `CHANGELOG.md` and your own docs.
+
+**Codex must avoid during phase 6** (until the phase 6 PR merges):
+- `src/db/migrations/versions/0001_baseline.py`
+- `pyproject.toml`, `uv.lock`, `prisma/**`
+- `Dockerfile`, `.dockerignore`, `.gitignore`, `.github/workflows/**`
+- `tests/conftest.py`, `tests/integration/conftest.py`, `tests/regression/conftest.py`, `tests/_rate_limit_reset.py`, `tests/_checkpoint_reset.py`
+- the 9 `NEEDS_LEGACY_PRISMA` modules: `tests/integration/test_user_approval_approved.py`, `test_user_approval_rejected.py`, `test_external_invoke.py`, `test_security_hardening.py`, `test_standalone_auth_lifecycle.py`, `test_workflow_assignments.py`, `test_durable_execution.py`, `test_migration.py`, `test_mcp_highspot.py`
+- new files: `tests/integration/_rows.py`, `tests/integration/db/schema_catalog.py`, `tests/integration/db/test_baseline_schema.py`, `tests/fixtures/schema/**`, `tests/unit/db/test_baseline_frozen.py`, `tests/unit/test_build_files.py`, `tests/integration/test_seed_templates.py`, `tests/integration/test_promote_admin.py`
+- `tests/unit/db/test_prisma_import_boundary.py`, `test_prisma_frozen.py`, `tests/unit/test_prisma_execution_schema.py`, `tests/unit/test_deploy_workflow.py`
+- the unit test files with `app.state.db` mocks (plan Task 5 list)
+- `scripts/**`, `frontend/scripts/**`, `CLAUDE.md`
+
+**Must not add:** any `prisma` or `asyncpg` import, `app.state.db` assignment or `NEEDS_LEGACY_PRISMA` marker; do not rely on `_prisma_migrations` existing or on `prisma migrate deploy` in a test. After phase 6 Task 6 the boundary test fails on any of these.
