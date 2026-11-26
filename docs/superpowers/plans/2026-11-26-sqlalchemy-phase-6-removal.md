@@ -42,6 +42,8 @@ Additionally, for this phase:
 
 ## Decisions for Balaji (each with a recommendation)
 
+**Confirmed by Balaji on 2026-11-26:** all recommendations D1–D10 accepted (incl. the pyproject/uv.lock, Dockerfile, .dockerignore/.gitignore, ci.yml / deploy-gcp.yml / live-provider-smoke.yml, `prisma/` deletion and CLAUDE.md edits exactly as listed). D9: Codex's `0005_execution_attempts` merges first; phase 6 rebases after it.
+
 **Status: awaiting Balaji.** Task 1 (the baseline and golden snapshots, no policy files) can start before these are confirmed. Each later task names the decision it needs. A different answer changes only the named task.
 
 | # | Topic | Recommendation |
