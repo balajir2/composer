@@ -58,7 +58,7 @@ def _row(
 
 def _build(
     monkeypatch: pytest.MonkeyPatch, *, admin: bool, environment: str = "development"
-) -> tuple[TestClient, MagicMock, FakeSession]:
+) -> tuple[TestClient, FakeSession]:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", environment)
     monkeypatch.setenv("ENCRYPTION_KEY", _ENC_KEY)
@@ -66,15 +66,12 @@ def _build(
 
     get_settings.cache_clear()
     app = create_app()
-    db = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=None)  # dev user -> member
-    app.state.db = db
     app.state.checkpointer = MagicMock()
     # Routes resolve their session before the admin gate runs, even for 401/403.
     session = override_session(app)
     if admin:
         app.dependency_overrides[ensure_admin] = lambda: "admin-1"
-    return TestClient(app, raise_server_exceptions=False), db, session
+    return TestClient(app, raise_server_exceptions=False), session
 
 
 class _FakeVerify:
@@ -103,7 +100,7 @@ _ROUTES: list[tuple[str, str, dict[str, Any] | None]] = [
 def test_admin_model_routes_forbid_non_admin_members(
     monkeypatch: pytest.MonkeyPatch, method: str, path: str, body: dict[str, Any] | None
 ) -> None:
-    client, _, session = _build(monkeypatch, admin=False)
+    client, session = _build(monkeypatch, admin=False)
     create = AsyncMock()
     delete = AsyncMock()
     monkeypatch.setattr(models_repo, "create", create)
@@ -119,7 +116,7 @@ def test_admin_model_routes_forbid_non_admin_members(
 def test_admin_model_routes_reject_unauthenticated_requests(
     monkeypatch: pytest.MonkeyPatch, method: str, path: str, body: dict[str, Any] | None
 ) -> None:
-    client, _, _ = _build(monkeypatch, admin=False, environment="production")
+    client, _ = _build(monkeypatch, admin=False, environment="production")
     resp = client.request(method, path, json=body)
     assert resp.status_code == 401
 
@@ -130,7 +127,7 @@ def test_admin_model_routes_reject_unauthenticated_requests(
 def test_list_returns_all_models_ordered_by_provider_then_model_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, _, session = _build(monkeypatch, admin=True)
+    client, session = _build(monkeypatch, admin=True)
     list_models = AsyncMock(return_value=[_row("a"), _row("b", enabled=False)])
     monkeypatch.setattr(models_repo, "list_models", list_models)
     resp = client.get("/admin/llm-models")
@@ -141,7 +138,7 @@ def test_list_returns_all_models_ordered_by_provider_then_model_id(
 
 
 def test_create_model_persists_fields_and_returns_201(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, _, session = _build(monkeypatch, admin=True)
+    client, session = _build(monkeypatch, admin=True)
     create = AsyncMock(return_value=_row())
     monkeypatch.setattr(models_repo, "create", create)
     resp = client.post(
@@ -159,7 +156,7 @@ def test_create_model_persists_fields_and_returns_201(monkeypatch: pytest.Monkey
 
 
 def test_create_duplicate_model_returns_409(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, _, session = _build(monkeypatch, admin=True)
+    client, session = _build(monkeypatch, admin=True)
     monkeypatch.setattr(
         models_repo,
         "create",
@@ -172,7 +169,7 @@ def test_create_duplicate_model_returns_409(monkeypatch: pytest.MonkeyPatch) -> 
 
 
 def test_create_non_duplicate_error_is_a_500_not_a_409(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, _, session = _build(monkeypatch, admin=True)
+    client, session = _build(monkeypatch, admin=True)
     monkeypatch.setattr(models_repo, "create", AsyncMock(side_effect=RuntimeError("db down")))
     resp = client.post("/admin/llm-models", json={"provider": "openai", "modelId": "gpt-x"})
     assert resp.status_code == 500
@@ -180,7 +177,7 @@ def test_create_non_duplicate_error_is_a_500_not_a_409(monkeypatch: pytest.Monke
 
 
 def test_update_only_applies_supplied_fields(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, _, session = _build(monkeypatch, admin=True)
+    client, session = _build(monkeypatch, admin=True)
     update = AsyncMock(return_value=_row(enabled=False))
     monkeypatch.setattr(models_repo, "update", update)
     resp = client.patch("/admin/llm-models/m1", json={"enabled": False})
@@ -192,7 +189,7 @@ def test_update_only_applies_supplied_fields(monkeypatch: pytest.MonkeyPatch) ->
 def test_update_missing_model_returns_404_without_committing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, _, session = _build(monkeypatch, admin=True)
+    client, session = _build(monkeypatch, admin=True)
     monkeypatch.setattr(models_repo, "update", AsyncMock(return_value=None))
     resp = client.patch("/admin/llm-models/nope", json={"label": "x"})
     assert resp.status_code == 404
@@ -200,7 +197,7 @@ def test_update_missing_model_returns_404_without_committing(
 
 
 def test_delete_removes_model_and_returns_204(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, _, session = _build(monkeypatch, admin=True)
+    client, session = _build(monkeypatch, admin=True)
     delete = AsyncMock(return_value=True)
     monkeypatch.setattr(models_repo, "delete", delete)
     resp = client.delete("/admin/llm-models/m1")
@@ -212,7 +209,7 @@ def test_delete_removes_model_and_returns_204(monkeypatch: pytest.MonkeyPatch) -
 def test_delete_missing_model_returns_404_without_committing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    client, _, session = _build(monkeypatch, admin=True)
+    client, session = _build(monkeypatch, admin=True)
     monkeypatch.setattr(models_repo, "delete", AsyncMock(return_value=False))
     assert client.delete("/admin/llm-models/nope").status_code == 404
     session.commit.assert_not_called()
@@ -229,7 +226,7 @@ def _verify_setup(
     key_row: SimpleNamespace | None,
     updated: LlmModelRecord | None = None,
 ) -> tuple[TestClient, AsyncMock, FakeSession, _FakeVerify]:
-    client, _, session = _build(monkeypatch, admin=True)
+    client, session = _build(monkeypatch, admin=True)
     fake = _FakeVerify(status)
     monkeypatch.setattr(mod, "run_model_verify", fake)
     monkeypatch.setattr(models_repo, "get_by_id", AsyncMock(return_value=row))

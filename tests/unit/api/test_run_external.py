@@ -128,13 +128,11 @@ def _build_client(
     )
     app.state.db_sessionmaker = FakeSessionmaker()
     monkeypatch.setattr(workflows_repo, "get_by_slug", AsyncMock(return_value=wf))
-    db = MagicMock()
     looked_up = existing_execution if existing_execution is not None else start_result
     find_key = AsyncMock(return_value=existing_execution)
     monkeypatch.setattr(executions_repo, "find_by_idempotency_key", find_key)
     monkeypatch.setattr(executions_repo, "get", AsyncMock(return_value=looked_up))
     app.state.find_key = find_key  # for assertions
-    app.state.db = db
     app.state.checkpointer = MagicMock()
     app.state.event_bus = ExecutionEventBus()
     app.state.rate_limiter = RateLimiter()

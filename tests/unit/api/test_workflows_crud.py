@@ -52,11 +52,6 @@ def _client(
     get_settings.cache_clear()
     app = create_app()
 
-    db = MagicMock()
-    # Dev-mode user_id='dev' has no user row by default -> role defaults to 'member'
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=None)
-    app.state.db = db
     override_session(app)
     repos = patch_workflow_repos(monkeypatch)
     repos.list_page.return_value = (rows, total)
@@ -112,9 +107,8 @@ def test_list_workflows_mine_overrides_admin_global_view(
 
     client, repos = _client(monkeypatch, [_wf_row(user_id="dev")], total=1)
     # Use FastAPI's dependency override (same pattern as the existing
-    # admin-bypass tests below).  The MagicMock db isn't a real Prisma
-    # instance, so the auth module's isinstance check forces 'member'
-    # otherwise.
+    # admin-bypass tests below).  Without it the dev-mode caller resolves to
+    # 'member'.
     client.app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")  # type: ignore[attr-defined]
     try:
         resp = client.get("/workflows?mine=true")
@@ -233,11 +227,6 @@ def _client_fetch(
     get_settings.cache_clear()
     app = create_app()
 
-    db = MagicMock()
-    # Dev-mode user_id='dev' has no user row by default -> role defaults to 'member'
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=None)
-    app.state.db = db
     override_session(app)
     repos = patch_workflow_repos(monkeypatch)
     repos.get.return_value = row
@@ -279,11 +268,6 @@ def _client_put(
     get_settings.cache_clear()
     app = create_app()
 
-    db = MagicMock()
-    # Dev-mode user_id='dev' has no user row by default -> role defaults to 'member'
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=None)
-    app.state.db = db
     override_session(app)
     repos = patch_workflow_repos(monkeypatch)
     repos.get.return_value = existing
@@ -404,7 +388,6 @@ def test_post_workflow_collapses_duplicate_edges(monkeypatch: pytest.MonkeyPatch
 
     get_settings.cache_clear()
     app = create_app()
-    app.state.db = MagicMock()
     override_session(app)
     repos = patch_workflow_repos(monkeypatch)
     repos.create.return_value = _wf_row_create(user_id="dev")
@@ -465,11 +448,6 @@ def _client_delete(
     get_settings.cache_clear()
     app = create_app()
 
-    db = MagicMock()
-    # Dev-mode user_id='dev' has no user row by default -> role defaults to 'member'
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=None)
-    app.state.db = db
     override_session(app)
     repos = patch_workflow_repos(monkeypatch)
     repos.get.return_value = existing
@@ -576,7 +554,6 @@ def test_create_workflow_over_node_limit_rejected(
     get_settings.cache_clear()
 
     app = create_app()
-    app.state.db = MagicMock()
     override_session(app)
     repos = patch_workflow_repos(monkeypatch)
     repos.create.return_value = _wf_row_create(id="w-big", user_id="dev")
@@ -624,7 +601,6 @@ def test_create_workflow_at_node_limit_accepted(
     get_settings.cache_clear()
 
     app = create_app()
-    app.state.db = MagicMock()
     override_session(app)
     repos = patch_workflow_repos(monkeypatch)
     repos.create.return_value = _wf_row_create(id="w-big", user_id="dev")
@@ -824,8 +800,8 @@ def test_patch_workflow_owner_unknown_workflow_returns_404(
 def test_patch_workflow_owner_member_403(monkeypatch: pytest.MonkeyPatch) -> None:
     """Non-admin calling PATCH /owner → 403.
 
-    In test mode the db is a MagicMock (not Prisma), so get_current_role
-    returns ('dev', 'member') and ensure_admin raises 403.
+    Nothing overrides get_current_role here, so the dev-mode caller resolves to
+    ('dev', 'member') and ensure_admin raises 403.
     """
     wf = _wf_row(id="wx", user_id="old-owner")
     target = SimpleNamespace(id="new-owner", email="t@x.com")

@@ -36,7 +36,6 @@ def _client_with_mock_db(
     monkeypatch: pytest.MonkeyPatch,
 ) -> tuple[TestClient, WorkflowRepoMocks]:
     app = create_app()
-    app.state.db = MagicMock()
     app.state.checkpointer = MagicMock()
     override_session(app)
     repos = patch_workflow_repos(monkeypatch)

@@ -16,7 +16,7 @@ from src.main import create_app
 from tests.unit.db_fakes import override_session
 
 
-def _client_with_mock_db(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, MagicMock]:
+def _client_with_mock_db(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     monkeypatch.setenv("COMPOSER_DEPLOYMENT_MODE", "standalone")
     monkeypatch.setenv("ENVIRONMENT", "development")
     from src.config import get_settings
@@ -26,13 +26,8 @@ def _client_with_mock_db(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, M
 
     monkeypatch.setattr(models_repo, "list_models", AsyncMock(return_value=[]))
     override_session(app)
-    db = MagicMock()
-    # Dev-mode user_id='dev' has no user row by default -> role defaults to 'member'
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=None)
-    app.state.db = db
     app.state.checkpointer = MagicMock()
-    return TestClient(app), db
+    return TestClient(app)
 
 
 def test_typesafe_skips_live_fetch_and_uses_db_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -46,7 +41,7 @@ def test_typesafe_skips_live_fetch_and_uses_db_fallback(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(mod, "_fetch_live", _fake_fetch_live)
 
-    client, _db = _client_with_mock_db(monkeypatch)
+    client = _client_with_mock_db(monkeypatch)
     resp = client.get("/llm-models/available", params={"provider": "typesafe"})
 
     assert resp.status_code == 200, resp.text

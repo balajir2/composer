@@ -30,10 +30,6 @@ def _build(monkeypatch: pytest.MonkeyPatch, *, admin: bool) -> tuple[TestClient,
     get_settings.cache_clear()
     app = create_app()
 
-    db = MagicMock()
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=None)  # dev-mode 'dev' -> member
-    app.state.db = db
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
     # Routes resolve their session before the admin gate runs, even for 401/403.

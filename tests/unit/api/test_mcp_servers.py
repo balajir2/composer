@@ -395,8 +395,8 @@ def test_patch_mcp_server_owner_unknown_server_404(monkeypatch: pytest.MonkeyPat
 def test_patch_mcp_server_owner_member_403(monkeypatch: pytest.MonkeyPatch) -> None:
     """Non-admin calling PATCH /owner → 403.
 
-    In test mode the db is a MagicMock (not Prisma), so get_current_role
-    returns ('dev', 'member') and ensure_admin raises 403.
+    Nothing overrides get_current_role here, so the dev-mode caller resolves to
+    ('dev', 'member') and ensure_admin raises 403.
     """
     client, _ = _client_with_mock_db(monkeypatch)
     # No admin override → dev-mode 'dev' user → member → ensure_admin raises 403

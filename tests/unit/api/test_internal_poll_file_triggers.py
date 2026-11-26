@@ -59,19 +59,15 @@ def _production_reads(monkeypatch: pytest.MonkeyPatch) -> None:  # pyright: igno
     monkeypatch.setattr(workflows_repo, "list_production", _list)
 
 
-def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
+def _client_with_mock_db() -> TestClient:
     app = create_app()
-    db = MagicMock()
-    db.workflowexecution = MagicMock()
-    # Prisma handle: only enqueue_execution's dev-mode checkpointer still reads it
-    app.state.db = db
     sessionmaker = RecordingSessionmaker([])
     app.state.db_sessionmaker = sessionmaker
     app.state.checkpointer = MagicMock()
     from src.engine.events_pg import PostgresEventStore
 
     app.state.event_bus = PostgresEventStore(sessionmaker)  # pyright: ignore[reportArgumentType]
-    return TestClient(app), db
+    return TestClient(app)
 
 
 def _workflow_with_drive_trigger(workflow_id: str = "wf1", owner: str = "user1") -> WorkflowRecord:
@@ -143,7 +139,7 @@ def test_poll_endpoint_rejects_unauthenticated_call(monkeypatch: pytest.MonkeyPa
     from src.config import get_settings
 
     get_settings.cache_clear()
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     _set_production(AsyncMock(side_effect=AssertionError("should not be called")))
 
     resp = client.post("/internal/poll-file-triggers")
@@ -152,7 +148,7 @@ def test_poll_endpoint_rejects_unauthenticated_call(monkeypatch: pytest.MonkeyPa
 
 
 def test_poll_endpoint_processes_new_file_and_marks_it(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     _set_production(AsyncMock(return_value=[_workflow_with_drive_trigger()]))
     _patch_connection(monkeypatch, "user1")
 
@@ -195,7 +191,7 @@ def test_poll_endpoint_passes_processed_and_error_folder_ids_to_provider(
     """A node configured with driveProcessedFolderId/driveErrorFolderId must
     have both forwarded into GoogleDriveProvider's constructor so move_file
     can visibly relocate files, not just set the appProperties marker."""
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     workflow = _workflow_with_drive_trigger()
     workflow.nodes[0]["data"]["driveProcessedFolderId"] = "done-folder"
     workflow.nodes[0]["data"]["driveErrorFolderId"] = "err-folder"
@@ -236,7 +232,7 @@ def test_poll_endpoint_passes_processed_and_error_folder_ids_to_provider(
 def test_poll_endpoint_isolates_per_file_failure(monkeypatch: pytest.MonkeyPatch) -> None:
     """One file's extraction/trigger failure marks it 'error' and continues
     — mirrors composer watch's per-file try/except (design doc §D.4)."""
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     _set_production(AsyncMock(return_value=[_workflow_with_drive_trigger()]))
     _patch_connection(monkeypatch, "user1")
 
@@ -281,7 +277,7 @@ def test_poll_endpoint_skips_node_when_connection_owner_mismatches_workflow_owne
     `triggered` nor `failed`: it's a misconfiguration caught before any
     file is even listed, not a file that was attempted and failed.
     """
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     # Workflow owned by "attacker"; the connection its node references is
     # actually owned by "victim" — these must NOT match.
     workflow = _workflow_with_drive_trigger(owner="attacker")
@@ -325,7 +321,7 @@ def test_poll_endpoint_isolates_malformed_node_from_other_workflows(
     Critical #2) actually works, not just that it doesn't crash: both
     workflows are polled in the same request, and only the malformed
     one's node is skipped."""
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     bad_workflow = _workflow_with_malformed_node()
     good_workflow = _workflow_with_drive_trigger()
     _set_production(AsyncMock(return_value=[bad_workflow, good_workflow]))
@@ -371,7 +367,7 @@ def test_poll_endpoint_closes_the_connection_session_before_drive_calls(
 ) -> None:
     """Short-session rule: the production-workflow list and the per-node connection read are
     each closed before the token fetch and every Drive call."""
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     events: list[str] = []
     client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
 
@@ -418,7 +414,7 @@ def test_poll_endpoint_closes_the_connection_session_before_drive_calls(
 
 
 def test_poll_endpoint_missing_connection_is_skipped(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     _set_production(AsyncMock(return_value=[_workflow_with_drive_trigger()]))
     monkeypatch.setattr(cloud_storage_repo, "get", AsyncMock(return_value=None))
     fake_get_token = AsyncMock(return_value="at-1")
@@ -432,7 +428,7 @@ def test_poll_endpoint_missing_connection_is_skipped(monkeypatch: pytest.MonkeyP
 
 
 def test_poll_endpoint_fails_closed_without_a_database(monkeypatch: pytest.MonkeyPatch) -> None:
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     client.app.state.db_sessionmaker = None  # type: ignore[attr-defined]
     _set_production(AsyncMock(side_effect=AssertionError("should not be called")))
 

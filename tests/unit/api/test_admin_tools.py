@@ -55,9 +55,6 @@ def _build(
 
     get_settings.cache_clear()
     app = create_app()
-    db = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=None)
-    app.state.db = db
     app.state.checkpointer = MagicMock()
     # Routes resolve their session before the admin gate runs, even for 401/403.
     session = override_session(app)
