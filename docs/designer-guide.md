@@ -332,7 +332,7 @@ Send a deterministic workflow email through Resend.
 | Field | Purpose |
 |---|---|
 | `emailProvider` | Provider. Currently `resend`. |
-| `emailFrom` | Sender address. Friendly format like `Reports <reports@example.com>` is accepted. |
+| `emailFrom` | Optional sender address. Leave it empty to send from the platform's verified sender (`RESEND_FROM_EMAIL`). Friendly format like `Reports <reports@example.com>` is accepted. |
 | `emailTo` / `emailCc` / `emailBcc` | Recipients. Comma, semicolon, and newline separated lists are accepted. |
 | `emailReplyTo` | Optional reply-to address. |
 | `emailSubject` | Subject line. Mustache substitution applies. |
@@ -342,7 +342,7 @@ Send a deterministic workflow email through Resend.
 
 Output: `{provider, messageId, to, cc, bccCount, subject, status}`. Use a `user-approval` node before `email` for workflows where a human should review content before distribution.
 
-**Resend sender rules:** the `emailFrom` domain must be verified in the Resend account and allowed by the API key. For example, if Resend has verified `example.com`, use `Reports <reports@example.com>` as the sender. The recipient can be Gmail/Outlook/etc.; the sender cannot be `gmail.com` unless that domain is verified in your Resend account, which normal users cannot do.
+**Resend sender rules:** if you set `emailFrom`, its domain must be verified in the Resend account and allowed by the API key. For example, if Resend has verified `example.com`, use `Reports <reports@example.com>` as the sender. The recipient can be Gmail/Outlook/etc.; the sender cannot be `gmail.com` unless that domain is verified in your Resend account, which normal users cannot do. If the domain is not verified, the run fails with an error naming the domain; either verify it in Resend (Domains) or clear `emailFrom` so the platform's verified sender is used. The AI Builder leaves `emailFrom` empty unless you give it an address.
 
 **Recommended key type:** use a Resend **Sending access** key restricted to the verified sending domain. In Admin → LLM keys, Composer may report "Resend sending-only key accepted; domain listing is restricted." That is a successful least-privilege check, not a delivery error. Full-access keys are only needed for broader Resend administration outside Composer.
 

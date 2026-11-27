@@ -8,7 +8,16 @@ RESEND_API_BASE = "https://api.resend.com"
 
 
 class ResendEmailProviderError(RuntimeError):
-    """Raised when Resend rejects or cannot process an email send."""
+    """Raised when Resend rejects or cannot process an email send.
+
+    `status_code` and `body` are set when Resend answered with an HTTP error
+    (never headers), so callers can recognise specific failures.
+    """
+
+    def __init__(self, message: str, *, status_code: int | None = None, body: str = "") -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = body
 
 
 class ResendEmailProvider:
@@ -44,7 +53,9 @@ class ResendEmailProvider:
 
         if resp.status_code >= 400:
             raise ResendEmailProviderError(
-                f"Resend API error {resp.status_code}: {resp.text[:500]}"
+                f"Resend API error {resp.status_code}: {resp.text[:500]}",
+                status_code=resp.status_code,
+                body=resp.text,
             )
 
         data = resp.json()
