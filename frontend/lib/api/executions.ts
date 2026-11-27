@@ -31,15 +31,13 @@ export async function getExecution(id: string): Promise<ExecutionRead> {
   return apiFetch<ExecutionRead>(`/executions/${id}`);
 }
 
-export async function getExecutionObservability(
-  id: string,
-): Promise<ExecutionObservabilityRead> {
+export async function getExecutionObservability(id: string): Promise<ExecutionObservabilityRead> {
   return apiFetch<ExecutionObservabilityRead>(`/executions/${id}/observability`);
 }
 
 export async function listExecutionAttempts(
   id: string,
-  params?: { limit?: number; offset?: number },
+  params?: { limit?: number; offset?: number }
 ): Promise<ExecutionAttemptPage> {
   const q = new URLSearchParams();
   if (params?.limit !== undefined) q.set("limit", String(params.limit));

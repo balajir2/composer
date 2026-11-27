@@ -84,7 +84,7 @@ it("retains selected deletion confirmation and sends only visible selected IDs",
   mount();
   fireEvent.click(await screen.findByLabelText("Select run-1"));
   fireEvent.click(screen.getByRole("button", { name: "Delete selected (1)" }));
-  fireEvent.click(await screen.findByRole("button", { name: "Delete", exact: true }));
+  fireEvent.click(await screen.findByRole("button", { name: "Delete" }));
   await waitFor(() =>
     expect(bulkDeleteExecutions).toHaveBeenCalledWith({ executionIds: ["run-1"] })
   );
@@ -93,7 +93,7 @@ it("retains selected deletion confirmation and sends only visible selected IDs",
 it("uses the backend canceled status when selecting Canceled", async () => {
   mount();
   await screen.findByLabelText("Select run-1");
-  const option = screen.getByRole("option", { name: "Canceled", exact: true }) as HTMLOptionElement;
+  const option = screen.getByRole("option", { name: "Canceled" }) as HTMLOptionElement;
   fireEvent.change(screen.getByRole("combobox", { name: "Status" }), {
     target: { value: option.value },
   });

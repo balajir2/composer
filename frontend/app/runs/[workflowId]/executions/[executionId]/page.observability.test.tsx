@@ -176,7 +176,7 @@ it.each(["queued", "running", "waiting_approval", "completed", "failed", "cancel
     ];
     after.forEach((count, index) => {
       if (["completed", "failed", "canceled"].includes(status)) expect(count).toBe(before[index]);
-      else expect(count).toBeGreaterThan(before[index]);
+      else expect(count).toBeGreaterThan(before[index] ?? 0);
     });
   }
 );

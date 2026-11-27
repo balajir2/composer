@@ -41,5 +41,4 @@ describe("AdminExecutionDiagnostics", () => {
     expect(screen.getByText("timeout")).toBeInTheDocument();
     expect(screen.getByText(/available references/i)).toBeInTheDocument();
   });
-
 });
