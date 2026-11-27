@@ -19,8 +19,8 @@ PREV = "0004_langgraph_saver_tables"
 HEAD = "0005_execution_attempts"
 
 
-def _alembic(*args: str) -> None:
-    done = subprocess.run(
+def _run_alembic(*args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         [sys.executable, "-m", "alembic", *args],
         cwd=ROOT,
         env={**os.environ, "DATABASE_URL": os.environ["TEST_DATABASE_URL"]},
@@ -28,6 +28,10 @@ def _alembic(*args: str) -> None:
         text=True,
         timeout=300,
     )
+
+
+def _alembic(*args: str) -> None:
+    done = _run_alembic(*args)
     assert done.returncode == 0, done.stdout + done.stderr
 
 
@@ -164,3 +168,89 @@ def test_upgrade_constraints_cascades_and_empty_round_trip() -> None:
         _alembic("upgrade", HEAD)
         with _conn() as conn:
             conn.execute("DELETE FROM workflows WHERE id = %s", (wid,))
+
+
+def _seed_execution(conn: psycopg.Connection, wid: str, eid: str) -> None:
+    conn.execute(
+        "INSERT INTO workflows (id, name, nodes, edges, updated_at) "
+        "VALUES (%s, 'test', '[]', '[]', now())",
+        (wid,),
+    )
+    conn.execute(
+        "INSERT INTO workflow_executions "
+        "(id, workflow_id, status, node_results, variables, thread_id) "
+        "VALUES (%s, %s, 'running', '{}', '{}', %s)",
+        (eid, wid, f"thread-{eid}"),
+    )
+
+
+def test_downgrade_refuses_while_attempt_history_exists() -> None:
+    tag = secrets.token_hex(5)
+    wid, eid = f"w-{tag}", f"e-{tag}"
+    try:
+        with _conn() as conn:
+            _seed_execution(conn, wid, eid)
+            _attempt(conn, f"att-{tag}", eid)
+        failed = _run_alembic("downgrade", PREV)
+        output = failed.stdout + failed.stderr
+        assert failed.returncode != 0
+        assert "1 execution_attempts rows" in output
+        assert "TRUNCATE execution_attempts" in output
+        with _conn() as conn:  # nothing dropped
+            assert conn.execute(
+                "SELECT count(*) FROM execution_attempts WHERE id = %s", (f"att-{tag}",)
+            ).fetchone() == (1,)
+            assert conn.execute(
+                "SELECT count(*) FROM information_schema.columns "
+                "WHERE table_name = 'workflow_executions' "
+                "AND column_name = 'pending_attempt_approval_id'"
+            ).fetchone() == (1,)
+    finally:
+        with _conn() as conn:
+            conn.execute("DELETE FROM workflows WHERE id = %s", (wid,))
+        _alembic("upgrade", HEAD)
+
+
+def test_downgrade_refuses_while_a_pending_attempt_approval_is_stamped() -> None:
+    tag = secrets.token_hex(5)
+    wid, eid, aid = f"w-{tag}", f"e-{tag}", f"a-{tag}"
+    try:
+        with _conn() as conn:
+            _seed_execution(conn, wid, eid)
+            conn.execute(
+                "INSERT INTO approvals (id, execution_id, node_id, decision) "
+                "VALUES (%s, %s, 'node', 'approved')",
+                (aid, eid),
+            )
+            conn.execute(
+                "UPDATE workflow_executions SET pending_attempt_approval_id = %s WHERE id = %s",
+                (aid, eid),
+            )
+        failed = _run_alembic("downgrade", PREV)
+        output = failed.stdout + failed.stderr
+        assert failed.returncode != 0
+        assert "1 workflow_executions rows" in output
+        with _conn() as conn:
+            assert conn.execute(
+                "SELECT pending_attempt_approval_id FROM workflow_executions WHERE id = %s",
+                (eid,),
+            ).fetchone() == (aid,)
+    finally:
+        with _conn() as conn:
+            conn.execute("DELETE FROM workflows WHERE id = %s", (wid,))
+        _alembic("upgrade", HEAD)
+
+
+def test_pending_attempt_approval_fk_is_validated_and_indexed() -> None:
+    with _conn() as conn:
+        assert conn.execute(
+            "SELECT convalidated FROM pg_constraint "
+            "WHERE conname = 'workflow_executions_pending_attempt_approval_id_fkey'"
+        ).fetchone() == (True,)
+        predicate = conn.execute(
+            "SELECT pg_get_expr(i.indpred, i.indrelid) FROM pg_index i "
+            "JOIN pg_class c ON c.oid = i.indexrelid "
+            "WHERE c.relname = 'workflow_executions_pending_attempt_approval_id_idx'"
+        ).fetchone()
+    assert predicate is not None
+    assert predicate[0] == "(pending_attempt_approval_id IS NOT NULL)"

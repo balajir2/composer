@@ -27,6 +27,11 @@ class WorkflowExecution(Base):
             "idempotency_key",
             unique=True,
         ),
+        Index(
+            "workflow_executions_pending_attempt_approval_id_idx",
+            "pending_attempt_approval_id",
+            postgresql_where=text("pending_attempt_approval_id IS NOT NULL"),
+        ),
     )
 
     id: Mapped[str] = id_column()

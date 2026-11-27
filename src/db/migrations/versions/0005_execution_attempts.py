@@ -1,5 +1,16 @@
 """Add durable execution attempts without backfilling legacy summaries.
 
+The new foreign key on workflow_executions.pending_attempt_approval_id is added NOT VALID and
+validated in a second statement, so the full-table validation scan does not run under the
+ACCESS EXCLUSIVE lock that ADD CONSTRAINT takes (VALIDATE CONSTRAINT only needs SHARE UPDATE
+EXCLUSIVE). A partial index on the column keeps ON DELETE SET NULL from scanning the table
+when an approval is deleted.
+
+Downgrade refuses while attempt history exists or any execution carries a pending attempt
+approval: dropping them would silently destroy the only record of past attempts. Export the
+rows first, then `TRUNCATE execution_attempts` and
+`UPDATE workflow_executions SET pending_attempt_approval_id = NULL`, then downgrade.
+
 Revision ID: 0005_execution_attempts
 Revises: 0004_langgraph_saver_tables
 """
@@ -15,6 +26,8 @@ depends_on: str | tuple[str, ...] | None = None
 
 TABLE = "execution_attempts"
 EXECUTION = "workflow_executions"
+PENDING_FK = "workflow_executions_pending_attempt_approval_id_fkey"
+PENDING_IDX = "workflow_executions_pending_attempt_approval_id_idx"
 
 
 def _bound_locks() -> None:
@@ -104,20 +117,42 @@ def upgrade() -> None:
     )
     op.create_index("execution_attempts_approval_id_idx", TABLE, ["approval_id"])
     op.add_column(EXECUTION, sa.Column("pending_attempt_approval_id", sa.Text()))
-    op.create_foreign_key(
-        "workflow_executions_pending_attempt_approval_id_fkey",
+    op.execute(
+        f"ALTER TABLE {EXECUTION} ADD CONSTRAINT {PENDING_FK} "
+        "FOREIGN KEY (pending_attempt_approval_id) REFERENCES approvals (id) "
+        "ON DELETE SET NULL NOT VALID"
+    )
+    op.execute(f"ALTER TABLE {EXECUTION} VALIDATE CONSTRAINT {PENDING_FK}")
+    op.create_index(
+        PENDING_IDX,
         EXECUTION,
-        "approvals",
         ["pending_attempt_approval_id"],
-        ["id"],
-        ondelete="SET NULL",
+        postgresql_where=sa.text("pending_attempt_approval_id IS NOT NULL"),
     )
 
 
 def downgrade() -> None:
     _bound_locks()
-    op.drop_constraint(
-        "workflow_executions_pending_attempt_approval_id_fkey", EXECUTION, type_="foreignkey"
+    bind = op.get_bind()
+    attempts = bind.scalar(sa.text(f"SELECT count(*) FROM {TABLE}")) or 0
+    pending = (
+        bind.scalar(
+            sa.text(
+                f"SELECT count(*) FROM {EXECUTION} WHERE pending_attempt_approval_id IS NOT NULL"
+            )
+        )
+        or 0
     )
+    if attempts or pending:
+        raise RuntimeError(
+            f"refusing to downgrade: {attempts} execution_attempts rows and {pending} "
+            "workflow_executions rows with pending_attempt_approval_id set would be destroyed. "
+            "To proceed deliberately, export execution_attempts first, then run "
+            "`TRUNCATE execution_attempts` and "
+            "`UPDATE workflow_executions SET pending_attempt_approval_id = NULL`, "
+            "and downgrade again."
+        )
+    op.drop_index(PENDING_IDX, table_name=EXECUTION)
+    op.drop_constraint(PENDING_FK, EXECUTION, type_="foreignkey")
     op.drop_column(EXECUTION, "pending_attempt_approval_id")
     op.drop_table(TABLE)
