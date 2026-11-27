@@ -666,15 +666,16 @@ def test_barrier_join_relays_only_for_conditional_lanes() -> None:
     (members,) = _join_channels(graph)
     assert "b3" in members
     assert len(members) == 2
-    assert _relays(graph) == ["__join_lane__j__0"] or _relays(graph) == ["__join_lane__j__1"]
+    assert len(_relays(graph)) == 1
     assert members - {"b3"} == set(_relays(graph))
 
 
 def test_relay_id_avoids_collision_with_a_user_node() -> None:
     wf, _, _ = _cases()["fanout_lane_with_if[True]"]
-    nodes = [*_node_dicts(wf), _n("__join_lane__j__0", "note"), _n("__join_lane__j__1", "note")]
+    (relay,) = _relays(build_graph(wf, MemorySaver()))
+    nodes = [*_node_dicts(wf), _n(relay, "note")]
     graph = build_graph(_wf(nodes, _edge_dicts(wf)), MemorySaver())
-    assert all(r.endswith("_") for r in _relays(graph))
+    assert _relays(graph) == [relay + "_"]
 
 
 async def test_relay_lane_emits_no_events_and_no_node_result() -> None:
@@ -709,3 +710,91 @@ async def test_relay_lane_emits_no_events_and_no_node_result() -> None:
     assert not any(k.startswith("__join_lane__") for k in run.values["node_results"])
     assert not any(k.startswith("__join_lane__") for k in run.values["final_outputs"])
     assert not any(k.startswith("__join_lane__") for k in (run.values.get("variables") or {}))
+
+
+# --- Canonical names: edge order must not rename the barrier ---------------
+#
+# A paused run's barrier progress lives in the checkpoint under the channel
+# name, and resume recompiles the LIVE workflow. Reordering a paused
+# workflow's edges (reconnecting a handle, a Builder rewrite) must therefore
+# not change any channel or relay name.
+
+
+def _reordered(wf: Workflow, permutation: str) -> Workflow:
+    edges = _edge_dicts(wf)
+    if permutation == "reversed":
+        edges = edges[::-1]
+    elif permutation == "rotated":
+        edges = edges[3:] + edges[:3]
+    elif permutation == "interleaved":
+        edges = edges[1::2] + edges[::2]
+    else:
+        import random
+
+        random.Random(int(permutation)).shuffle(edges)
+    return _wf(_node_dicts(wf), edges)
+
+
+def _names(graph: Any) -> tuple[list[str], list[str]]:
+    channels = sorted(c for c in graph.channels if isinstance(c, str) and c.startswith("join:"))
+    return channels, sorted(graph.nodes)
+
+
+@pytest.mark.parametrize("permutation", ["reversed", "rotated", "interleaved", "1", "2", "3"])
+@pytest.mark.parametrize("name", list(_cases()))
+def test_edge_order_does_not_rename_channels_or_relays(name: str, permutation: str) -> None:
+    wf, _, _ = _cases()[name]
+    assert _names(build_graph(_reordered(wf, permutation), MemorySaver())) == _names(
+        build_graph(wf, MemorySaver())
+    )
+
+
+def test_relay_ids_are_derived_from_lane_content_not_position() -> None:
+    wf, _, _ = _cases()["fanout_lane_with_if[True]"]
+    (relay,) = _relays(build_graph(wf, MemorySaver()))
+    assert relay.startswith("__join_lane__j__")
+    assert not relay.endswith(("__0", "__1"))  # a content hash, not an index
+
+
+def test_channel_members_are_sorted() -> None:
+    wf, _, _ = _cases()["fanout_lane_with_if[True]"]
+    graph = build_graph(wf, MemorySaver())
+    (channel,) = [c for c in graph.channels if isinstance(c, str) and c.startswith("join:")]
+    members = channel.split(":")[1].split("+")
+    assert members == sorted(members)
+
+
+async def test_reordered_edges_resume_a_paused_barrier_and_run_join_once() -> None:
+    """The reviewer's reproduction: pause with the barrier part-filled, rebuild the
+    same canvas with its edges in another order, resume."""
+    wf = _wf(
+        [S, _ss("p"), _ss("x1"), _ss("x2"), _ua("ua"), _ss("ok"), _ss("b"), J, END],
+        [
+            _ed("s", "p"),
+            _ed("p", "x1"),
+            _ed("x1", "x2"),
+            _ed("x2", "ua"),
+            _ed("ua", "ok", "approved"),
+            _ed("ok", "j"),
+            _ed("ua", "j", "rejected"),
+            _ed("p", "b"),
+            _ed("b", "j"),
+            _ed("j", "end"),
+        ],
+    )
+    saver = MemorySaver()
+    config: Any = {"configurable": {"thread_id": "reorder"}, "recursion_limit": 80}
+    first = build_graph(wf, saver)
+    async for _ in first.astream(initial_state("x"), config, stream_mode="updates"):
+        pass
+    assert (await first.aget_state(config)).next == ("ua",)
+
+    second = build_graph(_reordered(wf, "reversed"), saver)
+    counts: Counter[str] = Counter()
+    async for chunk in second.astream(Command(resume="approved"), config, stream_mode="updates"):
+        counts.update(k for k in chunk if k != "__interrupt__")
+    snap = await second.aget_state(config)
+    assert snap.next == ()
+    assert _real(counts)["j"] == 1
+    assert _real(counts)["end"] == 1
+    assert snap.values["final_outputs"]

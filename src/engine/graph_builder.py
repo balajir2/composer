@@ -5,6 +5,7 @@ Task 8 implements validation. Task 9 adds compile().
 Reference: OAB lib/workflow/langgraph.ts:169-427.
 """
 
+import hashlib
 from collections import deque
 from collections.abc import Callable, Hashable, Iterable
 from dataclasses import dataclass, field
@@ -991,6 +992,31 @@ _ROUTER_FACTORIES: dict[str, Callable[[Any], Callable[[WorkflowStateDict], str]]
 }
 
 
+def _edge_sort_key(edge: WorkflowEdge) -> tuple[str, str, str]:
+    return (edge.source, edge.target, edge.branch or "")
+
+
+def _canonical_lanes(
+    lanes: tuple[tuple[WorkflowEdge, ...], ...],
+) -> list[tuple[WorkflowEdge, ...]]:
+    """Each lane's edges and the lanes themselves in an order that depends only on
+    WHAT the edges are, never on the order they were drawn or saved in.
+
+    The barrier's channel name and its relay ids are stored in the checkpoint of
+    a paused run, and resume recompiles the live workflow: an edge-order change
+    (reconnecting a handle, a Builder rewrite) must not rename them.
+    """
+    ordered = [tuple(sorted(lane, key=_edge_sort_key)) for lane in lanes]
+    return sorted(ordered, key=lambda lane: [_edge_sort_key(e) for e in lane])
+
+
+def _relay_id(join_id: str, lane: tuple[WorkflowEdge, ...]) -> str:
+    """`__join_lane__<join>__<hash of the lane's edges>`: stable for the same lane."""
+    content = "".join("".join(_edge_sort_key(e)) for e in lane)
+    digest = hashlib.sha1(content.encode(), usedforsecurity=False).hexdigest()[:8]
+    return f"{JOIN_RELAY_PREFIX}{join_id}__{digest}"
+
+
 async def _join_lane_relay(_state: WorkflowStateDict) -> dict[str, Any]:
     """Barrier lane member that stands in for several exclusive incoming edges
     (or one conditional branch) of a Join. Writes no state and, being added
@@ -1045,13 +1071,13 @@ def build_graph(
         if plan.kind != "barrier":
             continue
         members: list[str] = []
-        for index, lane in enumerate(plan.lanes):
+        for lane in _canonical_lanes(plan.lanes):
             first = lane[0]
             if len(lane) == 1 and nodes_by_id[first.source].type not in CONDITIONAL_SOURCE_TYPES:
                 members.append(first.source)
                 barrier_edges.add((first.source, first.target, first.branch))
                 continue
-            relay_id = f"{JOIN_RELAY_PREFIX}{plan.join_id}__{index}"
+            relay_id = _relay_id(plan.join_id, lane)
             while relay_id in taken_ids:
                 relay_id += "_"
             taken_ids.add(relay_id)
@@ -1059,7 +1085,9 @@ def build_graph(
             members.append(relay_id)
             for edge in lane:
                 relayed[(edge.source, edge.target, edge.branch)] = relay_id
-        barriers.append((members, plan.join_id))
+        # Sorted: LangGraph names the barrier channel after its members in list
+        # order, and a paused run's progress is stored under that name.
+        barriers.append((sorted(members), plan.join_id))
 
     # Emit normal edges first; conditional edges handled in a second pass.
     for edge in workflow.edges:
