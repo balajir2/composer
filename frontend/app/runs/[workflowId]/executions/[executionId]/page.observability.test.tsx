@@ -9,7 +9,9 @@ import {
   type ExecutionAttemptPage,
 } from "@/lib/api/executions";
 import { ComposerApiError } from "@/lib/api/client";
-import { subscribeExecution, type ComposerEventHandler } from "@/lib/ws";
+import { subscribeExecution, type ComposerEvent, type ComposerEventHandler } from "@/lib/ws";
+
+type ComposerEventType = ComposerEvent["type"];
 import ExecutionPage from "./page";
 
 vi.mock("next/navigation", () => ({
@@ -205,6 +207,62 @@ it("uses the one progress socket to refresh all three reads on nonterminal and t
   }
   expect(subscribeExecution).toHaveBeenCalledTimes(1);
   expect(screen.getByText("WS output")).toBeVisible();
+});
+
+const fire = (type: ComposerEventType) =>
+  event({
+    type,
+    executionId: "run-1",
+    tenantId: null,
+    timestamp: summary.observedAt,
+  });
+const readCounts = () => [
+  vi.mocked(getExecution).mock.calls.length,
+  vi.mocked(getExecutionObservability).mock.calls.length,
+  vi.mocked(listExecutionAttempts).mock.calls.length,
+];
+
+it("coalesces a replay burst of lifecycle events into one refresh", async () => {
+  mount();
+  await screen.findByText("Attempt 2");
+  const before = readCounts();
+  await act(async () => {
+    for (const type of [
+      "workflow_started",
+      "approval_required",
+      "workflow_started",
+      "workflow_completed",
+      "approval_required",
+    ] as const) {
+      fire(type);
+    }
+  });
+  await waitFor(() => expect(readCounts()).toEqual(before.map((n) => n + 1)));
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  expect(readCounts()).toEqual(before.map((n) => n + 1));
+});
+
+it("does not refresh the durable reads for per-node events", async () => {
+  mount();
+  await screen.findByText("Attempt 2");
+  const before = readCounts();
+  await act(async () => {
+    for (const type of ["node_started", "node_completed", "node_failed"] as const) fire(type);
+  });
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  expect(readCounts()).toEqual(before);
+});
+
+it("says how many attempts are shown when the history is longer than one page", async () => {
+  vi.mocked(listExecutionAttempts).mockResolvedValue({ ...attempts, total: 120, limit: 50 });
+  mount();
+  expect(await screen.findByText("Showing 2 of 120 attempts")).toBeVisible();
+});
+
+it("does not show a count note when every attempt is on screen", async () => {
+  mount();
+  await screen.findByText("Attempt 2");
+  expect(screen.queryByText(/Showing \d+ of \d+ attempts/)).toBeNull();
 });
 
 it.each(["completed", "canceled"])(

@@ -19,11 +19,13 @@ import { ExecutionLifecycleSummary } from "@/components/composer/execution-lifec
 import { ExecutionAttemptTimeline } from "@/components/composer/execution-attempt-timeline";
 import { AdminExecutionDiagnostics } from "@/components/composer/admin-execution-diagnostics";
 import { ComposerApiError } from "@/lib/api/client";
+import type { ComposerEvent } from "@/lib/ws";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
 const ACTIVE_STATES = new Set(["pending", "queued", "running", "waiting_approval"]);
 const TERMINAL_STATES = new Set(["completed", "failed", "canceled"]);
+const REFRESH_DEBOUNCE_MS = 300;
 
 type NodeResult = {
   node_id?: string;
@@ -78,11 +80,25 @@ export default function ExecutionPage() {
     refetchInterval: pollInterval,
     retry: false,
   });
-  const refreshExecution = useCallback(() => {
-    void queryClient.invalidateQueries({ queryKey: ["execution", executionId] });
-    void queryClient.invalidateQueries({ queryKey: ["execution-observability", executionId] });
-    void queryClient.invalidateQueries({ queryKey: ["execution-attempts", executionId] });
-  }, [executionId, queryClient]);
+  // Only lifecycle events change the durable summary and attempts; per-node events are covered
+  // by the active-status polling. A reconnect replays many events at once, so coalesce them into
+  // one trailing refresh instead of three refetches per event.
+  const refreshTimer = useRef<ReturnType<typeof setTimeout>>();
+  const refreshExecution = useCallback(
+    (ev: ComposerEvent) => {
+      if (!ev.type.startsWith("workflow_") && !ev.type.startsWith("approval_")) return;
+      clearTimeout(refreshTimer.current);
+      refreshTimer.current = setTimeout(() => {
+        void queryClient.invalidateQueries({ queryKey: ["execution", executionId] });
+        void queryClient.invalidateQueries({
+          queryKey: ["execution-observability", executionId],
+        });
+        void queryClient.invalidateQueries({ queryKey: ["execution-attempts", executionId] });
+      }, REFRESH_DEBOUNCE_MS);
+    },
+    [executionId, queryClient]
+  );
+  useEffect(() => () => clearTimeout(refreshTimer.current), []);
 
   useEffect(() => {
     if (!execution) return;

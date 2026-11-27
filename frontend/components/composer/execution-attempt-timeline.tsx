@@ -102,11 +102,18 @@ export function ExecutionAttemptTimeline({
           No attempts to display.
         </p>
       ) : (
-        <ol className="space-y-2">
-          {items.map((attempt) => (
-            <AttemptItem key={attempt.id} attempt={attempt} />
-          ))}
-        </ol>
+        <>
+          <ol className="space-y-2">
+            {items.map((attempt) => (
+              <AttemptItem key={attempt.id} attempt={attempt} />
+            ))}
+          </ol>
+          {page.total > items.length && (
+            <p className="text-sm text-muted-foreground">
+              Showing {items.length} of {page.total} attempts
+            </p>
+          )}
+        </>
       )}
     </section>
   );
