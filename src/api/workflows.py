@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from src.api._runnable import refuse_unrunnable, runnable_warnings
 from src.config import get_settings
 from src.db.errors import AlreadyExists, ReferencedRowMissing, StalePrecondition
 from src.db.repos import users as users_repo
@@ -179,8 +180,10 @@ def _redact_http_headers(nodes: list[Any]) -> list[Any]:
     return redacted
 
 
-def _to_workflow_read(row: Any) -> "WorkflowRead":
+def _to_workflow_read(row: Any, *, with_warnings: bool = False) -> "WorkflowRead":
     read = WorkflowRead.model_validate(row)
+    if with_warnings:
+        read.warnings = runnable_warnings(row)
     read.nodes = _redact_jira_tokens(read.nodes)
     read.nodes = _redact_vector_db_keys(read.nodes)
     read.nodes = _redact_http_headers(read.nodes)
@@ -345,6 +348,9 @@ class WorkflowRead(BaseModel):
     external_slug: str | None = Field(default=None, alias="externalSlug")
     created_at: Any = Field(alias="createdAt")
     updated_at: Any = Field(alias="updatedAt")
+    # Non-blocking: reasons the canvas cannot run yet (e.g. an unconnected
+    # required branch). Filled on create/get/update; empty on list responses.
+    warnings: list[str] = Field(default_factory=list)
 
 
 class WorkflowListResponse(BaseModel):
@@ -445,7 +451,7 @@ async def create_workflow(
         },
     )
     await session.commit()
-    return _to_workflow_read(row)
+    return _to_workflow_read(row, with_warnings=True)
 
 
 # NOTE: /workflows/search must be registered BEFORE /workflows/{workflow_id}
@@ -511,11 +517,11 @@ async def get_workflow(
             detail=f"Workflow {workflow_id!r} not found.",
         )
     if role == "admin":
-        return _to_workflow_read(row)
+        return _to_workflow_read(row, with_warnings=True)
     if row.is_public or row.user_id == user_id:
-        return _to_workflow_read(row)
+        return _to_workflow_read(row, with_warnings=True)
     if await assignments_repo.exists(session, workflow_id, user_id):
-        return _to_workflow_read(row)
+        return _to_workflow_read(row, with_warnings=True)
     # 404 for private, not owner, not assignee — info-leak tight (ADR-0021)
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
@@ -578,6 +584,7 @@ async def update_workflow(
             )
         _validate_slug(payload.external_slug)
         _reject_unknown_variable_references(workflow)
+        refuse_unrunnable(workflow)
         publish_data["is_production"] = True
         publish_data["external_slug"] = payload.external_slug
     elif payload.is_production is False:
@@ -606,7 +613,7 @@ async def update_workflow(
     )
     updated = await _update_or_409(session, workflow_id, changes, expected_updated_at=expected)
     await session.commit()
-    return _to_workflow_read(updated)
+    return _to_workflow_read(updated, with_warnings=True)
 
 
 @router.delete("/workflows/{workflow_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -682,11 +689,11 @@ async def admin_update_workflow_flags(
                 detail="external_slug is required when isProduction=True",
             )
         _validate_slug(slug)
-        _reject_unknown_variable_references(
-            Workflow.model_validate(
-                {"name": existing.name, "nodes": existing.nodes, "edges": existing.edges}
-            )
+        existing_workflow = Workflow.model_validate(
+            {"name": existing.name, "nodes": existing.nodes, "edges": existing.edges}
         )
+        _reject_unknown_variable_references(existing_workflow)
+        refuse_unrunnable(existing_workflow)
         data["is_production"] = True
         data["external_slug"] = slug
     elif payload.is_production is False:

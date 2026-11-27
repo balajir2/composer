@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.api._idempotency import find_execution_by_idempotency_key, require_same_caller
+from src.api._runnable import refuse_unrunnable_row
 from src.api.app_state import get_event_bus
 from src.config import get_settings
 from src.db.errors import AlreadyExists
@@ -131,6 +132,10 @@ async def run_external(
     # Authz: public OR owner-key OR admin.
     if not workflow.is_public and workflow.user_id != auth.user_id and auth.role != "admin":
         raise HTTPException(status_code=404, detail=f"production workflow {slug!r} not found")
+
+    # Refuse a canvas that cannot run as drawn BEFORE any execution row exists.
+    # (A replay below returns the earlier execution, so it is gated too: harmless.)
+    refuse_unrunnable_row(workflow)
 
     executor = _get_executor(request, event_bus)
     sessionmaker = require_sessionmaker(request)
