@@ -239,7 +239,7 @@ async def claim_and_run_execution(
     # If this timeout fires after the server committed the claim but before the reply was
     # read, the row stays leased and the handler answers 500; Cloud Tasks redelivers, gets
     # ``already_claimed``, and the row fails at lease expiry (``lease_expired``). There is
-    # no duplicate execution. The window is the same as the old Prisma tx(timeout=10000).
+    # no duplicate execution. The window is the 10 s claim timeout above.
     async with asyncio.timeout(10), sessionmaker() as session:
         claimed = await executions_repo.claim(
             session,
@@ -573,8 +573,8 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
                 # `data`, etc.) must not abort the rest of this
                 # workflow's nodes, let alone every other workflow — the
                 # same isolate-failures-per-item contract this endpoint
-                # documents everywhere else. Prisma Python decodes `nodes`
-                # Json as plain Python values, so a hand-edited/corrupted
+                # documents everywhere else. The `nodes`
+                # JSON column decodes to plain Python values, so a hand-edited/corrupted
                 # entry can legitimately not be a dict here.
                 node_id = (
                     cast("dict[str, Any]", raw_node).get("id")

@@ -724,7 +724,7 @@ export interface paths {
          *     don't leak existence.
          *
          *     Cascade scope:
-         *       - `approvals` rows — via Prisma `onDelete: Cascade` on the FK.
+         *       - `approvals` rows — via the FK `ON DELETE CASCADE`.
          *       - LangGraph checkpoints + checkpoint_writes — keyed by
          *         `thread_id` (no FK to execution by design — checkpoints can
          *         outlive the execution row in some scenarios).  We delete
