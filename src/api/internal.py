@@ -71,6 +71,7 @@ from src.storage_providers.google_drive import GoogleDriveProvider
 from src.storage_providers.text_extraction import extract_text
 from src.telemetry.context import bind_context
 from src.telemetry.propagation import extract_task_context
+from src.warn_throttle import WarnThrottle
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -78,6 +79,9 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 logger = logging.getLogger(__name__)
+
+# One warning per unrunnable workflow per 15 minutes per process, not one per poll.
+_UNRUNNABLE_WARNINGS = WarnThrottle(interval_seconds=900)
 
 router = APIRouter(tags=["internal"])
 
@@ -586,10 +590,12 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
         # A canvas with an unconnected required branch cannot run: leave its
         # files untouched (not moved to the error folder) until it is fixed.
         if runnable_warnings(wf):
-            logger.warning(
-                "poll_file_triggers: workflow %s has an unconnected required branch; skipping",
-                wf.id,
-            )
+            if _UNRUNNABLE_WARNINGS.allow(wf.id):
+                logger.warning(
+                    "poll_file_triggers: workflow %s has an unconnected required branch; "
+                    "skipping (logged once per 15 minutes)",
+                    wf.id,
+                )
             continue
 
         for raw_node in raw_nodes:

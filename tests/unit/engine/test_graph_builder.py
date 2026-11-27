@@ -1414,11 +1414,14 @@ def test_exclusive_end_shapes_are_accepted(name: str) -> None:
     validate_workflow_shape(_mk(nodes, edges))
 
 
-@pytest.mark.parametrize("name", [
+@pytest.mark.parametrize(
+    "name",
+    [
         n
         for n in _accepted_topologies()
         if n not in ("approval_shape", "decision_three_options")  # pause / call an LLM
-    ])
+    ],
+)
 async def test_accepted_end_shapes_run_end_exactly_once(name: str) -> None:
     """Whatever the validator accepts must never run End twice. (The approval
     shape pauses and the decision shape calls an LLM; tests/integration/test_approval_branch_straight_to_end.py

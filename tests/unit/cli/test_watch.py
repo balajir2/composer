@@ -166,3 +166,54 @@ async def test_trigger_workflow_raises_runtime_error_on_non_2xx(
 
     with pytest.raises(RuntimeError, match="trigger failed"):
         await _trigger_workflow(config=config, input_payload={"some_var": "some text"})
+
+
+async def test_claim_leaves_the_file_in_place_when_the_workflow_cannot_run_yet(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """HTTP 422 means the workflow is unfinished, not the file: no move, one warning."""
+    import logging
+
+    from src.cli import watch
+    from src.cli.watch import WorkflowNotRunnableError, claim_file
+    from src.storage_providers.local import LocalFilesystemProvider
+    from src.warn_throttle import WarnThrottle
+
+    source = tmp_path / "in"
+    dest = tmp_path / "done"
+    error = tmp_path / "error"
+    source.mkdir()
+    (source / "note.txt").write_bytes(b"content")
+    config = _trigger_config(source, dest, error)
+    provider = LocalFilesystemProvider()
+    await provider.list_new_files(str(source))
+    ref = (await provider.list_new_files(str(source)))[0]
+
+    async def _unrunnable(**kwargs: object) -> None:
+        raise WorkflowNotRunnableError('step "x" has no "rejected" path')
+
+    monkeypatch.setattr("src.cli.watch._trigger_workflow", _unrunnable)
+    monkeypatch.setattr(watch, "_NOT_RUNNABLE_WARNINGS", WarnThrottle(900))
+
+    with caplog.at_level(logging.WARNING, logger="src.cli.watch"):
+        for _ in range(3):
+            await claim_file(provider, ref, config)
+
+    assert (source / "note.txt").exists()
+    assert not (error / "note.txt").exists()
+    assert not (dest / "note.txt").exists()
+    assert len([r for r in caplog.records if "cannot run yet" in r.getMessage()]) == 1
+
+
+async def test_trigger_workflow_maps_http_422_to_not_runnable(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+    tmp_path: Path,
+) -> None:
+    from src.cli.watch import WorkflowNotRunnableError, _trigger_workflow  # pyright: ignore[reportPrivateUsage]
+
+    httpx_mock.add_response(status_code=422, text="not runnable")  # pyright: ignore[reportUnknownMemberType]
+    config = _trigger_config(tmp_path, tmp_path, tmp_path)
+    with pytest.raises(WorkflowNotRunnableError):
+        await _trigger_workflow(config=config, input_payload={"a": "b"})
