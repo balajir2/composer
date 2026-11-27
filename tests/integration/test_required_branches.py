@@ -266,3 +266,61 @@ async def test_replayed_idempotency_key_returns_the_original_run_even_if_now_unr
         if user_id:
             with contextlib.suppress(Exception):
                 await rows.remove(User, User.id == user_id)
+
+
+_USES_X = [
+    {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+    {
+        "id": "ss",
+        "type": "set-state",
+        "position": {"x": 1, "y": 0},
+        "data": {"label": "Set it", "stateKey": "k", "stateValue": "{{x}}"},
+    },
+    {"id": "e", "type": "end", "position": {"x": 2, "y": 0}, "data": {"label": "E"}},
+]
+_USES_X_EDGES = [
+    {"id": "a", "source": "s", "target": "ss"},
+    {"id": "b", "source": "ss", "target": "e"},
+]
+_USES_X_WF = {"name": "undeclared", "nodes": _USES_X, "edges": _USES_X_EDGES}
+
+
+async def test_saving_a_published_workflow_with_an_undeclared_variable_warns(
+    client: AsyncClient,
+) -> None:
+    slug = f"uv-{secrets.token_hex(4)}"
+    wf_id = (await client.post("/workflows", json=FULL)).json()["id"]
+    published = await client.put(
+        f"/workflows/{wf_id}", json={**FULL, "isProduction": True, "externalSlug": slug}
+    )
+    assert published.status_code == 200, published.text
+    assert published.json()["warnings"] == []
+
+    edited = await client.put(
+        f"/workflows/{wf_id}", json={**_USES_X_WF, "isProduction": True, "externalSlug": slug}
+    )
+
+    assert edited.status_code == 200, edited.text
+    warnings = edited.json()["warnings"]
+    assert [(w["code"], w["nodeId"], w["branch"]) for w in warnings] == [
+        ("unknown_variable", "ss", None)
+    ]
+    assert "{{x}}" in warnings[0]["message"] and "Set it" in warnings[0]["message"]
+    # a later read reports it too
+    again = await client.get(f"/workflows/{wf_id}")
+    assert [w["code"] for w in again.json()["warnings"]] == ["unknown_variable"]
+
+
+async def test_newly_publishing_with_an_undeclared_variable_is_still_refused(
+    client: AsyncClient,
+) -> None:
+    wf_id = (await client.post("/workflows", json=_USES_X_WF)).json()["id"]
+    assert (await client.post("/workflows", json=_USES_X_WF)).json()["warnings"] == []
+
+    resp = await client.put(
+        f"/workflows/{wf_id}",
+        json={**_USES_X_WF, "isProduction": True, "externalSlug": f"uv-{secrets.token_hex(4)}"},
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert "undeclared variables" in resp.text

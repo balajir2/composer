@@ -35,6 +35,15 @@ describe("SaveControls warnings", () => {
     expect(box).toHaveTextContent(MESSAGE);
   });
 
+  it("shows a warning without a branch and does not claim the workflow can't run", () => {
+    const msg = 'Step "Set it" uses {{x}} in stateValue, which no Start input defines.';
+    renderControls([{ code: "unknown_variable", nodeId: "ss", branch: null, message: msg }]);
+    const box = screen.getByTestId("save-warnings");
+    expect(box).toHaveTextContent("1 problem");
+    expect(box).not.toHaveTextContent("can't run yet");
+    expect(box).toHaveTextContent(msg);
+  });
+
   it("shows nothing when there are no warnings", () => {
     renderControls([]);
     expect(screen.queryByTestId("save-warnings")).toBeNull();

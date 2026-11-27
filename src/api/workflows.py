@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api._runnable import refuse_unrunnable, runnable_warnings
+from src.api._runnable import parse_stored_workflow, refuse_unrunnable, runnable_warnings
 from src.config import get_settings
 from src.db.errors import AlreadyExists, ReferencedRowMissing, StalePrecondition
 from src.db.repos import users as users_repo
@@ -180,6 +180,34 @@ def _redact_http_headers(nodes: list[Any]) -> list[Any]:
     return redacted
 
 
+def _unknown_variable_warnings(row: Any) -> list["WorkflowWarning"]:
+    """Undeclared {{variables}} on a published workflow, as non-blocking warnings.
+
+    The publish gate only checks when a save makes a workflow public, and nothing
+    checks at run time (an unresolved placeholder renders as literal text), so a
+    later edit of a published workflow can introduce one with no other signal.
+    """
+    if not row.is_production:
+        return []
+    workflow = parse_stored_workflow(row)
+    if workflow is None:
+        return []
+    names = {n.id: (n.data.label or n.id) for n in workflow.nodes}
+    return [
+        WorkflowWarning(
+            code="unknown_variable",
+            nodeId=p.node_id,
+            branch=None,
+            message=(
+                f'Step "{names.get(p.node_id, p.node_id)}" uses {{{{{p.placeholder}}}}} in '
+                f"{p.field_path}, which no Start input or earlier step defines. It will run "
+                f"as literal text."
+            ),
+        )
+        for p in find_unknown_variable_references(workflow)
+    ]
+
+
 def _to_workflow_read(row: Any, *, with_warnings: bool = False) -> "WorkflowRead":
     read = WorkflowRead.model_validate(row)
     if with_warnings:
@@ -187,6 +215,7 @@ def _to_workflow_read(row: Any, *, with_warnings: bool = False) -> "WorkflowRead
             WorkflowWarning(nodeId=m.node_id, branch=m.branch, message=m.message)
             for m in runnable_warnings(row)
         ]
+        read.warnings.extend(_unknown_variable_warnings(row))
     read.nodes = _redact_jira_tokens(read.nodes)
     read.nodes = _redact_vector_db_keys(read.nodes)
     read.nodes = _redact_http_headers(read.nodes)
@@ -330,13 +359,14 @@ class WorkflowUpdate(WorkflowCreate):
 
 
 class WorkflowWarning(BaseModel):
-    """A non-blocking problem with a saved canvas: it saves, but cannot run yet."""
+    """A non-blocking problem with a saved canvas: it saves, but cannot run yet or may misbehave."""
 
     model_config = ConfigDict(populate_by_name=True)
 
-    code: Literal["missing_branch"] = "missing_branch"
+    code: Literal["missing_branch", "unknown_variable"] = "missing_branch"
     node_id: str = Field(alias="nodeId")
-    branch: str
+    # The unconnected branch for `missing_branch`; None for warnings about a whole step.
+    branch: str | None = None
     message: str
 
 

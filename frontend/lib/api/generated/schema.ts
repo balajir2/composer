@@ -3648,13 +3648,13 @@ export interface components {
             /**
              * Code
              * @default missing_branch
-             * @constant
+             * @enum {string}
              */
-            code: "missing_branch";
+            code: "missing_branch" | "unknown_variable";
             /** Nodeid */
             nodeId: string;
             /** Branch */
-            branch: string;
+            branch?: string | null;
             /** Message */
             message: string;
         };

@@ -68,13 +68,12 @@ export function SaveControls({
           className="relative text-xs text-amber-700 dark:text-amber-400"
         >
           <summary className="cursor-pointer select-none">
-            {warnings.length === 1
-              ? "1 problem: this workflow can't run yet"
-              : `${warnings.length} problems: this workflow can't run yet`}
+            {`${warnings.length} ${warnings.length === 1 ? "problem" : "problems"}`}
+            {warnings.some((w) => w.code === "missing_branch") && ": this workflow can't run yet"}
           </summary>
           <ul className="absolute right-0 z-20 mt-1 w-80 list-disc space-y-1 rounded-md border bg-card p-3 pl-6 text-foreground shadow-md">
-            {warnings.map((w) => (
-              <li key={`${w.nodeId}:${w.branch}`}>{w.message}</li>
+            {warnings.map((w, i) => (
+              <li key={`${w.code}:${w.nodeId}:${w.branch ?? ""}:${i}`}>{w.message}</li>
             ))}
           </ul>
         </details>
