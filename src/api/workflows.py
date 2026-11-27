@@ -2,7 +2,7 @@
 
 import re
 from datetime import UTC, datetime
-from typing import Any, cast
+from typing import Any, Literal, cast
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -183,7 +183,10 @@ def _redact_http_headers(nodes: list[Any]) -> list[Any]:
 def _to_workflow_read(row: Any, *, with_warnings: bool = False) -> "WorkflowRead":
     read = WorkflowRead.model_validate(row)
     if with_warnings:
-        read.warnings = runnable_warnings(row)
+        read.warnings = [
+            WorkflowWarning(nodeId=m.node_id, branch=m.branch, message=m.message)
+            for m in runnable_warnings(row)
+        ]
     read.nodes = _redact_jira_tokens(read.nodes)
     read.nodes = _redact_vector_db_keys(read.nodes)
     read.nodes = _redact_http_headers(read.nodes)
@@ -326,6 +329,17 @@ class WorkflowUpdate(WorkflowCreate):
     expected_updated_at: datetime | None = Field(default=None, alias="expectedUpdatedAt")
 
 
+class WorkflowWarning(BaseModel):
+    """A non-blocking problem with a saved canvas: it saves, but cannot run yet."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    code: Literal["missing_branch"] = "missing_branch"
+    node_id: str = Field(alias="nodeId")
+    branch: str
+    message: str
+
+
 class WorkflowRead(BaseModel):
     """Response body for /workflows endpoints."""
 
@@ -350,7 +364,7 @@ class WorkflowRead(BaseModel):
     updated_at: Any = Field(alias="updatedAt")
     # Non-blocking: reasons the canvas cannot run yet (e.g. an unconnected
     # required branch). Filled on create/get/update; empty on list responses.
-    warnings: list[str] = Field(default_factory=list)
+    warnings: list[WorkflowWarning] = Field(default_factory=list)
 
 
 class WorkflowListResponse(BaseModel):

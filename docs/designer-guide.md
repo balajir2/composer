@@ -45,7 +45,9 @@ Everything you need to build workflows on the canvas. If this is your first time
 
 ### Conditional routing
 
-When you connect from an `if-else`/`while`/`user-approval` node, the edge label is auto-set from the source handle (`true`/`false`, `body`/`exit`, `approved`/`rejected`). Both edges are required for the workflow to validate — a half-wired conditional won't save (the backend rejects with "leaves … node but has no branch label").
+When you connect from an `if-else`/`while`/`user-approval` node, the edge label is auto-set from the source handle (`true`/`false`, `body`/`exit`, `approved`/`rejected`). Every exit is required for the workflow to *run* (a `decision` in choice mode needs one per option). A half-wired canvas still **saves** — you can build in steps — but it carries a warning: the node shows an amber badge (hover for the message) and the save controls show "N problems: this workflow can't run yet" with the full list. **Run draft**, **Publish**, the external `POST /api/run/{slug}` and the Drive file trigger refuse until every exit is connected, with a message such as `User approval step "approval-1" has no "rejected" path. Connect its "rejected" handle to a step (for example End).` No execution is created. An edge that leaves a conditional node without a branch label is still rejected on save.
+
+Two exits may lead to the same End node (for example `approved` → a step → End and `rejected` → End): they can never both fire in one run, so the End needs no Join.
 
 ## Build with AI
 

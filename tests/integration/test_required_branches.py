@@ -36,18 +36,25 @@ FULL = {"name": "complete", "nodes": _NODES, "edges": [_START, _APPROVED, _REJEC
 MESSAGE = 'User approval step "approval-1" has no "rejected" path.'
 
 
+def _has_warning(body: dict[str, Any]) -> bool:
+    return any(
+        w["nodeId"] == "approval-1" and w["branch"] == "rejected" and MESSAGE in w["message"]
+        for w in body["warnings"]
+    )
+
+
 async def test_half_built_canvas_saves_with_a_warning(client: AsyncClient) -> None:
     created = await client.post("/workflows", json=HALF)
     assert created.status_code == 201, created.text
-    assert any(MESSAGE in w for w in created.json()["warnings"])
+    assert _has_warning(created.json())
 
     wf_id = created.json()["id"]
     updated = await client.put(f"/workflows/{wf_id}", json=HALF)
     assert updated.status_code == 200, updated.text
-    assert any(MESSAGE in w for w in updated.json()["warnings"])
+    assert _has_warning(updated.json())
 
     fetched = await client.get(f"/workflows/{wf_id}")
-    assert any(MESSAGE in w for w in fetched.json()["warnings"])
+    assert _has_warning(fetched.json())
 
 
 async def test_complete_canvas_saves_without_warnings_and_runs(client: AsyncClient) -> None:

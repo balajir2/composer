@@ -3285,6 +3285,8 @@ export interface components {
             createdAt: unknown;
             /** Updatedat */
             updatedAt: unknown;
+            /** Warnings */
+            warnings?: components["schemas"]["WorkflowWarning"][];
         };
         /**
          * WorkflowUpdate
@@ -3331,6 +3333,24 @@ export interface components {
              * Format: date-time
              */
             expectedUpdatedAt?: string | null;
+        };
+        /**
+         * WorkflowWarning
+         * @description A non-blocking problem with a saved canvas: it saves, but cannot run yet.
+         */
+        WorkflowWarning: {
+            /**
+             * Code
+             * @default missing_branch
+             * @constant
+             */
+            code: "missing_branch";
+            /** Nodeid */
+            nodeId: string;
+            /** Branch */
+            branch: string;
+            /** Message */
+            message: string;
         };
     };
     responses: never;

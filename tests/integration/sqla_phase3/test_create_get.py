@@ -250,6 +250,6 @@ async def test_get_response_is_redacted_view_with_iso_timestamps(
     assert set(got) == {
         "id", "userId", "name", "description", "category", "tags", "difficulty",
         "estimatedTime", "nodes", "edges", "version", "isTemplate", "isPublic",
-        "isProduction", "externalSlug", "createdAt", "updatedAt",
+        "isProduction", "externalSlug", "createdAt", "updatedAt", "warnings",
     }  # fmt: skip
     assert iso_dt(got["createdAt"]) <= iso_dt(got["updatedAt"])

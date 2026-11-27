@@ -7,7 +7,7 @@ Reference: OAB lib/workflow/langgraph.ts:169-427.
 
 from collections import deque
 from collections.abc import Callable, Hashable, Iterable
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import END, START
@@ -423,20 +423,25 @@ def required_branches(node: WorkflowNode) -> set[str] | None:
     return None
 
 
-def collect_missing_branches(workflow: Workflow) -> list[str]:
-    """One user-facing message per required branch with no outgoing edge.
+class MissingBranch(NamedTuple):
+    """A required branch with no outgoing edge."""
 
-    Saving a half-built canvas must succeed, so this is reported as a warning
-    on save; running or publishing refuses on it (validate_workflow_runnable),
-    and the AI Builder treats it as an issue to repair. Only branches that are
-    absent are reported; mislabelled or duplicate edges stay the job of
-    collect_workflow_violations.
+    node_id: str
+    branch: str
+    message: str
+
+
+def find_missing_branches(workflow: Workflow) -> list[MissingBranch]:
+    """Every required branch with no outgoing edge, with a user-facing message.
+
+    Only absent branches are reported; mislabelled or duplicate edges stay the
+    job of collect_workflow_violations.
     """
     connected: dict[str, set[str]] = {}
     for edge in workflow.edges:
         if edge.branch is not None:
             connected.setdefault(edge.source, set()).add(edge.branch)
-    messages: list[str] = []
+    found: list[MissingBranch] = []
     for node in workflow.nodes:
         required = required_branches(node)
         if required is None:
@@ -445,11 +450,25 @@ def collect_missing_branches(workflow: Workflow) -> list[str]:
         shown = f'"{label}"' if label == node.id else f'"{label}" ({node.id})'
         kind = _CONDITIONAL_DISPLAY_NAMES.get(node.type, node.type)
         for branch in sorted(required - connected.get(node.id, set())):
-            messages.append(
-                f'{kind} step {shown} has no "{branch}" path. '
-                f'Connect its "{branch}" handle to a step (for example End).'
+            found.append(
+                MissingBranch(
+                    node.id,
+                    branch,
+                    f'{kind} step {shown} has no "{branch}" path. '
+                    f'Connect its "{branch}" handle to a step (for example End).',
+                )
             )
-    return messages
+    return found
+
+
+def collect_missing_branches(workflow: Workflow) -> list[str]:
+    """One user-facing message per required branch with no outgoing edge.
+
+    Saving a half-built canvas must succeed, so this is reported as a warning
+    on save; running or publishing refuses on it (validate_workflow_runnable),
+    and the AI Builder treats it as an issue to repair.
+    """
+    return [m.message for m in find_missing_branches(workflow)]
 
 
 def validate_workflow_runnable(workflow: Workflow) -> None:
@@ -670,10 +689,12 @@ def build_graph(
 
 
 __all__ = [
+    "MissingBranch",
     "WorkflowValidationError",
     "build_graph",
     "collect_missing_branches",
     "collect_workflow_violations",
+    "find_missing_branches",
     "required_branches",
     "validate_workflow_runnable",
     "validate_workflow_shape",

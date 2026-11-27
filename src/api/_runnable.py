@@ -12,8 +12,9 @@ from typing import Any
 from fastapi import HTTPException, status
 
 from src.engine.graph_builder import (
+    MissingBranch,
     WorkflowValidationError,
-    collect_missing_branches,
+    find_missing_branches,
     validate_workflow_runnable,
 )
 from src.engine.workflow import Workflow
@@ -27,10 +28,10 @@ def parse_stored_workflow(row: Any) -> Workflow | None:
         return None
 
 
-def runnable_warnings(row: Any) -> list[str]:
+def runnable_warnings(row: Any) -> list[MissingBranch]:
     """Why a stored canvas cannot run yet (empty = nothing to warn about)."""
     workflow = parse_stored_workflow(row)
-    return collect_missing_branches(workflow) if workflow is not None else []
+    return find_missing_branches(workflow) if workflow is not None else []
 
 
 def refuse_unrunnable(workflow: Workflow) -> None:

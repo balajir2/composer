@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import Link from "next/link";
 import { useParams } from "next/navigation";
@@ -27,6 +27,7 @@ import { toReactFlow, fromReactFlow } from "@/lib/workflow-to-rf";
 import type { ComposerNode, ComposerEdge } from "@/lib/workflow-to-rf";
 import type { Node as RFNode, Edge as RFEdge } from "reactflow";
 import { useAutosave } from "@/lib/use-autosave";
+import { warningsByNode, type WorkflowWarning } from "@/lib/workflow-warnings";
 
 // ---------------------------------------------------------------------------
 // Mount-vs-edit content comparison
@@ -170,6 +171,15 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
     queryFn: () => getWorkflow(workflowId),
   });
 
+  // What the server said about the last saved canvas (a required branch left
+  // unconnected, ...). Saving still succeeds; running or publishing is refused.
+  const [savedWarnings, setSavedWarnings] = useState<WorkflowWarning[] | null>(null);
+  const warnings = useMemo(
+    () => savedWarnings ?? workflow?.warnings ?? [],
+    [savedWarnings, workflow?.warnings]
+  );
+  const nodeWarnings = useMemo(() => warningsByNode(warnings), [warnings]);
+
   const saveMutation = useMutation({
     mutationFn: async () => {
       if (!workflow) throw new Error("Workflow not loaded.");
@@ -213,6 +223,7 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
       }
     },
     onSuccess: (saved) => {
+      setSavedWarnings(saved.warnings ?? []);
       if (typeof saved.updatedAt === "string") seenUpdatedAtRef.current = saved.updatedAt;
       void queryClient.invalidateQueries({ queryKey: ["workflow", workflowId] });
     },
@@ -455,6 +466,7 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
             workflowId={workflowId}
             isSaving={isSaving}
             saveStatus={autosave.status}
+            warnings={warnings}
             onSave={handleSave}
             getCurrentNodes={() =>
               nodesRef.current.map((n) => ({
@@ -491,6 +503,7 @@ function DesignerCanvasPageInner({ workflowId }: { workflowId: string }) {
               }
             }}
             runState={runState ?? undefined}
+            nodeWarnings={nodeWarnings}
           />
         </div>
         <BuilderPanel

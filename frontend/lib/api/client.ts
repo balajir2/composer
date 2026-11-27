@@ -12,6 +12,18 @@ export class ComposerApiError extends Error {
   }
 }
 
+/**
+ * The server's own sentence when it sent a plain-string `detail` (no "422:" prefix),
+ * else the error's message. For refusals the user must read and act on.
+ */
+export function apiErrorText(err: unknown, fallback: string): string {
+  if (err instanceof ComposerApiError) {
+    const body = err.detail as { detail?: unknown } | null;
+    if (typeof body?.detail === "string") return body.detail;
+  }
+  return err instanceof Error ? err.message : fallback;
+}
+
 function extractDetail(status: number, detail: unknown): string {
   // FastAPI returns {detail: string} for HTTPException, or
   // {detail: [{loc, msg, type}, ...]} for 422 validation errors.
