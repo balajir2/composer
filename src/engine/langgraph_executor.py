@@ -58,6 +58,16 @@ class CheckpointSyncFailed(Exception):
     """Bringing a thread forward or probing its checkpoint failed; old-table rows survive."""
 
 
+class CheckpointIncompatible(Exception):
+    """A paused run's saved Join progress does not fit the workflow as it is now."""
+
+
+_CHECKPOINT_INCOMPATIBLE_MESSAGE = (
+    "The workflow was changed while this run was paused, in a way that the run cannot "
+    "continue from (a Join now waits for different paths). Start a new run."
+)
+
+
 def _transition_succeeded(execution_id: str, intended_status: str, updated: int) -> bool:
     """Report a lost compare-and-set without exposing execution payloads."""
     if updated != 1:
@@ -219,6 +229,28 @@ class LangGraphExecutor:
         """Whether the saver holds any checkpoint for the thread (a resume needs one)."""
         probe: Any = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
         return await self.checkpointer.aget_tuple(probe) is not None
+
+    async def _assert_barriers_carry_over(self, compiled: Any, thread_id: str) -> None:
+        """Refuse a resume whose saved Join progress has no channel in the compiled graph.
+
+        A barrier Join keeps its progress in a `join:<lanes>:<join>` channel of the
+        checkpoint. Resume compiles the LIVE workflow, so an edit that changes the
+        Join's lanes while the run is paused renames that channel; LangGraph would
+        then drop the progress and the Join would never fire, yet the run would
+        end looking complete.
+        """
+        probe: Any = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+        head = await self.checkpointer.aget_tuple(probe)
+        checkpoint = getattr(head, "checkpoint", None)
+        if not isinstance(checkpoint, dict):
+            return
+        values = cast("dict[str, Any]", checkpoint).get("channel_values")
+        channels = getattr(compiled, "channels", None)
+        if not isinstance(values, dict) or channels is None:
+            return
+        for name, value in cast("dict[str, Any]", values).items():
+            if name.startswith("join:") and value and name not in channels:
+                raise CheckpointIncompatible(_CHECKPOINT_INCOMPATIBLE_MESSAGE)
 
     async def _mark_completed(
         self, execution_id: str, final_state: dict[str, Any], *, attempt_id: str | None = None
@@ -438,6 +470,7 @@ class LangGraphExecutor:
                 raise CheckpointMissing(execution.id)
             await self._emit("workflow_started", execution_id, {"status": "running"})
             compiled, _state, lg_config = await self._prepare_compiled(execution)
+            await self._assert_barriers_carry_over(compiled, execution.thread_id)
 
             final_state = await self._invoke_with_timeout(
                 compiled.ainvoke(
@@ -493,6 +526,14 @@ class LangGraphExecutor:
             logger.error("Execution %s has no checkpoint to resume", execution_id)
             if await self._mark_failed(
                 execution_id, exc, failure_code="checkpoint_missing", attempt_id=attempt_id
+            ):
+                await self._emit("workflow_completed", execution_id, {"status": "failed"})
+        except CheckpointIncompatible as exc:
+            logger.error(
+                "Execution %s cannot resume: its Join progress no longer fits", execution_id
+            )
+            if await self._mark_failed(
+                execution_id, exc, failure_code="checkpoint_incompatible", attempt_id=attempt_id
             ):
                 await self._emit("workflow_completed", execution_id, {"status": "failed"})
         except CheckpointSyncFailed as exc:

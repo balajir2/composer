@@ -23,6 +23,7 @@ _GUIDANCE = {
     "orphaned_running": "Processing stopped unexpectedly. Contact an administrator if the problem continues.",
     "checkpoint_missing": "Execution state is unavailable. Contact an administrator.",
     "checkpoint_sync_failed": "Execution state could not be saved. Contact an administrator.",
+    "checkpoint_incompatible": "The workflow was changed while this run was paused, so it cannot continue. Start a new run.",
 }
 _GENERIC_GUIDANCE = "This execution failed. Contact an administrator if the problem continues."
 

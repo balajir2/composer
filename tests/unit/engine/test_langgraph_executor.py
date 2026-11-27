@@ -47,6 +47,7 @@ def _resume_finds_a_checkpoint(monkeypatch: pytest.MonkeyPatch) -> None:  # pyri
         "src.engine.langgraph_executor.bring_forward", AsyncMock(return_value=False)
     )
     monkeypatch.setattr(LangGraphExecutor, "_has_checkpoint", AsyncMock(return_value=True))
+    monkeypatch.setattr(LangGraphExecutor, "_assert_barriers_carry_over", AsyncMock())
 
 
 @pytest.fixture(autouse=True)

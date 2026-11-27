@@ -85,6 +85,10 @@ def test_admin_projection_and_recovery_states() -> None:
         ),
         ("checkpoint_missing", "Execution state is unavailable. Contact an administrator."),
         ("checkpoint_sync_failed", "Execution state could not be saved. Contact an administrator."),
+        (
+            "checkpoint_incompatible",
+            "The workflow was changed while this run was paused, so it cannot continue. Start a new run.",
+        ),
     ],
 )
 def test_controlled_failure_codes_have_fixed_safe_guidance(code: str, message: str) -> None:

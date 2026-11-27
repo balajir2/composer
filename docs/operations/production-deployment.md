@@ -346,6 +346,7 @@ Safety net: when a run is resumed, the executor first copies its thread from the
 ### Failure codes after the cutover
 
 - `checkpoint_missing`: a resume found no saved state for the run. The run fails closed instead of restarting from scratch.
+- `checkpoint_incompatible`: the workflow was edited while the run was paused, and the edit changed which paths a Join waits for, so the run's saved Join progress cannot be carried over. The run fails closed (it is not completed) and the user is told to start a new run; there is nothing to recover. Reordering edges is not such a change.
 - `checkpoint_sync_failed`: copying the run's state forward (or reading it) failed during a resume. The run was not restarted and the old-table rows are intact, so it is recoverable: fix the cause (database reachability, a stale lock), confirm with `composer checkpoints guard` that the run is listed as blocked or copy it with `copy --to postgres --execution <id> --force`, then resume or re-queue it.
 
 ### Rollback runbook
