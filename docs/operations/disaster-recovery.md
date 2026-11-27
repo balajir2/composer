@@ -133,8 +133,9 @@ This is the one that hurts. **The Postgres backup contains encrypted blobs that 
 
 The migration ran, applied a destructive change (dropped a column, deleted rows), and rolled forward to the next deploy.
 
-1. **Stop more migrations from running.** If your deploy pipeline auto-runs `prisma migrate deploy`, pause it.
-2. **Identify the migration.** `SELECT * FROM _prisma_migrations ORDER BY finished_at DESC LIMIT 5;` shows the most recent migrations and their timestamps.
+1. **Stop more migrations from running.** The GCP deploy workflow (`.github/workflows/deploy-gcp.yml`) runs `uv run alembic upgrade head` on every push to `main`, right before `gcloud run deploy`. Pause that workflow (disable it in the Actions tab) or hold merges to `main` until the bad revision is fixed; if you migrate by hand or from another pipeline, pause that step.
+2. **Identify the migration.** `SELECT version_num FROM alembic_version;` (or `uv run alembic current` with the direct `DATABASE_URL`) names the revision the database is at; `uv run alembic history --verbose` lists the revision files in order, and the file in `src/db/migrations/versions/` is the change. Alembic records no timestamps, so take the time the migration ran from the deploy workflow's "Apply database migrations" step log. (`_prisma_migrations` still exists on production until phase 7, but it holds only the 20 base-schema migrations from before 2026-11-20 and is not touched by new revisions.)
+   - **Restoring a backup taken before 2026-11-20** (a database only Prisma built, with no `alembic_version`): `alembic upgrade head` adopts it when its Prisma history is complete, runs the Alembic revisions after the base schema, and otherwise refuses and names the missing migrations. See [production-deployment.md](production-deployment.md#phase-3--run-migrations--seed-templates).
 3. **Restore from PITR** to a timestamp before the bad migration applied. Procedure A above.
 4. **Fix the migration in code.** Either revert the bad migration entirely or write a corrected version.
 5. **Re-apply** the corrected migration after testing.

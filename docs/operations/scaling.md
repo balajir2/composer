@@ -71,7 +71,7 @@ Scaling up costs more per hour; scaling down recovers it. Neon's auto-suspend on
 
 ### Postgres connections
 
-Each backend request acquires a connection from the pool. The default Prisma client's pool size is conservative (~10). At higher RPS:
+Each backend request acquires a connection from the pool. The SQLAlchemy pool (`DB_POOL_SIZE` and `DB_MAX_OVERFLOW`, 5 + 5 per instance by default) and the LangGraph saver's separate psycopg pool (`CHECKPOINTER_POOL_MAX_SIZE`, 5) are conservative, and there is one LISTEN connection per process on the direct endpoint. At higher RPS:
 
 - **Increase the per-replica pool size** if your Postgres host can support it (each connection has memory cost on the DB side)
 - **Switch to a connection pooler** (PgBouncer in transaction mode, or Neon's built-in pooler). One pooled connection per request, not per backend connection.

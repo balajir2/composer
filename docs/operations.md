@@ -12,7 +12,7 @@ The single comprehensive checklist for going live, in order:
 
 The component-specific runbooks the deployment checklist depends on:
 
-1. **[`operations/postgres-setup.md`](operations/postgres-setup.md)** — Provision Neon, set `DATABASE_URL`, run `prisma migrate deploy`.
+1. **[`operations/postgres-setup.md`](operations/postgres-setup.md)** — Provision Neon, set `DATABASE_URL`, run `alembic upgrade head`.
 2. **[`operations/llm-keys.md`](operations/llm-keys.md)** — Set LLM API keys in Postgres (the source of truth) and sync to your runtime env vars.
 3. **[`operations/gcp-cloud-run-setup.md`](operations/gcp-cloud-run-setup.md)** — End-to-end Cloud Run deployment: Dockerfiles, secrets, bootstrap script, GitHub Actions CI/CD, custom-domain mapping. The recommended path.
 4. **[`operations/vercel-setup.md`](operations/vercel-setup.md)** — Alternate path: Vercel for the frontend + a separate long-lived backend host.

@@ -2,7 +2,7 @@
 
 **Audience:** platform ops/SRE. Covers Neon-hosted Postgres. If you are using a different Postgres
 provider, the Neon-specific steps (console UI, branch model, PITR) differ but the
-`DATABASE_URL`/`prisma migrate deploy` steps are identical.
+`DATABASE_URL`/`alembic upgrade head` steps are identical.
 
 ---
 
@@ -49,33 +49,38 @@ Set this value:
 
 ---
 
-## 3. Run `prisma migrate deploy` (first-time bootstrap)
+## 3. Run `alembic upgrade head` (first-time bootstrap)
 
-`prisma migrate deploy` applies all pending migrations from `prisma/migrations/` to the target
-database. Run this once after provisioning (and after every schema migration that ships in a new
-Composer release).
+Alembic is the only migration tool. `alembic upgrade head` applies every pending revision from
+`src/db/migrations/versions/` to the target database. On an empty database, revision
+`0001_baseline` creates the base schema first (the exact SQL of the 20 Prisma migrations that built
+every earlier database), then the later revisions run in order. Run it once after provisioning, and
+again after every schema revision that ships in a new Composer release.
+
+Use the **direct** (non-pooler) Neon host: migrations take locks that PgBouncer transaction pooling
+breaks. For Neon that is the host without `-pooler` in its name (the deploy workflow swaps it
+automatically). Run the checkpoint guard first, as the deploy does; on a new database it prints `ok`
+immediately:
 
 ```bash
-# From the Composer repo root, with DATABASE_URL pointing at the production Neon branch:
-DATABASE_URL="postgresql://..." uv run prisma migrate deploy
+# From the Composer repo root, with DATABASE_URL pointing at the direct (non-pooler) production Neon host:
+export DATABASE_URL="postgresql://..."
+uv run composer checkpoints guard
+uv run alembic upgrade head
+uv run alembic current        # prints the head revision when the database is up to date
 ```
 
-Expected output:
+`alembic upgrade head` is idempotent: a database already at head is left unchanged. Revisions
+`0001` to `0004` are the base schema plus the changes made since 2026-11-20; later releases add
+more. `alembic downgrade` below `0001_baseline` is refused (it would drop every table); restore
+from a backup instead.
 
-```
-The following migration(s) have been applied:
-  migrations/20260420_initial_schema/migration.sql
-  migrations/20260421_phase7_users/migration.sql
-  migrations/20260422_phase9b_original_owner_email/migration.sql
-  ...
-All migrations applied successfully.
-```
+A database that only Prisma built (before 2026-11-20, no `alembic_version` table) is adopted by
+`alembic upgrade head` when its `_prisma_migrations` history lists all 20 migrations as finished:
+nothing is re-run, and Alembic records `0001_baseline`. A partial or unknown Prisma history, or
+tables without any Prisma history, are refused with a message naming the problem.
 
-If a migration was already applied (e.g., you ran this twice), Prisma skips it. `migrate deploy` is
-idempotent.
-
-**Do not run `prisma migrate dev` against production.** `migrate dev` is for local development; it
-interactively prompts and may reset the database. Always use `migrate deploy` in production.
+Do not run `prisma` commands: Prisma is no longer part of Composer.
 
 ---
 
@@ -191,8 +196,7 @@ postgresql://...@ep-cool-meadow-12345-pooler.us-east-2.aws.neon.tech/neondb?sslm
 Use this URL as the `DATABASE_URL` secret for the `composer-backend` Cloud Run service to avoid
 exhausting Postgres's max connection limit as instances scale up.
 
-Composer's Prisma client manages connections via `PRISMA_CLIENT_ENGINE_TYPE=library` (the default).
-Pooling at the Neon PgBouncer layer is additive and safe.
+Composer's SQLAlchemy engine (psycopg 3) keeps its own small pool and turns off server-side prepared statements (`prepare_threshold=None`), which Neon's transaction-mode pooler does not support. Pooling at the Neon PgBouncer layer is additive and safe. Migrations and the LISTEN connection use the direct endpoint instead.
 
 ---
 
