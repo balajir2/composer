@@ -597,8 +597,15 @@ async def update_workflow(
                 detail="external_slug is required when isProduction=True",
             )
         _validate_slug(payload.external_slug)
-        _reject_unknown_variable_references(workflow)
-        refuse_unrunnable(workflow)
+        # The Designer's autosave and the settings page send isProduction on
+        # every save, so an already-published workflow must still save (with a
+        # warning) while it is half-edited. Gate only when this save makes the
+        # workflow publicly reachable: becoming production, or moving it to a
+        # new public slug. /api/run refuses a published workflow that cannot run.
+        newly_public = not existing.is_production or payload.external_slug != existing.external_slug
+        if newly_public:
+            _reject_unknown_variable_references(workflow)
+            refuse_unrunnable(workflow)
         publish_data["is_production"] = True
         publish_data["external_slug"] = payload.external_slug
     elif payload.is_production is False:

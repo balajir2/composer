@@ -175,3 +175,94 @@ async def test_external_invoke_is_refused_for_a_published_unrunnable_workflow(
         if user_id:
             with contextlib.suppress(Exception):
                 await rows.remove(User, User.id == user_id)
+
+
+async def test_saving_a_published_workflow_half_built_warns_instead_of_refusing(
+    client: AsyncClient,
+) -> None:
+    """The Designer autosave re-sends isProduction/slug on every save."""
+    slug = f"rb-{secrets.token_hex(4)}"
+    wf_id = (await client.post("/workflows", json=FULL)).json()["id"]
+    published = await client.put(
+        f"/workflows/{wf_id}", json={**FULL, "isProduction": True, "externalSlug": slug}
+    )
+    assert published.status_code == 200, published.text
+
+    half = await client.put(
+        f"/workflows/{wf_id}", json={**HALF, "isProduction": True, "externalSlug": slug}
+    )
+    assert half.status_code == 200, half.text
+    assert _has_warning(half.json())
+    assert half.json()["isProduction"] is True
+
+    renamed = await client.put(
+        f"/workflows/{wf_id}",
+        json={**HALF, "name": "renamed", "isProduction": True, "externalSlug": slug},
+    )
+    assert renamed.status_code == 200, renamed.text
+    assert renamed.json()["name"] == "renamed"
+
+
+async def test_moving_a_published_workflow_to_a_new_slug_is_gated(client: AsyncClient) -> None:
+    slug = f"rb-{secrets.token_hex(4)}"
+    wf_id = (await client.post("/workflows", json=FULL)).json()["id"]
+    await client.put(
+        f"/workflows/{wf_id}", json={**FULL, "isProduction": True, "externalSlug": slug}
+    )
+
+    moved = await client.put(
+        f"/workflows/{wf_id}",
+        json={**HALF, "isProduction": True, "externalSlug": f"rb-{secrets.token_hex(4)}"},
+    )
+    assert moved.status_code == 422, moved.text
+    assert MESSAGE in moved.json()["detail"]
+    assert (await client.get(f"/workflows/{wf_id}")).json()["externalSlug"] == slug
+
+
+async def test_replayed_idempotency_key_returns_the_original_run_even_if_now_unrunnable(
+    client: AsyncClient, rows: Rows
+) -> None:
+    email = f"rb-{secrets.token_hex(6)}@example.com"
+    user_id: str | None = None
+    wf_id: str | None = None
+    slug = f"rb-{secrets.token_hex(4)}"
+    try:
+        r = await client.post(
+            "/auth/register", json={"email": email, "password": "correct-horse-battery-staple"}
+        )
+        assert r.status_code == 201, r.text
+        headers = {"Authorization": f"Bearer {r.json()['accessToken']}"}
+        user_id = r.json()["id"]
+        wf_id = (await client.post("/workflows", json=FULL, headers=headers)).json()["id"]
+        r = await client.put(
+            f"/workflows/{wf_id}",
+            json={**FULL, "isProduction": True, "externalSlug": slug},
+            headers=headers,
+        )
+        assert r.status_code == 200, r.text
+        api_key = (await client.post("/api-keys", json={"label": "c"}, headers=headers)).json()[
+            "key"
+        ]
+        key_headers = {"Authorization": f"Bearer {api_key}"}
+        body = {"input": {}, "idempotencyKey": f"idem-{secrets.token_hex(4)}"}
+
+        first = await client.post(f"/api/run/{slug}", headers=key_headers, json=body)
+        assert first.status_code in (200, 202), first.text
+
+        await rows.set(Workflow, Workflow.id == wf_id, edges=[_START, _APPROVED])
+
+        replay = await client.post(f"/api/run/{slug}", headers=key_headers, json=body)
+        assert replay.status_code == first.status_code, replay.text
+        assert replay.json()["executionId"] == first.json()["executionId"]
+
+        fresh = await client.post(
+            f"/api/run/{slug}", headers=key_headers, json={"input": {}, "idempotencyKey": "other"}
+        )
+        assert fresh.status_code == 422, fresh.text
+    finally:
+        if wf_id:
+            with contextlib.suppress(Exception):
+                await rows.remove(Workflow, Workflow.id == wf_id)
+        if user_id:
+            with contextlib.suppress(Exception):
+                await rows.remove(User, User.id == user_id)

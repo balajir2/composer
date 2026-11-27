@@ -133,10 +133,6 @@ async def run_external(
     if not workflow.is_public and workflow.user_id != auth.user_id and auth.role != "admin":
         raise HTTPException(status_code=404, detail=f"production workflow {slug!r} not found")
 
-    # Refuse a canvas that cannot run as drawn BEFORE any execution row exists.
-    # (A replay below returns the earlier execution, so it is gated too: harmless.)
-    refuse_unrunnable_row(workflow)
-
     executor = _get_executor(request, event_bus)
     sessionmaker = require_sessionmaker(request)
 
@@ -158,6 +154,11 @@ async def run_external(
     is_replay = execution is not None
 
     if execution is None:
+        # Refuse a canvas that cannot run as drawn BEFORE any execution row
+        # exists. After the replay lookup on purpose: a retry of a request that
+        # already started a run gets that run back, even if the workflow was
+        # edited since.
+        refuse_unrunnable_row(workflow)
         try:
             execution = await executor.start_execution(
                 workflow_id=workflow.id,
