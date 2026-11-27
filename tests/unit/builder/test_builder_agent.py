@@ -712,3 +712,34 @@ async def test_missing_approval_branch_is_sent_back_and_the_fix_is_kept() -> Non
     }
     assert reply == "Connected the rejected path."
     assert not any("Remaining issues" in str(e.get("content")) for e in events)
+
+
+async def test_repair_prompt_attaches_settings_of_a_missing_branch_node_with_a_different_label() -> (
+    None
+):
+    """The issue names the node as `"Label" (node-id)`; the id is not quoted."""
+    script = [
+        AIMessage(
+            content="",
+            tool_calls=[  # pyright: ignore[reportArgumentType]
+                _call(
+                    "create_node",
+                    {"node_type": "user-approval", "node_id": "approval-1", "label": "Approve"},
+                    "1",
+                ),
+                _call("disconnect_nodes", {"source": "s", "target": "e"}, "2"),
+                _call("connect_nodes", {"source": "s", "target": "approval-1"}, "3"),
+                _call(
+                    "connect_nodes",
+                    {"source": "approval-1", "target": "e", "branch": "approved"},
+                    "4",
+                ),
+            ],
+        ),
+        AIMessage(content="Built it."),
+    ]
+    model, _, _, _ = await _build(script)
+    feedback = _last_feedback(model)
+    assert '"Approve" (approval-1)' in feedback
+    assert "Current settings" in feedback
+    assert "- `approval-1` (user-approval)" in feedback

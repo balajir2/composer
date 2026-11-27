@@ -23,6 +23,7 @@ from src.engine.graph_builder import (
     collect_missing_branches,
     collect_workflow_violations,
     dedupe_edges,
+    find_missing_branches,
 )
 from src.engine.workflow import Workflow, WorkflowEdge
 
@@ -90,12 +91,14 @@ def _flagged_node_settings(workflow: Workflow, issues: list[str]) -> list[str]:
     The system prompt's canvas listing carries only id/type/label; without
     this the model repairs a node it cannot read. Issues quote ids as repr
     (`node 'pii'`) or in double quotes (`step "approval-1"`), which is how
-    flagged nodes are found.
+    flagged nodes are found. A missing-branch issue names the node by label
+    (`step "Label" (node-id)`), so those nodes are matched structurally.
     """
     text = "\n".join(issues)
+    flagged = {m.node_id for m in find_missing_branches(workflow) if m.message in issues}
     lines: list[str] = []
     for node in workflow.nodes:
-        if repr(node.id) not in text and f'"{node.id}"' not in text:
+        if node.id not in flagged and repr(node.id) not in text and f'"{node.id}"' not in text:
             continue
         data = node.data.model_dump(by_alias=True, exclude_none=True, mode="json")
         shown = {k: v for k, v in data.items() if k != "label" and not is_hidden_from_builder(k)}
