@@ -1,10 +1,15 @@
 """Add durable execution attempts without backfilling legacy summaries.
 
 The new foreign key on workflow_executions.pending_attempt_approval_id is added NOT VALID and
-validated in a second statement, so the full-table validation scan does not run under the
-ACCESS EXCLUSIVE lock that ADD CONSTRAINT takes (VALIDATE CONSTRAINT only needs SHARE UPDATE
-EXCLUSIVE). A partial index on the column keeps ON DELETE SET NULL from scanning the table
-when an approval is deleted.
+validated in a second statement. In this setup the split does not reduce locking: env.py runs
+the whole upgrade in one transaction, and ADD COLUMN holds ACCESS EXCLUSIVE on
+workflow_executions until that transaction commits, so VALIDATE CONSTRAINT also runs under
+that lock. The split is harmless and is kept, but it is not an online-migration technique
+here. The cost is small because the new column is all NULL: VALIDATE and the empty partial
+index each need one quick scan. Lock waits are bounded by the 5 s lock_timeout set in
+_bound_locks. CONCURRENTLY is deliberately not used for the index, because it cannot run
+inside env.py's single transaction. The partial index on the column keeps ON DELETE SET NULL
+from scanning the table when an approval is deleted.
 
 Downgrade refuses while attempt history exists or any execution carries a pending attempt
 approval: dropping them would silently destroy the only record of past attempts. Export the
@@ -117,12 +122,16 @@ def upgrade() -> None:
     )
     op.create_index("execution_attempts_approval_id_idx", TABLE, ["approval_id"])
     op.add_column(EXECUTION, sa.Column("pending_attempt_approval_id", sa.Text()))
+    # NOT VALID plus VALIDATE is harmless but does not shorten the ACCESS EXCLUSIVE hold: the
+    # ADD COLUMN above already holds it until the single migration transaction commits. The
+    # column is all NULL, so both statements are one quick scan; lock_timeout bounds the wait.
     op.execute(
         f"ALTER TABLE {EXECUTION} ADD CONSTRAINT {PENDING_FK} "
         "FOREIGN KEY (pending_attempt_approval_id) REFERENCES approvals (id) "
         "ON DELETE SET NULL NOT VALID"
     )
     op.execute(f"ALTER TABLE {EXECUTION} VALIDATE CONSTRAINT {PENDING_FK}")
+    # Plain CREATE INDEX on purpose: CONCURRENTLY cannot run inside env.py's transaction.
     op.create_index(
         PENDING_IDX,
         EXECUTION,
