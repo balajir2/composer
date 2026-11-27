@@ -96,8 +96,7 @@ jobs:
             ${{ env.REGION }}-docker.pkg.dev/${{ env.PROJECT_ID }}/${{ env.ARTIFACT_REPO }}/backend:latest
           # GHA cache: scoped per image so backend + frontend don't clobber each
           # other.  `mode=max` exports intermediate layers too — important
-          # because our Dockerfile is single-stage with several expensive
-          # layers (uv sync).
+          # because our Dockerfile has a few expensive layers (uv sync).
           cache-from: type=gha,scope=backend
           cache-to: type=gha,mode=max,scope=backend
           # Supply-chain evidence (audit P1-5): BuildKit attaches an SPDX SBOM
@@ -144,6 +143,9 @@ jobs:
         uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
 
       - name: Apply database migrations
+        env:
+          # The checkpoint guard is the first connection to Neon; allow a cold start.
+          DB_CONNECT_TIMEOUT_SECONDS: "15"
         run: |
           DATABASE_URL="$(gcloud secrets versions access latest \
             --secret=composer-database-url \

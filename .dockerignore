@@ -12,8 +12,8 @@
 
 # Local virtualenvs + Python cache
 .venv/
-__pycache__/
-*.pyc
+**/__pycache__
+**/*.py[cod]
 *.pyo
 *.pyd
 .pytest_cache/

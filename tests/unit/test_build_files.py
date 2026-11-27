@@ -4,6 +4,8 @@ phase 6). The frontend jobs' actions/setup-node is fine: it is not the backend i
 import re
 from pathlib import Path
 
+import yaml
+
 ROOT = Path(__file__).resolve().parents[2]
 BUILD_FILES = [
     ROOT / "Dockerfile",
@@ -19,8 +21,15 @@ def test_no_build_or_pipeline_file_mentions_prisma() -> None:
 
 def test_backend_image_installs_no_node_toolchain() -> None:
     text = (ROOT / "Dockerfile").read_text(encoding="utf-8").lower()
-    for marker in ("nodesource", "nodejs", "apt-get install -y --no-install-recommends nodejs"):
-        assert marker not in text
+    for marker in ("nodejs", "nodesource", "setup_20", "npm ", "from node"):
+        assert marker not in text, marker
+
+
+def test_no_builder_apt_install_adds_node() -> None:
+    text = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    builder = text.split(" AS builder", 1)[1].split(" AS runtime", 1)[0]
+    installs = [ln for ln in builder.splitlines() if "apt-get install" in ln]
+    assert not [ln for ln in installs if "node" in ln.lower()]
 
 
 def test_security_refresh_arg_is_kept() -> None:
@@ -29,7 +38,17 @@ def test_security_refresh_arg_is_kept() -> None:
     assert 'echo "security refresh ${SECURITY_REFRESH}"' in text
 
 
-def test_every_workflow_that_prepares_a_database_uses_alembic_only() -> None:
-    for name in ("ci.yml", "live-provider-smoke.yml"):
-        text = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
-        assert "uv run alembic upgrade head" in text, name
+def _runs(workflow: str, job: str | None) -> list[str]:
+    doc = yaml.safe_load((ROOT / ".github/workflows" / workflow).read_text(encoding="utf-8"))
+    jobs = doc["jobs"] if job is None else {job: doc["jobs"][job]}
+    return [str(s.get("run", "")) for j in jobs.values() for s in j["steps"]]
+
+
+def test_every_job_that_prepares_a_database_uses_alembic_only() -> None:
+    for workflow, job in (
+        ("ci.yml", "lint-typecheck-test"),
+        ("ci.yml", "e2e-smoke"),
+        ("live-provider-smoke.yml", None),
+    ):
+        runs = _runs(workflow, job)
+        assert "uv run alembic upgrade head" in runs, (workflow, job)
