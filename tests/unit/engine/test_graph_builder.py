@@ -1309,6 +1309,31 @@ def _topologies() -> dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]
                 _ee("j", "end"),
             ],
         ),
+        "refan_after_join_into_one_end": (
+            [
+                _n("s", "start"),
+                _ss("p"),
+                _ss("a"),
+                _ss("b"),
+                _n("j", "join"),
+                _ss("q"),
+                _ss("q1"),
+                _ss("q2"),
+                _n("end", "end"),
+            ],
+            [
+                _ee("s", "p"),
+                _ee("p", "a"),
+                _ee("p", "b"),
+                _ee("a", "j"),
+                _ee("b", "j"),
+                _ee("j", "q"),
+                _ee("q", "q1"),
+                _ee("q", "q2"),
+                _ee("q1", "end"),
+                _ee("q2", "end"),
+            ],
+        ),
         "double_c": (
             [_n("s", "start"), _ss("p"), _ss("q"), _ie("c"), _n("end", "end")],
             [
@@ -1392,6 +1417,29 @@ def _accepted_topologies() -> dict[str, tuple[list[dict[str, Any]], list[dict[st
             ],
             [_ee("s", "w"), _ee("w", "end", "body"), _ee("w", "end", "exit")],
         ),
+        "fanout_join_if_both_end": (
+            [
+                _n("s", "start"),
+                _ss("p"),
+                _ss("a"),
+                _ss("a2"),
+                _ss("b"),
+                _n("j", "join"),
+                _ie("c"),
+                _n("end", "end"),
+            ],
+            [
+                _ee("s", "p"),
+                _ee("p", "a"),
+                _ee("a", "a2"),
+                _ee("a2", "j"),
+                _ee("p", "b"),
+                _ee("b", "j"),
+                _ee("j", "c"),
+                _ee("c", "end", "true"),
+                _ee("c", "end", "false"),
+            ],
+        ),
         "note_edge_into_end": (
             [_n("s", "start"), _ss("x"), _n("nt", "note"), _n("end", "end")],
             [_ee("s", "x"), _ee("x", "end"), _ee("nt", "end")],
@@ -1406,8 +1454,8 @@ def test_end_reachable_by_parallel_paths_is_refused(name: str) -> None:
     with pytest.raises(WorkflowValidationError, match="reached by parallel paths") as info:
         validate_workflow_shape(wf)
     msg = str(info.value)
-    assert "Join" not in msg
-    assert "own End step" in msg
+    assert msg.startswith("End node 'end' must have exactly one incoming edge")
+    assert "Give each parallel path its own End step, or merge them with a Join first." in msg
 
 
 @pytest.mark.parametrize("name", list(_accepted_topologies()))

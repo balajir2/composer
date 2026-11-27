@@ -29,6 +29,7 @@ from tests.integration.sqla_phase5.conftest import (
     RunningApp,
     checkpoint_row_count,
     fan_out_graph,
+    join_lane_graph,
     running_app,
     start_paused,
     two_approval_graph,
@@ -289,3 +290,38 @@ async def test_resume_without_a_checkpoint_fails_closed(
     assert [t for t, _ in events].count("approval_required") == 1
     assert events[-1] == ("workflow_completed", None)
     assert len(events) > paused_events  # workflow_started and workflow_completed were emitted
+
+
+@pytest.mark.parametrize("decision", ["approved", "rejected"])
+async def test_join_barrier_survives_restart_and_runs_join_and_end_once(
+    db: Db, member: Member, monkeypatch: pytest.MonkeyPatch, decision: str
+) -> None:
+    """The approval sits in one parallel lane while the other lane is already waiting in the Join's
+    barrier. The barrier's progress is checkpointed (a set of arrived lanes) and must come back
+    through the Postgres saver: after a restart + resume the Join and End each run exactly once,
+    and the lane that had already arrived is not run again."""
+    async with running_app(monkeypatch) as a:
+        eid, thread = await start_paused(a.client, db, member, monkeypatch, graph=join_lane_graph)
+        assert (await db.must(eid)).status == "waiting_approval"
+        events = await _event_types(db, eid)
+        assert events.count(("node_started", "b")) == 1
+        assert ("node_started", "j") not in events  # barrier partly filled, not fired
+        head = await a.app.state.checkpointer.aget_tuple(
+            {"configurable": {"thread_id": thread, "checkpoint_ns": ""}}
+        )
+        assert head is not None
+        barriers = {
+            k: v for k, v in head.checkpoint["channel_values"].items() if k.startswith("join:")
+        }
+        assert [set(v) for v in barriers.values()] == [{"b"}]
+
+    async with running_app(monkeypatch) as b:
+        assert (await resume(b.client, member, eid, decision)).status_code == 200
+        row = await db.must(eid)
+        assert row.status == "completed", (row.status, row.error)
+        assert row.variables["fin"] == "yes"
+        await _assert_one_linear_chain(b, thread)
+    events = await _event_types(db, eid)
+    for node_id in ("j", "fin", "e", "b", "p"):
+        assert events.count(("node_started", node_id)) == 1, (node_id, events)
+    assert not any(str(n).startswith("__join_lane__") for _t, n in events)

@@ -7,7 +7,8 @@ Reference: OAB lib/workflow/langgraph.ts:169-427.
 
 from collections import deque
 from collections.abc import Callable, Hashable, Iterable
-from typing import Any, NamedTuple, cast
+from dataclasses import dataclass, field
+from typing import Any, Literal, NamedTuple, cast
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import END, START
@@ -228,7 +229,10 @@ def _mutually_exclusive(markers_a: set[tuple[str, str]], markers_b: set[tuple[st
 
 
 def _fan_out_ancestors_of(
-    target_id: str, nodes: dict[str, WorkflowNode], edges: list[WorkflowEdge]
+    target_id: str,
+    nodes: dict[str, WorkflowNode],
+    edges: list[WorkflowEdge],
+    cleared: frozenset[str] = frozenset(),
 ) -> bool:
     """True if any ancestor of `target_id` (walking executable edges backwards)
     is a fan-out node: not a conditional router, with two or more distinct
@@ -236,7 +240,9 @@ def _fan_out_ancestors_of(
     `add_edge`s, so tokens from different successors can reach one node in
     the same run -- which branch markers alone cannot see. Visual-only nodes
     and edges do not count. A `join` (one successor) is not itself a fan-out,
-    but the fan-out feeding it still is an ancestor.
+    but the fan-out feeding it still is an ancestor -- unless a barrier Join
+    has `cleared` it: every parallel path of a cleared fan-out is merged
+    back into one before this point (see `analyze_joins`).
     """
     successors: dict[str, set[str]] = {}
     predecessors: dict[str, set[str]] = {}
@@ -255,8 +261,10 @@ def _fan_out_ancestors_of(
         if current in seen:
             continue
         seen.add(current)
-        if nodes[current].type not in CONDITIONAL_SOURCE_TYPES and (
-            len(successors.get(current, ())) >= 2
+        if (
+            current not in cleared
+            and nodes[current].type not in CONDITIONAL_SOURCE_TYPES
+            and len(successors.get(current, ())) >= 2
         ):
             return True
         stack.extend(predecessors.get(current, ()))
@@ -279,6 +287,326 @@ def dedupe_edges(edges: list[WorkflowEdge]) -> list[WorkflowEdge]:
             seen.add(key)
             kept.append(edge)
     return kept
+
+
+# --- Join analysis: merge Joins vs barrier Joins ---------------------------
+#
+# LangGraph fires a node in every superstep in which any plain-edge
+# predecessor finishes, so a Join fed by parallel paths of different lengths
+# would run (and everything after it) once per arrival. `plan_join` decides,
+# per Join, whether its inputs are alternatives (a "merge": plain edges are
+# right) or parallel paths (a "barrier": `add_edge([lanes...], join)` waits
+# for all of them). `collect_workflow_violations` (End rule) and `build_graph`
+# (wiring) both read the same `JoinAnalysis`, so they cannot drift apart.
+
+JOIN_RELAY_PREFIX = "__join_lane__"
+
+JoinProblemCode = Literal["join_mixed_inputs", "join_lane_escapes", "join_collision"]
+
+
+# (source, target, branch): what identifies an edge once duplicates are dropped.
+_EdgeKey = tuple[str, str, str | None]
+
+
+class JoinProblem(NamedTuple):
+    """A Join that cannot wait correctly for its parallel paths."""
+
+    node_id: str  # the Join, or (join_collision) the step two paths collide on
+    code: JoinProblemCode
+    message: str
+
+
+@dataclass(frozen=True)
+class JoinPlan:
+    """How one Join is wired.
+
+    `lanes` is empty for a merge Join. For a barrier Join each lane is a set
+    of incoming edges of which at most one carries a token per run; the
+    barrier waits for one arrival per lane. `separating_fan_outs` are the
+    fan-outs whose parallel paths the Join waits for. `violations` holds at
+    most one problem; a Join with a violation cannot be compiled.
+    """
+
+    join_id: str
+    kind: Literal["merge", "barrier"]
+    lanes: tuple[tuple[WorkflowEdge, ...], ...] = ()
+    separating_fan_outs: frozenset[str] = frozenset()
+    violations: tuple[JoinProblem, ...] = ()
+
+
+@dataclass(frozen=True)
+class JoinAnalysis:
+    plans: dict[str, JoinPlan] = field(default_factory=lambda: {})
+    # Fan-outs whose every path is merged by a valid barrier Join: an End
+    # reached through such a Join no longer counts as reachable by parallel paths.
+    cleared: frozenset[str] = frozenset()
+
+    @property
+    def problems(self) -> list[JoinProblem]:
+        return [v for plan in self.plans.values() for v in plan.violations]
+
+
+def _quoted_label(node: WorkflowNode) -> str:
+    """`"Label"` or, when the label differs from the id, `"Label" (id)`."""
+    label = getattr(node.data, "label", None) or node.id
+    return f'"{label}"' if label == node.id else f'"{label}" ({node.id})'
+
+
+class _ExecutableGraph:
+    """The executable part of a workflow: visual-only nodes and every edge
+    touching one are dropped, exactly as `_check_reachability` and
+    `build_graph` do."""
+
+    def __init__(self, nodes: dict[str, WorkflowNode], edges: list[WorkflowEdge]) -> None:
+        self.nodes = nodes
+        self.edges = [
+            e
+            for e in dedupe_edges(edges)
+            if e.source in nodes
+            and e.target in nodes
+            and nodes[e.source].type not in _VISUAL_ONLY_TYPES
+            and nodes[e.target].type not in _VISUAL_ONLY_TYPES
+        ]
+        self.successors: dict[str, set[str]] = {node_id: set() for node_id in nodes}
+        self.incoming: dict[str, list[WorkflowEdge]] = {node_id: [] for node_id in nodes}
+        for edge in self.edges:
+            self.successors[edge.source].add(edge.target)
+            self.incoming[edge.target].append(edge)
+        self.fan_outs = {
+            node_id
+            for node_id, targets in self.successors.items()
+            if nodes[node_id].type not in CONDITIONAL_SOURCE_TYPES and len(targets) >= 2
+        }
+        self._markers = _branch_markers(nodes, self.edges)
+        self._forward_cache: dict[tuple[str, frozenset[str], bool], frozenset[str]] = {}
+
+    def is_join(self, node_id: str) -> bool:
+        return self.nodes[node_id].type == "join"
+
+    def is_sink(self, node_id: str) -> bool:
+        return self.nodes[node_id].type == "end" or not self.successors[node_id]
+
+    def edge_markers(self, edge: WorkflowEdge) -> set[tuple[str, str]]:
+        """Branch markers of one edge: how its source was reached, plus the
+        branch it leaves a conditional source by."""
+        marks = set(self._markers[edge.source])
+        if self.nodes[edge.source].type in CONDITIONAL_SOURCE_TYPES and edge.branch is not None:
+            marks.add((edge.source, edge.branch))
+        return marks
+
+    def forward(self, start: str, avoid: frozenset[str], *, through_joins: bool) -> frozenset[str]:
+        """Nodes reachable from `start` without entering `avoid`. Without
+        `through_joins` a Join can be reached but not walked through: a Join's
+        own output is a new token, not the lane's."""
+        key = (start, avoid, through_joins)
+        cached = self._forward_cache.get(key)
+        if cached is not None:
+            return cached
+        seen: set[str] = set()
+        stack = [t for t in self.successors[start] if t not in avoid]
+        while stack:
+            current = stack.pop()
+            if current in seen:
+                continue
+            seen.add(current)
+            if not through_joins and self.is_join(current):
+                continue
+            stack.extend(t for t in self.successors[current] if t not in avoid)
+        result = frozenset(seen)
+        self._forward_cache[key] = result
+        return result
+
+    def lanes_from(self, fan_out: str, edge: WorkflowEdge) -> set[str]:
+        """The successors of `fan_out` whose token can arrive over `edge`."""
+        lanes: set[str] = set()
+        avoid = frozenset({edge.target, fan_out})
+        for successor in self.successors[fan_out]:
+            if (edge.source == fan_out and successor == edge.target) or (
+                successor not in avoid
+                and (
+                    successor == edge.source
+                    or edge.source in self.forward(successor, avoid, through_joins=False)
+                )
+            ):
+                lanes.add(successor)
+        return lanes
+
+    def co_fire(self, first: WorkflowEdge, second: WorkflowEdge) -> set[str]:
+        """Fan-outs that can put a token on both edges in one run (empty =
+        the edges can never both carry a token)."""
+        if _mutually_exclusive(self.edge_markers(first), self.edge_markers(second)):
+            return set()
+        return {
+            fan_out
+            for fan_out in self.fan_outs
+            if any(
+                a != b
+                for a in self.lanes_from(fan_out, first)
+                for b in self.lanes_from(fan_out, second)
+            )
+        }
+
+
+def plan_join(graph: _ExecutableGraph, join_id: str) -> JoinPlan:
+    """Decide how `join_id` is wired and whether it can wait correctly.
+
+    Merge: fewer than two incoming edges, or no pair of them can both carry a
+    token in one run (if/else branches meeting, a loop re-entering): plain
+    edges are right. Barrier: some pair co-fires, so the Join must wait for
+    one arrival per lane -- lanes being the classes of "never both fire".
+    """
+    incoming = graph.incoming[join_id]
+    if len(incoming) < 2:
+        return JoinPlan(join_id, "merge")
+    co_fire: dict[tuple[int, int], set[str]] = {}
+    for a in range(len(incoming)):
+        for b in range(a + 1, len(incoming)):
+            hits = graph.co_fire(incoming[a], incoming[b])
+            if hits:
+                co_fire[(a, b)] = hits
+    if not co_fire:
+        return JoinPlan(join_id, "merge")
+    separating = frozenset(f for hits in co_fire.values() for f in hits)
+    join_label = _quoted_label(graph.nodes[join_id])
+
+    def label(node_id: str) -> str:
+        return _quoted_label(graph.nodes[node_id])
+
+    def refuse(problem: JoinProblem) -> JoinPlan:
+        return JoinPlan(join_id, "barrier", (), separating, (problem,))
+
+    # Lanes: union-find over the pairs that never both fire.
+    parent = list(range(len(incoming)))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            x = parent[x]
+        return x
+
+    for a in range(len(incoming)):
+        for b in range(a + 1, len(incoming)):
+            if (a, b) not in co_fire:
+                parent[find(a)] = find(b)
+    classes: dict[int, list[int]] = {}
+    for index in range(len(incoming)):
+        classes.setdefault(find(index), []).append(index)
+
+    # "Never both fire" must be an equivalence: no lane may contain a co-firing pair.
+    for members in classes.values():
+        for x in members:
+            for y in members:
+                if x < y and (x, y) in co_fire:
+                    others = [
+                        incoming[i].source
+                        for i in members
+                        if i != x and (min(i, x), max(i, x)) not in co_fire
+                    ]
+                    instead = label(others[0]) if others else "another incoming step"
+                    return refuse(
+                        JoinProblem(
+                            join_id,
+                            "join_mixed_inputs",
+                            f"Join step {join_label} mixes parallel paths with an alternative "
+                            f"path: the steps {label(incoming[x].source)} and "
+                            f"{label(incoming[y].source)} run in parallel, but {instead} runs "
+                            f"instead of one of them. Merge the parallel paths with their own "
+                            f"Join first, then connect that Join and the alternative path to "
+                            f"this one.",
+                        )
+                    )
+    lanes = tuple(tuple(incoming[i] for i in members) for members in classes.values())
+
+    # The region between each separating fan-out and the Join is what a
+    # parallel path passes through. A path that can finish before the Join
+    # leaves the barrier waiting forever; two paths meeting at a plain step
+    # run it twice.
+    for fan_out in sorted(separating):
+        region = sorted(
+            n
+            for n in graph.forward(fan_out, frozenset({join_id}), through_joins=True)
+            if n not in (fan_out, join_id)
+            and join_id in graph.forward(n, frozenset(), through_joins=True)
+        )
+        for node_id in region:
+            reachable = {node_id} | graph.forward(node_id, frozenset({join_id}), through_joins=True)
+            sinks = sorted(t for t in reachable if graph.is_sink(t))
+            if sinks:
+                return refuse(
+                    JoinProblem(
+                        join_id,
+                        "join_lane_escapes",
+                        f"Join step {join_label} waits for every parallel path, but the path "
+                        f"through {label(node_id)} can finish at {label(sinks[0])} without "
+                        f"reaching it, so the Join would wait forever. Connect that path to the "
+                        f"Join, or end it after the Join.",
+                    )
+                )
+            if graph.is_join(node_id):
+                continue
+            arriving = graph.incoming[node_id]
+            for a in range(len(arriving)):
+                for b in range(a + 1, len(arriving)):
+                    if graph.co_fire(arriving[a], arriving[b]):
+                        return refuse(
+                            JoinProblem(
+                                node_id,
+                                "join_collision",
+                                f"Step {label(node_id)} is reached by more than one parallel "
+                                f"path before Join step {join_label}, so it would run more than "
+                                f"once. Connect those paths to a Join first.",
+                            )
+                        )
+    return JoinPlan(join_id, "barrier", lanes, separating)
+
+
+def analyze_joins(nodes: dict[str, WorkflowNode], edges: list[WorkflowEdge]) -> JoinAnalysis:
+    """Plan every Join, and find the fan-outs they fully merge.
+
+    A fan-out is cleared by a Join when the Join is a valid barrier Join
+    separating it and no path from the fan-out can reach a sink without
+    entering the Join: every parallel path of that fan-out is folded back
+    into one token there.
+    """
+    if not any(node.type == "join" for node in nodes.values()):
+        return JoinAnalysis()
+    graph = _ExecutableGraph(nodes, edges)
+    plans = {
+        node_id: plan_join(graph, node_id) for node_id, node in nodes.items() if node.type == "join"
+    }
+    cleared: set[str] = set()
+    for plan in plans.values():
+        if plan.kind != "barrier" or plan.violations:
+            continue
+        for fan_out in plan.separating_fan_outs:
+            reachable = graph.forward(fan_out, frozenset({plan.join_id}), through_joins=True)
+            if not any(graph.is_sink(t) for t in reachable):
+                cleared.add(fan_out)
+    return JoinAnalysis(plans, frozenset(cleared))
+
+
+def _analyze_workflow_joins(workflow: Workflow) -> JoinAnalysis:
+    """`analyze_joins` for a workflow that may be half-built: duplicate node
+    ids keep the first, edges to unknown nodes are ignored."""
+    nodes: dict[str, WorkflowNode] = {}
+    for node in workflow.nodes:
+        nodes.setdefault(node.id, node)
+    return analyze_joins(nodes, workflow.edges)
+
+
+def find_join_problems(workflow: Workflow) -> list[JoinProblem]:
+    """Every Join that cannot wait correctly for its parallel paths.
+
+    Like required branches, these are warnings on save (a half-built canvas
+    must save) and refusals at run, publish and resume
+    (`validate_workflow_runnable`); `build_graph` also refuses to compile them
+    rather than deadlock.
+    """
+    return _analyze_workflow_joins(workflow).problems
+
+
+def collect_join_problems(workflow: Workflow) -> list[str]:
+    """One user-facing message per problem in `find_join_problems`."""
+    return [p.message for p in find_join_problems(workflow)]
 
 
 def collect_workflow_violations(workflow: Workflow) -> list[str]:
@@ -333,6 +661,7 @@ def collect_workflow_violations(workflow: Workflow) -> list[str]:
 
     # 5. End incoming-edge rule.
     branch_markers = _branch_markers(nodes, clean_edges)
+    cleared = analyze_joins(nodes, clean_edges).cleared
     for end_id in end_ids:
         incoming = [
             e
@@ -341,12 +670,13 @@ def collect_workflow_violations(workflow: Workflow) -> list[str]:
         ]
         if len(incoming) == 1:
             continue
-        if len(incoming) > 1 and _fan_out_ancestors_of(end_id, nodes, clean_edges):
+        if len(incoming) > 1 and _fan_out_ancestors_of(end_id, nodes, clean_edges, cleared):
             violations.append(
                 f"End node {end_id!r} must have exactly one incoming edge from an "
                 f"executable node (found {len(incoming)}): it can be reached by parallel "
                 f"paths (an earlier step fans out to several steps), so it would run more "
-                f"than once. Give each parallel path its own End step."
+                f"than once. Give each parallel path its own End step, or merge them with a "
+                f"Join first."
             )
             continue
         if len(incoming) > 1:
@@ -490,8 +820,7 @@ def find_missing_branches(workflow: Workflow) -> list[MissingBranch]:
         required = required_branches(node)
         if required is None:
             continue
-        label = getattr(node.data, "label", None) or node.id
-        shown = f'"{label}"' if label == node.id else f'"{label}" ({node.id})'
+        shown = _quoted_label(node)
         kind = _CONDITIONAL_DISPLAY_NAMES.get(node.type, node.type)
         for branch in sorted(required - connected.get(node.id, set())):
             found.append(
@@ -521,16 +850,18 @@ def validate_workflow_runnable(workflow: Workflow) -> None:
     Gate for running, publishing and resuming a paused run. It enforces every
     structural rule (`collect_workflow_violations`, so a canvas edited into an
     invalid shape is refused with the same user-facing message instead of
-    failing inside `build_graph`), then the required-branch check. NOT part of
+    failing inside `build_graph`), then the required-branch and Join checks
+    (`collect_join_problems`: a Join that would wait forever or run steps
+    twice). NOT part of
     validate_workflow_shape: that one runs on every canvas save, and a
     half-built canvas must save.
     """
     violations = collect_workflow_violations(workflow)
     if violations:
         raise WorkflowValidationError(violations[0])
-    missing = collect_missing_branches(workflow)
-    if missing:
-        raise WorkflowValidationError(" ".join(missing))
+    problems = [*collect_missing_branches(workflow), *collect_join_problems(workflow)]
+    if problems:
+        raise WorkflowValidationError(" ".join(problems))
 
 
 def _branch_mapping(
@@ -652,6 +983,21 @@ def _route_decision(node: DecisionNode) -> Callable[[WorkflowStateDict], str]:
     return _router
 
 
+_ROUTER_FACTORIES: dict[str, Callable[[Any], Callable[[WorkflowStateDict], str]]] = {
+    "if-else": _route_if_else,
+    "while": _route_while,
+    "user-approval": _route_user_approval,
+    "decision": _route_decision,
+}
+
+
+async def _join_lane_relay(_state: WorkflowStateDict) -> dict[str, Any]:
+    """Barrier lane member that stands in for several exclusive incoming edges
+    (or one conditional branch) of a Join. Writes no state and, being added
+    without the events wrapper, emits no events: users never see it."""
+    return {}
+
+
 def build_graph(
     workflow: Workflow,
     checkpointer: BaseCheckpointSaver[Any],
@@ -663,12 +1009,20 @@ def build_graph(
     to the StateGraph constructor at runtime and LangGraph infers reducers from
     it, but pyright can't bridge the runtime-inferred type to the compile-time
     generics. Any is the honest annotation rather than fighting the type system.
+
+    A Join is wired per `plan_join`: plain edges when its inputs are
+    alternatives, otherwise one barrier (`add_edge([lanes...], join)`) that
+    waits for every parallel lane exactly once. A Join that cannot wait
+    correctly is refused here rather than compiled into a deadlock.
     """
     workflow = workflow.model_copy(update={"edges": dedupe_edges(workflow.edges)})
     validate_workflow_shape(workflow)
+    nodes_by_id = {node.id: node for node in workflow.nodes}
+    join_plans = analyze_joins(nodes_by_id, workflow.edges)
+    if join_plans.problems:
+        raise WorkflowValidationError(join_plans.problems[0].message)
 
     builder: StateGraph[Any, Any, Any, Any] = StateGraph(WorkflowStateDict)
-    nodes_by_id = {node.id: node for node in workflow.nodes}
 
     for node in workflow.nodes:
         if node.type in _VISUAL_ONLY_TYPES:
@@ -677,57 +1031,69 @@ def build_graph(
         arun_with_events = wrap_executor_with_events(executor, node)
         builder.add_node(node.id, arun_with_events)  # pyright: ignore[reportUnknownMemberType,reportArgumentType]
 
+    # Barrier Joins: each lane contributes one member, and its edges are
+    # redirected into it. A lane that is a single plain edge uses its source
+    # node itself; any other lane (several exclusive edges, or an edge leaving
+    # a conditional branch) gets a no-op relay that the branch or edges
+    # target instead, because a barrier waits on a node finishing, not on
+    # one of its branches being taken.
+    relayed: dict[_EdgeKey, str] = {}
+    barrier_edges: set[_EdgeKey] = set()
+    barriers: list[tuple[list[str], str]] = []
+    taken_ids = set(nodes_by_id)
+    for plan in join_plans.plans.values():
+        if plan.kind != "barrier":
+            continue
+        members: list[str] = []
+        for index, lane in enumerate(plan.lanes):
+            first = lane[0]
+            if len(lane) == 1 and nodes_by_id[first.source].type not in CONDITIONAL_SOURCE_TYPES:
+                members.append(first.source)
+                barrier_edges.add((first.source, first.target, first.branch))
+                continue
+            relay_id = f"{JOIN_RELAY_PREFIX}{plan.join_id}__{index}"
+            while relay_id in taken_ids:
+                relay_id += "_"
+            taken_ids.add(relay_id)
+            builder.add_node(relay_id, _join_lane_relay)  # pyright: ignore[reportUnknownMemberType,reportArgumentType]
+            members.append(relay_id)
+            for edge in lane:
+                relayed[(edge.source, edge.target, edge.branch)] = relay_id
+        barriers.append((members, plan.join_id))
+
     # Emit normal edges first; conditional edges handled in a second pass.
     for edge in workflow.edges:
         source_node = nodes_by_id[edge.source]
-        if source_node.type in {"if-else", "while", "user-approval", "decision"}:
+        if source_node.type in CONDITIONAL_SOURCE_TYPES:
             continue  # handled by conditional-edges pass below
         # Skip edges whose source or target is a visual-only node
         if source_node.type in _VISUAL_ONLY_TYPES:
             continue
         if nodes_by_id[edge.target].type in _VISUAL_ONLY_TYPES:
             continue
-        builder.add_edge(edge.source, edge.target)  # pyright: ignore[reportUnknownMemberType]
+        key = (edge.source, edge.target, edge.branch)
+        if key in barrier_edges:
+            continue  # the barrier below carries this edge
+        builder.add_edge(edge.source, relayed.get(key, edge.target))  # pyright: ignore[reportUnknownMemberType]
+    for members, join_id in barriers:
+        builder.add_edge(members, join_id)  # pyright: ignore[reportUnknownMemberType]
 
     # Conditional edges pass — AFTER normal edges + all nodes are in place.
     for node in workflow.nodes:
-        if node.type == "if-else":
-            assert isinstance(node, IfElseNode)
-            mapping = cast(
-                "dict[Hashable, str]",
-                _branch_mapping(node, list(workflow.edges), required_branches(node) or set()),
-            )
-            builder.add_conditional_edges(  # pyright: ignore[reportUnknownMemberType]
-                node.id, _route_if_else(node), mapping
-            )
-        elif node.type == "while":
-            assert isinstance(node, WhileNode)
-            mapping = cast(
-                "dict[Hashable, str]",
-                _branch_mapping(node, list(workflow.edges), required_branches(node) or set()),
-            )
-            builder.add_conditional_edges(  # pyright: ignore[reportUnknownMemberType]
-                node.id, _route_while(node), mapping
-            )
-        elif node.type == "user-approval":
-            assert isinstance(node, UserApprovalNode)
-            mapping = cast(
-                "dict[Hashable, str]",
-                _branch_mapping(node, list(workflow.edges), required_branches(node) or set()),
-            )
-            builder.add_conditional_edges(  # pyright: ignore[reportUnknownMemberType]
-                node.id, _route_user_approval(node), mapping
-            )
-        elif node.type == "decision":
-            assert isinstance(node, DecisionNode)
-            required = required_branches(node) or set()
-            mapping = cast(
-                "dict[Hashable, str]",
-                _branch_mapping(node, list(workflow.edges), required),
-            )
-            builder.add_conditional_edges(  # pyright: ignore[reportUnknownMemberType]
-                node.id, _route_decision(node), mapping
-            )
+        router_factory = _ROUTER_FACTORIES.get(node.type)
+        if router_factory is None:
+            continue
+        branch_targets = _branch_mapping(
+            node, list(workflow.edges), required_branches(node) or set()
+        )
+        mapping = cast(
+            "dict[Hashable, str]",
+            {
+                branch: relayed.get((node.id, target, branch), target)
+                for branch, target in branch_targets.items()
+            },
+        )
+        builder.add_conditional_edges(node.id, router_factory(node), mapping)  # pyright: ignore[reportUnknownMemberType]
 
     start_id = next(n.id for n in workflow.nodes if n.type == "start")
     end_ids = [n.id for n in workflow.nodes if n.type == "end"]
@@ -740,12 +1106,20 @@ def build_graph(
 
 
 __all__ = [
+    "JOIN_RELAY_PREFIX",
+    "JoinAnalysis",
+    "JoinPlan",
+    "JoinProblem",
     "MissingBranch",
     "WorkflowValidationError",
+    "analyze_joins",
     "build_graph",
+    "collect_join_problems",
     "collect_missing_branches",
     "collect_workflow_violations",
+    "find_join_problems",
     "find_missing_branches",
+    "plan_join",
     "required_branches",
     "validate_workflow_runnable",
     "validate_workflow_shape",
