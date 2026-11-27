@@ -8,7 +8,9 @@ from typing import Any
 
 import pytest
 from httpx import AsyncClient
+from sqlalchemy import update
 
+from src.db.models import Workflow
 from tests.integration.sqla_phase4a.conftest import HTTPX_MARK, Db, EnqueueRecorder, Member
 from tests.integration.sqla_phase4b.conftest import (
     approvals_of,
@@ -113,3 +115,82 @@ async def test_email_resume_is_refused_and_keeps_the_pause(
     again = await confirm(client, token)
     assert again.headers["location"] == result_location("approved")
     assert rec.calls == [(eid, "resume")]
+
+
+# Not a missing branch: `s` fans out to `ua` and `t`, so `e` (three incoming
+# edges) is reachable by parallel paths and would run twice.
+_FANOUT_NODES: list[dict[str, Any]] = [
+    *_NODES,
+    {
+        "id": "t",
+        "type": "set-state",
+        "position": {"x": 1, "y": 1},
+        "data": {"label": "T", "stateKey": "k", "stateValue": "v"},
+    },
+]
+_FANOUT_EDGES: list[dict[str, Any]] = [
+    _E0,
+    _E1,
+    _E2,
+    {"id": "e3", "source": "s", "target": "t"},
+    {"id": "e4", "source": "t", "target": "e"},
+]
+_END_RULE = "must have exactly one incoming edge"
+
+
+async def _edit_into_end_violation(db: Db, wid: str) -> None:
+    async with db.sm() as session:
+        await session.execute(
+            update(Workflow)
+            .where(Workflow.id == wid)
+            .values(nodes=_FANOUT_NODES, edges=_FANOUT_EDGES)
+        )
+        await session.commit()
+
+
+async def test_api_resume_is_refused_when_the_workflow_now_violates_the_end_rule(
+    client: AsyncClient, db: Db, member: Member, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = install_resume_enqueue(monkeypatch, EnqueueRecorder())
+    wid, eid, _since = await _paused_on(db, member, [_E0, _E1, _E2])
+    await _edit_into_end_violation(db, wid)
+    before = await snap(db, eid)
+
+    resp = await resume(client, member, eid, "approved")
+
+    assert resp.status_code == 422, resp.text
+    assert _END_RULE in resp.json()["detail"]
+    assert await snap(db, eid) == before
+    assert await approvals_of(db, eid) == []
+    assert rec.calls == []
+
+
+async def test_email_resume_is_refused_when_the_workflow_now_violates_the_end_rule(
+    client: AsyncClient, db: Db, member: Member, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    rec = install_resume_enqueue(monkeypatch, EnqueueRecorder())
+    wid, eid, since = await _paused_on(db, member, [_E0, _E1, _E2])
+    await _edit_into_end_violation(db, wid)
+    before = await snap(db, eid)
+
+    resp = await confirm(client, email_token(eid, "approved", since, node_id="ua"))
+
+    assert resp.status_code == 303
+    assert resp.headers["location"] == result_location("unrunnable")
+    assert await snap(db, eid) == before
+    assert await approvals_of(db, eid) == []
+    assert rec.calls == []
+
+
+async def test_run_is_refused_for_a_stored_shape_violation_with_no_execution_created(
+    client: AsyncClient, db: Db, member: Member
+) -> None:
+    wid = await db.seed_workflow(member, nodes=_FANOUT_NODES, edges=_FANOUT_EDGES)
+
+    resp = await client.post(
+        "/executions", json={"workflowId": wid, "input": ""}, headers=member.headers
+    )
+
+    assert resp.status_code == 422, resp.text
+    assert _END_RULE in resp.json()["detail"]
+    assert await db.executions_of(wid) == []

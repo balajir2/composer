@@ -518,9 +518,16 @@ def collect_missing_branches(workflow: Workflow) -> list[str]:
 def validate_workflow_runnable(workflow: Workflow) -> None:
     """Raise WorkflowValidationError if the workflow cannot run as drawn.
 
-    Gate for running and publishing. NOT part of validate_workflow_shape:
-    that one runs on every canvas save, and a half-built canvas must save.
+    Gate for running, publishing and resuming a paused run. It enforces every
+    structural rule (`collect_workflow_violations`, so a canvas edited into an
+    invalid shape is refused with the same user-facing message instead of
+    failing inside `build_graph`), then the required-branch check. NOT part of
+    validate_workflow_shape: that one runs on every canvas save, and a
+    half-built canvas must save.
     """
+    violations = collect_workflow_violations(workflow)
+    if violations:
+        raise WorkflowValidationError(violations[0])
     missing = collect_missing_branches(workflow)
     if missing:
         raise WorkflowValidationError(" ".join(missing))
