@@ -9,7 +9,7 @@ const attempt = (overrides: Partial<ExecutionAttemptPage["items"][number]> = {})
   startedAt: "2026-11-26T10:00:00Z",
   endedAt: "2026-11-26T10:01:00Z",
   result: "failed",
-  triggerKind: "initial",
+  triggerKind: "run",
   failureGuidance: "Check the workflow configuration.",
   hasApproval: false,
   ...overrides,
@@ -71,10 +71,10 @@ describe("ExecutionAttemptTimeline", () => {
             id: "2",
             ordinal: 2,
             result: "completed",
-            triggerKind: "approval_resume",
+            triggerKind: "resume",
             hasApproval: true,
           }),
-          attempt({ id: "1", ordinal: 1 }),
+          attempt({ id: "1", ordinal: 1, result: "paused", triggerKind: "run" }),
         ])}
         isLoading={false}
         isError={false}
@@ -85,7 +85,10 @@ describe("ExecutionAttemptTimeline", () => {
     expect(items[0]).toHaveTextContent("Attempt 1");
     expect(items[1]).toHaveTextContent("Attempt 2");
     expect(items[1]).toHaveTextContent(/approval associated/i);
-    expect(items[1]).toHaveTextContent(/resumed after approval/i);
+    expect(items[0]).toHaveTextContent(/waiting for approval/i);
+    expect(items[0]).toHaveTextContent(/started/i);
+    expect(items[1]).toHaveTextContent(/resumed/i);
+    expect(items[1]).not.toHaveTextContent(/initial|approval_resume/i);
   });
 
   it("uses safe generic result and trigger labels", () => {
@@ -105,5 +108,33 @@ describe("ExecutionAttemptTimeline", () => {
     );
     expect(screen.getByText(/result unavailable/i)).toBeInTheDocument();
     expect(screen.getByText(/trigger unavailable/i)).toBeInTheDocument();
+  });
+
+  it.each(["__proto__", "constructor", "toString"])(
+    "uses safe generic labels for inherited result and trigger key %s",
+    (key) => {
+      render(
+        <ExecutionAttemptTimeline
+          page={page([attempt({ result: key, triggerKind: key, failureGuidance: null })])}
+          isLoading={false}
+          isError={false}
+          onRetry={vi.fn()}
+        />
+      );
+      expect(screen.getByText("Result unavailable")).toBeInTheDocument();
+      expect(screen.getByText("Trigger unavailable")).toBeInTheDocument();
+    }
+  );
+
+  it("renders safe failure guidance on a failed attempt", () => {
+    render(
+      <ExecutionAttemptTimeline
+        page={page([attempt({ failureGuidance: "Check the workflow configuration." })])}
+        isLoading={false}
+        isError={false}
+        onRetry={vi.fn()}
+      />
+    );
+    expect(screen.getByText("Check the workflow configuration.")).toBeInTheDocument();
   });
 });

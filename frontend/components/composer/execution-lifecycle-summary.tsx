@@ -19,7 +19,9 @@ export function ExecutionLifecycleSummary({
   summary: ExecutionObservabilityRead;
   stale: boolean;
 }) {
-  const statusLabel = STATUS_LABELS[summary.status] ?? "Status unavailable";
+  const statusLabel = Object.hasOwn(STATUS_LABELS, summary.status)
+    ? STATUS_LABELS[summary.status]
+    : "Status unavailable";
 
   return (
     <section

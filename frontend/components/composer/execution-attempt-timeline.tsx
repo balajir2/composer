@@ -16,7 +16,6 @@ const TRIGGER_LABELS: Record<string, string> = {
   run: "Started",
   resume: "Resumed",
   recovery: "Recovery attempt",
-  approval_resume: "Resumed after approval",
 };
 
 function formatDate(value: string) {
@@ -25,8 +24,12 @@ function formatDate(value: string) {
 }
 
 function AttemptItem({ attempt }: { attempt: Attempt }) {
-  const result = RESULT_LABELS[attempt.result] ?? "Result unavailable";
-  const trigger = TRIGGER_LABELS[attempt.triggerKind] ?? "Trigger unavailable";
+  const result = Object.hasOwn(RESULT_LABELS, attempt.result)
+    ? RESULT_LABELS[attempt.result]
+    : "Result unavailable";
+  const trigger = Object.hasOwn(TRIGGER_LABELS, attempt.triggerKind)
+    ? TRIGGER_LABELS[attempt.triggerKind]
+    : "Trigger unavailable";
   return (
     <li className="space-y-2 rounded-md border p-3">
       <div className="flex flex-wrap items-center justify-between gap-2">

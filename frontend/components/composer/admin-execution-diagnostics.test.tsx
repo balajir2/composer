@@ -4,6 +4,24 @@ import type { components } from "@/lib/api/generated/schema";
 import { AdminExecutionDiagnostics } from "./admin-execution-diagnostics";
 
 type Diagnostics = components["schemas"]["AdminExecutionDiagnostics"];
+type DiagnosticsProp = Exclude<
+  React.ComponentProps<typeof AdminExecutionDiagnostics>["diagnostics"],
+  null | undefined
+>;
+type ForbiddenFields =
+  | "checkpoint"
+  | "checkpointState"
+  | "payload"
+  | "workflowInputs"
+  | "nodeInputs"
+  | "nodeOutputs"
+  | "secret"
+  | "rawException"
+  | "rawError";
+type Assert<T extends true> = T;
+export type DiagnosticsExcludeForbiddenFields = Assert<
+  Extract<ForbiddenFields, keyof DiagnosticsProp> extends never ? true : false
+>;
 const diagnostics: Diagnostics = {
   threadId: "thread-123",
   deliveryAttempts: 3,
@@ -24,10 +42,4 @@ describe("AdminExecutionDiagnostics", () => {
     expect(screen.getByText(/available references/i)).toBeInTheDocument();
   });
 
-  it("does not expose secret or checkpoint fields in the component contract", () => {
-    const accepted: Diagnostics = { threadId: "t", deliveryAttempts: 0 };
-    expect(accepted).not.toHaveProperty("checkpoint");
-    expect(accepted).not.toHaveProperty("payload");
-    expect(accepted).not.toHaveProperty("secret");
-  });
 });

@@ -54,6 +54,14 @@ describe("ExecutionLifecycleSummary", () => {
     expect(screen.getByText(/may be out of date/i)).toBeInTheDocument();
   });
 
+  it.each(["__proto__", "constructor", "toString"])(
+    "uses a safe generic label for inherited status key %s",
+    (status) => {
+      renderSummary({ status });
+      expect(screen.getByText("Status unavailable")).toBeInTheDocument();
+    }
+  );
+
   it("does not offer recovery controls", () => {
     renderSummary({ status: "failed", recoveryState: "assessment_required" });
     expect(screen.queryByRole("button")).toBeNull();
