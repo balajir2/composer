@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
@@ -99,7 +100,7 @@ def _recovery_state(execution_status: str) -> RecoveryAssessmentState:
     return RecoveryAssessmentState.NOT_APPLICABLE
 
 
-def _base_observability(record: ExecutionRecord, count: int, history: bool) -> dict:
+def _base_observability(record: ExecutionRecord, count: int, history: bool) -> dict[str, Any]:
     return {
         "executionId": record.id,
         "workflowId": record.workflow_id,
@@ -138,7 +139,7 @@ def _to_admin_observability(
 
 
 def _attempt(record: AttemptRecord, *, admin: bool) -> ExecutionAttemptRead:
-    values = {
+    values: dict[str, Any] = {
         "id": record.id,
         "ordinal": record.ordinal,
         "startedAt": record.started_at,

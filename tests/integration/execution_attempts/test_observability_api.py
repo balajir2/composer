@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.db.models import (
     Approval,
@@ -14,7 +15,7 @@ from src.db.models import (
     User,
     UserRole,
 )
-from tests.integration.sqla_phase4a.conftest import Db, ExecApi, Member
+from tests.integration.sqla_phase4a.conftest import Db, ExecApi, MakeUser, Member
 
 pytestmark = pytest.mark.integration
 
@@ -47,7 +48,7 @@ async def test_owner_legacy_history_and_page_validation(
 
 
 async def test_unrelated_member_cannot_read_observability(
-    db: Db, member: Member, make_user, exec_api: ExecApi
+    db: Db, member: Member, make_user: MakeUser, exec_api: ExecApi
 ) -> None:
     second_member = await make_user()
     workflow_id = await db.seed_workflow(member)
@@ -59,7 +60,7 @@ async def test_unrelated_member_cannot_read_observability(
 
 
 async def test_exact_runner_can_read_summary_and_attempts(
-    db: Db, member: Member, exec_api: ExecApi, sessionmaker_
+    db: Db, member: Member, exec_api: ExecApi, sessionmaker_: async_sessionmaker[AsyncSession]
 ) -> None:
     workflow_id = await db.seed_workflow(member)
     execution_id = await db.seed_execution(workflow_id, member, status="completed")
@@ -139,7 +140,11 @@ async def test_exact_runner_can_read_summary_and_attempts(
 
 
 async def test_admin_receives_diagnostics_and_admin_attempt_fields(
-    db: Db, member: Member, make_user, exec_api: ExecApi, sessionmaker_
+    db: Db,
+    member: Member,
+    make_user: MakeUser,
+    exec_api: ExecApi,
+    sessionmaker_: async_sessionmaker[AsyncSession],
 ) -> None:
     admin = await make_user()
     async with sessionmaker_() as session:
@@ -183,7 +188,7 @@ async def test_admin_receives_diagnostics_and_admin_attempt_fields(
 
 
 async def test_workflow_assignee_cannot_read_other_runners_execution(
-    db: Db, member: Member, make_user, exec_api: ExecApi
+    db: Db, member: Member, make_user: MakeUser, exec_api: ExecApi
 ) -> None:
     second_member = await make_user()
     workflow_id = await db.seed_workflow(member)
@@ -197,7 +202,7 @@ async def test_workflow_assignee_cannot_read_other_runners_execution(
 
 
 async def test_inactive_user_is_rejected_by_auth_dependency(
-    db: Db, member: Member, exec_api: ExecApi, sessionmaker_
+    db: Db, member: Member, exec_api: ExecApi, sessionmaker_: async_sessionmaker[AsyncSession]
 ) -> None:
     workflow_id = await db.seed_workflow(member)
     execution_id = await db.seed_execution(workflow_id, member)
@@ -219,7 +224,7 @@ async def test_missing_execution_returns_404(db: Db, member: Member, exec_api: E
 
 
 async def test_attempt_http_page_is_ordered_by_ordinal(
-    db: Db, member: Member, exec_api: ExecApi, sessionmaker_
+    db: Db, member: Member, exec_api: ExecApi, sessionmaker_: async_sessionmaker[AsyncSession]
 ) -> None:
     workflow_id = await db.seed_workflow(member)
     execution_id = await db.seed_execution(workflow_id, member)
