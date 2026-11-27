@@ -63,6 +63,10 @@ The save controls warn, and **Run draft**, **Publish**, the external API and res
 
 A separate parallel path that never reaches the Join (it goes to its own End) is fine.
 
+If an End is refused only because a Join upstream of it has one of these problems, the End message also quotes the Join's message, so fix the Join first.
+
+Editing a workflow while a run is paused at an approval is supported. Reordering or re-dragging edges is harmless. Changing which paths feed a Join (adding or removing a path into it) is not: the run's saved wait cannot carry over, so the run fails with a message to start a new run instead of finishing without the Join.
+
 ## Build with AI
 
 The chat panel on the canvas builds and edits the workflow from a description. Beyond placing and wiring nodes, it fills them in: agent, MCP and Jira instructions, decision prompts, Gamma prompts, which guardrail checks are on, and the model. After each build it re-checks its own work and fixes empty or inconsistent nodes automatically (up to two short extra rounds, stopping early if a round fixes nothing).

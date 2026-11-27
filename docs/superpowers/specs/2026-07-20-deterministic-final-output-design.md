@@ -185,7 +185,10 @@ exactly as it does today.
 > `plan_join` (`src/engine/graph_builder.py`): a **barrier** (`add_edge([lanes...], join)`, with a
 > no-op `__join_lane__*` relay for a lane that is several exclusive edges or one conditional branch)
 > when its inputs are parallel paths, plain edges when they are alternatives. `JoinExecutor` itself is
-> unchanged. Join shapes that cannot wait correctly (mixed parallel/alternative inputs, a lane that can
+> unchanged. The barrier's channel name and relay ids are derived from the sorted lane edges (never
+> from edge order), because a paused run keeps its progress in the checkpoint under that name; a resume
+> whose saved `join:*` progress has no channel in the recompiled graph fails with
+> `checkpoint_incompatible`. Join shapes that cannot wait correctly (mixed parallel/alternative inputs, a lane that can
 > finish elsewhere, two paths meeting at a plain step) are warnings on save and refusals at run. See
 > `CHANGELOG.md`.
 

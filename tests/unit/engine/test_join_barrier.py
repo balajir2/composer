@@ -759,7 +759,7 @@ def test_relay_ids_are_derived_from_lane_content_not_position() -> None:
 def test_channel_members_are_sorted() -> None:
     wf, _, _ = _cases()["fanout_lane_with_if[True]"]
     graph = build_graph(wf, MemorySaver())
-    (channel,) = [c for c in graph.channels if isinstance(c, str) and c.startswith("join:")]
+    (channel,) = [c for c in graph.channels if c.startswith("join:")]
     members = channel.split(":")[1].split("+")
     assert members == sorted(members)
 
@@ -798,3 +798,255 @@ async def test_reordered_edges_resume_a_paused_barrier_and_run_join_once() -> No
     assert _real(counts)["j"] == 1
     assert _real(counts)["end"] == 1
     assert snap.values["final_outputs"]
+
+
+# --- Performance: autosave runs this on every save -------------------------
+
+
+def _worst_case_wide() -> Workflow:
+    """The size cap (100 nodes / 200 edges) spent on one Join fed by 48 lanes that each fan out."""
+    k = 48
+    nodes = [
+        S,
+        _ss("p"),
+        J,
+        END,
+        *(_ss(f"a{i}") for i in range(k)),
+        *(_ss(f"b{i}") for i in range(k)),
+    ]
+    edges = [_ed("s", "p"), _ed("j", "end")]
+    for i in range(k):
+        edges += [
+            _ed("p", f"a{i}"),
+            _ed(f"a{i}", "j"),
+            _ed(f"a{i}", f"b{i}"),
+            _ed(f"b{i}", "j"),
+        ]
+    assert len(nodes) <= 100 and len(edges) <= 200
+    return _wf(nodes, edges)
+
+
+def test_worst_case_join_analysis_stays_fast() -> None:
+    """Regression guard, not a benchmark: this shape took over a second before the analysis was
+    memoised (the bound is generous so a slow CI runner does not flake)."""
+    import time
+
+    from src.engine import graph_builder as gb
+
+    wf = _worst_case_wide()
+    gb._ANALYSIS_CACHE.clear()  # pyright: ignore[reportPrivateUsage]
+    started = time.perf_counter()
+    assert collect_workflow_violations(wf) == []
+    assert find_join_problems(wf) == []
+    build_graph(wf, MemorySaver())
+    assert time.perf_counter() - started < 2.0
+
+
+def test_one_save_analyses_a_canvas_once() -> None:
+    from src.engine import graph_builder as gb
+
+    wf, _, _ = _cases()["nested_joins"]
+    gb._ANALYSIS_CACHE.clear()  # pyright: ignore[reportPrivateUsage]
+    calls = 0
+    original = gb._analyze_joins_uncached  # pyright: ignore[reportPrivateUsage]
+
+    def counting(*args: Any) -> Any:
+        nonlocal calls
+        calls += 1
+        return original(*args)
+
+    gb._analyze_joins_uncached = counting  # pyright: ignore[reportPrivateUsage]
+    try:
+        validate_workflow_shape(wf)
+        find_join_problems(wf)
+        validate_workflow_runnable(wf)
+        build_graph(wf, MemorySaver())
+    finally:
+        gb._analyze_joins_uncached = original  # pyright: ignore[reportPrivateUsage]
+    assert calls == 1
+
+
+def test_analysis_cache_is_bounded_and_keyed_by_labels() -> None:
+    from src.engine import graph_builder as gb
+
+    wf, _, _, _ = _refused()["lane_escapes_to_end"]
+    first = find_join_problems(wf)[0].message
+    nodes = [
+        {**n, "data": {**n["data"], "label": "Merge"}} if n["id"] == "j" else n
+        for n in _node_dicts(wf)
+    ]
+    assert find_join_problems(_wf(nodes, _edge_dicts(wf)))[0].message != first  # not a stale hit
+    for i in range(gb._ANALYSIS_CACHE_SIZE + 5):  # pyright: ignore[reportPrivateUsage]
+        renamed = [{**n, "id": n["id"]} for n in _node_dicts(wf)]
+        renamed[1] = {**renamed[1], "data": {**renamed[1]["data"], "label": f"L{i}"}}
+        find_join_problems(_wf(renamed, _edge_dicts(wf)))
+    assert len(gb._ANALYSIS_CACHE) <= gb._ANALYSIS_CACHE_SIZE  # pyright: ignore[reportPrivateUsage]
+
+
+# --- The End rule names a Join that is the real cause ----------------------
+
+
+def _problem_join_into_if_else_end() -> Workflow:
+    """`mixed_parallel_and_alternative`, then the Join feeds an if-else whose two exits meet at
+    one End. The broken Join clears nothing, so the End looks reachable by parallel paths."""
+    return _wf(
+        [S, _ie("c", "True"), _ss("f"), _ss("a"), _ss("b"), _ss("d"), J, _ie("c2", "True"), END],
+        [
+            _ed("s", "c"),
+            _ed("c", "f", "true"),
+            _ed("f", "a"),
+            _ed("f", "b"),
+            _ed("a", "j"),
+            _ed("b", "j"),
+            _ed("c", "d", "false"),
+            _ed("d", "j"),
+            _ed("j", "c2"),
+            _ed("c2", "end", "true"),
+            _ed("c2", "end", "false"),
+        ],
+    )
+
+
+def test_end_rule_message_also_names_the_join_that_causes_it() -> None:
+    wf = _problem_join_into_if_else_end()
+    first = collect_workflow_violations(wf)[0]
+    assert first.startswith("End node 'end' must have exactly one incoming edge")
+    assert 'Join step "j" mixes parallel paths with an alternative path' in first
+    with pytest.raises(WorkflowValidationError) as refused:
+        validate_workflow_shape(wf)
+    assert 'Join step "j" mixes' in str(refused.value)
+
+
+def test_end_rule_message_is_unchanged_when_no_join_is_involved() -> None:
+    wf = _wf(
+        [S, _ss("p"), _ss("a"), _ss("b"), END],
+        [_ed("s", "p"), _ed("p", "a"), _ed("p", "b"), _ed("a", "end"), _ed("b", "end")],
+    )
+    (message,) = collect_workflow_violations(wf)
+    assert message.startswith("End node 'end' must have exactly one incoming edge")
+    assert "Join step" not in message
+
+
+def test_end_rule_ignores_a_join_that_is_not_an_ancestor_of_the_end() -> None:
+    wf, _, _, _ = _refused()["lane_escapes_to_end"]
+    # end2 is reached by a plain branch; the broken Join sits on another path to `end`.
+    for message in collect_workflow_violations(wf):
+        assert "Join step" not in message
+
+
+# --- A decision node as the source of a relayed lane ------------------------
+
+
+def _decision(node_id: str, mode: str) -> dict[str, Any]:
+    data: dict[str, Any] = {"mode": mode, "instruction": "pick"}
+    if mode == "choice":
+        data["options"] = [{"label": "x"}, {"label": "y"}]
+    return _n(node_id, "decision", data)
+
+
+def _decision_lane_wf(mode: str) -> Workflow:
+    """p fans out to a decision lane and to b; the decision's first exit goes straight to the Join,
+    its second through t, so the lane is a relay fed by two exclusive edges."""
+    first, second = ("x", "y") if mode == "choice" else ("true", "false")
+    return _wf(
+        [S, _ss("p"), _decision("d", mode), _ss("t"), _ss("b"), J, END],
+        [
+            _ed("s", "p"),
+            _ed("p", "d"),
+            _ed("d", "j", first),
+            _ed("d", "t", second),
+            _ed("t", "j"),
+            _ed("p", "b"),
+            _ed("b", "j"),
+            _ed("j", "end"),
+        ],
+    )
+
+
+@pytest.mark.parametrize(
+    ("mode", "option", "expect_t"),
+    [
+        ("choice", "x", False),
+        ("choice", "y", True),
+        ("binary", True, False),
+        ("binary", False, True),
+    ],
+)
+async def test_decision_node_as_relayed_lane_source_runs_join_and_end_once(
+    monkeypatch: pytest.MonkeyPatch, mode: str, option: object, expect_t: bool
+) -> None:
+    from unittest.mock import AsyncMock
+
+    from src.executors import decision as decision_module
+
+    class _Provider:
+        decide_binary = AsyncMock(return_value=(option, 0.9))
+        decide_choice = AsyncMock(return_value=(option, 0.9))
+
+    def _build(_name: str) -> _Provider:
+        return _Provider()
+
+    monkeypatch.setattr(decision_module, "build_judgment_provider", _build)
+    wf = _decision_lane_wf(mode)
+    assert find_join_problems(wf) == []
+    assert len(_relays(build_graph(wf, MemorySaver()))) == 1  # the decision lane is relayed
+    run = await _run(wf)
+    counts = _real(run.counts)
+    assert counts["j"] == 1
+    assert counts["end"] == 1
+    assert counts["d"] == 1
+    assert counts.get("t", 0) == (1 if expect_t else 0)
+    assert run.paused == ()
+    assert {"p", "b"} <= run.ran
+    assert ("t" in run.ran) == expect_t
+
+
+# --- Save warnings and run-gate refusals are one set -----------------------
+
+
+def _equivalence_shapes() -> dict[str, Workflow]:
+    from tests.unit.engine import test_graph_builder as tgb
+
+    shapes: dict[str, Workflow] = {}
+    for name, (wf, *_rest) in _cases().items():
+        shapes[f"case:{name}"] = wf
+    for name, (wf, *_rest) in _refused().items():
+        shapes[f"refused:{name}"] = wf
+    shapes["join_into_if_else_end"] = _problem_join_into_if_else_end()
+    for name, (nodes, edges) in tgb._topologies().items():  # pyright: ignore[reportPrivateUsage]
+        shapes[f"topology:{name}"] = tgb._mk(nodes, edges)  # pyright: ignore[reportPrivateUsage]
+    for name, (nodes, edges) in tgb._accepted_topologies().items():  # pyright: ignore[reportPrivateUsage]
+        shapes[f"accepted:{name}"] = tgb._mk(nodes, edges)  # pyright: ignore[reportPrivateUsage]
+    for branches in (["approved"], ["rejected"], [], ["approved", "rejected"]):
+        shapes[f"approval:{branches}"] = tgb._approval_wf(branches)  # pyright: ignore[reportPrivateUsage]
+    # A Join problem and a missing branch on one canvas.
+    wf, *_ = _refused()["lane_escapes_to_end"]
+    nodes = [*_node_dicts(wf), _ie("lonely", "True")]
+    shapes["join_problem_plus_unwired_if_else"] = _wf(nodes, _edge_dicts(wf))
+    return shapes
+
+
+@pytest.mark.parametrize("name", list(_equivalence_shapes()))
+def test_every_save_warning_is_a_run_refusal_and_back(name: str) -> None:
+    """`runnable_warnings` (shown on save) and `validate_workflow_runnable` (run, resume, publish)
+    must report the same problems for any canvas that passes the structural rules."""
+    from types import SimpleNamespace
+
+    from src.api._runnable import runnable_warnings
+
+    wf = _equivalence_shapes()[name]
+    row = SimpleNamespace(name=wf.name, nodes=_node_dicts(wf), edges=_edge_dicts(wf))
+    warnings = runnable_warnings(row)
+    structural = collect_workflow_violations(wf)
+    try:
+        validate_workflow_runnable(wf)
+        refusal: str | None = None
+    except WorkflowValidationError as exc:
+        refusal = str(exc)
+    if structural:
+        assert refusal == structural[0]  # structural rules refuse first, with their own message
+        return
+    if not warnings:
+        assert refusal is None
+    else:
+        assert refusal == " ".join(w.message for w in warnings)

@@ -6,8 +6,9 @@ Reference: OAB lib/workflow/langgraph.ts:169-427.
 """
 
 import hashlib
-from collections import deque
+from collections import OrderedDict, deque
 from collections.abc import Callable, Hashable, Iterable
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field
 from typing import Any, Literal, NamedTuple, cast
 
@@ -215,7 +216,9 @@ def _branch_markers(
     return markers
 
 
-def _mutually_exclusive(markers_a: set[tuple[str, str]], markers_b: set[tuple[str, str]]) -> bool:
+def _mutually_exclusive(
+    markers_a: AbstractSet[tuple[str, str]], markers_b: AbstractSet[tuple[str, str]]
+) -> bool:
     """True if some shared conditional ancestor was reached via disjoint
     branch sets on the way to each -- meaning a single run that reaches one
     can never also reach the other."""
@@ -380,6 +383,9 @@ class _ExecutableGraph:
         }
         self._markers = _branch_markers(nodes, self.edges)
         self._forward_cache: dict[tuple[str, frozenset[str], bool], frozenset[str]] = {}
+        self._lanes_cache: dict[tuple[str, _EdgeKey], frozenset[str]] = {}
+        self._edge_lanes_cache: dict[_EdgeKey, dict[str, frozenset[str]]] = {}
+        self._markers_cache: dict[_EdgeKey, frozenset[tuple[str, str]]] = {}
 
     def is_join(self, node_id: str) -> bool:
         return self.nodes[node_id].type == "join"
@@ -387,13 +393,17 @@ class _ExecutableGraph:
     def is_sink(self, node_id: str) -> bool:
         return self.nodes[node_id].type == "end" or not self.successors[node_id]
 
-    def edge_markers(self, edge: WorkflowEdge) -> set[tuple[str, str]]:
+    def edge_markers(self, edge: WorkflowEdge) -> frozenset[tuple[str, str]]:
         """Branch markers of one edge: how its source was reached, plus the
         branch it leaves a conditional source by."""
-        marks = set(self._markers[edge.source])
-        if self.nodes[edge.source].type in CONDITIONAL_SOURCE_TYPES and edge.branch is not None:
-            marks.add((edge.source, edge.branch))
-        return marks
+        key = (edge.source, edge.target, edge.branch)
+        cached = self._markers_cache.get(key)
+        if cached is None:
+            marks = set(self._markers[edge.source])
+            if self.nodes[edge.source].type in CONDITIONAL_SOURCE_TYPES and edge.branch is not None:
+                marks.add((edge.source, edge.branch))
+            cached = self._markers_cache[key] = frozenset(marks)
+        return cached
 
     def forward(self, start: str, avoid: frozenset[str], *, through_joins: bool) -> frozenset[str]:
         """Nodes reachable from `start` without entering `avoid`. Without
@@ -417,8 +427,16 @@ class _ExecutableGraph:
         self._forward_cache[key] = result
         return result
 
-    def lanes_from(self, fan_out: str, edge: WorkflowEdge) -> set[str]:
-        """The successors of `fan_out` whose token can arrive over `edge`."""
+    def lanes_from(self, fan_out: str, edge: WorkflowEdge) -> frozenset[str]:
+        """The successors of `fan_out` whose token can arrive over `edge`.
+        Memoised: `co_fire` asks about every pair of a Join's incoming edges."""
+        key = (fan_out, (edge.source, edge.target, edge.branch))
+        cached = self._lanes_cache.get(key)
+        if cached is None:
+            cached = self._lanes_cache[key] = self._compute_lanes_from(fan_out, edge)
+        return cached
+
+    def _compute_lanes_from(self, fan_out: str, edge: WorkflowEdge) -> frozenset[str]:
         lanes: set[str] = set()
         avoid = frozenset({edge.target, fan_out})
         for successor in self.successors[fan_out]:
@@ -430,22 +448,35 @@ class _ExecutableGraph:
                 )
             ):
                 lanes.add(successor)
-        return lanes
+        return frozenset(lanes)
 
     def co_fire(self, first: WorkflowEdge, second: WorkflowEdge) -> set[str]:
         """Fan-outs that can put a token on both edges in one run (empty =
         the edges can never both carry a token)."""
         if _mutually_exclusive(self.edge_markers(first), self.edge_markers(second)):
             return set()
+        lanes_a = self.edge_lanes(first)
+        lanes_b = self.edge_lanes(second)
+        # Two tokens from one fan-out need two different lanes: both edges
+        # reachable from it, and not both only through the same single lane.
         return {
             fan_out
-            for fan_out in self.fan_outs
-            if any(
-                a != b
-                for a in self.lanes_from(fan_out, first)
-                for b in self.lanes_from(fan_out, second)
-            )
+            for fan_out in lanes_a.keys() & lanes_b.keys()
+            if not (len(lanes_a[fan_out]) == 1 and lanes_a[fan_out] == lanes_b[fan_out])
         }
+
+    def edge_lanes(self, edge: WorkflowEdge) -> dict[str, frozenset[str]]:
+        """`lanes_from` for every fan-out that reaches `edge` (non-empty only)."""
+        key = (edge.source, edge.target, edge.branch)
+        cached = self._edge_lanes_cache.get(key)
+        if cached is None:
+            cached = {}
+            for fan_out in self.fan_outs:
+                lanes = self.lanes_from(fan_out, edge)
+                if lanes:
+                    cached[fan_out] = lanes
+            self._edge_lanes_cache[key] = cached
+        return cached
 
 
 def plan_join(graph: _ExecutableGraph, join_id: str) -> JoinPlan:
@@ -567,9 +598,37 @@ def analyze_joins(nodes: dict[str, WorkflowNode], edges: list[WorkflowEdge]) -> 
     separating it and no path from the fan-out can reach a sink without
     entering the Join: every parallel path of that fan-out is folded back
     into one token there.
+
+    One request analyses the same canvas several times (the shape check, the
+    run-gate warnings, the compile), and the analysis is quadratic in a Join's
+    inputs, so results are kept in a small LRU keyed by everything the analysis
+    reads: node ids, types and labels, and the de-duplicated edges. The
+    returned object is shared and must be treated as read-only.
     """
     if not any(node.type == "join" for node in nodes.values()):
         return JoinAnalysis()
+    key = (
+        tuple((n.id, n.type, getattr(n.data, "label", None)) for n in nodes.values()),
+        tuple((e.source, e.target, e.branch) for e in dedupe_edges(edges)),
+    )
+    cached = _ANALYSIS_CACHE.get(key)
+    if cached is not None:
+        _ANALYSIS_CACHE.move_to_end(key)
+        return cached
+    result = _analyze_joins_uncached(nodes, edges)
+    _ANALYSIS_CACHE[key] = result
+    while len(_ANALYSIS_CACHE) > _ANALYSIS_CACHE_SIZE:
+        _ANALYSIS_CACHE.popitem(last=False)
+    return result
+
+
+_ANALYSIS_CACHE_SIZE = 32
+_ANALYSIS_CACHE: OrderedDict[Any, JoinAnalysis] = OrderedDict()
+
+
+def _analyze_joins_uncached(
+    nodes: dict[str, WorkflowNode], edges: list[WorkflowEdge]
+) -> JoinAnalysis:
     graph = _ExecutableGraph(nodes, edges)
     plans = {
         node_id: plan_join(graph, node_id) for node_id, node in nodes.items() if node.type == "join"
@@ -608,6 +667,44 @@ def find_join_problems(workflow: Workflow) -> list[JoinProblem]:
 def collect_join_problems(workflow: Workflow) -> list[str]:
     """One user-facing message per problem in `find_join_problems`."""
     return [p.message for p in find_join_problems(workflow)]
+
+
+def _join_causes(
+    end_id: str,
+    nodes: dict[str, WorkflowNode],
+    edges: list[WorkflowEdge],
+    analysis: JoinAnalysis,
+) -> str:
+    """The messages of Joins with a problem that lie upstream of `end_id`, each
+    preceded by a space, or "" when there are none.
+
+    A Join with a problem clears no fan-out, so an End behind it can look
+    reachable by parallel paths. Naming the Join says what to fix; the End
+    message alone points at the wrong step.
+    """
+    broken = [plan for plan in analysis.plans.values() if plan.violations]
+    if not broken:
+        return ""
+    predecessors: dict[str, set[str]] = {}
+    for edge in edges:
+        if nodes[edge.source].type in _VISUAL_ONLY_TYPES:
+            continue
+        if nodes[edge.target].type in _VISUAL_ONLY_TYPES:
+            continue
+        predecessors.setdefault(edge.target, set()).add(edge.source)
+    upstream: set[str] = set()
+    stack = [end_id]
+    while stack:
+        for source in predecessors.get(stack.pop(), ()):
+            if source not in upstream:
+                upstream.add(source)
+                stack.append(source)
+    return "".join(
+        f" {problem.message}"
+        for plan in broken
+        if plan.join_id in upstream
+        for problem in plan.violations
+    )
 
 
 def collect_workflow_violations(workflow: Workflow) -> list[str]:
@@ -662,7 +759,8 @@ def collect_workflow_violations(workflow: Workflow) -> list[str]:
 
     # 5. End incoming-edge rule.
     branch_markers = _branch_markers(nodes, clean_edges)
-    cleared = analyze_joins(nodes, clean_edges).cleared
+    join_analysis = analyze_joins(nodes, clean_edges)
+    cleared = join_analysis.cleared
     for end_id in end_ids:
         incoming = [
             e
@@ -677,7 +775,7 @@ def collect_workflow_violations(workflow: Workflow) -> list[str]:
                 f"executable node (found {len(incoming)}): it can be reached by parallel "
                 f"paths (an earlier step fans out to several steps), so it would run more "
                 f"than once. Give each parallel path its own End step, or merge them with a "
-                f"Join first."
+                f"Join first." + _join_causes(end_id, nodes, clean_edges, join_analysis)
             )
             continue
         if len(incoming) > 1:
@@ -700,6 +798,7 @@ def collect_workflow_violations(workflow: Workflow) -> list[str]:
         violations.append(
             f"End node {end_id!r} must have exactly one incoming edge from an "
             f"executable node (found {len(incoming)})."
+            + _join_causes(end_id, nodes, clean_edges, join_analysis)
         )
 
     # 6. Join outgoing-edge rule.
