@@ -1,0 +1,248 @@
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import {
+  getExecution,
+  getExecutionObservability,
+  listExecutionAttempts,
+  type ExecutionObservabilityRead,
+  type ExecutionAttemptPage,
+} from "@/lib/api/executions";
+import { ComposerApiError } from "@/lib/api/client";
+import { subscribeExecution, type ComposerEventHandler } from "@/lib/ws";
+import ExecutionPage from "./page";
+
+vi.mock("next/navigation", () => ({
+  useParams: () => ({ executionId: "run-1", workflowId: "flow-1" }),
+}));
+vi.mock("next-auth/react", () => ({
+  useSession: () => ({ data: { accessToken: "token", user: { role: "member" } } }),
+  getSession: vi.fn(),
+}));
+vi.mock("@/lib/api/executions", () => ({
+  getExecution: vi.fn(),
+  getExecutionObservability: vi.fn(),
+  listExecutionAttempts: vi.fn(),
+  resumeExecution: vi.fn(),
+}));
+vi.mock("@/lib/ws", () => ({ subscribeExecution: vi.fn() }));
+const summary: ExecutionObservabilityRead = {
+  executionId: "run-1",
+  workflowId: "flow-1",
+  status: "completed",
+  currentNodeId: null,
+  startedAt: "2026-11-26T10:00:00Z",
+  completedAt: "2026-11-26T10:01:00Z",
+  historyAvailable: true,
+  attemptCount: 2,
+  failureGuidance: null,
+  recoveryState: "not_applicable",
+  observedAt: "2026-11-26T10:01:00Z",
+};
+const attempts: ExecutionAttemptPage = {
+  historyAvailable: true,
+  total: 2,
+  limit: 50,
+  offset: 0,
+  items: [1, 2].map((ordinal) => ({
+    id: `attempt-${ordinal}`,
+    ordinal,
+    startedAt: "2026-11-26T10:00:00Z",
+    endedAt: "2026-11-26T10:01:00Z",
+    result: ordinal === 1 ? "paused" : "completed",
+    triggerKind: ordinal === 1 ? "run" : "resume",
+    failureGuidance: null,
+    hasApproval: ordinal === 2,
+  })),
+};
+let event: ComposerEventHandler;
+let client: QueryClient;
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.mocked(subscribeExecution).mockImplementation((_id, _token, callback) => {
+    event = callback;
+    return vi.fn();
+  });
+  vi.mocked(getExecution).mockResolvedValue({
+    id: "run-1",
+    workflowId: "flow-1",
+    status: "completed",
+    startedAt: summary.startedAt,
+    threadId: "thread",
+    output: "Final output",
+    nodeResults: { end: { status: "completed", output: "Node output" } },
+  });
+  vi.mocked(getExecutionObservability).mockResolvedValue(summary);
+  vi.mocked(listExecutionAttempts).mockResolvedValue(attempts);
+});
+afterEach(() => {
+  cleanup();
+  client?.clear();
+  vi.useRealTimers();
+});
+function mount() {
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <ExecutionPage />
+    </QueryClientProvider>
+  );
+}
+it("shows lifecycle, multiple attempts and existing output/trace without diagnostics or recovery controls", async () => {
+  mount();
+  expect(await screen.findByRole("heading", { name: "Execution status" })).toBeVisible();
+  expect(await screen.findByText("Attempt 2")).toBeVisible();
+  expect(screen.getByText("Final output")).toBeVisible();
+  expect(screen.getByText(/Show node-by-node trace/)).toBeVisible();
+  expect(screen.queryByRole("heading", { name: "Administrator diagnostics" })).toBeNull();
+  expect(screen.queryByRole("button", { name: /recover/i })).toBeNull();
+  expect(listExecutionAttempts).toHaveBeenCalledWith("run-1", { limit: 50, offset: 0 });
+  expect(client.getQueryData(["execution-observability", "run-1"])).toEqual(summary);
+  expect(client.getQueryData(["execution-attempts", "run-1", 50, 0])).toEqual(attempts);
+});
+it("renders diagnostics only when supplied by the API, regardless of client role", async () => {
+  vi.mocked(getExecutionObservability).mockResolvedValue({
+    ...summary,
+    adminDiagnostics: { threadId: "admin-thread", deliveryAttempts: 3 },
+  });
+  mount();
+  expect(await screen.findByRole("heading", { name: "Administrator diagnostics" })).toBeVisible();
+  expect(screen.getByText("admin-thread")).toBeVisible();
+});
+it.each(["execution", "summary", "attempts"])(
+  "uses the same not-found state for a %s 404",
+  async (read) => {
+    const fn =
+      read === "execution"
+        ? getExecution
+        : read === "summary"
+          ? getExecutionObservability
+          : listExecutionAttempts;
+    vi.mocked(fn).mockRejectedValue(new ComposerApiError(404, null));
+    mount();
+    expect(await screen.findByText("Execution not found")).toBeVisible();
+    expect(screen.queryByText("Attempt 1")).toBeNull();
+  }
+);
+it("keeps successful data on refresh errors, warns and offers retry", async () => {
+  mount();
+  await screen.findByText("Attempt 2");
+  vi.mocked(getExecutionObservability).mockRejectedValue(new Error("offline"));
+  vi.mocked(listExecutionAttempts).mockRejectedValue(new Error("offline"));
+  vi.mocked(getExecution).mockRejectedValue(new Error("offline"));
+  await act(async () => {
+    await client.invalidateQueries();
+  });
+  expect(screen.getByText("Attempt 2")).toBeVisible();
+  expect(screen.getByText("Final output")).toBeVisible();
+  expect(await screen.findByText(/may be out of date/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "Retry execution status refresh" })).toBeVisible();
+  vi.mocked(getExecutionObservability).mockResolvedValue(summary);
+  fireEvent.click(screen.getByRole("button", { name: "Retry execution status refresh" }));
+  await waitFor(() => expect(screen.queryByText(/may be out of date/)).toBeNull());
+});
+it.each(["queued", "running", "waiting_approval", "completed", "failed", "cancelled"])(
+  "bounds polling for %s, including terminal rows without output",
+  async (status) => {
+    vi.mocked(getExecution).mockResolvedValue({
+      id: "run-1",
+      workflowId: "flow-1",
+      status,
+      startedAt: summary.startedAt,
+      threadId: "thread",
+      output: null,
+    });
+    vi.mocked(getExecutionObservability).mockResolvedValue({ ...summary, status });
+    vi.useFakeTimers();
+    await act(async () => {
+      mount();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(screen.getByText("Attempt 2")).toBeVisible();
+    const before = [
+      vi.mocked(getExecution).mock.calls.length,
+      vi.mocked(getExecutionObservability).mock.calls.length,
+      vi.mocked(listExecutionAttempts).mock.calls.length,
+    ];
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10_000);
+    });
+    const after = [
+      vi.mocked(getExecution).mock.calls.length,
+      vi.mocked(getExecutionObservability).mock.calls.length,
+      vi.mocked(listExecutionAttempts).mock.calls.length,
+    ];
+    after.forEach((count, index) => {
+      if (["completed", "failed", "cancelled"].includes(status)) expect(count).toBe(before[index]);
+      else expect(count).toBeGreaterThan(before[index]);
+    });
+  }
+);
+it("uses the one progress socket to refresh all three reads on nonterminal and terminal events", async () => {
+  mount();
+  await screen.findByText("Attempt 2");
+  for (const type of ["approval_required", "workflow_completed"] as const) {
+    vi.mocked(getExecution).mockClear();
+    vi.mocked(getExecutionObservability).mockClear();
+    vi.mocked(listExecutionAttempts).mockClear();
+    await act(async () => {
+      event({
+        type,
+        executionId: "run-1",
+        tenantId: null,
+        timestamp: summary.observedAt,
+        status: "completed",
+        output: "WS output",
+      });
+    });
+    await waitFor(() => {
+      expect(getExecution).toHaveBeenCalledTimes(1);
+      expect(getExecutionObservability).toHaveBeenCalledTimes(1);
+      expect(listExecutionAttempts).toHaveBeenCalledTimes(1);
+    });
+  }
+  expect(subscribeExecution).toHaveBeenCalledTimes(1);
+  expect(screen.getByText("WS output")).toBeVisible();
+});
+
+it("refreshes the final lifecycle and attempts when polling sees completion without a socket event", async () => {
+  vi.mocked(getExecution).mockResolvedValue({
+    id: "run-1",
+    workflowId: "flow-1",
+    status: "running",
+    startedAt: summary.startedAt,
+    threadId: "thread",
+    output: null,
+  });
+  vi.mocked(getExecutionObservability).mockResolvedValue({ ...summary, status: "running" });
+  vi.useFakeTimers();
+  await act(async () => {
+    mount();
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10);
+  });
+  const summaryReads = vi.mocked(getExecutionObservability).mock.calls.length;
+  vi.mocked(getExecution).mockResolvedValue({
+    id: "run-1",
+    workflowId: "flow-1",
+    status: "completed",
+    startedAt: summary.startedAt,
+    threadId: "thread",
+    output: "Persisted output",
+  });
+  vi.mocked(getExecutionObservability).mockResolvedValue(summary);
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(2100);
+  });
+  await act(async () => {
+    await vi.advanceTimersByTimeAsync(10);
+  });
+  expect(getExecutionObservability).toHaveBeenCalledTimes(summaryReads + 1);
+  expect(screen.getByText("Persisted output")).toBeVisible();
+  expect(
+    within(screen.getByRole("region", { name: "Execution status" })).getByText("Completed")
+  ).toBeVisible();
+});

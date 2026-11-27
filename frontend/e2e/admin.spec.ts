@@ -117,3 +117,62 @@ test("admin can toggle a built-in tool on /admin/tools", async ({ page }) => {
   const newText = await firstToggle.innerText();
   expect(newText).not.toBe(initialText);
 });
+
+// Uses another member's execution: authorization and diagnostics come from the API.
+test("admin can inspect execution lifecycle and server-projected diagnostics", async ({
+  page,
+  request,
+}) => {
+  const admin = await createTestUser();
+  const owner = await createTestUser();
+  const unrelated = await createTestUser();
+  promoteToAdmin(admin.email);
+  const apiUrl = process.env.NEXT_PUBLIC_COMPOSER_API_URL ?? "http://localhost:8000";
+  const headers = { Authorization: `Bearer ${owner.accessToken}` };
+  const workflow = await request.post(`${apiUrl}/workflows`, {
+    headers,
+    data: {
+      name: "PW Diagnostic Workflow",
+      isPublic: true,
+      isProduction: true,
+      nodes: [
+        { id: "s", type: "start", position: { x: 0, y: 0 }, data: { label: "Start" } },
+        { id: "e", type: "end", position: { x: 400, y: 0 }, data: { label: "End" } },
+      ],
+      edges: [{ id: "e1", source: "s", target: "e" }],
+    },
+  });
+  expect(workflow.status()).toBe(201);
+  const { id: workflowId } = await workflow.json();
+  const execution = await request.post(`${apiUrl}/executions`, {
+    headers,
+    data: { workflowId, input: {} },
+  });
+  expect(execution.status()).toBe(201);
+  const { id: executionId } = await execution.json();
+  await loginAs(page, admin.email, admin.password);
+  const diagnosticResponse = page.waitForResponse(
+    (response) =>
+      response.url().endsWith(`/executions/${executionId}/observability`) &&
+      response.status() === 200
+  );
+  await page.goto(`/runs/${workflowId}/executions/${executionId}`);
+  const summary = await (await diagnosticResponse).json();
+  expect(summary.adminDiagnostics.threadId).toBeTruthy();
+  expect(typeof summary.adminDiagnostics.deliveryAttempts).toBe("number");
+  await expect(page.getByRole("heading", { name: "Execution status", exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Administrator diagnostics", exact: true })
+  ).toBeVisible();
+  await expect(page.getByText(summary.adminDiagnostics.threadId, { exact: true })).toBeVisible();
+  await expect(page.getByText("Delivery attempts", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Attempt 1", exact: true })).toBeVisible({
+    timeout: 30_000,
+  });
+  for (const suffix of ["", "/observability", "/attempts?limit=50&offset=0"]) {
+    const denied = await request.get(`${apiUrl}/executions/${executionId}${suffix}`, {
+      headers: { Authorization: `Bearer ${unrelated.accessToken}` },
+    });
+    expect(denied.status()).toBe(404);
+  }
+});
