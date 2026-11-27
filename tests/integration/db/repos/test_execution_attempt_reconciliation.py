@@ -66,7 +66,12 @@ async def _old_code_ends(
     ("status", "result", "completed_at", "expected_end"),
     [
         ("failed", AttemptResult.FAILED, NOW - timedelta(minutes=3), NOW - timedelta(minutes=3)),
-        ("canceled", AttemptResult.CANCELED, NOW - timedelta(minutes=2), NOW - timedelta(minutes=2)),
+        (
+            "canceled",
+            AttemptResult.CANCELED,
+            NOW - timedelta(minutes=2),
+            NOW - timedelta(minutes=2),
+        ),
         ("completed", AttemptResult.COMPLETED, None, NOW),
     ],
 )
