@@ -491,10 +491,14 @@ class LangGraphExecutor:
             return
         except CheckpointMissing as exc:
             logger.error("Execution %s has no checkpoint to resume", execution_id)
-            if await self._mark_failed(execution_id, exc, failure_code="checkpoint_missing"):
+            if await self._mark_failed(
+                execution_id, exc, failure_code="checkpoint_missing", attempt_id=attempt_id
+            ):
                 await self._emit("workflow_completed", execution_id, {"status": "failed"})
         except CheckpointSyncFailed as exc:
-            if await self._mark_failed(execution_id, exc, failure_code="checkpoint_sync_failed"):
+            if await self._mark_failed(
+                execution_id, exc, failure_code="checkpoint_sync_failed", attempt_id=attempt_id
+            ):
                 await self._emit("workflow_completed", execution_id, {"status": "failed"})
         except _ExecutionDeadlineExceeded as exc:
             logger.warning("Execution %s timed out during resume", execution_id)
