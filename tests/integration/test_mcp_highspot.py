@@ -17,18 +17,14 @@ Required env vars:
 import asyncio
 import os
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
 import pytest
-from fastapi import FastAPI
 from httpx import AsyncClient
 
-from prisma import Json  # pyright: ignore[reportAttributeAccessIssue]
+from src.db.models import McpOAuthToken, McpServer
 from src.security.encryption import encrypt
+from tests.integration._rows import Rows
 
-NEEDS_LEGACY_PRISMA = (
-    True  # tests/conftest.py gives this module a test-only Prisma client (phase 6 removes it)
-)
 pytestmark = [
     pytest.mark.integration,
     pytest.mark.live,
@@ -71,12 +67,10 @@ def _required_env() -> dict[str, str] | None:
     return values
 
 
-async def test_agent_with_highspot_oauth(client: AsyncClient, app: FastAPI) -> None:
+async def test_agent_with_highspot_oauth(client: AsyncClient, rows: Rows) -> None:
     env = _required_env()
     if env is None:
         pytest.skip("Highspot OAuth env vars not set")
-
-    db: Any = app.state.db
 
     # Register the Highspot MCP server
     mcp_resp = await client.post(
@@ -95,33 +89,30 @@ async def test_agent_with_highspot_oauth(client: AsyncClient, app: FastAPI) -> N
     # required by the provider construction but aren't actually hit
     # because we seed a long-lived access token below. Real OAuth refresh
     # endpoints are covered by the unit + regression tests.
-    await db.mcpserver.update(
-        where={"id": server_id},
-        data={
-            "oauthConfig": Json(
-                {
-                    "authorizeUrl": "https://example.invalid/oauth/authorize",
-                    "tokenUrl": "https://example.invalid/oauth/token",
-                    "clientId": "test-client",
-                    "clientSecret": "test-secret",
-                    "scopes": [],
-                }
-            ),
+    await rows.set(
+        McpServer,
+        McpServer.id == server_id,
+        oauth_config={
+            "authorizeUrl": "https://example.invalid/oauth/authorize",
+            "tokenUrl": "https://example.invalid/oauth/token",
+            "clientId": "test-client",
+            "clientSecret": "test-secret",
+            "scopes": [],
         },
     )
 
     # Seed a valid access token with far-future expiry so refresh is never
     # triggered. The goal is to verify server-side token retrieval (fix #4)
     # + real MCP protocol against Highspot, not the OAuth refresh flow.
-    await db.mcpoauthtoken.create(
-        data={
-            "mcpServerId": server_id,
-            "userId": "dev",
-            "encryptedAccessToken": encrypt(env["HIGHSPOT_OAUTH_ACCESS_TOKEN"]),
-            "encryptedRefreshToken": None,
-            "expiresAt": datetime.now(UTC) + timedelta(hours=1),
-            "tokenType": "Bearer",
-        }
+    await rows.add(
+        McpOAuthToken(
+            mcp_server_id=server_id,
+            user_id="dev",
+            encrypted_access_token=encrypt(env["HIGHSPOT_OAUTH_ACCESS_TOKEN"]),
+            encrypted_refresh_token=None,
+            expires_at=datetime.now(UTC) + timedelta(hours=1),
+            token_type="Bearer",
+        )
     )
 
     try:

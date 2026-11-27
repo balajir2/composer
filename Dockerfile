@@ -1,19 +1,15 @@
-# Composer backend (FastAPI + LangGraph + Prisma) — Cloud Run image.
+# Composer backend (FastAPI + LangGraph + SQLAlchemy) — Cloud Run image.
 #
 # Build:   docker build -t composer-backend .
 # Run:     docker run -e DATABASE_URL=... -e JWT_SECRET=... -p 8080:8080 composer-backend
 #
 # Multi-stage build:
-#   builder  - Python 3.12 + Node.js + uv.  Installs deps, generates
-#              the Prisma client + downloads the query-engine binary.
-#   runtime  - Python 3.12 only.  Copies /app from builder (the venv,
-#              the source, and the Prisma cache).  No Node.js, no uv,
-#              no apt-cache.  Final image ~400 MB instead of ~1.3 GB.
+#   builder  - Python 3.12 + uv. Installs the locked dependencies and the project into /app/.venv.
+#   runtime  - Python 3.12 only. Copies /app from builder (the venv and the source). No uv,
+#              no apt cache, no build tools.
 #
-# Node.js is needed by Prisma Python's `generate` (it shells out to the
-# upstream Prisma TS CLI to download the query engine).  The runtime
-# image needs the resulting engine BINARY but not the Node toolchain
-# that fetched it.
+# Migrations are not run from the image: the deploy workflow runs `alembic upgrade head`
+# from its own checkout before the new revision takes traffic.
 
 # syntax=docker/dockerfile:1.7
 
@@ -26,21 +22,8 @@ FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PRISMA_HIDE_UPDATE_MESSAGE=1 \
     UV_LINK_MODE=copy \
-    UV_PROJECT_ENVIRONMENT=/app/.venv \
-    # Put the Prisma binary cache inside /app so the runtime copy picks
-    # it up.  Default ~/.cache/prisma-python wouldn't travel across
-    # stages.
-    PRISMA_BINARY_CACHE_DIR=/app/.prisma-cache
-
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl \
-        ca-certificates \
-        gnupg \
-    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
-    && apt-get install -y --no-install-recommends nodejs \
-    && rm -rf /var/lib/apt/lists/*
+    UV_PROJECT_ENVIRONMENT=/app/.venv
 
 # uv from the official image (~3 MB), pinned to 0.8.15 (matches the local
 # toolchain) by index digest, captured 2026-11-02.
@@ -48,17 +31,10 @@ COPY --from=ghcr.io/astral-sh/uv:0.8.15@sha256:a5727064a0de127bdb7c9d3c1383f3a9a
 
 WORKDIR /app
 
-# Dependency manifests + Prisma schema first so this layer caches
-# independently of source changes.
+# Dependency manifests first so this layer caches independently of source changes.
 COPY pyproject.toml uv.lock README.md ./
-COPY prisma/schema.prisma prisma/
 
 RUN uv sync --frozen --no-dev --no-install-project
-
-# Download the Prisma query-engine binary + generate the Python client
-# at BUILD time so runtime cold starts don't pay the multi-second
-# download penalty.  The binary lands in $PRISMA_BINARY_CACHE_DIR.
-RUN uv run prisma generate
 
 COPY src/ ./src/
 
@@ -70,8 +46,6 @@ FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PRISMA_HIDE_UPDATE_MESSAGE=1 \
-    PRISMA_BINARY_CACHE_DIR=/app/.prisma-cache \
     # Put the venv's bin/ first so `uvicorn` and friends resolve
     # without needing `uv run`.
     PATH=/app/.venv/bin:$PATH \
@@ -92,14 +66,12 @@ RUN echo "security refresh ${SECURITY_REFRESH}" \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy everything we need from the builder in a single layer.  This
-# brings the venv (with the generated Prisma client), the source, the
-# project manifest, and the Prisma engine cache — nothing else.  No
-# Node.js binary, no apt-cache, no uv, no nodeenv install.
+# brings the venv, the source and the project manifest — nothing else.
 COPY --from=builder /app /app
 
 # Run as an unprivileged user (fixed uid/gid 10001, no login shell).  /app
-# stays root-owned and world-readable/executable (code + venv + Prisma
-# engine are NOT writable by the app).  Only the paths the app writes at
+# stays root-owned and world-readable/executable (code + venv
+# are NOT writable by the app).  Only the paths the app writes at
 # runtime are owned by the app user:
 #   /tmp/composer-attachments  default APPROVAL_ATTACHMENT_ROOT
 #   /home/app                  HOME, for any library that wants ~/.cache

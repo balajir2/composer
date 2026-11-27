@@ -31,9 +31,15 @@ Run:
 from __future__ import annotations
 
 import asyncio
-from typing import Any
+import sys
+from typing import TYPE_CHECKING, Any
 
-from prisma import Json, Prisma  # pyright: ignore[reportMissingImports,reportAttributeAccessIssue]
+from src.config import get_settings
+from src.db.repos import workflows as workflows_repo
+from src.db.runtime import one_shot_session
+
+if TYPE_CHECKING:
+    from sqlalchemy.ext.asyncio import AsyncSession
 
 _DEFAULT_MODEL = "anthropic/claude-haiku-4-5-20251001"
 
@@ -2995,54 +3001,64 @@ _TEMPLATES: list[dict[str, Any]] = [
 ]
 
 
-async def _upsert_template(
-    db: Prisma,  # pyright: ignore[reportUnknownParameterType]
-    tmpl: dict[str, Any],
-) -> str:
+async def _upsert_template(session: AsyncSession, tmpl: dict[str, Any]) -> str:
     """Idempotent upsert by `externalSlug`.  Returns "created" / "updated"
     so the caller can log per-template outcomes."""
-    slug = tmpl["externalSlug"]
-    existing = await db.workflow.find_unique(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"externalSlug": slug}
-    )
-    common: dict[str, Any] = {
+    slug: str = tmpl["externalSlug"]
+    changes: workflows_repo.WorkflowChanges = {
         "name": tmpl["name"],
         "description": tmpl["description"],
         "category": tmpl["category"],
         "tags": tmpl["tags"],
         "difficulty": tmpl["difficulty"],
-        "estimatedTime": tmpl["estimatedTime"],
-        # Prisma needs the Json() wrapper for JSON columns — the
-        # workflow CRUD route does the same in src/api/workflows.py.
-        "nodes": Json(tmpl["nodes"]),
-        "edges": Json(tmpl["edges"]),
-        "isTemplate": True,
-        "isPublic": True,
-        "isProduction": False,
-        "externalSlug": slug,
-        "userId": None,
+        "estimated_time": tmpl["estimatedTime"],
+        "nodes": tmpl["nodes"],
+        "edges": tmpl["edges"],
+        "is_template": True,
+        "is_public": True,
+        "is_production": False,
+        "user_id": None,
     }
+    existing = await workflows_repo.get_by_slug(session, slug)
     if existing is None:
-        await db.workflow.create(data=common)  # pyright: ignore[reportAttributeAccessIssue,reportArgumentType]
+        values: workflows_repo.WorkflowValues = {
+            "name": tmpl["name"],
+            "nodes": tmpl["nodes"],
+            "edges": tmpl["edges"],
+            "description": tmpl["description"],
+            "category": tmpl["category"],
+            "tags": tmpl["tags"],
+            "difficulty": tmpl["difficulty"],
+            "estimated_time": tmpl["estimatedTime"],
+            "is_template": True,
+            "is_public": True,
+            "is_production": False,
+            "external_slug": slug,
+            "user_id": None,
+        }
+        await workflows_repo.create(session, values)
         return "created"
-    update_data = {k: v for k, v in common.items() if k != "externalSlug"}
-    await db.workflow.update(  # pyright: ignore[reportAttributeAccessIssue]
-        where={"externalSlug": slug},
-        data=update_data,  # pyright: ignore[reportArgumentType]
-    )
+    await workflows_repo.update(session, existing.id, changes)
     return "updated"
 
 
+async def seed(session: AsyncSession) -> list[tuple[str, str]]:
+    """Upsert every template; returns `(outcome, slug)` pairs in `_TEMPLATES` order."""
+    return [(await _upsert_template(session, t), t["externalSlug"]) for t in _TEMPLATES]
+
+
 async def main() -> None:
-    db = Prisma()
-    await db.connect()
-    try:
-        for tmpl in _TEMPLATES:
-            outcome = await _upsert_template(db, tmpl)
-            print(f"  {outcome:7s}  {tmpl['externalSlug']:40s}  {tmpl['name']}")
-    finally:
-        await db.disconnect()
+    async with one_shot_session(get_settings()) as session:
+        results = await seed(session)
+        await session.commit()
+    for (outcome, slug), tmpl in zip(results, _TEMPLATES, strict=True):
+        print(f"  {outcome:7s}  {slug:40s}  {tmpl['name']}")
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    if sys.platform == "win32":
+        # psycopg async cannot use Windows' default Proactor loop.
+        with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+            runner.run(main())
+    else:
+        asyncio.run(main())

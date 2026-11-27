@@ -7,13 +7,12 @@ from typing import Any
 
 import psycopg
 import pytest
-from fastapi import FastAPI
 from httpx import AsyncClient
 
+from src.db.models import User
+from tests.integration._rows import Rows
+
 pytestmark = pytest.mark.integration
-NEEDS_LEGACY_PRISMA = (
-    True  # tests/conftest.py gives this module a test-only Prisma client (phase 6 removes it)
-)
 
 _MINIMAL_BODY: dict[str, Any] = {
     "name": "Assignment integration test",
@@ -25,9 +24,7 @@ _MINIMAL_BODY: dict[str, Any] = {
 }
 
 
-async def test_grant_and_revoke_assignment_cycle(client: AsyncClient, app: FastAPI) -> None:
-    db: Any = app.state.db
-
+async def test_grant_and_revoke_assignment_cycle(client: AsyncClient, rows: Rows) -> None:
     # `grant_workflow_assignment` requires the target user to exist as a
     # real row (src/api/workflows.py does `db.user.find_unique` and 404s
     # otherwise) — dev-mode auth fallback only gives us one identity
@@ -79,7 +76,7 @@ async def test_grant_and_revoke_assignment_cycle(client: AsyncClient, app: FastA
             with contextlib.suppress(Exception):
                 await client.delete(f"/workflows/{wf_id}")
         with contextlib.suppress(Exception):
-            await db.user.delete(where={"id": target_user_id})
+            await rows.remove(User, User.id == target_user_id)
         if created_dev:
             with psycopg.connect(os.environ["TEST_DATABASE_URL"], autocommit=True) as conn:
                 conn.execute("DELETE FROM users WHERE id = 'dev'")

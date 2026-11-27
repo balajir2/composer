@@ -42,29 +42,33 @@ Walk through [postgres-setup.md](postgres-setup.md). The end state:
 
 ### 1.1a Apply release migrations before backend startup
 
-**On GCP Cloud Run with the GitHub Actions pipeline, this happens automatically.** `.github/workflows/deploy-gcp.yml` runs `prisma migrate deploy` and then `alembic upgrade head` (Alembic owns schema changes from 2026-11-20) against the `composer-database-url` secret (direct, non-pooler endpoint) right before `gcloud run deploy`. If a migration fails, the deploy stops and the previous revision keeps serving. Since the old revision briefly runs against the new schema, migrations must be additive and backward-compatible. Run the steps below by hand for first-time setup, for other hosts, or to check a database.
+**On GCP Cloud Run with the GitHub Actions pipeline, this happens automatically.** `.github/workflows/deploy-gcp.yml` runs `uv run composer checkpoints guard`, then `uv run alembic upgrade head`, then `uv run alembic current`, against the `composer-database-url` secret (direct, non-pooler endpoint) right before `gcloud run deploy`. Alembic is the only migration tool (Prisma was removed in SQLAlchemy migration phase 6; before that the workflow also ran `prisma migrate deploy`). If a migration fails, the deploy stops and the previous revision keeps serving. Since the old revision briefly runs against the new schema, migrations must be additive and backward-compatible. Run the steps below by hand for first-time setup, for other hosts, or to check a database.
 
 Deploys are serialised: the workflow's `concurrency` group (`deploy-gcp-production`, no cancellation) makes a second push to `main` wait for the running deploy rather than run alongside it. If several pushes queue up, only the newest waiting run deploys, which is the latest `main`.
 
-If `alembic upgrade head` fails after `prisma migrate deploy` succeeded, fix the cause and re-run the deploy job — both steps are idempotent. Rolling back a Cloud Run revision needs no database action; the `alembic_version` table is ignored by Prisma and by older code.
+If `alembic upgrade head` fails, fix the cause and re-run the deploy job: the step is idempotent, and each revision runs in one transaction, so a failed revision leaves nothing half-applied. Rolling back a Cloud Run revision needs no database action (see [Rollback](#rollback)).
+
+**The image does not contain `alembic.ini`** (the Dockerfile copies only `pyproject.toml`, `uv.lock`, `README.md` and `src/`), so the `alembic` CLI cannot run inside the container, for example through `gcloud run jobs execute` or a shell in the instance. Migrations run only from a repository checkout: the deploy workflow's checkout, or yours.
 
 Use an administrative/release environment with the intended `DATABASE_URL` and the release's schema. This step does not need a running new backend:
 
 ```bash
-uv run prisma generate
-uv run prisma migrate deploy
-uv run prisma migrate status
+# DATABASE_URL must be the DIRECT (non-pooler) host: migrations take locks that PgBouncer
+# transaction pooling breaks. For Neon, remove "-pooler" from the hostname.
+uv run composer checkpoints guard    # refuses (exit 1) while a paused run exists only in the old checkpoint tables
 uv run alembic upgrade head
-uv run alembic current
+uv run alembic current               # must print the head revision
 ```
 
-Alembic owns schema changes from 2026-11-20. On a database that has only Prisma's migrations, the first `alembic upgrade head` records the empty baseline revision and changes nothing.
+Alembic is the only migration tool. On an empty database, revision `0001_baseline` creates the base schema (the exact SQL of the 20 Prisma migrations that built every database before 2026-11-20), then the later revisions run in order, so a fresh database needs nothing else. A database that already has an `alembic_version` row is past `0001` and is never changed by it, so this step is a no-op on production until a new revision ships.
 
-For this lifecycle release, verify `20261117000000_execution_attempt_timing` is applied before any new backend code, workers, or sweepers run. It adds nullable `running_since` and `failure_code`; historical rows stay unchanged and new claims/resumes establish attempt timestamps. Inspect legacy running rows with null attempt timestamps separately because orphan sweeping requires `runningSince`. Validate real-Postgres integration races against the migrated schema before promotion.
+A database that only Prisma built (before 2026-11-20, no `alembic_version` table) is adopted by `alembic upgrade head` when its Prisma history is complete: nothing is re-run and Alembic records `0001_baseline`. Otherwise the upgrade refuses and names the missing or unknown migrations, or says that tables exist without any Prisma history. Finish such a database from a pre-phase-6 checkout (`git checkout 58d2829 && uv run prisma migrate deploy`) or restore it. `alembic downgrade` below `0001_baseline` is refused.
+
+For this lifecycle release, verify the schema includes the former Prisma migration `20261117000000_execution_attempt_timing` before any new backend code, workers, or sweepers run (any database at or past `0001_baseline` does). It adds nullable `running_since` and `failure_code`; historical rows stay unchanged and new claims/resumes establish attempt timestamps. Inspect legacy running rows with null attempt timestamps separately because orphan sweeping requires `runningSince`. Validate real-Postgres integration races against the migrated schema before promotion.
 
 If migration application or verification fails, keep the new backend revision stopped and its scheduler jobs uncreated/paused; resolve the database error before proceeding. On Cloud Run, this prerequisite comes **before** invoking `scripts/gcp-bootstrap.ps1`, since that script deploys the backend and creates scheduler jobs. Existing jobs must not target the new release until its schema is ready.
 
-**Done when**: `prisma migrate status` confirms the intended database has all release migrations applied, including `20261117000000_execution_attempt_timing`.
+**Done when**: `uv run alembic current` prints the head revision of the release you are deploying (compare with `uv run alembic heads`), which includes the `running_since` and `failure_code` columns from `20261117000000_execution_attempt_timing`.
 
 ### 1.2 Backend host
 
@@ -180,14 +184,14 @@ The complete list of supported variables is in [`../../.env.example`](../../.env
 Migration application was a hard prerequisite in Phase 1.1a, before backend startup and scheduler enablement. This phase verifies the already-applied schema and seeds templates; if the schema check fails, stop the new backend and pause its scheduler targets, then return to Phase 1.1a.
 
 ```bash
-# Confirm the prerequisite completed against the intended database
-uv run prisma migrate status
+# Confirm the prerequisite completed against the intended database (direct, non-pooler URL)
+uv run alembic current    # must print the head revision (compare with `uv run alembic heads`)
 
 # Seed the 21 reference templates (idempotent — safe to re-run)
 uv run python -m scripts.seed_templates
 ```
 
-If `prisma migrate deploy` fails because the database is read-only, the connection string is wrong — Neon often has a separate `POSTGRES_URL_NON_POOLING` for migrations vs. `POSTGRES_URL` for app traffic.
+If `alembic upgrade head` fails because the database is read-only or hangs on a lock, the connection string is wrong — use the direct (non-pooler) URL for migrations; Neon often has a separate `POSTGRES_URL_NON_POOLING` for migrations vs. `POSTGRES_URL` for app traffic.
 
 If template seeding fails on Windows (cp1252 encoding errors), run with `PYTHONIOENCODING=utf-8` set.
 
@@ -317,11 +321,11 @@ After go-live:
 
 ## Checkpointer cutover (phase 5 to phase 7)
 
-SQLAlchemy phase 5 replaces the Prisma LangGraph saver with the official `langgraph-checkpoint-postgres` saver, which reads and writes new tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`; Alembic revision `0004_langgraph_saver_tables`). The old tables (`langgraph_checkpoints`, `langgraph_checkpoint_writes`) are kept until phase 7 so a rollback is possible. A run paused on the old saver cannot resume on the new revision unless its snapshots exist in the new tables.
+SQLAlchemy phase 5 replaced the Prisma LangGraph saver with the official `langgraph-checkpoint-postgres` saver, which reads and writes new tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`; Alembic revision `0004_langgraph_saver_tables`). The old tables (`langgraph_checkpoints`, `langgraph_checkpoint_writes`) are kept until phase 7 so a rollback is possible. A run paused on the old saver cannot resume on the new revision unless its snapshots exist in the new tables.
 
 ### What the deploy guard checks
 
-The deploy workflow runs `uv run composer checkpoints guard` after `prisma migrate deploy`, BEFORE `alembic upgrade head`, and before the Cloud Run deploy, so a refusal leaves the database untouched. On a database that has not yet reached revision 0004 the new saver tables do not exist; the guard then treats them as empty, so every active run with old-table checkpoints is blocked. It fails the job (so the previous revision keeps serving) while any `queued`, `running` or `waiting_approval` run has checkpoints only in the old tables: the old tables' newest checkpoint id for its thread is newer than the new tables', or the new tables have none. It prints `active runs: <status>=<n> ...`, then either `ok: ...` (exit 0) or one `blocked: <execution id> (<status>)` line per run (exit 1). A failure of the check itself (for example no database) also exits 1: the guard fails closed. Output carries ids, statuses and counts only.
+The deploy workflow runs `uv run composer checkpoints guard` BEFORE `alembic upgrade head`, and before the Cloud Run deploy, so a refusal leaves the database untouched. On a database that has not yet reached revision 0004 the new saver tables do not exist; the guard then treats them as empty, so every active run with old-table checkpoints is blocked. It fails the job (so the previous revision keeps serving) while any `queued`, `running` or `waiting_approval` run has checkpoints only in the old tables: the old tables' newest checkpoint id for its thread is newer than the new tables', or the new tables have none. It prints `active runs: <status>=<n> ...`, then either `ok: ...` (exit 0) or one `blocked: <execution id> (<status>)` line per run (exit 1). A failure of the check itself (for example no database) also exits 1: the guard fails closed. Output carries ids, statuses and counts only.
 
 ### Clearing the guard
 
@@ -400,6 +404,14 @@ If the deployment misbehaves materially:
 | Frontend renders white screen after deploy | Roll back the Vercel deployment to the previous one (one click in Vercel UI). |
 | Auth misconfigured (nobody can sign in) | If you have backend SSH/exec, fix env vars + restart. If not, redeploy with corrected env. |
 | Encryption key rotated incorrectly (existing secrets unreadable) | Restore database from backup, restore prior encryption key, retry rotation more carefully. **The key is more important than any single secret encrypted with it** — never rotate without a tested restore plan. |
+
+### Rolling back across the Prisma removal (SQLAlchemy migration phase 6)
+
+Phase 6 changed no production data: production was already past `0001_baseline` (at `0004_langgraph_saver_tables`), so its first phase 6 deploy ran `alembic upgrade head` as a no-op, apart from any newer revision that was pending. `_prisma_migrations` and the two old checkpoint tables stay until phase 7. That makes rollback simple:
+
+- **Rolling back to a pre-phase-6 image is a Cloud Run revision swap with no database action.** Shift traffic to the previous revision (`gcloud run services update-traffic <BACKEND_SERVICE> --to-revisions=<previous-rev>=100 --region=<REGION> --project=<PROJECT>`). The old image still contains the Prisma client but never imports it. If the checkpointer is also being rolled back, follow the [Rollback runbook](#rollback-runbook) above as well.
+- **Re-running an old deploy workflow from a pre-phase-6 ref still works** while `_prisma_migrations` exists (until phase 7 drops it): its `prisma migrate deploy` finds nothing to apply. After phase 7, never re-run a pre-phase-6 deploy workflow: its `prisma migrate deploy` would fail on a non-empty schema without `_prisma_migrations`, loudly and without touching data.
+- **Once a later revision reaches production** (for example `0005_execution_attempts` from the telemetry work), rolling back the image does not roll back the database. An image whose Alembic head is older than the database reports `/ready` 503 with `schema=mismatch`, but it keeps serving traffic, because the live startup probe is TCP on port 8080 and not `/ready`. An old deploy workflow run against that database fails closed at `alembic upgrade head` (the database's revision is not in the old checkout's history), so the deploy stops before `gcloud run deploy`. To redeploy an old build in that state, do it as a Cloud Run revision swap, not by re-running the old workflow.
 
 The general principle: **prefer rollback over forward-fix during an incident**. Forward-fix lengthens the customer-impact window. Get back to the last-known-good state, investigate calmly, then re-deploy.
 

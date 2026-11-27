@@ -34,7 +34,6 @@ def _client_with_create(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, Wo
     get_settings.cache_clear()
     app = create_app()
 
-    app.state.db = MagicMock()
     override_session(app)
     repos = patch_workflow_repos(monkeypatch)
 
@@ -58,7 +57,6 @@ def _client_with_find_none(monkeypatch: pytest.MonkeyPatch) -> TestClient:
     get_settings.cache_clear()
     app = create_app()
 
-    app.state.db = MagicMock()
     override_session(app)
     patch_workflow_repos(monkeypatch)  # get() answers None
     app.state.checkpointer = MagicMock()
@@ -122,7 +120,6 @@ def test_execution_id_path_traversal_returns_404(
 
     monkeypatch.setattr(executions_repo, "get", AsyncMock(return_value=None))
     monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=make_user(id="dev")))
-    app.state.db = MagicMock()
     app.state.db_sessionmaker = FakeSessionmaker()
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus

@@ -158,28 +158,21 @@ def _workflow_row(**overrides: Any) -> WorkflowRecord:
     return make_workflow(**base)
 
 
-def _client_with_mock_db() -> tuple[TestClient, MagicMock]:
+def _client_with_mock_db() -> TestClient:
     app = create_app()
-    # The Prisma client is only passed through to enqueue_execution (dev-mode fallback);
-    # no execution query goes through it any more.
-    db = MagicMock()
-    # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=None)
-    app.state.db = db
     sessionmaker = FakeSessionmaker()
     _session_holder[:] = [sessionmaker.session]
     app.state.db_sessionmaker = sessionmaker
     app.state.checkpointer = MagicMock()
     app.state.rate_limiter = RateLimiter()
-    return TestClient(app), db
+    return TestClient(app)
 
 
 def test_post_execution_returns_queued() -> None:
     """P1-2: the response now reflects the row's real initial status —
     'queued' — rather than lying about being 'running' before any worker
     has claimed it via /internal/claim-and-run."""
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 202
     body = resp.json()
@@ -203,7 +196,7 @@ def test_post_execution_enqueues_cloud_task_instead_of_background_task(
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _fake_enqueue)
 
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 202
     assert resp.json()["status"] == "queued"
@@ -223,7 +216,7 @@ def test_post_execution_marks_row_failed_when_enqueue_raises(
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _raise_enqueue)
 
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
 
     assert resp.status_code == 500
@@ -251,7 +244,7 @@ def test_post_execution_enqueue_failure_does_not_clobber_concurrent_cancel(
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _raise_enqueue)
 
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().mark_failed.return_value = False
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
 
@@ -274,7 +267,7 @@ def test_post_execution_enqueue_failure_survives_nested_mark_failed_error(
 
     monkeypatch.setattr("src.api.executions.enqueue_execution", _raise_enqueue)
 
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().mark_failed.side_effect = RuntimeError("DB blip")
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
 
@@ -286,7 +279,7 @@ def test_post_execution_enqueue_failure_survives_nested_mark_failed_error(
 
 
 def test_post_execution_404_when_workflow_missing() -> None:
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     _repos().get.return_value = None
     resp = client.post("/executions", json={"workflowId": "ghost", "input": "hi"})
     assert resp.status_code == 404
@@ -294,7 +287,7 @@ def test_post_execution_404_when_workflow_missing() -> None:
 
 def test_post_execution_404_for_other_users_private_workflow() -> None:
     """A member cannot execute a private workflow they do not own."""
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     _repos().get.return_value = _workflow_row(user_id="someone-else")
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 404
@@ -303,7 +296,7 @@ def test_post_execution_404_for_other_users_private_workflow() -> None:
 
 def test_post_execution_allows_other_users_public_workflow() -> None:
     """Public workflows remain executable by authenticated members."""
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     _repos().get.return_value = _workflow_row(user_id="someone-else", is_public=True)
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 202
@@ -312,7 +305,7 @@ def test_post_execution_allows_other_users_public_workflow() -> None:
 def test_post_execution_with_idempotency_key_replays_existing_execution() -> None:
     """A client that retries POST /executions after a network timeout must not get a second
     execution, or side-effecting nodes downstream would fire twice for one request (P1-3)."""
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     existing = _execution_row(status="completed")
     _exec_repo().find_key.return_value = existing
     resp = client.post(
@@ -332,7 +325,7 @@ def test_post_execution_with_idempotency_key_replays_existing_execution() -> Non
 
 
 def test_post_execution_allows_an_assignee_of_a_private_workflow() -> None:
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     _repos().get.return_value = _workflow_row(user_id="someone-else")
     _repos().exists.return_value = True
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
@@ -342,7 +335,7 @@ def test_post_execution_allows_an_assignee_of_a_private_workflow() -> None:
 
 
 def test_post_execution_404_for_a_non_assignee_of_a_private_workflow() -> None:
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     _repos().get.return_value = _workflow_row(user_id="someone-else")
     _repos().exists.return_value = False
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
@@ -353,7 +346,7 @@ def test_post_execution_404_for_a_non_assignee_of_a_private_workflow() -> None:
 
 def test_post_execution_404_with_an_idempotency_key_never_looks_the_key_up() -> None:
     """A caller who may not see the workflow must not probe its executions via the key."""
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     _repos().get.return_value = _workflow_row(user_id="someone-else")
     _repos().exists.return_value = False
     resp = client.post(
@@ -369,7 +362,7 @@ def test_post_execution_404_with_an_idempotency_key_never_looks_the_key_up() -> 
 def test_post_execution_admin_runs_without_an_assignment_lookup() -> None:
     from src.security.auth import get_current_role
 
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     _repos().get.return_value = _workflow_row(user_id="someone-else")
     client.app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")  # type: ignore[attr-defined]
     try:
@@ -381,7 +374,7 @@ def test_post_execution_admin_runs_without_an_assignment_lookup() -> None:
 
 
 def test_post_execution_owner_and_public_runs_skip_the_assignment_lookup() -> None:
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     assert client.post("/executions", json={"workflowId": "wf1", "input": "x"}).status_code == 202
     _repos().get.return_value = _workflow_row(user_id="someone-else", is_public=True)
     assert client.post("/executions", json={"workflowId": "wf1", "input": "x"}).status_code == 202
@@ -390,7 +383,7 @@ def test_post_execution_owner_and_public_runs_skip_the_assignment_lookup() -> No
 
 def test_assignment_is_read_in_the_same_short_session_as_the_workflow() -> None:
     events: list[str] = []
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
     _repos().get.return_value = _workflow_row(user_id="someone-else")
 
@@ -418,7 +411,7 @@ def test_assignment_is_read_in_the_same_short_session_as_the_workflow() -> None:
 def test_same_key_from_another_user_starts_their_own_execution() -> None:
     """Keys are unique per (workflow, user): another user's use of the key is invisible,
     so this caller gets a fresh execution instead of a replay or a 409."""
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     _repos().get.return_value = _workflow_row(user_id="someone-else", is_public=True)
     _exec_repo().find_key.return_value = None
     resp = client.post(
@@ -446,7 +439,7 @@ def test_require_same_caller_is_a_fail_closed_backstop() -> None:
 
 
 def test_foreign_row_from_the_lookup_is_still_refused_with_409() -> None:
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().find_key.return_value = _execution_row(status="completed", user_id="someone-else")
     resp = client.post(
         "/executions",
@@ -459,7 +452,7 @@ def test_foreign_row_from_the_lookup_is_still_refused_with_409() -> None:
 def test_idempotency_key_race_lost_relooks_up_scoped_to_the_caller(
     _patch_enqueue_execution: AsyncMock,
 ) -> None:
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     mine = _execution_row(status="queued")
     _exec_repo().find_key.side_effect = [None, mine]
     _create_mock().side_effect = AlreadyExists("uq")
@@ -476,11 +469,11 @@ def test_idempotency_key_race_lost_relooks_up_scoped_to_the_caller(
 
 def _lost_race_client(
     lookups: list[Any],
-) -> tuple[TestClient, MagicMock]:
-    client, db = _client_with_mock_db()
+) -> TestClient:
+    client = _client_with_mock_db()
     _exec_repo().find_key.side_effect = lookups
     _create_mock().side_effect = AlreadyExists("uq")
-    return client, db
+    return client
 
 
 def test_race_lost_to_a_foreign_row_is_409_and_not_enqueued(
@@ -488,7 +481,7 @@ def test_race_lost_to_a_foreign_row_is_409_and_not_enqueued(
 ) -> None:
     """Backstop on the race path: a row owned by someone else is never replayed."""
     foreign = _execution_row(status="completed", user_id="someone-else")
-    client, _ = _lost_race_client([None, foreign])
+    client = _lost_race_client([None, foreign])
     resp = client.post(
         "/executions",
         json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "k"},
@@ -502,7 +495,7 @@ def test_unique_violation_with_no_row_for_the_caller_is_409_not_500(
 ) -> None:
     """Only possible while the DB still has the old per-workflow index (code deployed
     before alembic 0002): the key belongs to another user, the caller has no row."""
-    client, _ = _lost_race_client([None, None])
+    client = _lost_race_client([None, None])
     resp = client.post(
         "/executions",
         json={"workflowId": "wf1", "input": "hi", "idempotencyKey": "k"},
@@ -513,7 +506,7 @@ def test_unique_violation_with_no_row_for_the_caller_is_409_not_500(
 
 
 def test_post_execution_with_idempotency_key_creates_when_no_existing_match() -> None:
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().find_key.return_value = None
     resp = client.post(
         "/executions",
@@ -527,14 +520,14 @@ def test_post_execution_with_idempotency_key_creates_when_no_existing_match() ->
 def test_post_execution_without_idempotency_key_skips_lookup() -> None:
     """No idempotency lookup without a key. As of P1-2, the row is no longer run
     in-process (Cloud Tasks enqueueing replaces the BackgroundTask)."""
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 202
     _exec_repo().find_key.assert_not_awaited()
 
 
 def test_get_execution_returns_row() -> None:
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     resp = client.get("/executions/ex1")
     assert resp.status_code == 200
     assert resp.json()["status"] == "completed"
@@ -542,7 +535,7 @@ def test_get_execution_returns_row() -> None:
 
 
 def test_get_execution_404_when_missing() -> None:
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().get.return_value = None
     resp = client.get("/executions/ghost")
     assert resp.status_code == 404
@@ -550,7 +543,7 @@ def test_get_execution_404_when_missing() -> None:
 
 
 def test_get_execution_404_for_another_users_execution() -> None:
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().get.return_value = _execution_row(user_id="someone-else")
     resp = client.get("/executions/ex1")
     assert resp.status_code == 404
@@ -560,7 +553,7 @@ def test_get_execution_404_for_another_users_execution() -> None:
 def test_delete_execution_owner_succeeds() -> None:
     """Owner can delete their own execution: 204 with no body; the row, its checkpoints and
     its events go through ONE repo call and ONE commit (D6)."""
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().get.return_value = _execution_row(status="completed")
 
     resp = client.delete("/executions/ex1")
@@ -571,7 +564,7 @@ def test_delete_execution_owner_succeeds() -> None:
 
 
 def test_delete_execution_404_when_missing() -> None:
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().get.return_value = None
     resp = client.delete("/executions/ghost")
     assert resp.status_code == 404
@@ -580,7 +573,7 @@ def test_delete_execution_404_when_missing() -> None:
 
 def test_delete_execution_404_when_not_owner() -> None:
     """Non-owner gets 404 (not 403) — same authz pattern as read."""
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().get.return_value = _execution_row(user_id="someone-else")
     resp = client.delete("/executions/ex1")
     assert resp.status_code == 404
@@ -590,7 +583,7 @@ def test_delete_execution_404_when_not_owner() -> None:
 def test_delete_execution_running_rejected_409() -> None:
     """Deleting a still-running execution would delete its checkpoints out from under the
     in-flight task (P1-6). Reject rather than silently deleting live state."""
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().get.return_value = _execution_row(status="running")
     resp = client.delete("/executions/ex1")
     assert resp.status_code == 409
@@ -601,7 +594,7 @@ def test_delete_execution_running_rejected_409() -> None:
 def test_delete_execution_queued_rejected_409() -> None:
     """A 'queued' row may be in flight to Cloud Tasks or already claimed by a concurrent
     delivery — never safe to delete unconditionally. Behaves like 'running': 409."""
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().get.return_value = _execution_row(status="queued")
     resp = client.delete("/executions/ex1")
     assert resp.status_code == 409
@@ -611,7 +604,7 @@ def test_delete_execution_queued_rejected_409() -> None:
 
 def test_bulk_delete_skips_queued_executions() -> None:
     """Same guard as the single-delete 409 above, applied to the bulk path."""
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().list_refs.return_value = [
         ExecutionRef("ex1", "t1", "completed"),
         ExecutionRef("ex2", "t2", "queued"),
@@ -630,7 +623,7 @@ def test_bulk_delete_skips_queued_executions() -> None:
 
 def test_delete_execution_waiting_approval_rejected_409() -> None:
     """A row paused for approval is active too: 409."""
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().get.return_value = _execution_row(status="waiting_approval")
     resp = client.delete("/executions/ex1")
     assert resp.status_code == 409
@@ -642,7 +635,7 @@ def test_delete_execution_admin_can_delete_any() -> None:
     """Admin role bypasses ownership check."""
     from src.security.auth import get_current_role
 
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().get.return_value = _execution_row(status="completed", user_id="someone-else")
 
     client.app.dependency_overrides[get_current_role] = lambda: ("dev", "admin")  # type: ignore[attr-defined]
@@ -657,7 +650,7 @@ def test_delete_execution_admin_can_delete_any() -> None:
 def test_bulk_delete_owned_ids() -> None:
     """Owner can bulk-delete their own executions by id list: the id list is intersected
     with their own rows (``owner_id``), and deletion is one repo call and one commit."""
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().list_refs.return_value = [
         ExecutionRef("ex1", "t1", "completed"),
         ExecutionRef("ex2", "t2", "completed"),
@@ -679,7 +672,7 @@ def test_bulk_delete_owned_ids() -> None:
 def test_bulk_delete_skips_active_executions() -> None:
     """A running or waiting_approval row in the requested set is skipped, not deleted —
     same reasoning as the single-delete 409 (P1-6)."""
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().list_refs.return_value = [
         ExecutionRef("ex1", "t1", "completed"),
         ExecutionRef("ex2", "t2", "running"),
@@ -700,7 +693,7 @@ def test_bulk_delete_skips_active_executions() -> None:
 def test_bulk_delete_skips_non_owned_ids() -> None:
     """Member callers passing other users' ids: those rows never match the owner-scoped
     read, so they are skipped."""
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().list_refs.return_value = [ExecutionRef("ex1", "t1", "completed")]
 
     resp = client.post(
@@ -717,7 +710,7 @@ def test_bulk_delete_skips_non_owned_ids() -> None:
 def test_bulk_delete_all_in_scope_member_rejected() -> None:
     """allInScope=true is admin-only — protects members from
     accidentally wiping their own history."""
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     resp = client.post("/executions/delete-bulk", json={"allInScope": True})
     assert resp.status_code == 403
 
@@ -726,7 +719,7 @@ def test_bulk_delete_all_in_scope_admin_succeeds() -> None:
     """Admin can wipe everything via allInScope=true (no id or owner narrowing)."""
     from src.security.auth import get_current_role
 
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().list_refs.return_value = [
         ExecutionRef("ex1", "t1", "completed"),
         ExecutionRef("ex2", "t2", "completed"),
@@ -745,7 +738,7 @@ def test_bulk_delete_all_in_scope_admin_succeeds() -> None:
 def test_bulk_delete_no_args_rejected() -> None:
     """Empty body → 422.  Don't let a typo at the call site delete
     every execution the caller can see."""
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     resp = client.post("/executions/delete-bulk", json={})
     assert resp.status_code == 422
     assert resp.json()["detail"] == "Provide executionIds or set allInScope=true."
@@ -755,7 +748,7 @@ def test_bulk_delete_no_args_rejected() -> None:
 def test_cancel_execution_running_succeeds() -> None:
     """P1-6: a running execution can be explicitly canceled. The response carries the
     pre-update row with only status and error replaced (completedAt stays null)."""
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().get.return_value = _execution_row(status="running")
     resp = client.post("/executions/ex1/cancel")
     assert resp.status_code == 200
@@ -772,7 +765,7 @@ def test_cancel_execution_running_succeeds() -> None:
 def test_cancel_execution_queued_succeeds() -> None:
     """A user who cancels immediately after starting an execution — before any worker has
     claimed it — must not get a 409: 'queued' is cancellable."""
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().get.return_value = _execution_row(status="queued")
     resp = client.post("/executions/ex1/cancel")
     assert resp.status_code == 200
@@ -781,7 +774,7 @@ def test_cancel_execution_queued_succeeds() -> None:
 
 
 def test_cancel_execution_waiting_approval_succeeds() -> None:
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().get.return_value = _execution_row(status="waiting_approval")
     resp = client.post("/executions/ex1/cancel")
     assert resp.status_code == 200
@@ -790,7 +783,7 @@ def test_cancel_execution_waiting_approval_succeeds() -> None:
 
 def test_cancel_execution_completed_rejected_409() -> None:
     """Already-terminal executions can't be canceled."""
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     resp = client.post("/executions/ex1/cancel")
     assert resp.status_code == 409
     assert resp.json()["detail"] == "Execution is 'completed', not cancellable."
@@ -798,14 +791,14 @@ def test_cancel_execution_completed_rejected_409() -> None:
 
 
 def test_cancel_execution_404_when_missing() -> None:
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().get.return_value = None
     resp = client.post("/executions/ghost/cancel")
     assert resp.status_code == 404
 
 
 def test_cancel_execution_404_when_not_owner() -> None:
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().get.return_value = _execution_row(status="running", user_id="someone-else")
     resp = client.post("/executions/ex1/cancel")
     assert resp.status_code == 404
@@ -815,7 +808,7 @@ def test_cancel_execution_404_when_not_owner() -> None:
 def test_cancel_execution_race_loses_when_the_guarded_update_matches_nothing() -> None:
     """Two near-simultaneous cancel requests (or a cancel racing a resume) — only one can
     win the atomic transition; the loser gets the 'no longer cancellable' 409."""
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().get.return_value = _execution_row(status="running")
     _exec_repo().cancel.return_value = False
     resp = client.post("/executions/ex1/cancel")
@@ -827,7 +820,7 @@ def test_cancel_execution_race_loses_when_the_guarded_update_matches_nothing() -
 
 @pytest.mark.parametrize("failure_code", ["lease_expired", None])
 def test_detail_serializes_failure_code(failure_code: str | None) -> None:
-    client, _ = _client_with_mock_db()
+    client = _client_with_mock_db()
     _exec_repo().get.return_value = _execution_row(status="failed", failure_code=failure_code)
     response = cast("Any", client).get("/executions/ex1")
     assert response.status_code == 200, response.text
@@ -836,7 +829,7 @@ def test_detail_serializes_failure_code(failure_code: str | None) -> None:
 
 def test_workflow_is_read_in_a_short_session_closed_before_the_execution_is_created() -> None:
     events: list[str] = []
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
 
     async def _get(*_a: object, **_k: object) -> WorkflowRecord:
@@ -861,7 +854,7 @@ def test_workflow_is_read_in_a_short_session_closed_before_the_execution_is_crea
 
 
 def test_post_execution_without_a_database_is_503() -> None:
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     client.app.state.db_sessionmaker = None  # type: ignore[attr-defined]
     resp = client.post("/executions", json={"workflowId": "wf1", "input": "hi"})
     assert resp.status_code == 503
@@ -872,7 +865,7 @@ def test_create_enqueues_outside_any_session_and_marks_failure_in_its_own(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     events: list[str] = []
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
 
     async def _enqueue(*_a: object, **_k: object) -> None:
@@ -906,7 +899,7 @@ def test_create_enqueues_outside_any_session_and_marks_failure_in_its_own(
 
 def test_cancel_runs_read_and_guarded_update_in_one_short_session() -> None:
     events: list[str] = []
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
     _exec_repo().get.return_value = _execution_row(status="running")
 
@@ -928,7 +921,7 @@ def test_cancel_runs_read_and_guarded_update_in_one_short_session() -> None:
 
 def test_delete_runs_authz_read_and_delete_in_one_short_session() -> None:
     events: list[str] = []
-    client, _db = _client_with_mock_db()
+    client = _client_with_mock_db()
     client.app.state.db_sessionmaker = RecordingSessionmaker(events)  # type: ignore[attr-defined]
 
     async def _get(*_a: object, **_k: object) -> ExecutionRecord:

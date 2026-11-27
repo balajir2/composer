@@ -101,8 +101,8 @@ Backend phases 0–9 ≈ 10 weeks. UI phase 10 ≈ 3 weeks. Total ≈ 13 weeks.
 |---|---|
 | Language | Python 3.11 or 3.12 (`>=3.11,<3.13`) |
 | Web framework | FastAPI |
-| ORM | **SQLAlchemy 2.x (async) + Alembic**, replacing Prisma Python (archived upstream) area by area per `docs/superpowers/specs/2026-11-20-prisma-to-sqlalchemy-migration-design.md`. Both run until the migration's phase 6. **Schema changes go through Alembic only; `prisma/` is frozen.** |
-| Postgres driver | **psycopg 3** (asyncpg is removed during the migration) |
+| ORM | **SQLAlchemy 2.x (async) + Alembic.** Alembic is the only migration tool; `0001_baseline` creates the base schema on an empty database. Prisma Python (archived upstream) was removed in phase 6 of `docs/superpowers/specs/2026-11-20-prisma-to-sqlalchemy-migration-design.md` (ADR-0037); the migration is complete except phase 7 cleanup (old checkpoint tables, `_prisma_migrations`). **Schema changes go through Alembic revisions only.** |
+| Postgres driver | **psycopg 3** (asyncpg and Prisma were removed in phase 6) |
 | Database | Postgres 15+ (Neon for dev, Docker fallback) |
 | Orchestration | LangGraph Python + LangChain |
 | LLM providers | `langchain-anthropic`, `langchain-openai`, `langchain-google-genai`, `langchain-groq` |
@@ -126,17 +126,10 @@ Backend phases 0–9 ≈ 10 weeks. UI phase 10 ≈ 3 weeks. Total ≈ 13 weeks.
 # Install / update dependencies
 uv sync --all-extras
 
-# Generate Prisma client (after pulling; Prisma's schema is frozen)
-uv run prisma generate
-
-# (Frozen) Prisma migrations: do not create new ones
-# Never run prisma migrate dev/diff against a database Alembic has touched (it would see alembic_version as drift).
-# (frozen) uv run prisma migrate dev ...  — do NOT run; schema changes are Alembic revisions
-
-# Schema changes (Prisma's schema is frozen): write an Alembic revision
+# Schema changes: write an Alembic revision (Alembic is the only migration tool)
 uv run alembic revision -m "<what changed>"
 
-# Apply Alembic migrations (after `prisma migrate deploy` while both exist)
+# Apply Alembic migrations (on an empty database this builds the whole schema)
 uv run alembic upgrade head
 
 # Apply Alembic to your test database before running integration tests
@@ -288,8 +281,8 @@ Don't add a `Co-Authored-By` line for Balaji, since he is already the author.
 
 Record of issues hit during scaffolding — watch for these:
 
-1. **Prisma refuses to `generate` with zero models.** This mattered during initial scaffolding; the current schema contains the production models and no bootstrap placeholder is needed.
-2. **Prisma disallows leading underscore in model names.** Use `@@map("snake_case_name")` if you want a specific underscore-prefixed table name.
+1. **`alembic downgrade base` is refused:** `0001_baseline` is the base schema and downgrading below it would drop every table. Restore from a backup instead.
+2. *(Historical, no longer applicable: the Prisma `generate` and model-naming gotchas. Prisma was removed in phase 6; the number is kept so other docs' references to gotcha 6 and 8 stay valid.)*
 3. **Ruff's UP035** — `AsyncIterator` must come from `collections.abc`, not `typing`.
 4. **Pyright's `reportUnusedFunction`** on FastAPI `@app.get` handlers is a false positive. Suppress inline or use APIRouter pattern.
 5. **LF/CRLF warnings in Git on Windows** — harmless. `.gitattributes` could be added if it becomes annoying.

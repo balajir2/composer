@@ -1,4 +1,4 @@
-"""Pure transforms: OAB Convex row -> Composer Prisma dict.
+"""Pure transforms: OAB Convex row -> Composer insert dict (camelCase; `writer.py` maps keys to columns).
 
 These functions are easy to unit-test because they have no side effects.
 All DB writes live in writer.py.
@@ -34,7 +34,7 @@ def workflow_row(row: dict[str, Any], users: list[dict[str, Any]]) -> dict[str, 
     Sets user_id=None and original_owner_email=<email>.  Preserves isPublic.
     """
     return {
-        "id": row["_id"],  # reuse OAB's opaque id; Prisma @id accepts any unique string
+        "id": row["_id"],  # reuse OAB's opaque id; the text primary key accepts any unique string
         "userId": None,
         "originalOwnerEmail": _email_for_clerk_id(users, row.get("userId")),
         "name": row["name"],

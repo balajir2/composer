@@ -61,13 +61,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --all-extras
 
-      - name: Generate Prisma client
-        run: uv run prisma generate
-
-      - name: Apply migrations
-        run: uv run prisma migrate deploy
-
-      - name: Apply Alembic migrations
+      - name: Apply migrations (Alembic)
         run: uv run alembic upgrade head
 
       - name: Lint (ruff)
@@ -339,13 +333,7 @@ jobs:
       - name: Install backend dependencies
         run: uv sync --all-extras
 
-      - name: Generate Prisma client
-        run: uv run prisma generate
-
-      - name: Apply migrations
-        run: uv run prisma migrate deploy
-
-      - name: Apply Alembic migrations
+      - name: Apply migrations (Alembic)
         run: uv run alembic upgrade head
 
       - name: Start backend

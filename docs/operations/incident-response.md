@@ -155,8 +155,9 @@ If Scheduler cannot deliver, run the current sweep functions from an administrat
 import asyncio
 from datetime import UTC, datetime
 
-from prisma import Prisma
 from src.config import get_settings
+from src.db.engine import build_engine
+from src.db.session import build_sessionmaker
 from src.maintenance.execution_sweeper import (
     sweep_expired_approvals,
     sweep_expired_leases,
@@ -167,19 +168,21 @@ from src.maintenance.execution_sweeper import (
 
 async def main() -> None:
     settings = get_settings()
-    db = Prisma(datasource={"url": settings.database_url})
-    await db.connect()
+    # One-shot engine: no pool, so nothing lingers after the script exits. Use the direct
+    # (non-pooler) DATABASE_URL, as the deploy does.
+    engine = build_engine(settings, for_migrations=True)
+    sessionmaker = build_sessionmaker(engine)
     try:
         now = datetime.now(UTC)
         orphaned = await sweep_orphaned_running(
-            db, grace_seconds=settings.orphaned_running_grace_seconds, now=now
+            sessionmaker, grace_seconds=settings.orphaned_running_grace_seconds, now=now
         )
         approvals = await sweep_expired_approvals(
-            db, timeout_hours=settings.approval_wait_timeout_hours, now=now
+            sessionmaker, timeout_hours=settings.approval_wait_timeout_hours, now=now
         )
-        leases = await sweep_expired_leases(db, now=now)
+        leases = await sweep_expired_leases(sessionmaker, now=now)
         events_deleted = await sweep_old_execution_events(
-            db, retention_days=settings.execution_events_retention_days, now=now
+            sessionmaker, retention_days=settings.execution_events_retention_days, now=now
         )
         print({
             "orphaned_running": orphaned,
@@ -188,10 +191,12 @@ async def main() -> None:
             "events_deleted": events_deleted,
         })
     finally:
-        await db.disconnect()
+        await engine.dispose()
 
 
-asyncio.run(main())
+# psycopg async needs a selector event loop on Windows (asyncio.run uses the Proactor loop there).
+with asyncio.Runner(loop_factory=asyncio.SelectorEventLoop) as runner:
+    runner.run(main())
 ```
 
 The three attempt/approval results are `SweepResult` values: inspect `marked_failed` and `errored`, not just `scanned`. Approval expiration is disabled when `APPROVAL_WAIT_TIMEOUT_HOURS=0`. The orphan sweep requires `status='running'`, no lease expiry, and `runningSince` older than the configured positive claim grace; its update rechecks these predicates. The lease sweep requires a running row with an expired lease and rechecks that exact lease expiry before failing it. A live lease or a fresh resumed attempt must survive regardless of the original `startedAt`.

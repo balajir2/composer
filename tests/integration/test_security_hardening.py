@@ -12,13 +12,12 @@ import secrets
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
 from httpx import AsyncClient
 
+from src.db.models import User, Workflow
+from tests.integration._rows import Rows
+
 pytestmark = pytest.mark.integration
-NEEDS_LEGACY_PRISMA = (
-    True  # tests/conftest.py gives this module a test-only Prisma client (phase 6 removes it)
-)
 
 
 _MINIMAL: dict[str, Any] = {
@@ -30,9 +29,7 @@ _MINIMAL: dict[str, Any] = {
 }
 
 
-async def test_two_user_authz_boundaries(client: AsyncClient, app: FastAPI) -> None:
-    db: Any = app.state.db
-
+async def test_two_user_authz_boundaries(client: AsyncClient, rows: Rows) -> None:
     user_a_email = f"phase8-a-{secrets.token_hex(6)}@example.com"
     user_b_email = f"phase8-b-{secrets.token_hex(6)}@example.com"
     password = "correct-horse-battery-staple"
@@ -145,11 +142,11 @@ async def test_two_user_authz_boundaries(client: AsyncClient, app: FastAPI) -> N
         # Cleanup: delete workflows A created (cascades executions)
         for wid in created_workflow_ids:
             with contextlib.suppress(Exception):
-                await db.workflow.delete(where={"id": wid})
+                await rows.remove(Workflow, Workflow.id == wid)
         # Cleanup users
         if user_a_id:
             with contextlib.suppress(Exception):
-                await db.user.delete(where={"id": user_a_id})
+                await rows.remove(User, User.id == user_a_id)
         if user_b_id:
             with contextlib.suppress(Exception):
-                await db.user.delete(where={"id": user_b_id})
+                await rows.remove(User, User.id == user_b_id)

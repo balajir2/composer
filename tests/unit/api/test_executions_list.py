@@ -55,11 +55,6 @@ def _client(monkeypatch: pytest.MonkeyPatch, rows: list[Any], total: int) -> tup
     monkeypatch.setattr(executions_repo, "get", AsyncMock(return_value=None))
     monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=make_user(id="dev")))
 
-    db = MagicMock()
-    # Dev-mode user_id='dev' has no user row by default → role defaults to 'member'
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=None)
-    app.state.db = db
     app.state.db_sessionmaker = FakeSessionmaker()
     app.state.checkpointer = MagicMock()
     from src.engine.events import ExecutionEventBus

@@ -12,8 +12,8 @@
 
 # Local virtualenvs + Python cache
 .venv/
-__pycache__/
-*.pyc
+**/__pycache__
+**/*.py[cod]
 *.pyo
 *.pyd
 .pytest_cache/
@@ -53,10 +53,6 @@ scripts/
 .pre-commit-config.yaml
 pyrightconfig.json
 ruff.toml
-
-# Prisma migration history (only the schema is needed at runtime —
-# the Dockerfile copies prisma/schema.prisma explicitly)
-prisma/migrations/
 
 # Claude Code workspace
 .claude/

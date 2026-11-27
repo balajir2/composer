@@ -94,17 +94,17 @@ deployment model.
 |---|---|
 | Backend | Python 3.11/3.12, FastAPI, Pydantic |
 | Workflow runtime | LangGraph and LangChain |
-| Persistence | PostgreSQL with a Prisma Python client and custom LangGraph checkpointer |
+| Persistence | PostgreSQL through SQLAlchemy 2 (async, psycopg 3) with Alembic migrations, and the official LangGraph Postgres checkpointer |
 | Frontend | Next.js App Router, React, Tailwind, shadcn/ui, React Flow |
 | Authentication | NextAuth, Composer JWTs, Azure AD/standalone modes, per-user API keys |
 | Real-time | WebSocket execution events |
 | Security primitives | AES-256-GCM, bcrypt, sandboxed expressions, E2B code execution |
 | Observability | Structured logs and optional LangSmith traces |
 
-The architecture is sound for the product, with two modernization watch-items: the archived Prisma
-Client Python dependency (ADR-0031 evaluated migrating to SQLAlchemy 2 and chose to stay for now,
-with concrete, monitorable trigger conditions for revisiting) and moving the frontend to supported
-Next.js/React/React Flow lines. See [Architecture](architecture.md) and
+The architecture is sound for the product, with one modernization watch-item: moving the frontend
+to supported Next.js/React/React Flow lines. The archived Prisma Client Python dependency that
+earlier versions of this page flagged is gone: ADR-0035 replaced it with SQLAlchemy 2 and Alembic,
+and ADR-0037 records its removal. See [Architecture](architecture.md) and
 [Engineering Decisions](decisions.md).
 
 ## Evidence and diligence

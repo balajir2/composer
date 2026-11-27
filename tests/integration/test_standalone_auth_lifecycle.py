@@ -2,21 +2,17 @@
 
 import contextlib
 import secrets
-from typing import Any
 
 import pytest
-from fastapi import FastAPI
 from httpx import AsyncClient
 
+from src.db.models import User
+from tests.integration._rows import Rows
+
 pytestmark = pytest.mark.integration
-NEEDS_LEGACY_PRISMA = (
-    True  # tests/conftest.py gives this module a test-only Prisma client (phase 6 removes it)
-)
 
 
-async def test_standalone_register_login_me_refresh(client: AsyncClient, app: FastAPI) -> None:
-    db: Any = app.state.db  # Prisma client attached by conftest lifespan
-
+async def test_standalone_register_login_me_refresh(client: AsyncClient, rows: Rows) -> None:
     # Uniqueify email per run to avoid colliding with prior test invocations
     email = f"test-{secrets.token_hex(6)}@example.com"
     password = "correct-horse-battery-staple"
@@ -63,18 +59,16 @@ async def test_standalone_register_login_me_refresh(client: AsyncClient, app: Fa
         assert unknown.status_code == 401
 
     finally:
-        # Cleanup: delete the User row via Prisma directly
+        # Cleanup: delete the User row through the sessionmaker directly
         # (no DELETE /users endpoint in 7a)
         with contextlib.suppress(Exception):
-            await db.user.delete(where={"id": user_id})
+            await rows.remove(User, User.id == user_id)
 
 
 async def test_standalone_register_duplicate_email_409(
     client: AsyncClient,
-    app: FastAPI,
+    rows: Rows,
 ) -> None:
-    db: Any = app.state.db
-
     email = f"test-dup-{secrets.token_hex(6)}@example.com"
 
     # First register succeeds
@@ -90,7 +84,7 @@ async def test_standalone_register_duplicate_email_409(
         assert r2.status_code == 409
     finally:
         with contextlib.suppress(Exception):
-            await db.user.delete(where={"id": user_id})
+            await rows.remove(User, User.id == user_id)
 
 
 async def test_standalone_missing_auth_401_on_scoped_route(

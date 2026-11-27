@@ -231,12 +231,10 @@ def _client(
 
     get_settings.cache_clear()
     app = create_app()
-    db = MagicMock()
     rows = [_record(model_id="db-model", label="DB Model")]
     list_models = AsyncMock(return_value=rows)
     monkeypatch.setattr(models_repo, "list_models", list_models)
     override_session(app)
-    app.state.db = db
     app.state.checkpointer = MagicMock()
     return TestClient(app), list_models
 

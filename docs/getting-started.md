@@ -71,22 +71,14 @@ The full list of supported variables is in `.env.example`. Each is documented in
 ## 3. Set up the database
 
 ```bash
-# Generate the Prisma client (always after schema changes too)
-uv run prisma generate
-
-# Apply migrations
-uv run prisma migrate deploy
+# Build the schema (idempotent; also applies new revisions after you pull)
+uv run alembic upgrade head
 
 # Seed the 21 reference templates (idempotent — safe to re-run)
 uv run python -m scripts.seed_templates
 ```
 
-If `prisma generate` fails with `spawn prisma-client-py ENOENT` on Windows, ensure `.venv/Scripts` is on your PATH for that shell:
-
-```powershell
-$env:PATH = "$PWD\.venv\Scripts;$env:PATH"
-uv run prisma generate
-```
+Alembic is the only migration tool. On an empty database, `alembic upgrade head` creates the whole schema; on an existing one it applies only the revisions it has not seen. `uv run alembic current` prints the revision the database is at. There is no client to generate and the backend needs no Node.js.
 
 ## 4. Run both servers
 

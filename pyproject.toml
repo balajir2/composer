@@ -15,10 +15,8 @@ dependencies = [
     # Validation
     "pydantic>=2.14.3",
     "pydantic-settings>=2.16.3",
-    # Database (Prisma Python)
-    "prisma>=0.15.0",
-    # SQLAlchemy replaces Prisma area by area; see
-    # docs/superpowers/specs/2026-11-20-prisma-to-sqlalchemy-migration-design.md
+    # Database: SQLAlchemy 2 async + Alembic on psycopg 3 (replaced Prisma Python; see
+    # docs/superpowers/specs/2026-11-20-prisma-to-sqlalchemy-migration-design.md)
     "sqlalchemy[asyncio]>=2.1.9",
     "alembic>=1.20.1",
     "psycopg[binary]>=3.3.9",
@@ -26,8 +24,6 @@ dependencies = [
     "langgraph-checkpoint>=4.3.2,<5",
     "langgraph-checkpoint-postgres>=3.2.1,<4",
     "psycopg-pool>=3.3.3,<4",
-    # Postgres LISTEN/NOTIFY (P1-4)
-    "asyncpg>=0.32.0",
     # Cloud Tasks (P1-2 durable execution)
     "google-cloud-tasks>=2.26.0",
     # Orchestration
@@ -82,7 +78,6 @@ dev = [
     "pytest-httpx>=0.30.0",
     "ruff>=0.17.5",
     "pyright>=1.1.414",
-    "asyncpg-stubs>=0.31.0",
 ]
 
 [project.scripts]
@@ -101,7 +96,7 @@ packages = ["src"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
-extend-exclude = ["prisma/generated", ".venv"]
+extend-exclude = [".venv"]
 
 [tool.ruff.lint]
 select = [
@@ -130,7 +125,7 @@ indent-style = "space"
 # ───────────────────────────────────────────
 [tool.pyright]
 include = ["src", "tests"]
-exclude = ["prisma/generated", ".venv", "**/__pycache__"]
+exclude = [".venv", "**/__pycache__"]
 typeCheckingMode = "strict"
 pythonVersion = "3.11"
 venvPath = "."
@@ -174,7 +169,6 @@ branch = true
 source = ["src"]
 omit = [
     "src/main.py",
-    "prisma/generated/**",
 ]
 
 [tool.coverage.report]

@@ -887,7 +887,7 @@ If any of those trigger, the recommended path is **incremental, not big-bang**: 
 - Future work that touches the persistence layer (P1-2 durable workers in particular) should read this ADR first — the row-locking pattern it validated is the one to reuse, via `db.tx()` + `query_raw`/`execute_raw`, rather than re-litigating whether Prisma can support it.
 - This finding should be revisited periodically (e.g., alongside P2-4's dependency-reproducibility work) even absent a trigger condition, since "archived repo, still works" is a risk that only ever gets worse with time, never better.
 
-**Implemented by.** `scripts/poc_persistence_row_lock.py` (the row-locking POC; safe to re-run against any dev database — writes and cleans up only its own scratch rows). No other code changes.
+**Implemented by.** `scripts/poc_persistence_row_lock.py` (the row-locking POC; safe to re-run against any dev database — writes and cleans up only its own scratch rows). No other code changes. (Removed in SQLAlchemy migration phase 6, 2026-11-26: it exercised Prisma's raw-SQL API, which no longer exists; see git history before the phase 6 merge.)
 
 **Related.** `docs/claude-improvement-backlog.md` §P3-1 (the source backlog item); `docs/deferred-backlog.md` (P3-1's entry, now resolved by this ADR); ADR-0001 (the checkpoint-saver escape-hatch precedent this ADR's incremental-migration recommendation reuses); `docs/claude-improvement-backlog.md` §P1-2 (durable workers — the backlog item most likely to trigger revisiting this decision) and §P2-4 (dependency reproducibility — the audit's own recommended sequencing put this persistence decision ahead of routine dependency upgrades).
 
@@ -1037,6 +1037,8 @@ Timeouts fail with `execution_timeout`, expired leases with `lease_expired`, aba
 
 **Related.** ADR-0001, ADR-0033, ADR-0034.
 
+> **Phase 6 done (2026-11, ADR-0037):** Prisma, asyncpg and Node.js are removed and Alembic builds the base schema.
+
 ## ADR-0036: Official LangGraph checkpointer — Alembic-owned tables, split connections, legacy bridge
 
 **Date.** 2026-11-25. **Status.** Accepted. Implements phase 5 of ADR-0035; supersedes ADR-0001.
@@ -1052,3 +1054,19 @@ Timeouts fail with `execution_timeout`, expired leases with `lease_expired`, aba
 **Consequences.** Rollback is possible until phase 7 but needs the queue paused and two copies (runbook in `docs/operations/production-deployment.md`). A resume that finds no checkpoint fails the run (`checkpoint_missing`) instead of restarting it. A run that pauses on the new revision and resumes on a draining old instance is not copied back (small known window).
 
 **Related.** ADR-0001, ADR-0033, ADR-0035.
+
+## ADR-0037: Prisma removed; Alembic builds the base schema
+
+**Date.** 2026-11 (merge date recorded in the CHANGELOG). **Status.** Accepted. Implements phase 6 of ADR-0035.
+
+**Context.** After phase 5 nothing in `src` imported Prisma or asyncpg, but the packages, the `prisma/` directory (schema plus 20 migrations), `prisma generate` / `migrate deploy` in the Dockerfile and the workflows, Node.js in the image build, and Prisma-shaped test code were still there. `0001_baseline` was empty because `prisma migrate deploy` built the base schema, so a fresh database still needed Prisma. Production's `alembic_version` was `0004_langgraph_saver_tables`, and Neon branches and dev databases could sit at 0001 to 0003.
+
+**Decision.**
+- **D2, keep the chain.** Every revision id and `down_revision` stays. Only `0001_baseline` changes, so it creates the base schema. A database that already has an `alembic_version` row never re-runs 0001, so production and every existing branch are untouched and no `alembic stamp` is needed anywhere. The spec's "squashed base" is therefore realised as 0001 plus the existing chain, not one collapsed file.
+- **D3, the SQL is Prisma's own.** 0001 inlines the 20 `migration.sql` files verbatim and in order, so it runs what `prisma migrate deploy` ran on every existing database. A fingerprint test (`tests/unit/db/test_baseline_frozen.py`) freezes it, and golden catalogs of a Prisma-built database (`tests/fixtures/schema/`) are compared with a fresh Alembic build at revisions 0001 and 0004.
+- **D4, adoption.** A database that only Prisma built (no `alembic_version`) is adopted without running DDL when `_prisma_migrations` lists all 20 migrations as finished and not rolled back, with no unresolved or unknown rows. An empty `public` schema runs the DDL. Anything else (a partial history, unknown migrations, or tables with no Prisma history) is refused with a message naming the problem. `downgrade()` of 0001 is always refused: it would drop every table.
+- **D1, D5, D6, D7, D8.** `prisma`, `asyncpg`, `asyncpg-stubs` (and `jinja2`, `tomlkit`) leave `pyproject.toml` and `uv.lock`; `prisma/` is deleted; the Dockerfile, CI and deploy workflows no longer install Node.js or run Prisma; `scripts/seed_templates.py` and `frontend/scripts/promote_admin.py` are ported to SQLAlchemy and the Prisma row-lock POC is deleted (ADR-0031). `CLAUDE.md` is updated.
+
+**Consequences.** A fresh database needs only `alembic upgrade head` (CI exercises this on every run). Production's database is not changed by phase 6; `_prisma_migrations` and the two old checkpoint tables stay until phase 7. Rolling back the image needs no database action, and an old deploy workflow still works until phase 7 drops `_prisma_migrations` (runbook: `docs/operations/production-deployment.md`, "Rolling back across the Prisma removal"). The backend image no longer contains Node.js, the Prisma engine or generated client, and it never contained `alembic.ini`, so migrations run only from a repository checkout. Prisma-only query parameters in `DATABASE_URL` are still stripped by `src/db/url.py` until the secret is cleaned.
+
+**Related.** ADR-0031, ADR-0035, ADR-0036. Plan: `docs/superpowers/plans/2026-11-26-sqlalchemy-phase-6-removal.md`.

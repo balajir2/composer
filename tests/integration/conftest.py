@@ -15,6 +15,7 @@ from fastapi import FastAPI
 
 from tests._checkpoint_reset import checkpoint_thread_ids, delete_checkpoint_threads_except
 from tests._rate_limit_reset import reset_rate_limit_buckets
+from tests.integration._rows import Rows
 
 
 @pytest_asyncio.fixture(autouse=True)
@@ -71,3 +72,8 @@ async def _drive_cloud_tasks_synchronously(  # pyright: ignore[reportUnusedFunct
     monkeypatch.setattr("src.api.executions.enqueue_execution", _fake_enqueue)
     monkeypatch.setattr("src.api.approval_email.enqueue_execution", _fake_enqueue)
     monkeypatch.setattr("src.api.run.enqueue_execution", _fake_enqueue)
+
+
+@pytest.fixture
+def rows(app: FastAPI) -> Rows:
+    return Rows(app.state.db_sessionmaker)

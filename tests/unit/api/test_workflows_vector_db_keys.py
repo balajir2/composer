@@ -7,7 +7,7 @@ credential fields instead of Jira's single apiToken.
 """
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -81,10 +81,6 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, WorkflowRepoMo
 
     get_settings.cache_clear()
     app = create_app()
-    db = MagicMock()
-    db.user = MagicMock()
-    db.user.find_unique = AsyncMock(return_value=None)
-    app.state.db = db
     override_session(app)
     repos = patch_workflow_repos(monkeypatch)
     app.state.checkpointer = MagicMock()

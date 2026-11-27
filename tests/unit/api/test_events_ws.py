@@ -116,7 +116,6 @@ def _build_app(execution: SimpleNamespace, user_role: str = "member") -> tuple[T
     app = create_app()
     _EXECUTION["value"] = execution
     _ROLE["value"] = UserRole(user_role)
-    app.state.db = MagicMock()
     app.state.db_sessionmaker = FakeSessionmaker()
     app.state.checkpointer = MagicMock()
     # Production wiring: app.state.event_bus is a PostgresEventStore over the sessionmaker.

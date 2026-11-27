@@ -1,4 +1,4 @@
-"""Per-execution context — Prisma client available to executors.
+"""Per-execution context — the sessionmaker, LangSmith config and event store for executors.
 
 LangGraphExecutor sets this before invoking the compiled graph so the
 Agent executor (and any future executor that needs DB access) can look it

@@ -366,7 +366,7 @@ Target spans: `composer.execution.enqueue`, `composer.execution.claim`, `compose
 
 ### Current sources
 
-These PostgreSQL definitions use `workflow_executions` as mapped in `prisma/schema.prisma`. Bind `:start` and `:end` to UTC timestamps and use the same half-open reporting window for comparisons. Execute in an authorized environment; save query definitions only, never customer results. The source is current database state, not an immutable event ledger: deleted executions disappear and historical values can change. Results are aggregate only.
+These PostgreSQL definitions use `workflow_executions` as defined by the `WorkflowExecution` model in `src/db/models/executions.py`. Bind `:start` and `:end` to UTC timestamps and use the same half-open reporting window for comparisons. Execute in an authorized environment; save query definitions only, never customer results. The source is current database state, not an immutable event ledger: deleted executions disappear and historical values can change. Results are aggregate only.
 
 | Question | Current-source definition |
 |---|---|

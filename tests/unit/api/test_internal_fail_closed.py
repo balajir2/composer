@@ -32,7 +32,6 @@ def _client() -> TestClient:
     # process would otherwise see stale development settings.
     get_settings.cache_clear()
     app = create_app()
-    app.state.db = MagicMock()
     app.state.db_sessionmaker = MagicMock()
     app.state.checkpointer = MagicMock()
     app.state.event_bus = MagicMock()

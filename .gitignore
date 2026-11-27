@@ -55,10 +55,6 @@ coverage.xml
 # Ruff
 .ruff_cache/
 
-# Prisma
-prisma/generated/
-prisma/migrations/dev.db*
-
 # Logs
 *.log
 logs/

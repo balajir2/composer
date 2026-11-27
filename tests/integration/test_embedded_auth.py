@@ -66,9 +66,7 @@ async def _embedded_client(monkeypatch: pytest.MonkeyPatch) -> AsyncClient:
     from src.main import create_app
 
     app = create_app()
-    # /auth/me in embedded mode does NOT query the User table, so a
-    # MagicMock db satisfies any code paths that touch app.state.db.
-    app.state.db = MagicMock()
+    # /auth/me in embedded mode does NOT query the User table.
     app.state.checkpointer = MagicMock()
 
     return AsyncClient(transport=ASGITransport(app=app), base_url="http://test")
