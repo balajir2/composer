@@ -63,7 +63,7 @@ alembic/           migrations from now on; first revision is an empty baseline
 
 ### 2.3 Dependencies
 
-Added in phase 0: `sqlalchemy[asyncio]` (2.1), `alembic`, `psycopg[binary]` 3. Added in phase 5: `psycopg-pool` and `langgraph-checkpoint-postgres` (which needs `langgraph-checkpoint` ≥ 4.3; it was already 4.3.2 when phase 5 started). Removed at the end: `prisma`, `asyncpg`, `asyncpg-stubs`.
+Added in phase 0: `sqlalchemy[asyncio]` (2.1), `alembic`, `psycopg[binary]` 3. Added in phase 5: `psycopg-pool` and `langgraph-checkpoint-postgres` (which needs `langgraph-checkpoint` ≥ 4.3; it was already 4.3.2 when phase 5 started). Removed in phase 6: `prisma`, `asyncpg`, `asyncpg-stubs` (and `jinja2`, `tomlkit`, which only Prisma needed).
 
 ### 2.4 Documentation updates (in the foundation PR)
 
@@ -79,11 +79,11 @@ Added in phase 0: `sqlalchemy[asyncio]` (2.1), `alembic`, `psycopg[binary]` 3. A
 2. **Schema parity is tested.** A CI test runs `alembic upgrade head` on the throwaway Postgres, then checks that the SQLAlchemy models match the real tables (Alembic autogenerate produces an empty diff).
 3. **An area moves whole.** All reads and writes of an area switch ORMs in the same PR, so no transaction ever spans both ORMs.
 4. **Same tables, same rows.** Rows written by either ORM are readable by the other. Both clients are connected during the transition, with pool sizes chosen so their total stays within Neon's connection limit.
-5. **Deploys run both migration tools during the transition:** the existing (by then no-op) `prisma migrate deploy`, then `alembic upgrade head`. After phase 6 only Alembic remains.
+5. **Deploys ran both migration tools during the transition:** the existing (by then no-op) `prisma migrate deploy`, then `alembic upgrade head`. Since phase 6 only Alembic remains.
 
 ### 3.2 Alembic baseline
 
-The first Alembic revision is empty and is *stamped* on existing databases (production, and CI after `prisma migrate deploy`), so Alembic starts from the schema Prisma's 20 migrations produced. A fresh database during the transition is built by `prisma migrate deploy` + `alembic upgrade head`. After phase 6, a squashed Alembic revision that creates the full current schema replaces the Prisma migrations for fresh databases.
+The first Alembic revision is empty and is *stamped* on existing databases (production, and CI after `prisma migrate deploy`), so Alembic starts from the schema Prisma's 20 migrations produced. A fresh database during the transition is built by `prisma migrate deploy` + `alembic upgrade head`. After phase 6, `0001_baseline` creates the base schema with the exact SQL of Prisma's 20 migrations, and the existing revisions follow it (ADR-0037); no database needed a stamp.
 
 ### 3.3 Phases (one PR each)
 
@@ -95,7 +95,7 @@ The first Alembic revision is empty and is *stamped* on existing databases (prod
 | 3 | **Workflows (done, PR #33):** CRUD, assignments, builder saves | Medium | 2 days |
 | 4 | **Executions core (done: 4a and 4b in one PR, pending; phase 5 next):** create, list, delete, resume, approvals, events, rate limiter, claim and sweep, all 15 guarded status updates | High | 3–4 days |
 | 5 | **Checkpointer and notifications (done, PR pending):** official saver, paused-run deploy guard, two-way copy tool, LISTEN/NOTIFY on psycopg | High | 2 days |
-| 6 | **Removal:** Prisma client and schema; Node.js and asyncpg out of the image; remaining Prisma-shaped mocks; squashed Alembic base | Low | 1 day |
+| 6 | **Removal (done, PR pending; see ADR-0037):** Prisma client and schema; Node.js and asyncpg out of the image; remaining Prisma-shaped mocks; Alembic builds the base schema (`0001_baseline`) | Low | 1 day |
 | 7 | **Cleanup (about two weeks after phase 5 is stable):** Alembic revision that drops `langgraph_checkpoints`, `langgraph_checkpoint_writes` and `_prisma_migrations` | Low | ½ day |
 
 Total: about 2½–3 weeks.

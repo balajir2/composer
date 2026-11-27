@@ -1137,11 +1137,11 @@ Without a listener (unit tests), the loop still delivers through the 15 s poll. 
 
 ## After phase 5: what phase 6 removes
 
-- The `prisma` dependency, `prisma/` (schema and the 20 migrations), `uv run prisma generate` / `migrate deploy` / `migrate status` in `Dockerfile`, `.github/workflows/ci.yml` and `deploy-gcp.yml`, Node.js in the backend image.
-- `asyncpg` and `asyncpg-stubs`; `tests/_rate_limit_reset.py` moves to psycopg or SQLAlchemy.
-- Remaining Prisma-shaped test mocks (`app.state.db = MagicMock()` and similar); comments that explain Prisma history where they no longer help.
-- The squashed Alembic base for fresh databases, which must include the saver tables and the ten `checkpoint_migrations` rows from `0004`, and must be generated from the live schema, never from `schema.prisma`.
-- `MIGRATED_PATHS` and the `prisma`/`src.storage` detector become a plain "no such import anywhere" check.
+- [x] The `prisma` dependency, `prisma/` (schema and the 20 migrations), `uv run prisma generate` / `migrate deploy` / `migrate status` in `Dockerfile`, `.github/workflows/ci.yml` and `deploy-gcp.yml`, Node.js in the backend image. (Done in the [phase 6 plan](2026-11-26-sqlalchemy-phase-6-removal.md), Tasks 6 and 7.)
+- [x] `asyncpg` and `asyncpg-stubs`; `tests/_rate_limit_reset.py` moves to psycopg or SQLAlchemy. (Done: [phase 6 plan](2026-11-26-sqlalchemy-phase-6-removal.md), Tasks 5 and 6.)
+- [x] Remaining Prisma-shaped test mocks (`app.state.db = MagicMock()` and similar); comments that explain Prisma history where they no longer help. (Mocks removed in [phase 6 plan](2026-11-26-sqlalchemy-phase-6-removal.md), Tasks 3 to 5; the comment cleanups in files the telemetry work edits were skipped, see its Outcome.)
+- [x] The squashed Alembic base for fresh databases, which must include the saver tables and the ten `checkpoint_migrations` rows from `0004`, and must be generated from the live schema, never from `schema.prisma`. (Realised as `0001_baseline` creating the base schema plus the unchanged chain 0002 to 0004, checked against golden catalogs of a Prisma-built database; [phase 6 plan](2026-11-26-sqlalchemy-phase-6-removal.md), Task 2, ADR-0037.)
+- [x] `MIGRATED_PATHS` and the `prisma`/`src.storage` detector become a plain "no such import anywhere" check. (Done: [phase 6 plan](2026-11-26-sqlalchemy-phase-6-removal.md), Task 6.)
 
 **Phase 7 (about two weeks after phase 5 is stable)** additionally drops `langgraph_checkpoints`, `langgraph_checkpoint_writes` and `_prisma_migrations`, and deletes `src/checkpoints/legacy.py`, `copy.py`, `versions.py`, `sync.py` (guard and `bring_forward`), the `composer checkpoints` CLI, the guard step in `deploy-gcp.yml`, the legacy half of `checkpoints_repo`, the `LangGraphCheckpoint*` models, and the golden fixture.
 
