@@ -212,7 +212,7 @@ def _to_workflow_read(row: Any, *, with_warnings: bool = False) -> "WorkflowRead
     read = WorkflowRead.model_validate(row)
     if with_warnings:
         read.warnings = [
-            WorkflowWarning(nodeId=m.node_id, branch=m.branch, message=m.message)
+            WorkflowWarning(code=m.code, nodeId=m.node_id, branch=m.branch, message=m.message)
             for m in runnable_warnings(row)
         ]
         read.warnings.extend(_unknown_variable_warnings(row))
@@ -363,7 +363,15 @@ class WorkflowWarning(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
-    code: Literal["missing_branch", "unknown_variable"] = "missing_branch"
+    # missing_branch, join_mixed_inputs, join_lane_escapes and join_collision stop
+    # the canvas running (run, publish and resume refuse it); unknown_variable does not.
+    code: Literal[
+        "missing_branch",
+        "unknown_variable",
+        "join_mixed_inputs",
+        "join_lane_escapes",
+        "join_collision",
+    ] = "missing_branch"
     node_id: str = Field(alias="nodeId")
     # The unconnected branch for `missing_branch`; None for warnings about a whole step.
     branch: str | None = None

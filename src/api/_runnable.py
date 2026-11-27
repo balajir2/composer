@@ -1,19 +1,20 @@
 """Run/publish gate shared by the API routes: a stored workflow must be runnable as drawn.
 
 Saving a half-built canvas must succeed, so graph validation on save stays
-lenient (see `collect_missing_branches`). Starting an execution, the external
-invoke, the file-trigger poller and publishing all call `refuse_unrunnable`
-BEFORE they create anything, so a canvas with an unconnected required branch
-answers 422 with a user-facing message instead of becoming a failed run.
+lenient (see `collect_missing_branches`, `find_join_problems`). Starting an
+execution, the external invoke, the file-trigger poller and publishing all call
+`refuse_unrunnable` BEFORE they create anything, so a canvas with an
+unconnected required branch or a Join that cannot wait correctly answers 422
+with a user-facing message instead of becoming a failed run.
 """
 
-from typing import Any
+from typing import Any, Literal, NamedTuple
 
 from fastapi import HTTPException, status
 
 from src.engine.graph_builder import (
-    MissingBranch,
     WorkflowValidationError,
+    find_join_problems,
     find_missing_branches,
     validate_workflow_runnable,
 )
@@ -28,14 +29,38 @@ def parse_stored_workflow(row: Any) -> Workflow | None:
         return None
 
 
-def runnable_warnings(row: Any) -> list[MissingBranch]:
-    """Why a stored canvas cannot run yet (empty = nothing to warn about)."""
+class RunnableWarning(NamedTuple):
+    """One reason a stored canvas cannot run yet."""
+
+    node_id: str
+    code: Literal["missing_branch", "join_mixed_inputs", "join_lane_escapes", "join_collision"]
+    branch: str | None  # the unconnected branch for `missing_branch`, else None
+    message: str
+
+
+def runnable_warnings(row: Any) -> list[RunnableWarning]:
+    """Why a stored canvas cannot run yet (empty = nothing to warn about).
+
+    Exactly the problems `validate_workflow_runnable` adds on top of the
+    structural rules, so a warning shown on save is a refusal at run.
+    """
     workflow = parse_stored_workflow(row)
-    return find_missing_branches(workflow) if workflow is not None else []
+    if workflow is None:
+        return []
+    return [
+        *(
+            RunnableWarning(m.node_id, "missing_branch", m.branch, m.message)
+            for m in find_missing_branches(workflow)
+        ),
+        *(
+            RunnableWarning(p.node_id, p.code, None, p.message)
+            for p in find_join_problems(workflow)
+        ),
+    ]
 
 
 def refuse_unrunnable(workflow: Workflow) -> None:
-    """422 with the user-facing message when a required branch is unconnected."""
+    """422 with the user-facing message when the canvas cannot run as drawn."""
     try:
         validate_workflow_runnable(workflow)
     except WorkflowValidationError as exc:

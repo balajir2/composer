@@ -194,3 +194,72 @@ async def test_run_is_refused_for_a_stored_shape_violation_with_no_execution_cre
     assert resp.status_code == 422, resp.text
     assert _END_RULE in resp.json()["detail"]
     assert await db.executions_of(wid) == []
+
+
+# A run paused on an approval inside one parallel lane, then the canvas is edited
+# so the `rejected` path ends at its own End: the Join would wait forever.
+def _step(node_id: str, y: int) -> dict[str, Any]:
+    return {
+        "id": node_id,
+        "type": "set-state",
+        "position": {"x": 1, "y": y},
+        "data": {"label": node_id, "stateKey": node_id, "stateValue": "v"},
+    }
+
+
+_JOIN_NODES: list[dict[str, Any]] = [
+    *_NODES[:2],
+    _step("p", 0),
+    _step("ok", 1),
+    _step("b", 2),
+    {"id": "j", "type": "join", "position": {"x": 2, "y": 1}, "data": {"label": "J"}},
+    {"id": "e", "type": "end", "position": {"x": 3, "y": 1}, "data": {"label": "E"}},
+    {"id": "e2", "type": "end", "position": {"x": 3, "y": 2}, "data": {"label": "E2"}},
+]
+_JOIN_COMMON: list[dict[str, Any]] = [
+    {"id": "j0", "source": "s", "target": "p"},
+    {"id": "j1", "source": "p", "target": "ua"},
+    {"id": "j2", "source": "ua", "target": "ok", "branch": "approved"},
+    {"id": "j3", "source": "ok", "target": "j"},
+    {"id": "j4", "source": "p", "target": "b"},
+    {"id": "j5", "source": "b", "target": "j"},
+    {"id": "j6", "source": "j", "target": "e"},
+]
+_JOIN_ESCAPES = [*_JOIN_COMMON, {"id": "j7", "source": "ua", "target": "e2", "branch": "rejected"}]
+_JOIN_FIXED = [*_JOIN_COMMON, {"id": "j7", "source": "ua", "target": "j", "branch": "rejected"}]
+
+
+async def test_api_resume_is_refused_when_a_join_would_wait_forever(
+    client: AsyncClient, db: Db, member: Member, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from datetime import UTC, datetime
+
+    rec = install_resume_enqueue(monkeypatch, EnqueueRecorder())
+    since = datetime.now(UTC).isoformat()
+    wid = await db.seed_workflow(member, nodes=_JOIN_NODES, edges=_JOIN_ESCAPES)
+    eid = await db.seed_execution(
+        wid,
+        member,
+        status="waiting_approval",
+        variables=paused_variables(since),
+        delivery_attempts=1,
+    )
+    before = await snap(db, eid)
+
+    resp = await resume(client, member, eid, "approved")
+
+    assert resp.status_code == 422, resp.text
+    assert "waits for every parallel path" in resp.json()["detail"]
+    assert await snap(db, eid) == before  # the pause is kept
+    assert await approvals_of(db, eid) == []
+    assert rec.calls == []
+
+    fixed = await client.get(f"/workflows/{wid}", headers=member.headers)
+    nodes = [n for n in fixed.json()["nodes"] if n["id"] != "e2"]  # its own End is gone
+    body = {**fixed.json(), "nodes": nodes, "edges": _JOIN_FIXED}
+    assert (
+        await client.put(f"/workflows/{wid}", json=body, headers=member.headers)
+    ).status_code == 200
+    ok = await resume(client, member, eid, "approved")
+    assert ok.status_code == 200, ok.text
+    assert rec.calls == [(eid, "resume")]

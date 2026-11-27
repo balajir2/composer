@@ -587,7 +587,8 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
             )
             continue
 
-        # A canvas with an unconnected required branch cannot run: leave its
+        # A canvas with an unconnected required branch (or a Join that cannot
+        # wait correctly for its parallel paths) cannot run: leave its
         # files untouched (not moved to the error folder) until it is fixed.
         if runnable_warnings(wf):
             if _UNRUNNABLE_WARNINGS.allow(wf.id):

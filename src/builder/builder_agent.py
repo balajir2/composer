@@ -20,6 +20,7 @@ from src.builder.node_catalog import is_hidden_from_builder
 from src.builder.normalize import normalize_orchestration
 from src.builder.prompts import build_system_prompt, describe_canvas
 from src.engine.graph_builder import (
+    collect_join_problems,
     collect_missing_branches,
     collect_workflow_violations,
     dedupe_edges,
@@ -79,6 +80,7 @@ def _turn_issues(
     return [
         *collect_workflow_violations(workflow),
         *collect_missing_branches(workflow),
+        *collect_join_problems(workflow),
         *collect_completeness_issues(
             workflow, model_catalog=models, credential_requested=requested, only=touched
         ),

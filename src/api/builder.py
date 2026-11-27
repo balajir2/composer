@@ -28,7 +28,11 @@ from src.db.repos.workflows import WorkflowRecord
 from src.db.runtime import require_sessionmaker
 from src.db.session import get_session
 from src.db.types import ensure_utc, truncate_to_millis
-from src.engine.graph_builder import collect_missing_branches, collect_workflow_violations
+from src.engine.graph_builder import (
+    collect_join_problems,
+    collect_missing_branches,
+    collect_workflow_violations,
+)
 from src.engine.workflow import Workflow
 from src.llm.providers import build_chat_model
 from src.security.auth import get_current_role, get_current_user_id
@@ -278,7 +282,11 @@ async def builder_message(  # pyright: ignore[reportUnusedFunction]
     row = await _persist(
         sessionmaker, workflow_id, updated, existing, user_id, role, expected_updated_at=expected
     )
-    validation_errors = [*collect_workflow_violations(updated), *collect_missing_branches(updated)]
+    validation_errors = [
+        *collect_workflow_violations(updated),
+        *collect_missing_branches(updated),
+        *collect_join_problems(updated),
+    ]
     return BuilderMessageResponse(
         sessionId=sid,
         events=events,

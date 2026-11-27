@@ -6,7 +6,7 @@ import { toast } from "sonner";
 
 import { RunDraftDialog } from "./run-draft-dialog";
 import type { SaveStatus } from "@/lib/use-autosave";
-import type { WorkflowWarning } from "@/lib/workflow-warnings";
+import { blocksRun, type WorkflowWarning } from "@/lib/workflow-warnings";
 
 interface SaveControlsProps {
   workflowId: string;
@@ -69,7 +69,7 @@ export function SaveControls({
         >
           <summary className="cursor-pointer select-none">
             {`${warnings.length} ${warnings.length === 1 ? "problem" : "problems"}`}
-            {warnings.some((w) => w.code === "missing_branch") && ": this workflow can't run yet"}
+            {warnings.some(blocksRun) && ": this workflow can't run yet"}
           </summary>
           <ul className="absolute right-0 z-20 mt-1 w-80 list-disc space-y-1 rounded-md border bg-card p-3 pl-6 text-foreground shadow-md">
             {warnings.map((w, i) => (

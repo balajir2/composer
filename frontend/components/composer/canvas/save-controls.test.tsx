@@ -44,6 +44,17 @@ describe("SaveControls warnings", () => {
     expect(box).toHaveTextContent(msg);
   });
 
+  it.each(["join_mixed_inputs", "join_lane_escapes", "join_collision"] as const)(
+    "says the workflow can't run yet for a %s warning",
+    (code) => {
+      const msg = 'Join step "j" waits for every parallel path, but ...';
+      renderControls([{ code, nodeId: "j", branch: null, message: msg }]);
+      const box = screen.getByTestId("save-warnings");
+      expect(box).toHaveTextContent("1 problem: this workflow can't run yet");
+      expect(box).toHaveTextContent(msg);
+    }
+  );
+
   it("shows nothing when there are no warnings", () => {
     renderControls([]);
     expect(screen.queryByTestId("save-warnings")).toBeNull();

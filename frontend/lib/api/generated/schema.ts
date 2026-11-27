@@ -3642,7 +3642,7 @@ export interface components {
         };
         /**
          * WorkflowWarning
-         * @description A non-blocking problem with a saved canvas: it saves, but cannot run yet.
+         * @description A non-blocking problem with a saved canvas: it saves, but cannot run yet or may misbehave.
          */
         WorkflowWarning: {
             /**
@@ -3650,7 +3650,7 @@ export interface components {
              * @default missing_branch
              * @enum {string}
              */
-            code: "missing_branch" | "unknown_variable";
+            code: "missing_branch" | "unknown_variable" | "join_mixed_inputs" | "join_lane_escapes" | "join_collision";
             /** Nodeid */
             nodeId: string;
             /** Branch */
