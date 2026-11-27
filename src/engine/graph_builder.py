@@ -306,11 +306,23 @@ def collect_workflow_violations(workflow: Workflow) -> list[str]:
         if len(incoming) == 1:
             continue
         if len(incoming) > 1:
-            sources = [e.source for e in incoming]
+            # Markers per incoming EDGE, not per source: an edge leaving a
+            # conditional node directly (approval --rejected--> End) carries
+            # its own (source, branch) pair, which the source node's markers
+            # do not contain (those describe how the source was reached).
+            edge_markers = [
+                branch_markers[e.source]
+                | (
+                    {(e.source, e.branch)}
+                    if nodes[e.source].type in CONDITIONAL_SOURCE_TYPES and e.branch is not None
+                    else set()
+                )
+                for e in incoming
+            ]
             if all(
-                _mutually_exclusive(branch_markers[sources[i]], branch_markers[sources[j]])
-                for i in range(len(sources))
-                for j in range(i + 1, len(sources))
+                _mutually_exclusive(edge_markers[i], edge_markers[j])
+                for i in range(len(edge_markers))
+                for j in range(i + 1, len(edge_markers))
             ):
                 continue
         violations.append(
