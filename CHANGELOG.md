@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — review-gate findings on PR #57 (2026-11-27)
+
+- **End could run twice behind a parallel fan-out.** The "several edges into one End" rule proved two branches exclusive from the if-else/approval branches alone, which is wrong when an earlier step fans out (a non-conditional step with two or more outgoing edges runs them in parallel, so one path can bypass the conditional). Four shapes the previous commit newly accepted, and one older hole, ran End twice. `collect_workflow_violations` now allows several edges into an End only when no ancestor of that End (walking executable edges backwards) is a fan-out; otherwise it is the strict one-edge rule, with a message that says the End can be reached by parallel paths and to merge them with a Join or use separate End steps. **Compatibility:** an existing saved workflow that fans out and has several edges into one End now fails this check on save (and on run) until it is fixed with a Join or separate Ends. Accepted (single user). Tests: five refused topologies, six accepted shapes, and a run-it test that asserts End executes exactly once.
 ### Fixed — an approval wired to only one exit saved, was handed back by the AI Builder, then failed at run time (2026-11-27)
 
 - **What happened:** a User Approval node with only its `approved` edge connected saved fine, the AI Builder returned it as valid, and the run failed with `user-approval node 'approval-1' branches mismatch: missing=['rejected'], got=['approved']`. The save validator (`collect_workflow_violations`) only checked that connected edges were labelled; the check that every required exit is connected lived only in the graph compiler (`_branch_mapping`).

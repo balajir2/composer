@@ -227,6 +227,42 @@ def _mutually_exclusive(markers_a: set[tuple[str, str]], markers_b: set[tuple[st
     return False
 
 
+def _fan_out_ancestors_of(
+    target_id: str, nodes: dict[str, WorkflowNode], edges: list[WorkflowEdge]
+) -> bool:
+    """True if any ancestor of `target_id` (walking executable edges backwards)
+    is a fan-out node: not a conditional router, with two or more distinct
+    executable successors. `build_graph` compiles those into parallel
+    `add_edge`s, so tokens from different successors can reach one node in
+    the same run -- which branch markers alone cannot see. Visual-only nodes
+    and edges do not count. A `join` (one successor) is not itself a fan-out,
+    but the fan-out feeding it still is an ancestor.
+    """
+    successors: dict[str, set[str]] = {}
+    predecessors: dict[str, set[str]] = {}
+    for edge in edges:
+        if nodes[edge.source].type in _VISUAL_ONLY_TYPES:
+            continue
+        if nodes[edge.target].type in _VISUAL_ONLY_TYPES:
+            continue
+        successors.setdefault(edge.source, set()).add(edge.target)
+        predecessors.setdefault(edge.target, set()).add(edge.source)
+
+    seen: set[str] = set()
+    stack = list(predecessors.get(target_id, ()))
+    while stack:
+        current = stack.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        if nodes[current].type not in CONDITIONAL_SOURCE_TYPES and (
+            len(successors.get(current, ())) >= 2
+        ):
+            return True
+        stack.extend(predecessors.get(current, ()))
+    return False
+
+
 def dedupe_edges(edges: list[WorkflowEdge]) -> list[WorkflowEdge]:
     """Keep the first edge per (source, target, branch); drop later copies.
 
@@ -304,6 +340,15 @@ def collect_workflow_violations(workflow: Workflow) -> list[str]:
             if e.target == end_id and nodes[e.source].type not in _VISUAL_ONLY_TYPES
         ]
         if len(incoming) == 1:
+            continue
+        if len(incoming) > 1 and _fan_out_ancestors_of(end_id, nodes, clean_edges):
+            violations.append(
+                f"End node {end_id!r} must have exactly one incoming edge from an "
+                f"executable node (found {len(incoming)}): it can be reached by parallel "
+                f"paths (an earlier step fans out to several steps), so it would run more "
+                f"than once. Merge the paths with a Join step before it, or give each "
+                f"path its own End step."
+            )
             continue
         if len(incoming) > 1:
             # Markers per incoming EDGE, not per source: an edge leaving a

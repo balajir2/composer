@@ -1258,6 +1258,185 @@ def test_two_edges_from_same_branch_into_one_end_still_rejected() -> None:
         validate_workflow_shape(wf)
 
 
+# --- End incoming-edge rule: parallel fan-out ancestors ---
+
+
+def _ie(node_id: str) -> dict[str, Any]:
+    return _n(node_id, "if-else", {"condition": "True"})
+
+
+def _ee(source: str, target: str, branch: str | None = None) -> dict[str, Any]:
+    return _ed(f"{source}-{target}-{branch}", source, target, branch)
+
+
+def _topologies() -> dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
+    """Shapes where an End has several incoming edges and a fan-out upstream."""
+    return {
+        "fanout_bypass_delayed": (
+            [_n("s", "start"), _ss("p"), _ie("a"), _ss("y0"), _ss("y"), _n("end", "end")],
+            [
+                _ee("s", "p"),
+                _ee("p", "a"),
+                _ee("p", "y0"),
+                _ee("y0", "y"),
+                _ee("a", "end", "true"),
+                _ee("a", "y", "false"),
+                _ee("y", "end"),
+            ],
+        ),
+        "fanout_two_conds": (
+            [_n("s", "start"), _ss("p"), _ie("a"), _ie("b"), _ss("x"), _n("end", "end")],
+            [
+                _ee("s", "p"),
+                _ee("p", "a"),
+                _ee("p", "b"),
+                _ee("a", "end", "true"),
+                _ee("a", "x", "false"),
+                _ee("b", "x", "true"),
+                _ee("b", "x", "false"),
+                _ee("x", "end"),
+            ],
+        ),
+        "fanout_join": (
+            [_n("s", "start"), _ss("p"), _ie("a"), _ss("y"), _n("j", "join"), _n("end", "end")],
+            [
+                _ee("s", "p"),
+                _ee("p", "a"),
+                _ee("p", "y"),
+                _ee("a", "end", "true"),
+                _ee("a", "j", "false"),
+                _ee("y", "j"),
+                _ee("j", "end"),
+            ],
+        ),
+        "double_c": (
+            [_n("s", "start"), _ss("p"), _ss("q"), _ie("c"), _n("end", "end")],
+            [
+                _ee("s", "p"),
+                _ee("s", "q"),
+                _ee("p", "c"),
+                _ee("q", "c"),
+                _ee("c", "end", "true"),
+                _ee("c", "end", "false"),
+            ],
+        ),
+        "bypass_old_hole": (
+            [_n("s", "start"), _ss("p"), _ie("a"), _ss("x"), _ss("y"), _n("end", "end")],
+            [
+                _ee("s", "p"),
+                _ee("p", "a"),
+                _ee("p", "x"),
+                _ee("a", "x", "true"),
+                _ee("a", "y", "false"),
+                _ee("x", "end"),
+                _ee("y", "end"),
+            ],
+        ),
+    }
+
+
+def _accepted_topologies() -> dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
+    decision = _n(
+        "d",
+        "decision",
+        {
+            "mode": "choice",
+            "options": [{"label": "a"}, {"label": "b"}, {"label": "c"}],
+            "instruction": "q",
+        },
+    )
+    return {
+        "approval_shape": (
+            [_n("s", "start"), _n("ua", "user-approval"), _ss("w"), _n("end", "end")],
+            [
+                _ee("s", "ua"),
+                _ee("ua", "w", "approved"),
+                _ee("w", "end"),
+                _ee("ua", "end", "rejected"),
+            ],
+        ),
+        "nested_if_else": (
+            [_n("s", "start"), _ie("a"), _ie("b"), _n("end", "end")],
+            [
+                _ee("s", "a"),
+                _ee("a", "b", "true"),
+                _ee("b", "end", "true"),
+                _ee("b", "end", "false"),
+                _ee("a", "end", "false"),
+            ],
+        ),
+        "branch_edge_plus_descendant": (
+            [_n("s", "start"), _ie("a"), _ss("x"), _n("end", "end")],
+            [
+                _ee("s", "a"),
+                _ee("a", "end", "true"),
+                _ee("a", "x", "false"),
+                _ee("x", "end"),
+            ],
+        ),
+        "decision_three_options": (
+            [_n("s", "start"), decision, _ss("w"), _n("end", "end")],
+            [
+                _ee("s", "d"),
+                _ee("d", "w", "a"),
+                _ee("w", "end"),
+                _ee("d", "end", "b"),
+                _ee("d", "end", "c"),
+            ],
+        ),
+        "while_body_and_exit": (
+            [
+                _n("s", "start"),
+                _n("w", "while", {"condition": "False", "maxIterations": 3}),
+                _n("end", "end"),
+            ],
+            [_ee("s", "w"), _ee("w", "end", "body"), _ee("w", "end", "exit")],
+        ),
+        "note_edge_into_end": (
+            [_n("s", "start"), _ss("x"), _n("nt", "note"), _n("end", "end")],
+            [_ee("s", "x"), _ee("x", "end"), _ee("nt", "end")],
+        ),
+    }
+
+
+@pytest.mark.parametrize("name", list(_topologies()))
+def test_end_reachable_by_parallel_paths_is_refused(name: str) -> None:
+    nodes, edges = _topologies()[name]
+    wf = _mk(nodes, edges)
+    with pytest.raises(WorkflowValidationError, match="reached by parallel paths") as info:
+        validate_workflow_shape(wf)
+    assert "Join" in str(info.value)
+
+
+@pytest.mark.parametrize("name", list(_accepted_topologies()))
+def test_exclusive_end_shapes_are_accepted(name: str) -> None:
+    nodes, edges = _accepted_topologies()[name]
+    validate_workflow_shape(_mk(nodes, edges))
+
+
+@pytest.mark.parametrize("name", [
+        n
+        for n in _accepted_topologies()
+        if n not in ("approval_shape", "decision_three_options")  # pause / call an LLM
+    ])
+async def test_accepted_end_shapes_run_end_exactly_once(name: str) -> None:
+    """Whatever the validator accepts must never run End twice. (The approval
+    shape pauses and the decision shape calls an LLM; tests/integration/test_approval_branch_straight_to_end.py
+    runs it.)"""
+    from src.engine.state import initial_state
+
+    nodes, edges = _accepted_topologies()[name]
+    wf = _mk(nodes, edges)
+    graph = build_graph(wf, MemorySaver())
+    count = 0
+    config: Any = {"configurable": {"thread_id": f"t-{name}"}, "recursion_limit": 60}
+    async for chunk in graph.astream(initial_state("x"), config, stream_mode="updates"):
+        for key in chunk:
+            if key == "end":
+                count += 1
+    assert count == 1
+
+
 # --- Required branches: warn on save, block run (single source of truth) ---
 
 from src.engine.graph_builder import (  # noqa: E402
