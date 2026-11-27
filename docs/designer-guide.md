@@ -49,6 +49,20 @@ When you connect from an `if-else`/`while`/`user-approval` node, the edge label 
 
 Two exits may lead to the same End node (for example `approved` → a step → End and `rejected` → End): they can never both fire in one run, so the End needs no Join.
 
+### Parallel paths and the Join
+
+A step with two or more outgoing edges starts those paths in parallel. A **Join** brings parallel paths back together: it waits until *every* path has arrived, then runs once, so the steps after it run once too, even when the paths have different lengths. Give each parallel path its own End, or merge them with a Join first; a Join followed by an If / Else whose two exits share one End is fine.
+
+A Join whose inputs are *alternatives* (the two exits of an If / Else meeting again, or a loop coming back) is not a wait: it simply runs when whichever path was taken arrives.
+
+The save controls warn, and **Run draft**, **Publish**, the external API and resume refuse, when a Join cannot wait correctly:
+
+- **Mixed inputs**: some of its inputs are parallel paths and another is an alternative to one of them (`Join step "j" mixes parallel paths with an alternative path ...`). Merge the parallel paths with their own Join first, then connect that Join and the alternative path to this one.
+- **A path escapes**: a parallel path can finish at an End without reaching the Join, so the Join would wait forever (for example an approval whose `rejected` exit goes to its own End). Connect that path to the Join, or end it after the Join.
+- **Two paths collide**: two parallel paths meet at an ordinary step before the Join, so that step would run twice. Connect those paths to a Join first. The badge is on the colliding step; the other two are on the Join.
+
+A separate parallel path that never reaches the Join (it goes to its own End) is fine.
+
 ## Build with AI
 
 The chat panel on the canvas builds and edits the workflow from a description. Beyond placing and wiring nodes, it fills them in: agent, MCP and Jira instructions, decision prompts, Gamma prompts, which guardrail checks are on, and the model. After each build it re-checks its own work and fixes empty or inconsistent nodes automatically (up to two short extra rounds, stopping early if a round fixes nothing).

@@ -179,6 +179,16 @@ handles arbitrary JSON generically:
 A dict value renders as pretty-printed JSON automatically; a single scalar (the common case) renders
 exactly as it does today.
 
+> **Amended 2026-11-27 (Join barrier).** The "same superstep" premise below is false: LangGraph fires a
+> node in every superstep in which any plain-edge predecessor finishes, so paths of different lengths
+> ran the Join (and everything after it) once per arrival. `build_graph` now wires a Join per
+> `plan_join` (`src/engine/graph_builder.py`): a **barrier** (`add_edge([lanes...], join)`, with a
+> no-op `__join_lane__*` relay for a lane that is several exclusive edges or one conditional branch)
+> when its inputs are parallel paths, plain edges when they are alternatives. `JoinExecutor` itself is
+> unchanged. Join shapes that cannot wait correctly (mixed parallel/alternative inputs, a lane that can
+> finish elsewhere, two paths meeting at a plain step) are warnings on save and refusals at run. See
+> `CHANGELOG.md`.
+
 ### Component 4 — new `join` node type (`src/engine/workflow.py`, `src/executors/join.py`)
 
 A genuine structural node type, mirroring `EndNodeData`'s existing "no extra fields" shape:
@@ -246,6 +256,11 @@ edge-emission handling needed — `join` is a plain node with plain (non-conditi
 already covered by the default edge-emission loop.
 
 ### Component 5 — validation: `join` needs exactly one outgoing edge, `End` needs exactly one incoming edge (`src/engine/graph_builder.py`)
+
+> **Amended 2026-11-27.** An End with several incoming edges is refused when a fan-out upstream can
+> reach it by parallel paths, unless a valid barrier Join has merged every path of that fan-out first
+> (fan-out, Join, If / Else, both exits into one End is accepted and the End runs once). The refusal
+> now ends "Give each parallel path its own End step, or merge them with a Join first."
 
 In `validate_workflow_shape()`, right after the existing "must contain at least one end node" check:
 
