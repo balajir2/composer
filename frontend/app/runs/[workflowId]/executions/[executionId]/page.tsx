@@ -23,7 +23,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
 const ACTIVE_STATES = new Set(["pending", "queued", "running", "waiting_approval"]);
-const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
+const TERMINAL_STATES = new Set(["completed", "failed", "canceled"]);
 
 type NodeResult = {
   node_id?: string;

@@ -89,3 +89,15 @@ it("retains selected deletion confirmation and sends only visible selected IDs",
     expect(bulkDeleteExecutions).toHaveBeenCalledWith({ executionIds: ["run-1"] })
   );
 });
+
+it("uses the backend canceled status when selecting Canceled", async () => {
+  mount();
+  await screen.findByLabelText("Select run-1");
+  const option = screen.getByRole("option", { name: "Canceled", exact: true }) as HTMLOptionElement;
+  fireEvent.change(screen.getByRole("combobox", { name: "Status" }), {
+    target: { value: option.value },
+  });
+  await waitFor(() =>
+    expect(listExecutions).toHaveBeenLastCalledWith({ limit: 100, offset: 0, status: "canceled" })
+  );
+});

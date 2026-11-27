@@ -13,7 +13,7 @@ type NodeStatus = {
   error?: string;
 };
 
-const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
+const TERMINAL_STATES = new Set(["completed", "failed", "canceled"]);
 
 export function ExecutionProgress({
   executionId,

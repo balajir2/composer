@@ -179,7 +179,7 @@ export default function HistoryPage() {
           <option value="waiting_approval">Waiting for approval</option>
           <option value="completed">Completed</option>
           <option value="failed">Failed</option>
-          <option value="cancelled">Canceled</option>
+          <option value="canceled">Canceled</option>
         </select>
       </div>
       {isLoading ? (

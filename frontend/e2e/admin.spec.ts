@@ -148,7 +148,7 @@ test("admin can inspect execution lifecycle and server-projected diagnostics", a
     headers,
     data: { workflowId, input: {} },
   });
-  expect(execution.status()).toBe(201);
+  expect(execution.status()).toBe(202);
   const { id: executionId } = await execution.json();
   await loginAs(page, admin.email, admin.password);
   const diagnosticResponse = page.waitForResponse(

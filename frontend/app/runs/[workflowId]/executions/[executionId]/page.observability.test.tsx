@@ -141,7 +141,7 @@ it("keeps successful data on refresh errors, warns and offers retry", async () =
   fireEvent.click(screen.getByRole("button", { name: "Retry execution status refresh" }));
   await waitFor(() => expect(screen.queryByText(/may be out of date/)).toBeNull());
 });
-it.each(["queued", "running", "waiting_approval", "completed", "failed", "cancelled"])(
+it.each(["queued", "running", "waiting_approval", "completed", "failed", "canceled"])(
   "bounds polling for %s, including terminal rows without output",
   async (status) => {
     vi.mocked(getExecution).mockResolvedValue({
@@ -175,7 +175,7 @@ it.each(["queued", "running", "waiting_approval", "completed", "failed", "cancel
       vi.mocked(listExecutionAttempts).mock.calls.length,
     ];
     after.forEach((count, index) => {
-      if (["completed", "failed", "cancelled"].includes(status)) expect(count).toBe(before[index]);
+      if (["completed", "failed", "canceled"].includes(status)) expect(count).toBe(before[index]);
       else expect(count).toBeGreaterThan(before[index]);
     });
   }
@@ -207,42 +207,49 @@ it("uses the one progress socket to refresh all three reads on nonterminal and t
   expect(screen.getByText("WS output")).toBeVisible();
 });
 
-it("refreshes the final lifecycle and attempts when polling sees completion without a socket event", async () => {
-  vi.mocked(getExecution).mockResolvedValue({
-    id: "run-1",
-    workflowId: "flow-1",
-    status: "running",
-    startedAt: summary.startedAt,
-    threadId: "thread",
-    output: null,
-  });
-  vi.mocked(getExecutionObservability).mockResolvedValue({ ...summary, status: "running" });
-  vi.useFakeTimers();
-  await act(async () => {
-    mount();
-  });
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(10);
-  });
-  const summaryReads = vi.mocked(getExecutionObservability).mock.calls.length;
-  vi.mocked(getExecution).mockResolvedValue({
-    id: "run-1",
-    workflowId: "flow-1",
-    status: "completed",
-    startedAt: summary.startedAt,
-    threadId: "thread",
-    output: "Persisted output",
-  });
-  vi.mocked(getExecutionObservability).mockResolvedValue(summary);
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(2100);
-  });
-  await act(async () => {
-    await vi.advanceTimersByTimeAsync(10);
-  });
-  expect(getExecutionObservability).toHaveBeenCalledTimes(summaryReads + 1);
-  expect(screen.getByText("Persisted output")).toBeVisible();
-  expect(
-    within(screen.getByRole("region", { name: "Execution status" })).getByText("Completed")
-  ).toBeVisible();
-});
+it.each(["completed", "canceled"])(
+  "refreshes the final lifecycle and attempts when polling sees %s without a socket event",
+  async (terminalStatus) => {
+    vi.mocked(getExecution).mockResolvedValue({
+      id: "run-1",
+      workflowId: "flow-1",
+      status: "running",
+      startedAt: summary.startedAt,
+      threadId: "thread",
+      output: null,
+    });
+    vi.mocked(getExecutionObservability).mockResolvedValue({ ...summary, status: "running" });
+    vi.useFakeTimers();
+    await act(async () => {
+      mount();
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    const summaryReads = vi.mocked(getExecutionObservability).mock.calls.length;
+    const attemptReads = vi.mocked(listExecutionAttempts).mock.calls.length;
+    vi.mocked(getExecution).mockResolvedValue({
+      id: "run-1",
+      workflowId: "flow-1",
+      status: terminalStatus,
+      startedAt: summary.startedAt,
+      threadId: "thread",
+      output: "Persisted output",
+    });
+    vi.mocked(getExecutionObservability).mockResolvedValue({ ...summary, status: terminalStatus });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(2100);
+    });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(10);
+    });
+    expect(getExecutionObservability).toHaveBeenCalledTimes(summaryReads + 1);
+    expect(listExecutionAttempts).toHaveBeenCalledTimes(attemptReads + 1);
+    expect(screen.getByText("Persisted output")).toBeVisible();
+    expect(
+      within(screen.getByRole("region", { name: "Execution status" })).getByText(
+        terminalStatus === "canceled" ? "Canceled" : "Completed"
+      )
+    ).toBeVisible();
+  }
+);

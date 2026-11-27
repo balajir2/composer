@@ -36,3 +36,18 @@ it("forwards each socket event and retains node progress, terminal output, and u
   unmount();
   expect(unsubscribe).toHaveBeenCalledTimes(1);
 });
+
+it("recognizes a polled canceled status as terminal without socket delivery", () => {
+  vi.mocked(subscribeExecution).mockReturnValue(vi.fn());
+  const onTerminal = vi.fn();
+  const { rerender } = render(
+    <ExecutionProgress executionId="run-1" initialStatus="running" onTerminal={onTerminal} />
+  );
+  expect(screen.getByText(/Waiting for node events/)).toBeVisible();
+  rerender(
+    <ExecutionProgress executionId="run-1" initialStatus="canceled" onTerminal={onTerminal} />
+  );
+  expect(screen.getByText("canceled")).toBeVisible();
+  expect(screen.queryByText(/Waiting for node events/)).toBeNull();
+  expect(screen.getByText(/Execution ended before any node events/)).toBeVisible();
+});
