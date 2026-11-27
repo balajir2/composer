@@ -6,7 +6,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import pytest
+from sqlalchemy import text
 
+from src.db.models import Approval
+from src.db.models.enums import ApprovalDecision
 from tests.integration.sqla_phase4a.conftest import (
     HTTPX_MARK,
     Db,
@@ -344,3 +347,56 @@ async def test_crash_handler_write_failure_leaves_the_lease_for_the_sweeper(
     assert row.completed_at is None and row.delivery_attempts == 1
     assert WORKER_ID.match(row.lease_owner or "") and row.lease_expires_at is not None
     assert row.running_since is not None
+
+
+async def test_resume_claim_is_not_skipped_by_a_losing_resumes_open_approval_insert(
+    exec_api: ExecApi, member: Member, db: Db, sessionmaker_: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression: a losing concurrent resume inserts its Approval row, whose foreign-key check
+    takes FOR KEY SHARE on the execution row, and holds it until its transaction rolls back
+    after the guarded UPDATE loses. The winner's claim used FOR UPDATE SKIP LOCKED, which
+    conflicts with KEY SHARE: it skipped the row, answered ``already_claimed`` and left it
+    ``running`` without a lease until the orphan sweeper failed the approved run. The claim
+    changes no key column, so it must lock FOR NO KEY UPDATE, which KEY SHARE does not block."""
+    log = install_fake_executor(monkeypatch, sessionmaker_)
+    wid = await db.seed_workflow(member)
+    eid = await _seed(db, wid, member, "running", variables={"_resume_decision": "approved"})
+    async with sessionmaker_() as loser:
+        loser.add(
+            Approval(
+                execution_id=eid,
+                node_id="ua",
+                decision=ApprovalDecision.APPROVED,
+                approver_user_id=None,
+                approver_email=None,
+                via_email_link=False,
+                note=None,
+            )
+        )
+        await loser.flush()  # FK check: KEY SHARE on the execution row, held until rollback
+        r = await exec_api.claim(eid, "resume")
+        await loser.rollback()
+    assert r.status_code == 200 and jbody(r) == {"status": "completed"}, r.text
+    assert log.resumes == [(eid, "approved")]
+    row = await db.must(eid)
+    assert row.status == "running" and row.lease_owner is not None
+
+
+async def test_claim_still_skips_a_row_another_transaction_is_updating(
+    exec_api: ExecApi, member: Member, db: Db, sessionmaker_: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The weaker lock keeps exclusivity: an uncommitted UPDATE of the row (a concurrent claim,
+    cancel or sweep) still makes the claim skip it instead of waiting or double-running."""
+    log = install_fake_executor(monkeypatch, sessionmaker_)
+    wid = await db.seed_workflow(member)
+    eid = await _seed(db, wid, member, "running", variables={"_resume_decision": "approved"})
+    before = db.snapshot(await db.must(eid))
+    async with sessionmaker_() as writer:
+        await writer.execute(
+            text("UPDATE workflow_executions SET error = NULL WHERE id = :e"), {"e": eid}
+        )
+        r = await exec_api.claim(eid, "resume")
+        await writer.rollback()
+    assert r.status_code == 200 and jbody(r) == ALREADY, r.text
+    assert log.resumes == []
+    assert db.snapshot(await db.must(eid)) == before

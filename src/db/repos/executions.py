@@ -259,9 +259,15 @@ async def claim(
 ) -> ClaimedExecution | None:
     """Take the lease on an unleased execution of the kind's status, or None.
 
-    One statement: the row is locked with ``FOR UPDATE SKIP LOCKED`` in a subquery and the
-    eligibility is re-checked by the outer ``UPDATE``, so exactly one concurrent caller wins
-    and nobody waits. Must be the first statements of the caller's transaction (the
+    One statement: the row is locked with ``FOR NO KEY UPDATE SKIP LOCKED`` in a subquery and
+    the eligibility is re-checked by the outer ``UPDATE``, so exactly one concurrent caller wins
+    and nobody waits. ``NO KEY UPDATE``, not ``UPDATE``: the claim changes no key column, and a
+    plain ``FOR UPDATE`` conflicts with the ``FOR KEY SHARE`` lock that any open transaction
+    inserting a row that references this execution holds (the foreign-key check). A losing
+    concurrent resume inserts its approval row before its guarded ``UPDATE`` loses, so the
+    winner's claim skipped the row, answered ``already_claimed`` and stranded it ``running``
+    without a lease. Claims, cancels and sweeps still exclude each other: they all write the
+    row, and ``NO KEY UPDATE`` conflicts with every row write. Must be the first statements of the caller's transaction (the
     ``SET LOCAL`` timeouts last until it ends). The caller must wrap the transaction in
     ``asyncio.timeout(10)``, commit before running anything, and know that
     ``SET LOCAL statement_timeout`` (10 s) applies to every later statement of the same
@@ -276,7 +282,10 @@ async def claim(
         WorkflowExecution.lease_owner.is_(None),
     )
     locked = (
-        select(WorkflowExecution.id).where(*eligible).with_for_update(skip_locked=True).limit(1)
+        select(WorkflowExecution.id)
+        .where(*eligible)
+        .with_for_update(skip_locked=True, key_share=True)  # FOR NO KEY UPDATE SKIP LOCKED
+        .limit(1)
     )
     row = (
         await session.execute(

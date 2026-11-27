@@ -5,7 +5,7 @@ Not part of the public API surface; secured by OIDC token verification
 the callers are Cloud Tasks and Cloud Scheduler, not end users:
 
   - POST /internal/claim-and-run — Cloud Tasks delivery target. Claims
-    the execution via SELECT ... FOR UPDATE SKIP LOCKED (the pattern
+    the execution via SELECT ... FOR NO KEY UPDATE SKIP LOCKED (the pattern
     validated in scripts/poc_persistence_row_lock.py, ADR-0031) before
     running it — this, not Cloud Tasks' delivery guarantee, is what
     prevents two concurrent deliveries of the same task from
@@ -210,7 +210,7 @@ async def claim_and_run_execution(
     *,
     worker_id: str,
 ) -> dict[str, str]:
-    """Claim `execution_id` (FOR UPDATE SKIP LOCKED) and run/resume it.
+    """Claim `execution_id` (FOR NO KEY UPDATE SKIP LOCKED) and run/resume it.
 
     This is the actual claim-and-run logic, factored out of the
     `claim_and_run` HTTP handler below so it can also be invoked

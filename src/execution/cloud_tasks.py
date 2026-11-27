@@ -10,8 +10,8 @@ which is the actual fix for the scale-to-zero risk this whole subsystem
 exists to close (ADR-0033).
 
 Cloud Tasks' at-least-once delivery does NOT by itself guarantee a task
-runs exactly once — the claim-and-run endpoint's SELECT ... FOR UPDATE
-SKIP LOCKED (already validated: scripts/poc_persistence_row_lock.py) is
+runs exactly once — the claim-and-run endpoint's SELECT ... FOR NO KEY
+UPDATE SKIP LOCKED (already validated: scripts/poc_persistence_row_lock.py) is
 what actually prevents a double-run if Cloud Tasks redelivers.
 
 CloudTasksAsyncClient provisions a grpc_asyncio transport and resolves
@@ -29,7 +29,7 @@ unconditionally against a real, unprovisioned Cloud Tasks queue made
 every local `POST /executions` fail outright). When it's unset,
 `enqueue_execution` skips the real Cloud Tasks RPC entirely and instead
 dispatches `claim_and_run_execution` (src/api/internal.py) in-process via
-`asyncio.create_task` — the exact same claim (FOR UPDATE SKIP LOCKED) and
+`asyncio.create_task` — the exact same claim (FOR NO KEY UPDATE SKIP LOCKED) and
 run/resume logic Cloud Tasks' push delivery would otherwise trigger over
 HTTP, just invoked directly instead of round-tripping through the
 network. This mirrors the existing dev-mode bypass in `src/api/
@@ -158,7 +158,7 @@ async def enqueue_execution(execution_id: str, *, kind: _TaskKind) -> None:
 
     `kind` distinguishes a fresh run from an approval-resume so the
     claim-and-run endpoint knows which LangGraphExecutor method to call —
-    both still go through the same claim (FOR UPDATE SKIP LOCKED) guard.
+    both still go through the same claim (FOR NO KEY UPDATE SKIP LOCKED) guard.
     """
     settings = get_settings()
     if not settings.cloud_tasks_service_account:

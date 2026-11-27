@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Fixed — an approved resume could be stranded by a losing concurrent resume (2026-11-27)
+
+- **What happened:** when several resumes of one paused run raced (a double-click, two reviewers, API plus email link), each loser inserted its `approvals` row before its guarded `UPDATE` lost, and held that transaction open until it rolled back. The insert's foreign-key check takes `FOR KEY SHARE` on the `workflow_executions` row. The winner's claim (`executions_repo.claim`) locked the row with `FOR UPDATE SKIP LOCKED`, which conflicts with `KEY SHARE`, so if it ran inside that window it skipped the row and answered `already_claimed`. The row stayed `running` with no lease and no resume attempt, the graph never resumed, and the orphan sweeper later failed the approved run. Seen as the flaky `test_six_concurrent_resume_requests_after_restart_run_the_graph_once` (row `running` after the 200); a lock snapshot taken at the failing claim showed two `Key Share` lockers on the row and the losers' transactions still open.
+- **Fix:** the claim locks with `FOR NO KEY UPDATE SKIP LOCKED`. It changes no key column, `KEY SHARE` does not block it, and it still conflicts with every row write, so concurrent claims, cancels and sweeps keep excluding each other. Regression tests in `tests/integration/sqla_phase4a/test_claim.py`: a claim with an open, uncommitted approval insert on the row now claims it (it answered `already_claimed` before the fix), and an uncommitted `UPDATE` of the row still makes the claim skip it.
+
 ### Fixed — review-gate findings on the Join barrier (2026-11-27)
 
 - **Editing a paused workflow no longer loses the Join's progress.** The barrier channel was named after the incoming edges in list order and relay ids after a lane index, so reordering edges of a paused workflow (reconnecting a React Flow handle, a Builder rewrite) renamed the channel; the resumed run then never ran the Join or End yet was recorded as completed. Lanes, edges and members are now sorted and a relay id is `__join_lane__<join>__<8-hex hash of the lane's edges>`, so the same canvas in any edge order has identical channel and node names.

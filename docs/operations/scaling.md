@@ -41,7 +41,7 @@ The backend is **stateless per request** (state lives in Postgres — checkpoint
 
 - **Add replicas** via the host's UI. New replicas pick up traffic from the load balancer immediately.
 - **Health checks** prevent traffic from hitting unhealthy replicas; the host should be configured for both startup probes (don't route until ready) and liveness probes (restart unhealthy).
-- **Rolling restarts** are safe. Pending executions continue independently of any single replica — execution ownership is a Postgres row + lease claimed via `SELECT ... FOR UPDATE SKIP LOCKED` (ADR-0033), not in-memory state on the replica that first accepted the request.
+- **Rolling restarts** are safe. Pending executions continue independently of any single replica — execution ownership is a Postgres row + lease claimed via `SELECT ... FOR NO KEY UPDATE SKIP LOCKED` (ADR-0033), not in-memory state on the replica that first accepted the request.
 
 What still has a per-replica wrinkle:
 
