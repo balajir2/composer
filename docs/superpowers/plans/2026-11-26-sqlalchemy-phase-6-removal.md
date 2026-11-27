@@ -1438,6 +1438,6 @@ Status: code Tasks 1 to 7 are committed on branch `feat/sqlalchemy-phase-6`; Tas
 
 **Pending (explicitly not done here)**
 
-- Codex rebase result: pending (Task 8 Step 3; Codex has not merged `0005_execution_attempts`).
+- Codex rebase result: **D9 reversed by Balaji on 2026-11-27.** Phase 6 merges first because Codex's telemetry phase 5 will take several more sessions. Codex's `feat/telemetry-phase-5-attempts` branch rebases onto phase 6 instead. `0005`'s `down_revision` (`0004_langgraph_saver_tables`) is unaffected. Task 5 Step 9 (comment cleanups in Codex's files) moves to Codex's rebase, or becomes a follow-up after it.
 - Final full-run counts (ruff, pyright, unit and integration pytest, frontend checks, E2E `admin.spec.ts`): pending (Task 8 Step 4, run by Balaji).
 - Push, PR and merge (Steps 6 and 7): pending Balaji's go-ahead.

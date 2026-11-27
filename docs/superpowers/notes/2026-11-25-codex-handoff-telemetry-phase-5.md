@@ -40,7 +40,11 @@ Never point a 2 s Cloud Run startup probe at `/ready`. Balaji accepted occasiona
 
 ## Phase 6 (Prisma removal), 2026-11-26
 
-Phase 6 (branch `feat/sqlalchemy-phase-6`, plan `docs/superpowers/plans/2026-11-26-sqlalchemy-phase-6-removal.md`) removes Prisma, asyncpg and `prisma/`, and makes `0001_baseline` build the base schema on an empty database. Balaji confirmed D9: **your `0005_execution_attempts` merges first; phase 6 rebases onto it.** `0005`'s `down_revision = "0004_langgraph_saver_tables"` stays valid in either order (existing databases never re-run 0001; fresh ones run 0001 to 0005 in order).
+Phase 6 (branch `feat/sqlalchemy-phase-6`, plan `docs/superpowers/plans/2026-11-26-sqlalchemy-phase-6-removal.md`) removes Prisma, asyncpg and `prisma/`, and makes `0001_baseline` build the base schema on an empty database. Balaji first confirmed D9 (your `0005_execution_attempts` merges first), then **reversed it on 2026-11-27: phase 6 merges first, and you rebase `feat/telemetry-phase-5-attempts` onto main after it.** Expect these when you rebase:
+- `prisma/`, the `prisma`/`asyncpg` packages and the `NEEDS_LEGACY_PRISMA` shim are gone. Seed test rows through `tests/integration/_rows.py` (the `rows` fixture).
+- `CHANGELOG.md` and `tests/unit/db/test_models_metadata.py` may conflict in places. Keep both sides.
+- Fresh databases are built by Alembic alone, so make sure `alembic upgrade head` from empty reaches 0005.
+- Clean up the leftover "Prisma" comments in `src/api/executions.py:430` and `src/api/internal.py:241,573` as part of your rebase. `0005`'s `down_revision = "0004_langgraph_saver_tables"` stays valid in either order (existing databases never re-run 0001; fresh ones run 0001 to 0005 in order).
 
 **Phase 6 avoids** (until the rebase, then only comment-only cleanups): `src/db/migrations/versions/0005_execution_attempts.py`; `src/db/models/{__init__,execution_attempts,executions}.py`; `src/db/repos/{execution_attempts,executions}.py`; `src/api/{approval_email,executions,internal}.py`; `src/engine/langgraph_executor.py`; the sweepers; `tests/integration/db/test_alembic_0005_execution_attempts.py`; `tests/integration/db/repos/test_execution_attempt_*.py`; `tests/integration/execution_attempts/`; `tests/integration/sqla_phase4a/conftest.py`; `tests/integration/sqla_phase4b/{test_approval_email,test_resume_route}.py`; `tests/unit/api/{test_approval_email,test_executions_resume,test_internal}.py`; `tests/unit/db/test_models_metadata.py`; `tests/unit/engine/test_langgraph_executor.py`; `CHANGELOG.md` and your own docs.
 
