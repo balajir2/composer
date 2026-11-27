@@ -2,6 +2,7 @@
 # pyright: reportAttributeAccessIssue=false
 import json
 import logging
+import re
 
 from src.telemetry.context import bind_context
 from src.telemetry.logging import JSONFormatter
@@ -180,3 +181,132 @@ def test_malformed_log_arguments_never_trigger_raw_logging_diagnostics() -> None
     )
     assert "secret-token" not in result.stdout + result.stderr
     assert "Logging error" not in result.stderr
+
+
+# --- exception diagnostics: class names and code locations only ---------------------------
+
+_SECRET_MSG = "boom sk-live-SECRET123 for alice@example.com at /home/alice/site-packages/x"
+
+
+class _Boom(Exception):
+    pass
+
+
+def _deep(n: int) -> None:
+    if n == 0:
+        raise _Boom(_SECRET_MSG)
+    _deep(n - 1)
+
+
+def _exc_record(
+    exc: BaseException, name: str = "src.engine.langgraph_executor"
+) -> logging.LogRecord:
+    return logging.LogRecord(
+        name,
+        logging.ERROR,
+        "",
+        0,
+        "Execution %s failed",
+        ("abc",),
+        (type(exc), exc, exc.__traceback__),
+    )
+
+
+def _capture(n: int = 0) -> BaseException:
+    try:
+        _deep(n)
+    except _Boom as exc:
+        return exc
+    raise AssertionError
+
+
+def test_exception_record_has_type_and_frames() -> None:
+    out = JSONFormatter().format(_exc_record(_capture(2)))
+    data = json.loads(out)
+    assert data["exception.type"].endswith("test_logging._Boom")
+    frames = data["exception.frames"]
+    assert re.fullmatch(r"([A-Za-z0-9_]+[.])*test_logging:_deep:[0-9]+", frames[-1])
+    assert frames[-1].rsplit(":", 1)[1].isdigit()
+    assert data["level"] == "ERROR"
+    assert "event" not in data
+    assert "Execution" not in out
+
+
+def test_exception_chain_lists_class_names_innermost_last() -> None:
+    try:
+        try:
+            raise KeyError("inner-secret")
+        except KeyError as inner:
+            raise ValueError("middle") from inner
+    except ValueError as middle:
+        try:
+            raise RuntimeError("outer") from middle
+        except RuntimeError as outer:
+            exc = outer
+    data = json.loads(JSONFormatter().format(_exc_record(exc)))
+    assert data["exception.type"] == "builtins.RuntimeError"
+    assert data["exception.chain"] == ["builtins.ValueError", "builtins.KeyError"]
+    assert "inner-secret" not in json.dumps(data)
+
+
+def test_exception_message_never_emitted() -> None:
+    out = JSONFormatter().format(_exc_record(_capture(1)))
+    for needle in ("sk-live-SECRET123", "alice", "example.com", "boom"):
+        assert needle not in out
+
+
+def test_exception_output_has_no_paths() -> None:
+    import os
+    import sys
+
+    out = JSONFormatter().format(_exc_record(_capture(3)))
+    bs = chr(92)
+    for needle in (os.path.expanduser("~"), "site-packages", bs, "C:", "/home/", "Users"):
+        assert needle not in out
+    assert sys.prefix not in out
+    from src.telemetry.logging import _module_for_path  # pyright: ignore[reportPrivateUsage]
+
+    win = bs.join(["C:", "x", ".venv", "Lib", "site-packages", "httpx", "_client.py"])
+    assert _module_for_path(win) == "httpx._client"
+    assert (
+        _module_for_path("/usr/lib/python3.12/site-packages/langchain_core/runnables/base.py")
+        == "langchain_core.runnables.base"
+    )
+    assert _module_for_path("/home/bob/stuff/other.py") == "other"
+
+
+def test_frame_cap_is_15_and_keeps_innermost() -> None:
+    data = json.loads(JSONFormatter().format(_exc_record(_capture(40))))
+    frames = data["exception.frames"]
+    assert len(frames) == 15
+    assert all(f.endswith(tuple("0123456789")) for f in frames)
+    assert frames[-1].split(":")[1] == "_deep"
+    assert not any(":_capture:" in f for f in frames)  # outermost frames were dropped
+
+
+def test_output_stays_under_4096_bytes_with_deep_stack() -> None:
+    exc = _capture(40)
+    long_name = "m" * 300
+    chain_exc: BaseException = exc
+    for i in range(8):
+        cls = type(f"{long_name}{i}", (Exception,), {})
+        new = cls("x")
+        new.__cause__ = chain_exc
+        chain_exc = new
+    out = JSONFormatter().format(_exc_record(chain_exc))
+    assert len(out.encode()) <= 4096
+    json.loads(out)
+
+
+def test_uvicorn_error_gets_fields_and_keeps_correlation() -> None:
+    with bind_context(request_id="req-1"):
+        data = json.loads(JSONFormatter().format(_exc_record(_capture(1), "uvicorn.error")))
+    assert data["request_id"] == "req-1"
+    assert data["logger"] == "uvicorn.error"
+    assert "exception.type" in data and "exception.frames" in data
+
+
+def test_records_without_exc_info_have_no_exception_fields() -> None:
+    record = logging.LogRecord("src.x", logging.ERROR, "", 0, "plain", (), None)
+    data = json.loads(JSONFormatter().format(record))
+    assert not any(k.startswith("exception.") for k in data)

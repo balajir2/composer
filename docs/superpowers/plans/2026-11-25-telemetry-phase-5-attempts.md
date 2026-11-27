@@ -449,6 +449,8 @@ Smaller rebase and CI fixes: `ab65392` (0004 schema tests pinned to revision 000
 - **Cosmetic `approval_id` gap during the deploy window.** While the old revision still serves traffic after 0005 is applied, an approval resolved through the old code doesn't set `pending_attempt_approval_id`. The resume attempt the new code later opens for that run therefore has no `approval_id`, and the UI shows `hasApproval=false` for it. It affects display only, never a transition, and ends once the old revision drains.
 - **Migration vs. resume lock order, during the deploy only.** 0005 locks `workflow_executions` (ACCESS EXCLUSIVE, for `ADD COLUMN`) and then `approvals` (SHARE ROW EXCLUSIVE, for the new foreign key). The resume route works the other way: it inserts into `approvals`, then updates `workflow_executions`. A resume that lands while the migration runs can therefore deadlock with it. Postgres aborts one side: either the deploy step fails and can be re-run, or that one resume returns a 500 and can be retried. The pattern pre-dates this branch, and the 5 s `lock_timeout` bounds the wait. Noted in review and not fixed.
 
+- **Exception diagnostics in logs (done).** Error log lines carried no cause. `JSONFormatter` now emits `exception.type`, `exception.chain` and `exception.frames` (class names and `module:function:lineno` only; never messages, values or paths) for any record with `exc_info`; see the signal catalog's `Log exception fields`.
+
 ### Pending
 
 - Final full-run counts and PR number: **pending** (to be filled in once the full suite has run and the PR is open).

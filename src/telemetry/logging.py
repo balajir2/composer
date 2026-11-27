@@ -2,11 +2,15 @@
 
 import json
 import logging
+import re
 from dataclasses import asdict
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from src.telemetry.context import current_correlation, exception_correlation
 from src.telemetry.redaction import redact
+
+if TYPE_CHECKING:
+    from types import TracebackType
 
 # Only fixed, application-owned templates can supply legacy event names and counts.
 _TEMPLATES = {
@@ -83,6 +87,74 @@ def log_event(logger: logging.Logger, event: str, **fields: object) -> None:
     )
 
 
+_MAX_LINE_BYTES = 4096
+_MAX_FRAMES = 15
+_MAX_CHAIN = 5
+_NAME_CAP = 200
+_SAFE_NAME = re.compile(r"[^A-Za-z0-9_.<>-]")
+
+
+def _safe_name(name: str) -> str:
+    return _SAFE_NAME.sub("_", name)[:_NAME_CAP]
+
+
+def _class_name(exc_type: type[BaseException]) -> str:
+    return _safe_name(f"{exc_type.__module__}.{exc_type.__qualname__}")
+
+
+def _module_for_path(path: str) -> str:
+    """Reduce a source path to a dotted module name with no directories, drive or user."""
+    parts = [p for p in re.split(r"[\\/]+", path) if p and not p.endswith(":")]
+    for marker in ("site-packages", "dist-packages"):
+        if marker in parts:
+            parts = parts[len(parts) - parts[::-1].index(marker) :]
+            break
+    else:
+        for root in ("src", "tests"):
+            if root in parts:
+                parts = parts[parts.index(root) :]
+                break
+        else:
+            parts = parts[-1:]
+    if parts and parts[-1].endswith(".py"):
+        parts[-1] = parts[-1][:-3]
+    if parts and parts[-1] == "__init__" and len(parts) > 1:
+        parts.pop()
+    return _safe_name(".".join(parts))
+
+
+def _exception_fields(exc_info: tuple[object, ...]) -> dict[str, object]:
+    """Class names and code locations only: never the message, values or file paths."""
+    exc = exc_info[1] if len(exc_info) > 1 else None
+    if not isinstance(exc, BaseException):
+        return {}
+    fields: dict[str, object] = {"exception.type": _class_name(type(exc))}
+    chain: list[str] = []
+    seen = {id(exc)}
+    nxt = exc.__cause__ or exc.__context__
+    while nxt is not None and id(nxt) not in seen and len(chain) < _MAX_CHAIN:
+        seen.add(id(nxt))
+        chain.append(_class_name(type(nxt)))
+        nxt = nxt.__cause__ or nxt.__context__
+    if chain:
+        fields["exception.chain"] = chain
+    frames: list[str] = []
+    tb: TracebackType | None = exc.__traceback__
+    while tb is not None:
+        frame = tb.tb_frame
+        module = frame.f_globals.get("__name__")
+        name = (
+            _safe_name(module)
+            if isinstance(module, str) and module != "__main__"
+            else _module_for_path(frame.f_code.co_filename)
+        )
+        frames.append(f"{name}:{_safe_name(frame.f_code.co_name)}:{tb.tb_lineno}")
+        tb = tb.tb_next
+    if frames:
+        fields["exception.frames"] = frames[-_MAX_FRAMES:]
+    return fields
+
+
 class JSONFormatter(logging.Formatter):
     def format(self, record: logging.LogRecord) -> str:
         # Never interpolate untrusted arguments; logging error diagnostics can expose them.
@@ -131,7 +203,25 @@ class JSONFormatter(logging.Formatter):
             if exc is not None:
                 correlation = exception_correlation(exc) or correlation
         fields.update({k: v for k, v in asdict(correlation).items() if v is not None})
-        return json.dumps(redact(fields, max_bytes=4096), ensure_ascii=False)
+        if record.exc_info:
+            fields.update(_exception_fields(record.exc_info))
+        return self._dump(fields)
+
+    @staticmethod
+    def _dump(fields: dict[str, object]) -> str:
+        """Serialize under the byte cap, dropping outermost frames first, then chain."""
+        while True:
+            line = json.dumps(redact(fields, max_bytes=_MAX_LINE_BYTES), ensure_ascii=False)
+            if len(line.encode("utf-8")) <= _MAX_LINE_BYTES:
+                return line
+            frames = fields.get("exception.frames")
+            chain = fields.get("exception.chain")
+            if isinstance(frames, list) and frames:
+                fields["exception.frames"] = frames[1:]
+            elif isinstance(chain, list) and chain:
+                fields["exception.chain"] = chain[:-1]
+            else:
+                return line
 
 
 def configure_logging(level: str) -> None:
