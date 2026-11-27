@@ -202,6 +202,21 @@ def test_resume_missing_pending_node_500(monkeypatch: pytest.MonkeyPatch) -> Non
     assert resp.status_code == 500
 
 
+def test_resume_without_pending_since_stamp_still_resumes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Waiting rows created before _pending_approval_since existed stay resumable: the guard
+    falls back to status-only (expected_pending=None) instead of returning 500."""
+    client, repos = _client_with_execution(
+        monkeypatch, _execution_row(variables={"_pending_approval_node": "ua"})
+    )
+    resp = client.post("/executions/e1/resume", json={"decision": "approved"})
+    assert resp.status_code == 200, resp.text
+    repos.resume.assert_awaited_once()
+    assert repos.resume.await_args.kwargs["expected_pending"] is None
+    assert resp.json()["status"] == "running"
+
+
 def test_resume_invalid_decision_422(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _ = _client_with_execution(monkeypatch, _execution_row())
     resp = client.post(

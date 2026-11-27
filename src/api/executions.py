@@ -571,12 +571,13 @@ async def resume_execution(
             note=payload.note,
         )
         pending_since = cast("dict[str, Any]", variables).get("_pending_approval_since")
-        if not isinstance(pending_since, str):
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Execution is waiting_approval but has no _pending_approval_since.",
-            )
-        expected_pending = PendingInstance(node_id=str(pending_node_id), since=pending_since)
+        # Waiting rows from before the stamp existed carry no `_pending_approval_since`; they
+        # stay resumable with the status-only guard rather than failing the request.
+        expected_pending = (
+            PendingInstance(node_id=str(pending_node_id), since=pending_since)
+            if isinstance(pending_since, str)
+            else None
+        )
         won = await executions_repo.resume_if_waiting(
             session,
             execution_id,
