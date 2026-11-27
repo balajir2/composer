@@ -39,7 +39,7 @@
 - Produces: `ExecutionAttempt`, `AttemptResult`, `AttemptTriggerKind`, and nullable `WorkflowExecution.pending_attempt_approval_id`.
 - Consumes: `Base`, `id_column`, `created_at_column`, `UTCDateTime`, `WorkflowExecution`, `Approval`, and Alembic revision `0004_langgraph_saver_tables`.
 
-- [ ] **Step 1: Write failing metadata tests**
+- [x] **Step 1: Write failing metadata tests**
 
   Add `execution_attempts` to the exact table set and assert these named relationships and indexes:
 
@@ -59,13 +59,13 @@
 
   Assert FKs: attempt execution → execution `CASCADE/CASCADE`, approval → approval `SET NULL`, recovery source → attempt `SET NULL`, and workflow execution pending approval → approval `SET NULL`.
 
-- [ ] **Step 2: Run the metadata tests and verify they fail**
+- [x] **Step 2: Run the metadata tests and verify they fail**
 
   Run: `.venv\Scripts\python -m pytest tests/unit/db/test_models_metadata.py -q -o addopts=''`
 
   Expected: FAIL because `execution_attempts` and the pending approval column do not exist.
 
-- [ ] **Step 3: Write migration tests before the migration**
+- [x] **Step 3: Write migration tests before the migration**
 
   In a dedicated test database, downgrade explicitly to `0004_langgraph_saver_tables`, seed queued/running/waiting/terminal legacy executions, upgrade to `0005_execution_attempts`, and assert:
 
@@ -76,7 +76,7 @@
   - downgrade/upgrade round-trip works on an empty attempt table;
   - catalog inspection verifies the partial-index predicate `ended_at IS NULL`.
 
-- [ ] **Step 4: Implement revision `0005_execution_attempts`**
+- [x] **Step 4: Implement revision `0005_execution_attempts`**
 
   Create an empty table with no backfill:
 
@@ -99,11 +99,11 @@
 
   Add named checks for `ordinal > 0`, allowed result values (`running`, `paused`, `completed`, `failed`, `canceled`), allowed trigger values (`run`, `resume`, `recovery`), `(result = 'running') = (ended_at IS NULL)`, and `ended_at IS NULL OR ended_at >= started_at`. Add `pending_attempt_approval_id` to `workflow_executions` after creating the attempt table; its FK targets `approvals.id` with `ON DELETE SET NULL`.
 
-- [ ] **Step 5: Implement the model and controlled enums**
+- [x] **Step 5: Implement the model and controlled enums**
 
   Use Python `StrEnum` values backed by `Text` plus the same named CHECK constraints as the migration. Define all indexes in `__table_args__`; the open-attempt index uses `postgresql_where=text("ended_at IS NULL")`. Export the model and enums from `src/db/models/__init__.py`.
 
-- [ ] **Step 6: Run schema tests**
+- [x] **Step 6: Run schema tests**
 
   Run:
 
@@ -113,7 +113,7 @@
   .venv\Scripts\python -m pytest tests/integration/db/test_schema_parity.py -q --no-cov
   ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
   Commit: `feat(execution): define durable processing attempts`
 
@@ -136,23 +136,23 @@
   - `list_operational_page(session, *, result, started_after, started_before, limit, offset) -> tuple[list[AttemptRecord], int]`.
 - Consumes: the Task 1 model; caller already holds the execution-row lock before `open_for_claim`.
 
-- [ ] **Step 1: Write repository tests for open/close and rollback**
+- [x] **Step 1: Write repository tests for open/close and rollback**
 
   Test ordinal 1 regardless of legacy `delivery_attempts`, frozen detached records, exact timestamps/lease/provenance, and `close_open` preserving the historical lease. Roll back after open and after close, then verify both summary and history from a fresh session. Inject an attempt insert failure and prove the caller can roll back without partial history.
 
-- [ ] **Step 2: Write query and pagination tests**
+- [x] **Step 2: Write query and pagination tests**
 
   Assert execution isolation, ordinal ascending order with ID tie-break, total counts, first/final/empty pages, result/time filters, and deterministic global order `(started_at DESC, id DESC)`. Reject `limit < 1`, `limit > 100`, and negative offsets with `ValueError`.
 
-- [ ] **Step 3: Run tests and verify they fail**
+- [x] **Step 3: Run tests and verify they fail**
 
   Run: `.venv\Scripts\python -m pytest tests/integration/db/repos/test_execution_attempts.py -q --no-cov`
 
-- [ ] **Step 4: Implement the minimal repository**
+- [x] **Step 4: Implement the minimal repository**
 
   `open_for_claim` calculates `coalesce(max(ordinal), 0) + 1` only after the caller's winning claim has locked the execution row. It never commits. `close_open` updates exactly `id`, `execution_id`, and `ended_at IS NULL`, and returns whether one row won. Validate controlled enum inputs through typed signatures, not arbitrary strings.
 
-- [ ] **Step 5: Run repository tests and static checks**
+- [x] **Step 5: Run repository tests and static checks**
 
   Run:
 
@@ -162,7 +162,7 @@
   .venv\Scripts\python -m pyright src/db/repos/execution_attempts.py
   ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
   Commit: `feat(execution): add attempt history repository`
 
@@ -180,27 +180,27 @@
 - Produces: `ClaimedExecution(id, variables, attempt_id, attempt_ordinal)` and a committed attempt identity passed to the executor.
 - Consumes: Task 2 `open_for_claim`; `WorkflowExecution.pending_attempt_approval_id` is captured and cleared in the claim transaction.
 
-- [ ] **Step 1: Write failing claim tests**
+- [x] **Step 1: Write failing claim tests**
 
   Prove a winning initial claim creates ordinal 1 with trigger `run`; a winning post-approval claim creates the next ordinal with trigger `resume` and the exact pending approval ID. Wrong-kind, locked, missing, terminal, or already-leased claims create no attempt. A claim rollback removes both the lease/delivery increment and attempt.
 
-- [ ] **Step 2: Write deterministic concurrent-claim tests**
+- [x] **Step 2: Write deterministic concurrent-claim tests**
 
   Run five independently committed sessions against the same initial and resume claim. Assert one `ClaimedExecution`, one open attempt, one ordinal, and one delivery increment. Seed `delivery_attempts=7` before the first genuine claim and assert ordinal 1.
 
-- [ ] **Step 3: Run tests and verify failure**
+- [x] **Step 3: Run tests and verify failure**
 
   Run: `.venv\Scripts\python -m pytest tests/integration/db/repos/test_execution_attempt_claims.py -q --no-cov`
 
-- [ ] **Step 4: Extend `claim` inside its existing transaction**
+- [x] **Step 4: Extend `claim` inside its existing transaction**
 
   After the guarded execution UPDATE returns a row, call `open_for_claim` before commit. Use `kind` as the trigger, carry `pending_attempt_approval_id` into the attempt, and clear that bridge before returning. Any insert/clear failure rolls back the claim. Do not use `delivery_attempts` as the ordinal.
 
-- [ ] **Step 5: Thread the committed attempt ID into worker calls**
+- [x] **Step 5: Thread the committed attempt ID into worker calls**
 
   Change internal dispatch to call `executor.run(execution_id, attempt_id=claimed.attempt_id)` or `executor.resume(execution_id, decision, attempt_id=claimed.attempt_id)` only after the claim transaction commits. Bind the same ID in telemetry correlation. Do not change checkpointer construction or Cloud Tasks fallback plumbing.
 
-- [ ] **Step 6: Run focused and Phase 4 oracle tests**
+- [x] **Step 6: Run focused and Phase 4 oracle tests**
 
   Run:
 
@@ -209,7 +209,7 @@
   .venv\Scripts\python -m pytest tests/integration/sqla_phase4a/test_claim.py -q --no-cov
   ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
   Commit: `feat(execution): open attempts on durable claims`
 
@@ -229,27 +229,27 @@
 - Produces worker transitions requiring `attempt_id`: pause, complete, fail, and crash-fail; each transition fences the execution update to that currently open attempt and closes it in the same transaction.
 - Consumes: Task 2 `close_open`, Task 3 committed attempt ID.
 
-- [ ] **Step 1: Write failing transition tests**
+- [x] **Step 1: Write failing transition tests**
 
   Test `running → paused/completed/failed` with exact end time/result/failure code; repeat/losing calls leave history byte-for-byte unchanged. Test transaction rollback restores both running summary and open attempt.
 
-- [ ] **Step 2: Write the stale-worker regression test**
+- [x] **Step 2: Write the stale-worker regression test**
 
   Create attempt 1, pause it, resume and claim attempt 2, then submit completion/failure/pause using attempt 1. Assert the stale write loses, attempt 2 remains open, and summary remains owned by attempt 2. The same operation with attempt 2 must win.
 
-- [ ] **Step 3: Run tests and verify failure**
+- [x] **Step 3: Run tests and verify failure**
 
   Run: `.venv\Scripts\python -m pytest tests/integration/db/repos/test_execution_attempt_transitions.py -q --no-cov`
 
-- [ ] **Step 4: Add attempt fencing to worker-owned repository transitions**
+- [x] **Step 4: Add attempt fencing to worker-owned repository transitions**
 
   Each worker transition first guards the summary UPDATE with an `EXISTS` predicate for the supplied open attempt ID. Only after the summary UPDATE returns a winner does `close_open` run. Add `now` to pause so the attempt has an exact end time. If closure unexpectedly loses after the guarded summary wins, raise and roll back rather than commit inconsistent state.
 
-- [ ] **Step 5: Update executor lifecycle signatures only**
+- [x] **Step 5: Update executor lifecycle signatures only**
 
   Carry `attempt_id` through `run`, `resume`, `_execute`, `_mark_completed`, `_mark_waiting_approval`, and `_mark_failed`. Preserve all checkpointer setup and graph invocation code. The internal crash handler uses the claimed attempt ID. `CancelledError` remains lease-sweeper-owned and is not converted to immediate failure.
 
-- [ ] **Step 6: Run focused lifecycle and oracle tests**
+- [x] **Step 6: Run focused lifecycle and oracle tests**
 
   Run:
 
@@ -258,7 +258,7 @@
   .venv\Scripts\python -m pytest tests/integration/sqla_phase4a -q --no-cov
   ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
   Commit: `feat(execution): fence and close worker attempts`
 
@@ -278,27 +278,27 @@
 - Produces: exact `pending_attempt_approval_id` persisted by the winning resume transaction; running cancellation closes its open attempt, while queued/waiting cancellation creates or rewrites no attempt.
 - Consumes: `approvals_repo.create(...) -> ApprovalRecord`, Task 2 `close_open`.
 
-- [ ] **Step 1: Write failing approval bridge tests**
+- [x] **Step 1: Write failing approval bridge tests**
 
   For in-app and email confirmation, assert the winning transaction stores the exact returned Approval ID in `pending_attempt_approval_id`; losing concurrent decisions roll back their approval row. Resolution alone creates no attempt. The subsequent resume claim consumes the bridge and places the exact ID on the attempt.
 
-- [ ] **Step 2: Write cancellation race tests**
+- [x] **Step 2: Write cancellation race tests**
 
   Cover cancel-before-claim (zero attempts), claim-before-cancel (one canceled attempt), pause-then-cancel (paused attempt remains paused), cancel-before-pause (attempt closes canceled and pause loses), and resume-then-cancel (both may win sequentially; no resume attempt opens without a claim).
 
-- [ ] **Step 3: Run tests and verify failure**
+- [x] **Step 3: Run tests and verify failure**
 
   Run: `.venv\Scripts\python -m pytest tests/integration/db/repos/test_execution_attempt_resume_cancel.py -q --no-cov`
 
-- [ ] **Step 4: Persist the approval bridge atomically**
+- [x] **Step 4: Persist the approval bridge atomically**
 
   Create the Approval within the same transaction and pass its ID to `resume_if_waiting`; on a winning resume, store it in `pending_attempt_approval_id`. On a losing resume, roll back the newly created Approval. For in-app resume, pass `PendingInstance` from the row read so an obsolete pause cannot authorize a newer pause instance.
 
-- [ ] **Step 5: Close only a genuinely open attempt on cancellation**
+- [x] **Step 5: Close only a genuinely open attempt on cancellation**
 
   After `cancel_if_active` wins, close the current open attempt as `canceled` if one exists. Queued and waiting-approval cancellation succeeds without fabricating history; an already paused attempt stays paused.
 
-- [ ] **Step 6: Run Phase 4b and focused tests**
+- [x] **Step 6: Run Phase 4b and focused tests**
 
   Run:
 
@@ -307,7 +307,7 @@
   .venv\Scripts\python -m pytest tests/integration/sqla_phase4b -q --no-cov
   ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
   Commit: `feat(execution): preserve attempt approval and cancel history`
 
@@ -325,23 +325,23 @@
 - Produces: orphan/approval/lease sweeps that preserve current summary behavior and close an open attempt only when the winning guarded transition corresponds to one.
 - Consumes: Task 2 `close_open`; no new attempt is created by a sweeper.
 
-- [ ] **Step 1: Write failing sweeper tests**
+- [x] **Step 1: Write failing sweeper tests**
 
   Assert expired leased attempts close as failed with `lease_expired`; a stale lease scan leaves summary/history unchanged. An orphaned unclaimed resume fails its summary with no attempt. Approval expiry after pause leaves the paused attempt unchanged. Legacy running rows without history may fail without fabricated attempts.
 
-- [ ] **Step 2: Add race coverage**
+- [x] **Step 2: Add race coverage**
 
   Exercise stale orphan after claim, stale approval snapshot after re-pause, and stale lease after renewal/change. Only the existing guarded execution winner may close an attempt.
 
-- [ ] **Step 3: Run tests and verify failure**
+- [x] **Step 3: Run tests and verify failure**
 
   Run: `.venv\Scripts\python -m pytest tests/integration/db/repos/test_execution_attempt_sweepers.py -q --no-cov`
 
-- [ ] **Step 4: Integrate closure into guarded sweeper transitions**
+- [x] **Step 4: Integrate closure into guarded sweeper transitions**
 
   Keep scan sessions and per-row update sessions unchanged. When a guarded failure wins, close the matching open attempt if present; no open attempt is a valid legacy/unclaimed case and does not fail the summary transaction. Do not modify notification/event plumbing.
 
-- [ ] **Step 5: Run focused tests**
+- [x] **Step 5: Run focused tests**
 
   Run:
 
@@ -350,7 +350,7 @@
   .venv\Scripts\python -m pytest tests/integration/sqla_phase4a -q --no-cov
   ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
   Commit: `feat(execution): preserve attempt history in sweepers`
 
@@ -368,15 +368,15 @@
 - Produces: verified claim → pause → approval → resume claim → complete history and documents the repository contract consumed by Tasks 5.2/5.3.
 - Consumes: Tasks 1–6.
 
-- [ ] **Step 1: Write the end-to-end lifecycle test**
+- [x] **Step 1: Write the end-to-end lifecycle test**
 
   Execute initial claim → pause → in-app approval → resume claim → completion. Assert two immutable attempts with ordinals `[1, 2]`, results `[paused, completed]`, distinct IDs, exact approval reference on attempt 2, and unchanged attempt 1 fields. Observe the attempt through a separate session after claim to prove commit occurs before graph work.
 
-- [ ] **Step 2: Add history-availability coverage**
+- [x] **Step 2: Add history-availability coverage**
 
   Assert an execution with zero persisted attempts reports `has_history=False`; after its first genuine claim it reports `True`. Empty history is distinct from a missing execution. Do not synthesize rows from `delivery_attempts` or summary timestamps.
 
-- [ ] **Step 3: Run all Phase 5.1 and Phase 4 regression tests**
+- [x] **Step 3: Run all Phase 5.1 and Phase 4 regression tests**
 
   Run:
 
@@ -385,11 +385,11 @@
   .venv\Scripts\python -m pytest tests/unit/api/test_internal.py tests/unit/api/test_executions.py tests/unit/api/test_approval_email.py tests/unit/engine/test_langgraph_executor.py tests/unit/maintenance/test_execution_sweeper.py tests/unit/db -q --no-cov
   ```
 
-- [ ] **Step 4: Update documentation**
+- [x] **Step 4: Update documentation**
 
   Mark Task 5.1 complete only after tests pass. Document that `attempt_id` is created on claim, ordinal starts at 1 for the first real post-migration claim, paused attempts remain immutable after later cancellation/expiry, and recovery transitions remain deferred to Task 7.2.
 
-- [ ] **Step 5: Run full verification**
+- [ ] **Step 5: Run full verification** _(not ticked: the final full-suite run is pending; see Outcome)_
 
   Run:
 
@@ -400,7 +400,7 @@
   .venv\Scripts\python -m pytest
   ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
   Commit: `docs(execution): publish durable attempt contract`
 
@@ -418,3 +418,37 @@
 - **Reserved-path audit:** no task edits `src/storage/**`, event notify/WebSocket modules, checkpointer wiring, or Prisma schema/migrations.
 - **Placeholder scan:** no TBD/TODO/“implement later” steps; deliberately deferred roadmap work is listed explicitly above.
 - **Type consistency:** `AttemptRecord`, `open_for_claim`, `close_open`, `has_history`, and claim-return fields are defined once and consumed under the same names.
+
+## Outcome (2026-11-27)
+
+**Status:** implemented on `feat/telemetry-phase-5-attempts`, together with the observability API and UI ([plan](2026-11-26-execution-observability-ui.md)). Task 7 Step 5 (full verification) and the PR are pending; see the last section. Task 7 Step 6 was satisfied by folding the contract documentation into `22451f4` and the later documentation commit, not by a separate `docs(execution): publish durable attempt contract` commit.
+
+Codex built this work on a pre-phase-6 base. Claude took over on 2026-11-27 and rebased the branch onto main after SQLAlchemy phase 6 (Prisma removal). The migration is therefore `0005_execution_attempts`, chained after `0004_langgraph_saver_tables`. The first draft of it was numbered `0004`, and any older reference in commit messages or notes means the same revision.
+
+### The bug the rebase found
+
+After the rebase onto phase 6 main, the phase 5 oracle tests (fails-closed, sync-failure and no-checkpoint resume) failed. Main's resume path fails a run with `checkpoint_missing` or `checkpoint_sync_failed` through `_mark_failed`, but it did not pass the attempt ID that this branch introduced. The fenced transition refuses an unowned write while an attempt is open, so the run stayed `running` and its attempt never closed. `bcd0a2c` passes `attempt_id` like the other failure handlers. `62ef8ad` adds the regression test that asserts both codes carry it.
+
+### Review-gate findings and their fixes
+
+| Commit | Finding | Fix |
+|---|---|---|
+| `62ef8ad` | The `bcd0a2c` fix had no regression test. | Unit test pinning `attempt_id` on both resume checkpoint-failure transitions. |
+| `806ee91` | Rows paused before the `_pending_approval_since` stamp existed were resumable; the attempts work turned the missing stamp into a 500. | Fall back to the status-only guard (`expected_pending=None`) for those rows, with a test. |
+| `576a949` | The 0005 downgrade silently dropped `execution_attempts` and the pending-approval column, destroying the only history. Deleting an approval would scan `workflow_executions`. | Downgrade refuses while either holds data, states the counts and the export-then-`TRUNCATE` path (as 0004 does for checkpoints). The FK is added `NOT VALID` and then validated, and a partial index covers the column. 0005 had not reached production, so it was edited in place. The locking rationale in that commit was corrected afterwards: see the migration docstring. |
+| `c849fe0` | A resume-kind claim without `_resume_decision` answered 422 but left the row leased and running, with its attempt open, until the lease sweeper fired. | Fail the row at once, fenced to its attempt (`execution_error`), then return the same 422. A failed write is logged and never masks the 422. Closes the 4a "D9 (kept)" pin and the 4b follow-up. |
+| `6c3c6ce` | The 0004 image cancels and lease-fails executions without knowing about attempt rows, so rolling back and forward leaves attempts open and the UI shows "In progress" forever. | `/internal/sweep` gains an isolated reconciliation step that closes open attempts under terminal executions with one guarded `UPDATE` (`failure_code = closed_by_reconciliation`). Runbook section added to `docs/operations/production-deployment.md`. |
+| `471a90d` | Every socket event invalidated three queries, so a reconnect replay fired a burst of refetches. The timeline silently showed only the first page of attempts. | Refresh only on `workflow_*` and `approval_*` events behind a 300 ms trailing debounce. The timeline says "Showing N of M attempts" when truncated. |
+
+Smaller rebase and CI fixes: `ab65392` (0004 schema tests pinned to revision 0004 now that 0005 exists), `92a83e7` (pyright strict), `b3d915c` (frontend type-check and prettier), `aea7b61` (leftover Prisma wording in comments).
+
+### Follow-ups skipped on purpose
+
+- **Concurrent blocked-update race tests.** The sweeper, cancel and resume races have deterministic sequential and gathered tests, but no test holds a row lock from a second connection to prove that a blocked guarded `UPDATE` re-evaluates its predicate. The same gap applies to the new reconciliation `UPDATE` (`close_terminal_open_attempts`): its guard is one statement, tested for idempotency and for leaving running or waiting executions alone, not under a real concurrent writer.
+- **`has_history` plus count.** `GET /executions/{id}/observability` calls `has_history` and then `list_page(limit=1)` for the count: two queries where one `count` would answer both. Left as is. Both are indexed and cheap, and merging them changes the repository contract.
+- **Cosmetic `approval_id` gap during the deploy window.** An attempt opened while an old image and a new image serve traffic side by side can lack its approval reference, so the UI shows `hasApproval=false` for it. It affects display only, never a transition, and ends once the old revision drains.
+- **Approvals / `workflow_executions` lock order.** The new foreign key (`ON DELETE SET NULL` from `approvals` to `workflow_executions.pending_attempt_approval_id`) means that deleting an approval and updating its execution can take row locks in opposite orders, so a deadlock is possible in principle. The same lock-order shape pre-dates this branch, and nothing here makes it likely. Noted during migration review and not fixed.
+
+### Pending
+
+- Final full-run counts and PR number: **pending** (to be filled in once the full suite has run and the PR is open).

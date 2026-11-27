@@ -752,7 +752,7 @@ Telemetry Task 7.2's "protect recovery/cancel/resume with one conditional state 
 - DB3: move the approval token out of the frontend query string (fragment or opaque confirm id); optional dedicated signing key for approval links.
 - DB4: handle an enqueue failure after a resume (re-enqueue with backoff, or fail at once) instead of waiting for the orphan sweeper.
 - DB2 for in-app resume: send the displayed `pendingSince` from the run page and guard G3 on it.
-- 4a D9 leftover: a resume-kind claim without `_resume_decision` should fail the row at once; after DB1 the only remaining cause is a row resumed by something other than these two routes (none exist).
+- [x] 4a D9 leftover: a resume-kind claim without `_resume_decision` should fail the row at once; after DB1 the only remaining cause is a row resumed by something other than these two routes (none exist). **Done 2026-11-27 in `c849fe0` on `feat/telemetry-phase-5-attempts`** (the row is failed with `execution_error`, attempt closed, then the 422; see the [telemetry phase 5 attempts plan](2026-11-25-telemetry-phase-5-attempts.md#outcome-2026-11-27)).
 - Return the post-transition row from resume (RETURNING) instead of the pre-transition snapshot (DB5), together with 4a's cancel follow-up.
 
 ## Outcome

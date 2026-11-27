@@ -72,6 +72,8 @@ The `nodes` and `edges` arrays are validated against the discriminated union of 
 POST /executions                                        body: {workflowId, input, idempotencyKey?: string}
 GET  /executions?workflowId=<id>&status=<x>&limit=N&offset=N
 GET  /executions/{id}
+GET  /executions/{id}/observability                       role-projected lifecycle summary (runner or admin)
+GET  /executions/{id}/attempts?limit=N&offset=N            durable attempt history, ordinal ascending (runner or admin)
 POST /executions/{id}/resume                            body: {decision: "approved"|"rejected", note?: string}
 POST /executions/{id}/cancel
 DELETE /executions/{id}
@@ -88,6 +90,8 @@ WS   /executions/{id}/ws                                stream node events
 `DELETE /executions/{id}` and `POST /executions/delete-bulk` reject (409) or skip active (`queued`/`running`/`waiting_approval`) executions. Cancel or wait for a terminal state before explicitly deleting durable data.
 
 Statuses: `queued` / `running` / `waiting_approval` / `completed` / `failed` / `canceled`.
+
+`GET /executions/{id}/observability` and `GET /executions/{id}/attempts` are read-only views of an execution's durable lifecycle. Both are open to the user who ran the execution and to admins; anyone else, including an assignee of the workflow, gets 404, as does a missing execution. `attempts` accepts `limit` (default 50, maximum 100) and `offset`, and returns `historyAvailable`, `total`, `limit`, `offset` and `items`; an execution that has no recorded attempts (for example one that ran before attempt history existed) returns 200 with `historyAvailable: false` and no items. Owners get a safe projection (status, timestamps, attempt count, per-attempt ordinal, timing, result, trigger kind, safe failure guidance, whether an approval was involved). Admins also get `adminDiagnostics` (thread ID, failure code, delivery attempts, lease) and per-attempt lease, failure code and reference IDs. `recoveryState` is `ineligible_canceled`, `assessment_required` (failed) or `not_applicable`; there is no recovery endpoint. Field list and rationale: [signal catalog](telemetry/signal-catalog.md#inventory-and-interpretation).
 
 Each active processing attempt defaults to **29 minutes** (`EXECUTION_MAX_RUNTIME_SECONDS=1740`). The shutdown grace defaults to 30 seconds; the Cloud Tasks dispatch deadline and worker lease both derive from runtime plus grace (1770 seconds by default). An approval resume starts a fresh attempt. These processing limits are independent of the durable thread's lifetime: a workflow may wait months for approval without holding a worker, subject to retention policy and any operator-configured approval expiration.
 
