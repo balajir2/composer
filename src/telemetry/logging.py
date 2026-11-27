@@ -89,6 +89,7 @@ def log_event(logger: logging.Logger, event: str, **fields: object) -> None:
 
 _MAX_LINE_BYTES = 4096
 _MAX_FRAMES = 15
+_MAX_ROOT_FRAMES = 10
 _MAX_CHAIN = 5
 _NAME_CAP = 200
 _SAFE_NAME = re.compile(r"[^A-Za-z0-9_.<>-]")
@@ -123,6 +124,35 @@ def _module_for_path(path: str) -> str:
     return _safe_name(".".join(parts))
 
 
+def _frames_of(exc: BaseException) -> list[str]:
+    frames: list[str] = []
+    tb: TracebackType | None = exc.__traceback__
+    while tb is not None:
+        frame = tb.tb_frame
+        module = frame.f_globals.get("__name__")
+        name = (
+            _safe_name(module)
+            if isinstance(module, str) and module != "__main__"
+            else _module_for_path(frame.f_code.co_filename)
+        )
+        frames.append(f"{name}:{_safe_name(frame.f_code.co_name)}:{tb.tb_lineno}")
+        tb = tb.tb_next
+    return frames
+
+
+def _root_cause(exc: BaseException) -> BaseException:
+    """The innermost exception of the `__cause__`/`__context__` chain (cycle-safe, bounded)."""
+    seen = {id(exc)}
+    current = exc
+    for _ in range(50):
+        nxt = current.__cause__ or current.__context__
+        if nxt is None or id(nxt) in seen:
+            break
+        seen.add(id(nxt))
+        current = nxt
+    return current
+
+
 def _exception_fields(exc_info: tuple[object, ...]) -> dict[str, object]:
     """Class names and code locations only: never the message, values or file paths."""
     exc = exc_info[1] if len(exc_info) > 1 else None
@@ -138,20 +168,14 @@ def _exception_fields(exc_info: tuple[object, ...]) -> dict[str, object]:
         nxt = nxt.__cause__ or nxt.__context__
     if chain:
         fields["exception.chain"] = chain
-    frames: list[str] = []
-    tb: TracebackType | None = exc.__traceback__
-    while tb is not None:
-        frame = tb.tb_frame
-        module = frame.f_globals.get("__name__")
-        name = (
-            _safe_name(module)
-            if isinstance(module, str) and module != "__main__"
-            else _module_for_path(frame.f_code.co_filename)
-        )
-        frames.append(f"{name}:{_safe_name(frame.f_code.co_name)}:{tb.tb_lineno}")
-        tb = tb.tb_next
+    frames = _frames_of(exc)
     if frames:
         fields["exception.frames"] = frames[-_MAX_FRAMES:]
+    root = _root_cause(exc)
+    if root is not exc:
+        root_frames = _frames_of(root)
+        if root_frames:
+            fields["exception.root_frames"] = root_frames[-_MAX_ROOT_FRAMES:]
     return fields
 
 
@@ -209,15 +233,18 @@ class JSONFormatter(logging.Formatter):
 
     @staticmethod
     def _dump(fields: dict[str, object]) -> str:
-        """Serialize under the byte cap, dropping outermost frames first, then chain."""
+        """Serialize under the byte cap: outer frames first, then root frames, then the chain."""
         while True:
             line = json.dumps(redact(fields, max_bytes=_MAX_LINE_BYTES), ensure_ascii=False)
             if len(line.encode("utf-8")) <= _MAX_LINE_BYTES:
                 return line
             frames = fields.get("exception.frames")
+            root_frames = fields.get("exception.root_frames")
             chain = fields.get("exception.chain")
             if isinstance(frames, list) and frames:
                 fields["exception.frames"] = frames[1:]
+            elif isinstance(root_frames, list) and root_frames:
+                fields["exception.root_frames"] = root_frames[1:]
             elif isinstance(chain, list) and chain:
                 fields["exception.chain"] = chain[:-1]
             else:

@@ -332,7 +332,7 @@ Send a deterministic workflow email through Resend.
 | Field | Purpose |
 |---|---|
 | `emailProvider` | Provider. Currently `resend`. |
-| `emailFrom` | Optional sender address. Leave it empty to send from the platform's verified sender (`RESEND_FROM_EMAIL`). Friendly format like `Reports <reports@example.com>` is accepted. |
+| `emailFrom` | Optional sender address. Leave it empty to send from the platform's verified sender (`RESEND_FROM_EMAIL`). A From that renders empty after substitution (for example `{{sender}}` when `sender` has no value) also uses the platform sender. Friendly format like `Reports <reports@example.com>` is accepted. |
 | `emailTo` / `emailCc` / `emailBcc` | Recipients. Comma, semicolon, and newline separated lists are accepted. |
 | `emailReplyTo` | Optional reply-to address. |
 | `emailSubject` | Subject line. Mustache substitution applies. |

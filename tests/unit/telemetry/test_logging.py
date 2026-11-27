@@ -249,6 +249,57 @@ def test_exception_chain_lists_class_names_innermost_last() -> None:
     assert "inner-secret" not in json.dumps(data)
 
 
+def _origin_fail() -> None:
+    raise KeyError("inner-secret")
+
+
+def _wrap() -> None:
+    try:
+        _origin_fail()
+    except KeyError as inner:
+        raise RuntimeError("wrapper") from inner
+
+
+def test_chained_exception_reports_root_cause_frames() -> None:
+    try:
+        _wrap()
+    except RuntimeError as outer:
+        exc = outer
+    out = JSONFormatter().format(_exc_record(exc))
+    data = json.loads(out)
+    assert data["exception.frames"][-1].split(":")[1] == "_wrap"
+    root = data["exception.root_frames"]
+    assert root[-1].split(":")[1] == "_origin_fail"
+    assert len(root) <= 10
+    assert "inner-secret" not in out and "wrapper" not in out
+
+
+def test_unchained_exception_has_no_root_frames() -> None:
+    data = json.loads(JSONFormatter().format(_exc_record(_capture(1))))
+    assert "exception.root_frames" not in data
+
+
+def test_root_frames_are_capped_and_trimmed_after_outer_frames() -> None:
+    root = _capture(40)
+    outer = RuntimeError("x")
+    outer.__cause__ = root
+    try:
+        raise outer
+    except RuntimeError as exc:
+        outer = exc
+    data = json.loads(JSONFormatter().format(_exc_record(outer)))
+    assert len(data["exception.root_frames"]) == 10
+    assert data["exception.root_frames"][-1].split(":")[1] == "_deep"
+    # a pathological chain: outer frames go first, then root frames, always <= 4096 bytes
+    chain_exc: BaseException = outer
+    for i in range(8):
+        new = type(f"{'m' * 300}{i}", (Exception,), {})("x")
+        new.__cause__ = chain_exc
+        chain_exc = new
+    out = JSONFormatter().format(_exc_record(chain_exc))
+    assert len(out.encode()) <= 4096
+
+
 def test_exception_message_never_emitted() -> None:
     out = JSONFormatter().format(_exc_record(_capture(1)))
     for needle in ("sk-live-SECRET123", "alice", "example.com", "boom"):

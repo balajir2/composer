@@ -363,15 +363,16 @@ This is the binding **roadmap target**, not an inventory of emitted instruments.
 
 ## Log exception fields
 
-A log record that carries `exc_info` (for example `logger.exception(...)` or uvicorn's 500 handler on `uvicorn.error`) adds three fields to its JSON line, for every logger. The log message and its arguments are still never emitted.
+A log record that carries `exc_info` (for example `logger.exception(...)` or uvicorn's 500 handler on `uvicorn.error`) adds up to four fields to its JSON line, for every logger. The log message and its arguments are still never emitted.
 
 | Field | Content |
 |---|---|
 | `exception.type` | The exception class as `module.QualName`, for example `src.engine.graph_builder.WorkflowValidationError` or `httpx.ReadTimeout`. |
 | `exception.chain` | Class names of the `__cause__` / `__context__` chain, outermost cause first and innermost last, at most 5. Omitted when there is no chain. |
 | `exception.frames` | Up to the 15 innermost traceback frames, outermost first, each `"<module>:<function>:<lineno>"`, for example `src.builder.builder_agent:run_builder_turn:241` or `langchain_core.runnables.base:ainvoke:3012`. |
+| `exception.root_frames` | Up to the 10 innermost traceback frames of the innermost exception in the `__cause__` / `__context__` chain (the root cause), same format as `exception.frames`. Omitted when the chain is empty, since the root is then the exception itself. It keeps the origin visible when the outer exception is a wrapper such as `raise HTTPException(...) from exc`. |
 
-Privacy rationale: these are class names and code locations only. The exception message (`str(exc)`), source lines, local variables, argument values and file paths are never emitted, because a message can carry user data, secrets or workflow content, and a path can carry a username or deployment layout. Frames use the module's dotted name (or the file's module name with directories, drive and `site-packages` prefix removed when the module name is unavailable). The line still passes through `redact(...)` and the 4096-byte cap; if the cap would truncate, outermost frames are dropped first so the innermost survive (then chain entries, innermost last). Sources: `src/telemetry/logging.py`, tests in `tests/unit/telemetry/test_logging.py`.
+Privacy rationale: these are class names and code locations only. The exception message (`str(exc)`), source lines, local variables, argument values and file paths are never emitted, because a message can carry user data, secrets or workflow content, and a path can carry a username or deployment layout. Frames use the module's dotted name (or the file's module name with directories, drive and `site-packages` prefix removed when the module name is unavailable). The line still passes through `redact(...)` and the 4096-byte cap; if the cap would truncate, outer `exception.frames` are dropped first so the innermost survive, then `exception.root_frames`, then chain entries (innermost last). Sources: `src/telemetry/logging.py`, tests in `tests/unit/telemetry/test_logging.py`.
 
 ## Span names and correlation
 
