@@ -198,7 +198,7 @@ async def test_resume_passes_decision_from_variables(
 
 
 @pytest.mark.parametrize("variables", [{}, {"_resume_decision": ""}, {"_resume_decision": None}])
-async def test_resume_without_decision_is_422_and_lease_stays(
+async def test_resume_without_decision_is_422_and_fails_the_row_fast(
     exec_api: ExecApi,
     member: Member,
     db: Db,
@@ -206,7 +206,8 @@ async def test_resume_without_decision_is_422_and_lease_stays(
     monkeypatch: pytest.MonkeyPatch,
     variables: dict[str, Any],
 ) -> None:
-    """D9 (kept): the 422 leaves the freshly committed lease for the lease sweeper to fail."""
+    """The 422 is still returned, but the row no longer waits out its lease: it is failed with
+    its attempt id so the attempt closes with it instead of staying open until lease expiry."""
     log = install_fake_executor(monkeypatch, sessionmaker_)
     wid = await db.seed_workflow(member)
     eid = await _seed(db, wid, member, "running", variables=variables)
@@ -215,10 +216,16 @@ async def test_resume_without_decision_is_422_and_lease_stays(
     assert jbody(r) == {"detail": "decision is required when kind='resume'"}
     assert log.resumes == [] and log.runs == []
     row = await db.must(eid)
-    assert row.status == "running" and row.delivery_attempts == 1
-    assert WORKER_ID.match(row.lease_owner or "") and row.lease_expires_at is not None
-    assert row.running_since is not None and row.error is None and row.failure_code is None
+    assert row.status == "failed" and row.failure_code == "execution_error"
+    assert row.error == "Resume claimed without a decision."
+    assert row.lease_owner is None and row.lease_expires_at is None
+    assert row.completed_at is not None and row.delivery_attempts == 1
     assert row.variables == variables
+    (attempt,) = await db.raw(
+        "SELECT result, failure_code, ended_at FROM execution_attempts WHERE execution_id = :e",
+        e=eid,
+    )
+    assert attempt[0] == "failed" and attempt[1] == "execution_error" and attempt[2] is not None
 
 
 @pytest.mark.parametrize("kind", ["run", "resume"])

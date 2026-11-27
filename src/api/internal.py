@@ -336,6 +336,26 @@ async def claim_and_run_execution(
                 # docstring) — not via any request-body field.
                 decision = cast("dict[str, Any]", claimed.variables or {}).get("_resume_decision")
                 if not decision:
+                    # Fail the row now, fenced to this attempt, instead of leaving it leased
+                    # with its attempt open until the lease sweeper notices. A failed write
+                    # here must not mask the 422; the lease remains for the sweeper.
+                    try:
+                        async with sessionmaker() as missing_session:
+                            await executions_repo.mark_failed_if_running(
+                                missing_session,
+                                execution_id,
+                                error="Resume claimed without a decision.",
+                                failure_code="execution_error",
+                                now=utcnow(),
+                                attempt_id=claimed.attempt_id,
+                            )
+                            await missing_session.commit()
+                    except Exception:
+                        logger.exception(
+                            "internal: failed to mark decision-less resume %s as failed "
+                            "(lease remains for sweep_expired_leases to mark failed)",
+                            execution_id,
+                        )
                     raise HTTPException(
                         status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
                         detail="decision is required when kind='resume'",
