@@ -261,10 +261,12 @@ def _wrap() -> None:
 
 
 def test_chained_exception_reports_root_cause_frames() -> None:
+    exc: BaseException | None = None
     try:
         _wrap()
     except RuntimeError as outer:
         exc = outer
+    assert exc is not None
     out = JSONFormatter().format(_exc_record(exc))
     data = json.loads(out)
     assert data["exception.frames"][-1].split(":")[1] == "_wrap"

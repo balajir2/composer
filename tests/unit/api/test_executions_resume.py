@@ -13,6 +13,7 @@ from src.db.models import ApprovalDecision
 from src.db.repos import approvals as approvals_repo
 from src.db.repos import executions as executions_repo
 from src.db.repos import users as users_repo
+from src.db.repos import workflows as workflows_repo
 from src.db.repos.executions import ExecutionRecord
 from src.engine.events import ExecutionEvent
 from src.main import create_app
@@ -138,6 +139,8 @@ def _client_with_execution(
     monkeypatch.setattr(executions_repo, "get", repos.get)
     monkeypatch.setattr(executions_repo, "resume_if_waiting", repos.resume)
     monkeypatch.setattr(approvals_repo, "create", repos.approval_create)
+    # The runnable gate looks the workflow up; these tests are about the resume itself.
+    monkeypatch.setattr(workflows_repo, "get", AsyncMock(return_value=None))
     # Dev-mode user 'dev' resolves to a member (the live user check runs with a sessionmaker).
     monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=make_user(id="dev")))
     return TestClient(app), repos

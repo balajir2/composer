@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from src.db.models import ApprovalDecision
 from src.db.repos import approvals as approvals_repo
 from src.db.repos import executions as executions_repo
+from src.db.repos import workflows as workflows_repo
 from src.db.repos.executions import ExecutionRecord, PendingInstance
 from tests.unit.db_fakes import RecordingSessionmaker, assert_no_network_inside_session
 
@@ -116,6 +117,8 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _Repos]:
     monkeypatch.setattr(executions_repo, "get", repos.get)
     monkeypatch.setattr(executions_repo, "resume_if_waiting", repos.resume)
     monkeypatch.setattr(approvals_repo, "create", repos.approval_create)
+    # The runnable gate looks the workflow up; these tests are about the resume itself.
+    monkeypatch.setattr(workflows_repo, "get", AsyncMock(return_value=None))
     monkeypatch.setattr("src.api.approval_email.enqueue_execution", repos.enqueue)
     return TestClient(app), repos
 

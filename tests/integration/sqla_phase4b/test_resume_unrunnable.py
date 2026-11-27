@@ -15,9 +15,9 @@ from tests.integration.sqla_phase4b.conftest import (
     confirm,
     email_token,
     install_resume_enqueue,
-    resume,
     paused_variables,
     result_location,
+    resume,
     snap,
 )
 
