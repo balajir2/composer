@@ -22,14 +22,16 @@ transaction; the Cloud Task is enqueued only after the session closes.
 from typing import Any, cast
 from urllib.parse import urlencode
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import RedirectResponse
 from starlette import status
 
+from src.api._runnable import refuse_unrunnable_row
 from src.config import get_settings
 from src.db.models import ApprovalDecision
 from src.db.repos import approvals as approvals_repo
 from src.db.repos import executions as executions_repo
+from src.db.repos import workflows as workflows_repo
 from src.db.repos.executions import ExecutionRecord, PendingInstance
 from src.db.runtime import require_sessionmaker
 from src.db.types import utcnow
@@ -153,8 +155,16 @@ async def confirm_approval_email(
         return _redirect_result("invalid")
     async with sessionmaker() as session:
         execution = await executions_repo.get(session, claims.sub)
-        if not _matches_pause(execution, claims):
+        if not _matches_pause(execution, claims) or execution is None:
             return _redirect_result("invalid")
+        # Edited while paused into a workflow that cannot run: leave the pause (and the
+        # link) intact instead of recording a decision that would only fail the run.
+        workflow_row = await workflows_repo.get(session, execution.workflow_id)
+        if workflow_row is not None:
+            try:
+                refuse_unrunnable_row(workflow_row)
+            except HTTPException:
+                return _redirect_result("unrunnable")
         # The approval row and guarded transition share a transaction, so a losing transition
         # rolls the approval insert back. Its ID is carried to the later resume claim.
         approval = await approvals_repo.create(

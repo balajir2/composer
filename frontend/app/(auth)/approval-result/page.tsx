@@ -35,13 +35,21 @@ function ApprovalResultContent() {
             title: "Rejected",
             message: "Your rejection has been recorded. The workflow has stopped here.",
           }
-        : {
-            Icon: AlertTriangle,
-            color: "text-amber-600",
-            title: "Link no longer valid",
-            message:
-              "This link has expired or the decision may already have been made. If you still need to act on this, open the run in Composer directly.",
-          };
+        : status === "unrunnable"
+          ? {
+              Icon: AlertTriangle,
+              color: "text-amber-600",
+              title: "Workflow can't continue yet",
+              message:
+                "Nothing was recorded. This workflow was edited while it waited and has an unfinished step. Ask the workflow owner to finish it, then use this link again.",
+            }
+          : {
+              Icon: AlertTriangle,
+              color: "text-amber-600",
+              title: "Link no longer valid",
+              message:
+                "This link has expired or the decision may already have been made. If you still need to act on this, open the run in Composer directly.",
+            };
 
   const { Icon, color, title, message } = content;
 

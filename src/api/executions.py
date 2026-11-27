@@ -556,6 +556,12 @@ async def resume_execution(
                 detail="Execution is waiting_approval but has no _pending_approval_node.",
             )
 
+        # The workflow may have been edited while this run was paused. Refuse BEFORE
+        # recording a decision, so the pause survives: fix the workflow, then approve again.
+        workflow_row = await workflows_repo.get(session, execution.workflow_id)
+        if workflow_row is not None:
+            refuse_unrunnable_row(workflow_row)
+
         # Atomic conditional transition (P1-1): the earlier status check gives a friendly
         # error for the common case, but two near-simultaneous resumes (a double-click, two
         # reviewers racing) could both pass it. One guarded UPDATE folds the guard into the
