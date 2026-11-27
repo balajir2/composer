@@ -7,7 +7,7 @@ Reference: OAB lib/workflow/langgraph.ts:169-427.
 
 from collections import deque
 from collections.abc import Callable, Hashable, Iterable
-from typing import Any, cast
+from typing import Any, NamedTuple, cast
 
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.constants import END, START
@@ -306,11 +306,20 @@ def collect_workflow_violations(workflow: Workflow) -> list[str]:
         if len(incoming) == 1:
             continue
         if len(incoming) > 1:
-            sources = [e.source for e in incoming]
+            # Markers per incoming EDGE, not per source: an edge leaving a
+            # conditional node directly (approval --rejected--> End) carries
+            # its own (source, branch) pair, which the source node's markers
+            # do not contain (those describe how the source was reached).
+            edge_markers: list[set[tuple[str, str]]] = []
+            for e in incoming:
+                marks = set(branch_markers[e.source])
+                if nodes[e.source].type in CONDITIONAL_SOURCE_TYPES and e.branch is not None:
+                    marks.add((e.source, e.branch))
+                edge_markers.append(marks)
             if all(
-                _mutually_exclusive(branch_markers[sources[i]], branch_markers[sources[j]])
-                for i in range(len(sources))
-                for j in range(i + 1, len(sources))
+                _mutually_exclusive(edge_markers[i], edge_markers[j])
+                for i in range(len(edge_markers))
+                for j in range(i + 1, len(edge_markers))
             ):
                 continue
         violations.append(
@@ -383,17 +392,106 @@ def validate_workflow_shape(workflow: Workflow) -> None:
 
 CONDITIONAL_SOURCE_TYPES = {"if-else", "while", "user-approval", "decision"}
 
+# Names shown to the user for each conditional node type (the Designer's palette wording).
+_CONDITIONAL_DISPLAY_NAMES = {
+    "if-else": "If / Else",
+    "while": "While",
+    "user-approval": "User approval",
+    "decision": "Decision",
+}
+
+
+def required_branches(node: WorkflowNode) -> set[str] | None:
+    """Branch labels that must each have an outgoing edge, or None if `node`
+    is not a conditional source.
+
+    The single definition of "which exits does this node need": build_graph
+    (via _branch_mapping) and collect_missing_branches both use it, so the
+    save-time warning, the run gate and the compiler cannot disagree.
+    """
+    if isinstance(node, IfElseNode):
+        return {"true", "false"}
+    if isinstance(node, WhileNode):
+        return {"body", "exit"}
+    if isinstance(node, UserApprovalNode):
+        return {"approved", "rejected"}
+    if isinstance(node, DecisionNode):
+        if node.data.mode == "binary":
+            return {"true", "false"}
+        assert node.data.options is not None
+        return {o.label for o in node.data.options}
+    return None
+
+
+class MissingBranch(NamedTuple):
+    """A required branch with no outgoing edge."""
+
+    node_id: str
+    branch: str
+    message: str
+
+
+def find_missing_branches(workflow: Workflow) -> list[MissingBranch]:
+    """Every required branch with no outgoing edge, with a user-facing message.
+
+    Only absent branches are reported; mislabelled or duplicate edges stay the
+    job of collect_workflow_violations.
+    """
+    connected: dict[str, set[str]] = {}
+    for edge in workflow.edges:
+        if edge.branch is not None:
+            connected.setdefault(edge.source, set()).add(edge.branch)
+    found: list[MissingBranch] = []
+    for node in workflow.nodes:
+        required = required_branches(node)
+        if required is None:
+            continue
+        label = getattr(node.data, "label", None) or node.id
+        shown = f'"{label}"' if label == node.id else f'"{label}" ({node.id})'
+        kind = _CONDITIONAL_DISPLAY_NAMES.get(node.type, node.type)
+        for branch in sorted(required - connected.get(node.id, set())):
+            found.append(
+                MissingBranch(
+                    node.id,
+                    branch,
+                    f'{kind} step {shown} has no "{branch}" path. '
+                    f'Connect its "{branch}" handle to a step (for example End).',
+                )
+            )
+    return found
+
+
+def collect_missing_branches(workflow: Workflow) -> list[str]:
+    """One user-facing message per required branch with no outgoing edge.
+
+    Saving a half-built canvas must succeed, so this is reported as a warning
+    on save; running or publishing refuses on it (validate_workflow_runnable),
+    and the AI Builder treats it as an issue to repair.
+    """
+    return [m.message for m in find_missing_branches(workflow)]
+
+
+def validate_workflow_runnable(workflow: Workflow) -> None:
+    """Raise WorkflowValidationError if the workflow cannot run as drawn.
+
+    Gate for running and publishing. NOT part of validate_workflow_shape:
+    that one runs on every canvas save, and a half-built canvas must save.
+    """
+    missing = collect_missing_branches(workflow)
+    if missing:
+        raise WorkflowValidationError(" ".join(missing))
+
 
 def _branch_mapping(
     node: WorkflowNode,
     edges: list[WorkflowEdge],
-    required_branches: set[str],
+    required: set[str],
 ) -> dict[str, str]:
     """Build a {branch: target_node_id} mapping for a conditional source.
 
     Raises WorkflowValidationError if any edge has no branch label, duplicate
     branch labels exist, or the edge set doesn't exactly match
-    `required_branches`.
+    `required`.
     """
     out_edges = [e for e in edges if e.source == node.id]
     seen: dict[str, str] = {}
@@ -406,13 +504,13 @@ def _branch_mapping(
             raise WorkflowValidationError(
                 f"Duplicate branch {e.branch!r} on edges leaving {node.id!r}."
             )
-        if e.branch not in required_branches:
+        if e.branch not in required:
             raise WorkflowValidationError(
                 f"Edge {e.id!r} leaving {node.type} node {node.id!r} has "
-                f"unexpected branch {e.branch!r}; allowed: {sorted(required_branches)}."
+                f"unexpected branch {e.branch!r}; allowed: {sorted(required)}."
             )
         seen[e.branch] = e.target
-    missing = required_branches - seen.keys()
+    missing = required - seen.keys()
     if missing:
         raise WorkflowValidationError(
             f"{node.type} node {node.id!r} branches mismatch: "
@@ -546,7 +644,7 @@ def build_graph(
             assert isinstance(node, IfElseNode)
             mapping = cast(
                 "dict[Hashable, str]",
-                _branch_mapping(node, list(workflow.edges), {"true", "false"}),
+                _branch_mapping(node, list(workflow.edges), required_branches(node) or set()),
             )
             builder.add_conditional_edges(  # pyright: ignore[reportUnknownMemberType]
                 node.id, _route_if_else(node), mapping
@@ -555,7 +653,7 @@ def build_graph(
             assert isinstance(node, WhileNode)
             mapping = cast(
                 "dict[Hashable, str]",
-                _branch_mapping(node, list(workflow.edges), {"body", "exit"}),
+                _branch_mapping(node, list(workflow.edges), required_branches(node) or set()),
             )
             builder.add_conditional_edges(  # pyright: ignore[reportUnknownMemberType]
                 node.id, _route_while(node), mapping
@@ -564,18 +662,14 @@ def build_graph(
             assert isinstance(node, UserApprovalNode)
             mapping = cast(
                 "dict[Hashable, str]",
-                _branch_mapping(node, list(workflow.edges), {"approved", "rejected"}),
+                _branch_mapping(node, list(workflow.edges), required_branches(node) or set()),
             )
             builder.add_conditional_edges(  # pyright: ignore[reportUnknownMemberType]
                 node.id, _route_user_approval(node), mapping
             )
         elif node.type == "decision":
             assert isinstance(node, DecisionNode)
-            if node.data.mode == "binary":
-                required = {"true", "false"}
-            else:
-                assert node.data.options is not None
-                required = {o.label for o in node.data.options}
+            required = required_branches(node) or set()
             mapping = cast(
                 "dict[Hashable, str]",
                 _branch_mapping(node, list(workflow.edges), required),
@@ -595,8 +689,13 @@ def build_graph(
 
 
 __all__ = [
+    "MissingBranch",
     "WorkflowValidationError",
     "build_graph",
+    "collect_missing_branches",
     "collect_workflow_violations",
+    "find_missing_branches",
+    "required_branches",
+    "validate_workflow_runnable",
     "validate_workflow_shape",
 ]

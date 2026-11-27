@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { render } from "@testing-library/react";
 import { ReactFlowProvider } from "reactflow";
-import { COMPOSER_NODE_TYPES } from "./workflow-canvas";
+import { COMPOSER_NODE_TYPES, NodeWarningsContext } from "./workflow-canvas";
 
 function renderNode(type: string, data: Record<string, unknown>) {
   const NodeComponent = COMPOSER_NODE_TYPES[type];
@@ -44,5 +44,38 @@ describe("BranchingNode — decision choice mode", () => {
     const handles = container.querySelectorAll(".react-flow__handle[data-handleid]");
     const ids = Array.from(handles).map((h) => h.getAttribute("data-handleid"));
     expect(ids).toEqual(expect.arrayContaining(["true", "false"]));
+  });
+});
+
+describe("node warnings", () => {
+  const MESSAGE = 'User approval step "d1" has no "rejected" path.';
+
+  it("badges the offending node and carries the message", () => {
+    const NodeComponent = COMPOSER_NODE_TYPES["user-approval"]!;
+    const { getByTestId } = render(
+      <ReactFlowProvider>
+        <NodeWarningsContext.Provider value={{ d1: [MESSAGE] }}>
+          <NodeComponent
+            id="d1"
+            type="user-approval"
+            data={{}}
+            selected={false}
+            isConnectable={true}
+            xPos={0}
+            yPos={0}
+            zIndex={0}
+            dragging={false}
+          />
+        </NodeWarningsContext.Provider>
+      </ReactFlowProvider>
+    );
+    const badge = getByTestId("node-warning");
+    expect(badge).toHaveAttribute("title", MESSAGE);
+    expect(badge).toHaveAttribute("aria-label", MESSAGE);
+  });
+
+  it("shows no badge on a node without warnings", () => {
+    const { queryByTestId } = renderNode("user-approval", {});
+    expect(queryByTestId("node-warning")).toBeNull();
   });
 });

@@ -48,6 +48,10 @@ Fill every node completely; a node with empty settings does nothing at run time:
   referencing inputs with {{{{name}}}}.
 - guardrails: turn on at least one check (piiEnabled, moderationEnabled,
   jailbreakEnabled, hallucinationEnabled).
+- email: leave `emailFrom` empty unless the user explicitly gave you a sender
+  address. Never invent one: an unverified domain makes the send fail, and with
+  `emailFrom` empty the platform's verified sender is used. Fill `emailTo`,
+  `emailSubject` and `emailBody`.
 - Set `model` on agent and mcp nodes to one of the available models below.
 - Every {{{{name}}}} you use must be a start input (set_start_inputs),
   {{{{lastOutput}}}}, or a node id with '-' written as '_'.

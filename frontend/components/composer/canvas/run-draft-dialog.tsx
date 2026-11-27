@@ -18,6 +18,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { apiErrorText } from "@/lib/api/client";
 import { createExecution } from "@/lib/api/executions";
 import { startNodeSpec } from "@/lib/start-node-schema";
 import { DocumentField } from "../document-field";
@@ -90,6 +91,7 @@ export function RunDraftDialog({
   useEffect(() => {
     if (open && !prevOpenRef.current) {
       form.reset(defaultValues);
+      mutation.reset();
     }
     prevOpenRef.current = open;
     // `form` is a stable RHF object; `defaultValues` is intentionally read
@@ -214,6 +216,17 @@ export function RunDraftDialog({
               )}
             </div>
           ))}
+          {mutation.isError && (
+            // The server's own words (e.g. a required branch that is not connected):
+            // kept on screen, unlike the toast, so the user can read it and go fix the canvas.
+            <p
+              role="alert"
+              data-testid="run-refused"
+              className="border-destructive/40 bg-destructive/10 rounded-md border px-3 py-2 text-sm text-destructive"
+            >
+              {apiErrorText(mutation.error, "Failed to start execution.")}
+            </p>
+          )}
           <DialogFooter>
             <Button
               type="button"

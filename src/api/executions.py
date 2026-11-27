@@ -11,6 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.api._idempotency import find_execution_by_idempotency_key, require_same_caller
+from src.api._runnable import refuse_unrunnable_row
 from src.api.execution_status import ACTIVE_EXECUTION_STATUSES
 from src.config import get_settings
 from src.db.errors import AlreadyExists
@@ -191,6 +192,9 @@ async def create_execution(
     if replay is not None:
         require_same_caller(replay, user_id)
         return _to_execution_read(replay)
+
+    # Refuse a canvas that cannot run as drawn BEFORE any execution row exists.
+    refuse_unrunnable_row(workflow)
 
     executor = _get_executor(request)
     try:

@@ -102,3 +102,12 @@ def test_field_guide_leaves_out_secrets_and_ui_bookkeeping() -> None:
     guide = build_field_guide(NODE_CLASSES)
     for hidden in ("apiToken", "vectorDbApiKey", "nodeType"):
         assert hidden not in guide
+
+
+def test_system_prompt_tells_builder_to_leave_email_from_empty() -> None:
+    """2026-11-27: the builder invented a From on an unverified domain and the send
+    failed with a 403. The platform's verified sender is used when From is empty."""
+    prompt = build_system_prompt("(empty)", {"openai/gpt-5": None})
+    assert "emailFrom" in prompt
+    assert "empty" in prompt.split("emailFrom", 1)[1].split("\n\n", 1)[0]
+    assert "never invent" in prompt.lower()

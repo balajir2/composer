@@ -2,7 +2,7 @@
 
 import "reactflow/dist/style.css";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
 import ReactFlow, {
   Background,
   Controls,
@@ -24,6 +24,7 @@ import { PropertyPanel } from "./property-panel";
 import type { PaletteDragData } from "./tools-palette";
 import type { DesignerExecutionState } from "./designer-execution-panel";
 import { visualFor } from "./node-visuals";
+import { AlertTriangle } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // Node variants — n8n-inspired chips with an icon tile, name, and type
@@ -47,6 +48,10 @@ type NodeData = {
   tools?: string[] | string;
 };
 
+/** Messages per node id from the last save (a required branch left unconnected, ...). */
+const NO_WARNINGS: Record<string, string[]> = {};
+export const NodeWarningsContext = createContext<Record<string, string[]>>(NO_WARNINGS);
+
 type NodeChipProps = {
   type: string;
   /** React Flow's auto-generated id (agent-1, http-2, …) — shown as a
@@ -57,6 +62,7 @@ type NodeChipProps = {
 };
 
 function NodeChip({ type, id, data }: NodeChipProps) {
+  const warnings = useContext(NodeWarningsContext)[id];
   const visual = visualFor(type);
   const Icon = visual.icon;
   // Display priority: user-given Name > generic data.label > visual default.
@@ -89,6 +95,17 @@ function NodeChip({ type, id, data }: NodeChipProps) {
         )}
         <div className="text-muted-foreground/70 mt-0.5 truncate font-mono text-[9px]">{id}</div>
       </div>
+      {warnings && warnings.length > 0 && (
+        <span
+          role="img"
+          data-testid="node-warning"
+          aria-label={warnings.join(" ")}
+          title={warnings.join(" ")}
+          className="absolute -right-2 -top-2 flex size-5 items-center justify-center rounded-full bg-amber-500 text-white shadow"
+        >
+          <AlertTriangle className="size-3" />
+        </span>
+      )}
     </div>
   );
 }
@@ -298,6 +315,8 @@ interface WorkflowCanvasProps {
    *  like the transform "Test expression" section can fetch this
    *  workflow's own execution history. */
   workflowId?: string;
+  /** Server warnings by node id (from the last save); shown as a badge on the node. */
+  nodeWarnings?: Record<string, string[]>;
 }
 
 export function WorkflowCanvas({
@@ -307,6 +326,7 @@ export function WorkflowCanvas({
   onEdgesChange,
   runState,
   workflowId,
+  nodeWarnings,
 }: WorkflowCanvasProps) {
   const [nodes, setNodes, handleNodesChange] = useNodesState(initialNodes);
   const [edges, setEdges, handleEdgesChange] = useEdgesState(initialEdges);
@@ -559,70 +579,72 @@ export function WorkflowCanvas({
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex h-full w-full">
-      {/* Left sidebar — Tools palette */}
-      <ToolsPalette />
+    <NodeWarningsContext.Provider value={nodeWarnings ?? NO_WARNINGS}>
+      <div className="flex h-full w-full">
+        {/* Left sidebar — Tools palette */}
+        <ToolsPalette />
 
-      {/* Canvas center */}
-      <div
-        ref={rfWrapperRef}
-        className="relative flex-1 overflow-hidden"
-        onDrop={handleDrop}
-        onDragOver={handleDragOver}
-      >
-        <ReactFlow
-          nodes={nodes}
-          edges={edges}
-          onInit={(instance) => {
-            rfInstanceRef.current = instance;
-          }}
-          onNodesChange={handleNodesChange}
-          onEdgesChange={handleEdgesChange}
-          onConnect={handleConnect}
-          onNodeClick={handleNodeClick}
-          onNodeContextMenu={handleNodeContextMenu}
-          onEdgeContextMenu={handleEdgeContextMenu}
-          onPaneClick={() => {
-            setSelectedNodeId(null);
-            setContextMenu(null);
-          }}
-          deleteKeyCode={["Delete", "Backspace"]}
-          nodeTypes={COMPOSER_NODE_TYPES}
-          fitView
-          className="h-full w-full"
+        {/* Canvas center */}
+        <div
+          ref={rfWrapperRef}
+          className="relative flex-1 overflow-hidden"
+          onDrop={handleDrop}
+          onDragOver={handleDragOver}
         >
-          <Background gap={18} size={1.2} color="#d7d6de" />
-          <Controls className="!shadow-md" />
-        </ReactFlow>
-
-        {/* Right-click context menu */}
-        {contextMenu && (
-          <div
-            className="absolute z-50 min-w-[140px] rounded-md border bg-popover text-popover-foreground shadow-md"
-            style={{ left: contextMenu.x, top: contextMenu.y }}
-            onClick={(e) => e.stopPropagation()}
+          <ReactFlow
+            nodes={nodes}
+            edges={edges}
+            onInit={(instance) => {
+              rfInstanceRef.current = instance;
+            }}
+            onNodesChange={handleNodesChange}
+            onEdgesChange={handleEdgesChange}
+            onConnect={handleConnect}
+            onNodeClick={handleNodeClick}
+            onNodeContextMenu={handleNodeContextMenu}
+            onEdgeContextMenu={handleEdgeContextMenu}
+            onPaneClick={() => {
+              setSelectedNodeId(null);
+              setContextMenu(null);
+            }}
+            deleteKeyCode={["Delete", "Backspace"]}
+            nodeTypes={COMPOSER_NODE_TYPES}
+            fitView
+            className="h-full w-full"
           >
-            <button
-              type="button"
-              onClick={handleContextDelete}
-              className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+            <Background gap={18} size={1.2} color="#d7d6de" />
+            <Controls className="!shadow-md" />
+          </ReactFlow>
+
+          {/* Right-click context menu */}
+          {contextMenu && (
+            <div
+              className="absolute z-50 min-w-[140px] rounded-md border bg-popover text-popover-foreground shadow-md"
+              style={{ left: contextMenu.x, top: contextMenu.y }}
+              onClick={(e) => e.stopPropagation()}
             >
-              Delete {contextMenu.kind}
-            </button>
-          </div>
+              <button
+                type="button"
+                onClick={handleContextDelete}
+                className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground"
+              >
+                Delete {contextMenu.kind}
+              </button>
+            </div>
+          )}
+        </div>
+
+        {/* Right sidebar — Property panel */}
+        {selectedNode && (
+          <PropertyPanel
+            node={selectedNode}
+            allNodes={nodes}
+            onChange={handlePanelChange}
+            onClose={() => setSelectedNodeId(null)}
+            workflowId={workflowId}
+          />
         )}
       </div>
-
-      {/* Right sidebar — Property panel */}
-      {selectedNode && (
-        <PropertyPanel
-          node={selectedNode}
-          allNodes={nodes}
-          onChange={handlePanelChange}
-          onClose={() => setSelectedNodeId(null)}
-          workflowId={workflowId}
-        />
-      )}
-    </div>
+    </NodeWarningsContext.Provider>
   );
 }

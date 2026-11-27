@@ -48,6 +48,7 @@ from google.oauth2 import id_token
 from opentelemetry import context as otel_context
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.api._runnable import runnable_warnings
 from src.api.app_state import get_checkpointer, get_event_bus
 from src.config import get_settings
 from src.db.repos import cloud_storage as cloud_storage_repo
@@ -579,6 +580,15 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
         except Exception:
             logger.exception(
                 "poll_file_triggers: workflow %s has a malformed nodes field; skipping", wf.id
+            )
+            continue
+
+        # A canvas with an unconnected required branch cannot run: leave its
+        # files untouched (not moved to the error folder) until it is fixed.
+        if runnable_warnings(wf):
+            logger.warning(
+                "poll_file_triggers: workflow %s has an unconnected required branch; skipping",
+                wf.id,
             )
             continue
 

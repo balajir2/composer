@@ -201,3 +201,13 @@ def test_mcp_agent_mode_is_still_checked() -> None:
     issues = collect_completeness_issues(_wf(agent_mode), model_catalog=CATALOG)
     assert any("instructions" in i for i in issues)
     assert any("`model`" in i for i in issues)
+
+
+def test_email_without_from_is_not_reported() -> None:
+    """An empty From sends from the platform's verified sender, so it is complete."""
+    email = {
+        "id": "m",
+        "type": "email",
+        "data": {"label": "M", "emailTo": "a@example.com", "emailSubject": "s", "emailBody": "b"},
+    }
+    assert collect_completeness_issues(_wf(email)) == []
