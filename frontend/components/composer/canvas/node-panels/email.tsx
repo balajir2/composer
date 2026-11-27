@@ -43,8 +43,13 @@ export default function EmailPanel({
           id="email-from"
           value={(data.emailFrom as string) ?? ""}
           onChange={(e) => onChange({ emailFrom: e.target.value })}
-          placeholder="Reports <reports@example.com>"
+          placeholder="Empty = platform's verified sender"
         />
+        <p className="text-xs text-muted-foreground">
+          Leave empty to send from the platform&apos;s verified sender. Set it only to use your own
+          address, e.g. Reports &lt;reports@example.com&gt;, and only if that domain is verified in
+          Resend.
+        </p>
       </div>
 
       <div className="space-y-2">

@@ -36,6 +36,12 @@ def _wf(**overrides: Any) -> WorkflowRecord:
         "is_public": False,
         "is_production": True,
         "external_slug": "my-wf",
+        # A minimal valid canvas: the run gate now enforces every structural rule.
+        "nodes": [
+            {"id": "s", "type": "start", "position": {"x": 0, "y": 0}, "data": {"label": "S"}},
+            {"id": "e", "type": "end", "position": {"x": 1, "y": 0}, "data": {"label": "E"}},
+        ],
+        "edges": [{"id": "s-e", "source": "s", "target": "e"}],
     }
     base.update(overrides)
     return make_workflow(**base)

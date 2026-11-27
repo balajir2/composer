@@ -94,8 +94,17 @@ async def test_resume_approved_and_rejected_success(
     assert after["failure_code"] is None
     assert after["delivery_attempts"] == 1
     assert after["variables"] == {**paused_variables(since), "_resume_decision": decision}
+    approvals = await approvals_of(db, eid)
+    assert after["pending_attempt_approval_id"] == approvals[0]["id"]
     same_except(
-        before, after, "status", "running_since", "lease_owner", "lease_expires_at", "variables"
+        before,
+        after,
+        "status",
+        "running_since",
+        "lease_owner",
+        "lease_expires_at",
+        "variables",
+        "pending_attempt_approval_id",
     )
 
     rows = await approvals_of(db, eid)

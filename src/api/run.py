@@ -18,6 +18,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.api._idempotency import find_execution_by_idempotency_key, require_same_caller
+from src.api._runnable import refuse_unrunnable_row
 from src.api.app_state import get_event_bus
 from src.config import get_settings
 from src.db.errors import AlreadyExists
@@ -153,6 +154,11 @@ async def run_external(
     is_replay = execution is not None
 
     if execution is None:
+        # Refuse a canvas that cannot run as drawn BEFORE any execution row
+        # exists. After the replay lookup on purpose: a retry of a request that
+        # already started a run gets that run back, even if the workflow was
+        # edited since.
+        refuse_unrunnable_row(workflow)
         try:
             execution = await executor.start_execution(
                 workflow_id=workflow.id,

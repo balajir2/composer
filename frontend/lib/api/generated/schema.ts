@@ -4,6 +4,24 @@
  */
 
 export interface paths {
+    "/admin/builder-models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Builder Models */
+        get: operations["get_builder_models_admin_builder_models_get"];
+        /** Put Builder Models */
+        put: operations["put_builder_models_admin_builder_models_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin/deployment-settings": {
         parameters: {
             query?: never;
@@ -390,6 +408,43 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/builder/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Builder Models
+         * @description Models the signed-in user may pick in the Build-with-AI panel.
+         */
+        get: operations["builder_models_builder_models_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/builder/{workflow_id}/message": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Builder Message */
+        post: operations["builder_message_builder__workflow_id__message_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/cloud-storage/google-drive/authorize": {
         parameters: {
             query?: never;
@@ -669,7 +724,7 @@ export interface paths {
          *     don't leak existence.
          *
          *     Cascade scope:
-         *       - `approvals` rows — via Prisma `onDelete: Cascade` on the FK.
+         *       - `approvals` rows — via the FK `ON DELETE CASCADE`.
          *       - LangGraph checkpoints + checkpoint_writes — keyed by
          *         `thread_id` (no FK to execution by design — checkpoints can
          *         outlive the execution row in some scenarios).  We delete
@@ -728,15 +783,9 @@ export interface paths {
          *     documents `canceled`, but nothing ever wrote it — worker shutdown
          *     persisted `failed`, and there was no user-triggered cancel operation.
          *
-         *     Known limitation: this marks the row canceled but does not preempt an
-         *     in-flight claim-and-run delivery (P1-2: execution is driven by
-         *     POST /internal/claim-and-run, not a request-bound background task) —
-         *     LangGraph has no cooperative-cancellation hook wired through the
-         *     executor today. Any side-effecting node (Jira, email, HTTP) already
-         *     in flight when cancel is called still
-         *     completes; this stops the row from looking permanently stuck and gives
-         *     callers a real terminal status to key off, which is the concrete gap
-         *     this closes. True mid-node preemption is a separate, larger change.
+         *     Execution stops cooperatively at graph boundaries. A side-effecting
+         *     node already in flight may still complete; cancellation releases the
+         *     attempt's ownership without deleting its checkpoints or pending writes.
          */
         post: operations["cancel_execution_executions__execution_id__cancel_post"];
         delete?: never;
@@ -756,6 +805,40 @@ export interface paths {
         put?: never;
         /** Resume Execution */
         post: operations["resume_execution_executions__execution_id__resume_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executions/{execution_id}/observability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Observability */
+        get: operations["get_observability_executions__execution_id__observability_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/executions/{execution_id}/attempts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Attempts */
+        get: operations["get_attempts_executions__execution_id__attempts_get"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -826,14 +909,15 @@ export interface paths {
          * Sweep
          * @description Cloud-Scheduler-triggered maintenance sweep (P1-2/P1-4).
          *
-         *     Runs all four sweep functions exactly once per invocation, reading
-         *     thresholds from settings. Intentionally NOT wired into the
+         *     Runs lease, orphan, and retention maintenance once per invocation;
+         *     approval expiry runs only with a positive timeout. Reads thresholds
+         *     from settings. Intentionally NOT wired into the
          *     in-process `_sweeper_loop` — see this module's docstring and the
          *     2026-07-14 revision note in Task 11 of
          *     docs/superpowers/plans/2026-07-13-durable-execution-cloud-tasks.md.
          *
          *     Each of the four sweeps is isolated in its own try/except: this
-         *     endpoint is now the SOLE production trigger for lease recovery and
+         *     endpoint is now the SOLE production trigger for lease expiry and
          *     retention cleanup (no in-process background loop to fall back on —
          *     see the module docstring), so one sweep raising (e.g. a transient DB
          *     error on its initial query) must not prevent the other three from
@@ -1098,6 +1182,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/ready": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Readiness
+         * @description Return readiness state without exposing exception or connection details.
+         */
+        get: operations["readiness_ready_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/internal/test-users/me": {
         parameters: {
             query?: never;
@@ -1307,6 +1411,19 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AdminExecutionDiagnostics */
+        AdminExecutionDiagnostics: {
+            /** Threadid */
+            threadId: string;
+            /** Failurecode */
+            failureCode?: string | null;
+            /** Deliveryattempts */
+            deliveryAttempts: number;
+            /** Leaseowner */
+            leaseOwner?: string | null;
+            /** Leaseexpiresat */
+            leaseExpiresAt?: string | null;
+        };
         /**
          * AdminFlagsRequest
          * @description Admin-only partial update for visibility / production flags.
@@ -1491,6 +1608,55 @@ export interface components {
             /** File */
             file: string;
         };
+        /** BuilderMessageRequest */
+        BuilderMessageRequest: {
+            /** Message */
+            message: string;
+            /** Sessionid */
+            sessionId?: string | null;
+            /** Executionid */
+            executionId?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Expectedupdatedat */
+            expectedUpdatedAt?: string | null;
+        };
+        /** BuilderMessageResponse */
+        BuilderMessageResponse: {
+            /** Sessionid */
+            sessionId: string;
+            /** Events */
+            events: {
+                [key: string]: unknown;
+            }[];
+            /** Reply */
+            reply: string;
+            /** Workflow */
+            workflow: unknown;
+            /** Validation Errors */
+            validation_errors: string[];
+        };
+        /** BuilderModelOption */
+        BuilderModelOption: {
+            /** Id */
+            id: string;
+            /** Label */
+            label: string;
+        };
+        /** BuilderModelSettings */
+        BuilderModelSettings: {
+            /** Defaultmodel */
+            defaultModel: string;
+            /** Allowedmodels */
+            allowedModels: string[];
+        };
+        /** BuilderModelsResponse */
+        BuilderModelsResponse: {
+            /** Default */
+            default: string;
+            /** Models */
+            models: components["schemas"]["BuilderModelOption"][];
+        };
         /**
          * BulkDeleteRequest
          * @description Body for `POST /executions/delete-bulk`.
@@ -1644,6 +1810,62 @@ export interface components {
             itemVar: string;
             /** Initial */
             initial?: unknown | null;
+        };
+        /** DecisionExample */
+        DecisionExample: {
+            /** Input */
+            input: string;
+            /** Result */
+            result?: boolean | null;
+            /** Option */
+            option?: string | null;
+        };
+        /** DecisionNode */
+        DecisionNode: {
+            /** Id */
+            id: string;
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            type: "decision";
+            position: components["schemas"]["Position"];
+            data: components["schemas"]["DecisionNodeData"];
+        };
+        /** DecisionNodeData */
+        DecisionNodeData: {
+            /** Label */
+            label: string;
+            /** Nodetype */
+            nodeType?: string | null;
+            /** Nodename */
+            nodeName?: string | null;
+            /**
+             * Mode
+             * @enum {string}
+             */
+            mode: "binary" | "choice";
+            /** Instruction */
+            instruction: string;
+            /** Examples */
+            examples?: components["schemas"]["DecisionExample"][] | null;
+            /** Options */
+            options?: components["schemas"]["DecisionOption"][] | null;
+            /** Truelabel */
+            trueLabel?: string | null;
+            /** Falselabel */
+            falseLabel?: string | null;
+            /** Model */
+            model?: string | null;
+            /** Provider */
+            provider?: string | null;
+        };
+        /** DecisionOption */
+        DecisionOption: {
+            /** Label */
+            label: string;
+            /** Description */
+            description?: string | null;
         };
         /** DownloadPdfNode */
         DownloadPdfNode: {
@@ -1837,6 +2059,55 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** ExecutionAttemptPage */
+        ExecutionAttemptPage: {
+            /** Historyavailable */
+            historyAvailable: boolean;
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+            /** Items */
+            items: components["schemas"]["ExecutionAttemptRead"][];
+        };
+        /** ExecutionAttemptRead */
+        ExecutionAttemptRead: {
+            /** Id */
+            id: string;
+            /** Ordinal */
+            ordinal: number;
+            /**
+             * Startedat
+             * Format: date-time
+             */
+            startedAt: string;
+            /** Endedat */
+            endedAt: string | null;
+            /** Result */
+            result: string;
+            /** Triggerkind */
+            triggerKind: string;
+            /** Failureguidance */
+            failureGuidance: string | null;
+            /** Hasapproval */
+            hasApproval: boolean;
+            /** Leaseowner */
+            leaseOwner?: string | null;
+            /** Leaseexpiresat */
+            leaseExpiresAt?: string | null;
+            /** Failurecode */
+            failureCode?: string | null;
+            /** Recoverysourceattemptid */
+            recoverySourceAttemptId?: string | null;
+            /** Approvalid */
+            approvalId?: string | null;
+            /** Actoruserid */
+            actorUserId?: string | null;
+            /** Reasonref */
+            reasonRef?: string | null;
+        };
         /** ExecutionCreate */
         ExecutionCreate: {
             /** Workflowid */
@@ -1856,6 +2127,37 @@ export interface components {
             limit: number;
             /** Offset */
             offset: number;
+        };
+        /** ExecutionObservabilityRead */
+        ExecutionObservabilityRead: {
+            /** Executionid */
+            executionId: string;
+            /** Workflowid */
+            workflowId: string;
+            /** Status */
+            status: string;
+            /** Currentnodeid */
+            currentNodeId: string | null;
+            /**
+             * Startedat
+             * Format: date-time
+             */
+            startedAt: string;
+            /** Completedat */
+            completedAt: string | null;
+            /** Historyavailable */
+            historyAvailable: boolean;
+            /** Attemptcount */
+            attemptCount: number;
+            /** Failureguidance */
+            failureGuidance: string | null;
+            recoveryState: components["schemas"]["RecoveryAssessmentState"];
+            /**
+             * Observedat
+             * Format: date-time
+             */
+            observedAt: string;
+            adminDiagnostics?: components["schemas"]["AdminExecutionDiagnostics"] | null;
         };
         /** ExecutionRead */
         ExecutionRead: {
@@ -1883,6 +2185,8 @@ export interface components {
             output?: unknown;
             /** Error */
             error?: string | null;
+            /** Failurecode */
+            failureCode?: string | null;
             /** Startedat */
             startedAt: unknown;
             /** Completedat */
@@ -2670,6 +2974,11 @@ export interface components {
             /** Y */
             y: number;
         };
+        /**
+         * RecoveryAssessmentState
+         * @enum {string}
+         */
+        RecoveryAssessmentState: "not_applicable" | "ineligible_canceled" | "assessment_required";
         /** RefreshRequest */
         RefreshRequest: {
             /** Refreshtoken */
@@ -3189,7 +3498,7 @@ export interface components {
             /** Estimatedtime */
             estimatedTime?: string | null;
             /** Nodes */
-            nodes: (components["schemas"]["StartNode"] | components["schemas"]["EndNode"] | components["schemas"]["NoteNode"] | components["schemas"]["FileTriggerNode"] | components["schemas"]["FileWriteNode"] | components["schemas"]["AgentNode"] | components["schemas"]["McpNode"] | components["schemas"]["IfElseNode"] | components["schemas"]["WhileNode"] | components["schemas"]["UserApprovalNode"] | components["schemas"]["TransformNode"] | components["schemas"]["DataTransformNode"] | components["schemas"]["SetStateNode"] | components["schemas"]["ExtractNode"] | components["schemas"]["HttpNode"] | components["schemas"]["GuardrailsNode"] | components["schemas"]["VectorDbNode"] | components["schemas"]["GammaAiNode"] | components["schemas"]["EmailNode"] | components["schemas"]["ArcadeNode"] | components["schemas"]["JoinChunksNode"] | components["schemas"]["ConfluenceNode"] | components["schemas"]["JiraNode"] | components["schemas"]["DownloadPdfNode"] | components["schemas"]["JoinNode"])[];
+            nodes: (components["schemas"]["StartNode"] | components["schemas"]["EndNode"] | components["schemas"]["NoteNode"] | components["schemas"]["FileTriggerNode"] | components["schemas"]["FileWriteNode"] | components["schemas"]["AgentNode"] | components["schemas"]["McpNode"] | components["schemas"]["IfElseNode"] | components["schemas"]["DecisionNode"] | components["schemas"]["WhileNode"] | components["schemas"]["UserApprovalNode"] | components["schemas"]["TransformNode"] | components["schemas"]["DataTransformNode"] | components["schemas"]["SetStateNode"] | components["schemas"]["ExtractNode"] | components["schemas"]["HttpNode"] | components["schemas"]["GuardrailsNode"] | components["schemas"]["VectorDbNode"] | components["schemas"]["GammaAiNode"] | components["schemas"]["EmailNode"] | components["schemas"]["ArcadeNode"] | components["schemas"]["JoinChunksNode"] | components["schemas"]["ConfluenceNode"] | components["schemas"]["JiraNode"] | components["schemas"]["DownloadPdfNode"] | components["schemas"]["JoinNode"])[];
             /** Edges */
             edges: components["schemas"]["WorkflowEdge"][];
             /** Version */
@@ -3285,6 +3594,8 @@ export interface components {
             createdAt: unknown;
             /** Updatedat */
             updatedAt: unknown;
+            /** Warnings */
+            warnings?: components["schemas"]["WorkflowWarning"][];
         };
         /**
          * WorkflowUpdate
@@ -3307,7 +3618,7 @@ export interface components {
             /** Estimatedtime */
             estimatedTime?: string | null;
             /** Nodes */
-            nodes: (components["schemas"]["StartNode"] | components["schemas"]["EndNode"] | components["schemas"]["NoteNode"] | components["schemas"]["FileTriggerNode"] | components["schemas"]["FileWriteNode"] | components["schemas"]["AgentNode"] | components["schemas"]["McpNode"] | components["schemas"]["IfElseNode"] | components["schemas"]["WhileNode"] | components["schemas"]["UserApprovalNode"] | components["schemas"]["TransformNode"] | components["schemas"]["DataTransformNode"] | components["schemas"]["SetStateNode"] | components["schemas"]["ExtractNode"] | components["schemas"]["HttpNode"] | components["schemas"]["GuardrailsNode"] | components["schemas"]["VectorDbNode"] | components["schemas"]["GammaAiNode"] | components["schemas"]["EmailNode"] | components["schemas"]["ArcadeNode"] | components["schemas"]["JoinChunksNode"] | components["schemas"]["ConfluenceNode"] | components["schemas"]["JiraNode"] | components["schemas"]["DownloadPdfNode"] | components["schemas"]["JoinNode"])[];
+            nodes: (components["schemas"]["StartNode"] | components["schemas"]["EndNode"] | components["schemas"]["NoteNode"] | components["schemas"]["FileTriggerNode"] | components["schemas"]["FileWriteNode"] | components["schemas"]["AgentNode"] | components["schemas"]["McpNode"] | components["schemas"]["IfElseNode"] | components["schemas"]["DecisionNode"] | components["schemas"]["WhileNode"] | components["schemas"]["UserApprovalNode"] | components["schemas"]["TransformNode"] | components["schemas"]["DataTransformNode"] | components["schemas"]["SetStateNode"] | components["schemas"]["ExtractNode"] | components["schemas"]["HttpNode"] | components["schemas"]["GuardrailsNode"] | components["schemas"]["VectorDbNode"] | components["schemas"]["GammaAiNode"] | components["schemas"]["EmailNode"] | components["schemas"]["ArcadeNode"] | components["schemas"]["JoinChunksNode"] | components["schemas"]["ConfluenceNode"] | components["schemas"]["JiraNode"] | components["schemas"]["DownloadPdfNode"] | components["schemas"]["JoinNode"])[];
             /** Edges */
             edges: components["schemas"]["WorkflowEdge"][];
             /** Version */
@@ -3326,11 +3637,26 @@ export interface components {
             isProduction?: boolean | null;
             /** Externalslug */
             externalSlug?: string | null;
-            /**
-             * Expectedupdatedat
-             * Format: date-time
-             */
+            /** Expectedupdatedat */
             expectedUpdatedAt?: string | null;
+        };
+        /**
+         * WorkflowWarning
+         * @description A non-blocking problem with a saved canvas: it saves, but cannot run yet or may misbehave.
+         */
+        WorkflowWarning: {
+            /**
+             * Code
+             * @default missing_branch
+             * @enum {string}
+             */
+            code: "missing_branch" | "unknown_variable" | "join_mixed_inputs" | "join_lane_escapes" | "join_collision";
+            /** Nodeid */
+            nodeId: string;
+            /** Branch */
+            branch?: string | null;
+            /** Message */
+            message: string;
         };
     };
     responses: never;
@@ -3341,6 +3667,59 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    get_builder_models_admin_builder_models_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderModelSettings"];
+                };
+            };
+        };
+    };
+    put_builder_models_admin_builder_models_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BuilderModelSettings"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderModelSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_settings_admin_deployment_settings_get: {
         parameters: {
             query?: never;
@@ -4094,6 +4473,61 @@ export interface operations {
             };
         };
     };
+    builder_models_builder_models_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderModelsResponse"];
+                };
+            };
+        };
+    };
+    builder_message_builder__workflow_id__message_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                workflow_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BuilderMessageRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderMessageResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     google_drive_authorize_cloud_storage_google_drive_authorize_get: {
         parameters: {
             query?: never;
@@ -4242,7 +4676,7 @@ export interface operations {
     list_available_models_llm_models_available_get: {
         parameters: {
             query: {
-                /** @description Provider id: anthropic|openai|google|groq|deepseek|qwen */
+                /** @description Provider id: anthropic|openai|google|groq|deepseek|qwen|typesafe */
                 provider: string;
                 /** @description Bypass the 5-minute in-process cache and re-hit the provider. */
                 refresh?: boolean;
@@ -4858,6 +5292,71 @@ export interface operations {
             };
         };
     };
+    get_observability_executions__execution_id__observability_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                execution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionObservabilityRead"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_attempts_executions__execution_id__attempts_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path: {
+                execution_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExecutionAttemptPage"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     evaluate_transform_expression_expressions_evaluate_transform_post: {
         parameters: {
             query?: never;
@@ -5437,6 +5936,28 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    readiness_ready_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
                 };
             };
         };

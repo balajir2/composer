@@ -17,10 +17,16 @@ import psycopg
 import pytest
 from sqlalchemy.engine import make_url
 
+from src.db.health import alembic_head_revision
 from src.db.url import to_libpq_url
 from tests.integration.db.schema_catalog import snapshot
 
 pytestmark = pytest.mark.integration
+
+# The golden catalogs pin the schema at 0001 and 0004. Tests that compare against
+# golden_0004 migrate to exactly that revision, so later revisions (0005 onward) don't move
+# them; test_fresh_database_at_head_matches_the_models covers head itself.
+BASE_HEAD = "0004_langgraph_saver_tables"
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 GOLDEN = REPO_ROOT / "tests" / "fixtures" / "schema"
@@ -177,7 +183,7 @@ def test_fresh_database_at_head_matches_the_models(scratch_db: str) -> None:
 
 def test_a_database_prisma_built_is_adopted_without_ddl(scratch_db: str) -> None:
     _prisma_built(scratch_db)
-    _ok(scratch_db, "upgrade", "head")
+    _ok(scratch_db, "upgrade", BASE_HEAD)
     assert snapshot(scratch_db) == _golden("0004_langgraph_saver_tables")
 
 
@@ -238,7 +244,7 @@ def test_tables_in_other_schemas_do_not_count_as_non_empty(scratch_db: str) -> N
         conn.execute("CREATE SCHEMA other")
         conn.execute("CREATE TABLE other.stuff (id int)")
     _ok(scratch_db, "upgrade", "head")
-    assert _versions(scratch_db) == [("0004_langgraph_saver_tables",)]
+    assert _versions(scratch_db) == [(alembic_head_revision(),)]
 
 
 def test_an_existing_database_past_the_baseline_never_reruns_it(scratch_db: str) -> None:
@@ -246,13 +252,13 @@ def test_an_existing_database_past_the_baseline_never_reruns_it(scratch_db: str)
     _ok(scratch_db, "upgrade", "0002_idempotency_per_user")
     with psycopg.connect(scratch_db, autocommit=True) as conn:
         conn.execute("DROP TABLE _prisma_migrations")  # 0001 must not look at it again
-    _ok(scratch_db, "upgrade", "head")
+    _ok(scratch_db, "upgrade", BASE_HEAD)
     assert snapshot(scratch_db) == _golden("0004_langgraph_saver_tables")
 
 
 def test_a_database_at_0003_upgrades_to_head(scratch_db: str) -> None:
     _ok(scratch_db, "upgrade", "0003_assignment_user_fks")
-    _ok(scratch_db, "upgrade", "head")
+    _ok(scratch_db, "upgrade", BASE_HEAD)
     assert snapshot(scratch_db) == _golden("0004_langgraph_saver_tables")
 
 
@@ -300,14 +306,14 @@ def test_a_rolled_back_row_followed_by_a_successful_retry_is_adopted(scratch_db:
     names = _names()
     _prisma_built(scratch_db)
     _history_row(scratch_db, names[3], finished=False, rolled_back=True)
-    _ok(scratch_db, "upgrade", "head")
+    _ok(scratch_db, "upgrade", BASE_HEAD)
     assert snapshot(scratch_db) == _golden("0004_langgraph_saver_tables")
 
 
 def test_a_rolled_back_unknown_row_is_ignored(scratch_db: str) -> None:
     _prisma_built(scratch_db)
     _history_row(scratch_db, "20261201000000_abandoned", finished=False, rolled_back=True)
-    _ok(scratch_db, "upgrade", "head")
+    _ok(scratch_db, "upgrade", BASE_HEAD)
     assert snapshot(scratch_db) == _golden("0004_langgraph_saver_tables")
 
 
@@ -334,7 +340,7 @@ def test_everything_lands_in_public_even_if_a_role_schema_exists(scratch_db: str
     assert role
     with psycopg.connect(scratch_db, autocommit=True) as conn:
         conn.execute(f'CREATE SCHEMA "{role}"')  # pyright: ignore[reportCallIssue, reportArgumentType]
-    _ok(scratch_db, "upgrade", "head")
+    _ok(scratch_db, "upgrade", BASE_HEAD)
     with psycopg.connect(scratch_db, autocommit=True) as conn:
         in_role = conn.execute(
             "SELECT count(*) FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace"

@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -12,6 +13,7 @@ from src.db.models import ApprovalDecision
 from src.db.repos import approvals as approvals_repo
 from src.db.repos import executions as executions_repo
 from src.db.repos import users as users_repo
+from src.db.repos import workflows as workflows_repo
 from src.db.repos.executions import ExecutionRecord
 from src.engine.events import ExecutionEvent
 from src.main import create_app
@@ -66,6 +68,7 @@ def _execution_row(**overrides: Any) -> ExecutionRecord:
         "node_results": {},
         "variables": {
             "_pending_approval_node": "ua",
+            "_pending_approval_since": "2026-04-21T00:00:00+00:00",
             "_pending_approval_prompt": "Approve?",
         },
         "input": None,
@@ -120,8 +123,9 @@ def _client_with_execution(
         log.append("db:resume")
         return True
 
-    async def _approve(*_a: Any, **_k: Any) -> None:
+    async def _approve(*_a: Any, **_k: Any) -> SimpleNamespace:
         log.append("db:approval")
+        return SimpleNamespace(id="approval-row-1")
 
     async def _commit() -> None:
         log.append("db:commit")
@@ -135,6 +139,8 @@ def _client_with_execution(
     monkeypatch.setattr(executions_repo, "get", repos.get)
     monkeypatch.setattr(executions_repo, "resume_if_waiting", repos.resume)
     monkeypatch.setattr(approvals_repo, "create", repos.approval_create)
+    # The runnable gate looks the workflow up; these tests are about the resume itself.
+    monkeypatch.setattr(workflows_repo, "get", AsyncMock(return_value=None))
     # Dev-mode user 'dev' resolves to a member (the live user check runs with a sessionmaker).
     monkeypatch.setattr(users_repo, "get_by_id", AsyncMock(return_value=make_user(id="dev")))
     return TestClient(app), repos
@@ -199,6 +205,21 @@ def test_resume_missing_pending_node_500(monkeypatch: pytest.MonkeyPatch) -> Non
     assert resp.status_code == 500
 
 
+def test_resume_without_pending_since_stamp_still_resumes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Waiting rows created before _pending_approval_since existed stay resumable: the guard
+    falls back to status-only (expected_pending=None) instead of returning 500."""
+    client, repos = _client_with_execution(
+        monkeypatch, _execution_row(variables={"_pending_approval_node": "ua"})
+    )
+    resp = client.post("/executions/e1/resume", json={"decision": "approved"})
+    assert resp.status_code == 200, resp.text
+    repos.resume.assert_awaited_once()
+    assert repos.resume.await_args.kwargs["expected_pending"] is None
+    assert resp.json()["status"] == "running"
+
+
 def test_resume_invalid_decision_422(monkeypatch: pytest.MonkeyPatch) -> None:
     client, _ = _client_with_execution(monkeypatch, _execution_row())
     resp = client.post(
@@ -219,7 +240,8 @@ def test_resume_marks_execution_running_before_scheduling_task(
     repos.resume.assert_awaited_once()
     assert repos.resume.await_args.args[1] == "e1"
     assert repos.resume.await_args.kwargs["decision"] == "approved"
-    assert "expected_pending" not in repos.resume.await_args.kwargs  # in-app resume: status-only
+    assert repos.resume.await_args.kwargs["expected_pending"].node_id == "ua"
+    assert repos.resume.await_args.kwargs["approval_id"] == "approval-row-1"
     assert resp.json()["status"] == "running"
 
 
@@ -241,9 +263,8 @@ def test_resume_passes_resume_time_to_the_guarded_transition(
 def test_resume_race_loses_when_the_guarded_transition_wins_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """P1-1: the atomic waiting_approval -> running transition is the real concurrency guard. If a
-    concurrent request already flipped the row, this request must not create a second audit row
-    or enqueue a second resumption: 409, no side effects."""
+    """A losing guarded transition leaves its newly inserted approval uncommitted and does not
+    enqueue a second resumption."""
     events: list[str] = []
     client, repos = _client_with_execution(monkeypatch, _execution_row(), events=events)
     repos.resume.side_effect = None
@@ -252,7 +273,8 @@ def test_resume_race_loses_when_the_guarded_transition_wins_nothing(
     monkeypatch.setattr("src.api.executions.enqueue_execution", enqueue)
     resp = client.post("/executions/e1/resume", json={"decision": "approved"})
     assert resp.status_code == 409
-    repos.approval_create.assert_not_awaited()
+    repos.approval_create.assert_awaited_once()
+    assert "db:commit" not in events
     enqueue.assert_not_awaited()
 
 
@@ -281,8 +303,8 @@ def test_resume_enqueues_only_after_commit_and_after_the_session_closes(
     # The auth dependency's live user check opens its own short session first.
     assert events[-6:] == [
         "session:enter",
-        "db:resume",
         "db:approval",
+        "db:resume",
         "db:commit",
         "session:exit",
         "net:enqueue",

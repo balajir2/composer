@@ -117,6 +117,150 @@ async def test_email_resend_error_raises(httpx_mock: HTTPXMock) -> None:  # pyri
         await EmailExecutor(_node()).arun(initial_state())
 
 
+def _unverified_body(domain: str = "flowcomposer.com") -> dict[str, Any]:
+    return {
+        "message": f"The {domain} domain is not verified. Please, add and verify your domain.",
+        "name": "validation_error",
+        "statusCode": 403,
+    }
+
+
+async def _sent_payload(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+    node: EmailNode,
+    state: Any = None,
+) -> dict[str, Any]:
+    import json
+
+    httpx_mock.add_response(method="POST", url=f"{RESEND_API_BASE}/emails", json={"id": "e1"})
+    await EmailExecutor(node).arun(state or initial_state())
+    req = httpx_mock.get_request()  # pyright: ignore[reportUnknownMemberType]
+    assert req is not None
+    return json.loads(req.content)
+
+
+@pytest.mark.parametrize("blank", ["", "   ", " \n\t "])
+async def test_blank_from_uses_platform_sender(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+    monkeypatch: pytest.MonkeyPatch,
+    blank: str,
+) -> None:
+    from src.config import get_settings
+
+    monkeypatch.setenv("RESEND_FROM_EMAIL", "platform@verified.example")
+    get_settings.cache_clear()
+
+    payload = await _sent_payload(httpx_mock, _node(emailFrom=blank))
+
+    assert payload["from"] == "platform@verified.example"
+
+
+async def test_from_that_substitutes_to_blank_uses_platform_sender(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.config import get_settings
+
+    monkeypatch.setenv("RESEND_FROM_EMAIL", "platform@verified.example")
+    get_settings.cache_clear()
+
+    state = initial_state()
+    state["variables"]["sender"] = "  "
+    payload = await _sent_payload(httpx_mock, _node(emailFrom="{{sender}}"), state)
+
+    assert payload["from"] == "platform@verified.example"
+
+
+async def test_explicit_from_is_kept(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.config import get_settings
+
+    monkeypatch.setenv("RESEND_FROM_EMAIL", "platform@verified.example")
+    get_settings.cache_clear()
+
+    payload = await _sent_payload(httpx_mock, _node())
+
+    assert payload["from"] == "Composer <reports@example.com>"
+
+
+async def test_invalid_explicit_from_still_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.config import get_settings
+
+    monkeypatch.setenv("RESEND_FROM_EMAIL", "platform@verified.example")
+    get_settings.cache_clear()
+
+    with pytest.raises(EmailNodeError, match="invalid from address"):
+        await EmailExecutor(_node(emailFrom="not-an-address")).arun(initial_state())
+
+
+async def test_blank_from_and_blank_setting_raises(monkeypatch: pytest.MonkeyPatch) -> None:
+    from src.config import get_settings
+
+    monkeypatch.setenv("RESEND_FROM_EMAIL", "")
+    get_settings.cache_clear()
+
+    with pytest.raises(EmailNodeError, match="no from address"):
+        await EmailExecutor(_node(emailFrom="  ")).arun(initial_state())
+
+
+async def test_unverified_domain_gives_actionable_error(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{RESEND_API_BASE}/emails",
+        status_code=403,
+        json=_unverified_body(),
+    )
+
+    with pytest.raises(EmailNodeError) as excinfo:
+        await EmailExecutor(_node(emailFrom="Team <hello@flowcomposer.com>")).arun(initial_state())
+
+    message = str(excinfo.value)
+    assert "'email-1'" in message
+    assert "flowcomposer.com" in message
+    assert "403" in message
+    assert "Domains" in message
+    assert "clear" in message.lower()
+    assert "re_test" not in message
+    assert "Bearer" not in message
+    assert "Authorization" not in message
+
+
+async def test_unverified_domain_taken_from_error_not_from_address(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{RESEND_API_BASE}/emails",
+        status_code=403,
+        json=_unverified_body("other.example"),
+    )
+
+    with pytest.raises(EmailNodeError, match=r"other.example"):
+        await EmailExecutor(_node()).arun(initial_state())
+
+
+async def test_other_4xx_keeps_original_message(
+    httpx_mock: HTTPXMock,  # pyright: ignore[reportUnknownParameterType]
+) -> None:
+    httpx_mock.add_response(
+        method="POST",
+        url=f"{RESEND_API_BASE}/emails",
+        status_code=422,
+        json={"message": "Invalid `to` field.", "name": "validation_error", "statusCode": 422},
+    )
+
+    with pytest.raises(EmailNodeError) as excinfo:
+        await EmailExecutor(_node()).arun(initial_state())
+
+    assert "Resend API error 422" in str(excinfo.value)
+    assert "Invalid `to` field." in str(excinfo.value)
+    assert "Domains" not in str(excinfo.value)
+
+
 async def test_executor_is_registered() -> None:
     import src.executors.email  # noqa: F401  # pyright: ignore[reportUnusedImport]
     from src.executors.base import build_executor

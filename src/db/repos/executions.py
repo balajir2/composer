@@ -18,8 +18,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.api.execution_status import ACTIVE_EXECUTION_STATUSES_SORTED
 from src.db.errors import add_or_already_exists
-from src.db.models import ExecutionEvent, WorkflowExecution
+from src.db.models import (
+    AttemptResult,
+    AttemptTriggerKind,
+    ExecutionAttempt,
+    ExecutionEvent,
+    WorkflowExecution,
+)
 from src.db.repos import checkpoints as checkpoints_repo
+from src.db.repos import execution_attempts as execution_attempts_repo
 from src.db.repos._sql import in_array
 
 ACTIVE_STATUSES: tuple[str, ...] = tuple(ACTIVE_EXECUTION_STATUSES_SORTED)
@@ -53,6 +60,8 @@ class ExecutionRecord:
 class ClaimedExecution:
     id: str
     variables: Any
+    attempt_id: str
+    attempt_ordinal: int
 
 
 @dataclass(frozen=True)
@@ -250,9 +259,15 @@ async def claim(
 ) -> ClaimedExecution | None:
     """Take the lease on an unleased execution of the kind's status, or None.
 
-    One statement: the row is locked with ``FOR UPDATE SKIP LOCKED`` in a subquery and the
-    eligibility is re-checked by the outer ``UPDATE``, so exactly one concurrent caller wins
-    and nobody waits. Must be the first statements of the caller's transaction (the
+    One statement: the row is locked with ``FOR NO KEY UPDATE SKIP LOCKED`` in a subquery and
+    the eligibility is re-checked by the outer ``UPDATE``, so exactly one concurrent caller wins
+    and nobody waits. ``NO KEY UPDATE``, not ``UPDATE``: the claim changes no key column, and a
+    plain ``FOR UPDATE`` conflicts with the ``FOR KEY SHARE`` lock that any open transaction
+    inserting a row that references this execution holds (the foreign-key check). A losing
+    concurrent resume inserts its approval row before its guarded ``UPDATE`` loses, so the
+    winner's claim skipped the row, answered ``already_claimed`` and stranded it ``running``
+    without a lease. Claims, cancels and sweeps still exclude each other: they all write the
+    row, and ``NO KEY UPDATE`` conflicts with every row write. Must be the first statements of the caller's transaction (the
     ``SET LOCAL`` timeouts last until it ends). The caller must wrap the transaction in
     ``asyncio.timeout(10)``, commit before running anything, and know that
     ``SET LOCAL statement_timeout`` (10 s) applies to every later statement of the same
@@ -267,7 +282,10 @@ async def claim(
         WorkflowExecution.lease_owner.is_(None),
     )
     locked = (
-        select(WorkflowExecution.id).where(*eligible).with_for_update(skip_locked=True).limit(1)
+        select(WorkflowExecution.id)
+        .where(*eligible)
+        .with_for_update(skip_locked=True, key_share=True)  # FOR NO KEY UPDATE SKIP LOCKED
+        .limit(1)
     )
     row = (
         await session.execute(
@@ -280,11 +298,39 @@ async def claim(
                 running_since=now,
                 delivery_attempts=WorkflowExecution.delivery_attempts + 1,
             )
-            .returning(WorkflowExecution.id, WorkflowExecution.variables)
+            .returning(
+                WorkflowExecution.id,
+                WorkflowExecution.variables,
+                WorkflowExecution.pending_attempt_approval_id,
+            )
             .execution_options(synchronize_session=False)
         )
     ).one_or_none()
-    return None if row is None else ClaimedExecution(id=row.id, variables=row.variables)
+    if row is None:
+        return None
+    attempt = await execution_attempts_repo.open_for_claim(
+        session,
+        execution_id=row.id,
+        started_at=now,
+        lease_owner=worker_id,
+        lease_expires_at=lease_expires_at,
+        trigger_kind=AttemptTriggerKind(kind),
+        approval_id=row.pending_attempt_approval_id,
+        actor_user_id=None,
+    )
+    if row.pending_attempt_approval_id is not None:
+        await session.execute(
+            sa_update(WorkflowExecution)
+            .where(WorkflowExecution.id == row.id)
+            .values(pending_attempt_approval_id=None)
+            .execution_options(synchronize_session=False)
+        )
+    return ClaimedExecution(
+        id=row.id,
+        variables=row.variables,
+        attempt_id=attempt.id,
+        attempt_ordinal=attempt.ordinal,
+    )
 
 
 async def _guarded(
@@ -322,29 +368,121 @@ async def cancel_if_active(
     session: AsyncSession, execution_id: str, *, error: str, now: datetime
 ) -> bool:
     """G2: queued/running/waiting_approval -> canceled, dropping any lease."""
-    return await _guarded(
+    won = await _guarded(
         session,
         execution_id,
         (WorkflowExecution.status.in_(ACTIVE_STATUSES),),
         {"status": "canceled", "error": error, "completed_at": now, **_NO_LEASE},
     )
+    if not won:
+        return False
+    open_attempt_id = await session.scalar(
+        select(ExecutionAttempt.id)
+        .where(ExecutionAttempt.execution_id == execution_id, ExecutionAttempt.ended_at.is_(None))
+        .limit(1)
+    )
+    if open_attempt_id is not None:
+        closed = await execution_attempts_repo.close_open(
+            session,
+            execution_id=execution_id,
+            attempt_id=open_attempt_id,
+            result=AttemptResult.CANCELED,
+            failure_code=None,
+            ended_at=now,
+        )
+        if not closed:
+            raise RuntimeError("canceled execution had an open attempt that could not be closed")
+    return True
+
+
+def _worker_attempt_guard(attempt_id: str | None) -> ColumnElement[bool]:
+    """Fence an outcome to its open attempt; allow old rows without one."""
+    open_attempt = select(ExecutionAttempt.id).where(
+        ExecutionAttempt.execution_id == WorkflowExecution.id,
+        ExecutionAttempt.ended_at.is_(None),
+    )
+    if attempt_id is not None:
+        open_attempt = open_attempt.where(ExecutionAttempt.id == attempt_id)
+        return open_attempt.exists()
+    return ~open_attempt.exists()
+
+
+async def _worker_transition(
+    session: AsyncSession,
+    execution_id: str,
+    *,
+    attempt_id: str | None,
+    values: dict[str, Any],
+    result: AttemptResult,
+    failure_code: str | None,
+    now: datetime,
+) -> bool:
+    if attempt_id is None:
+        # Claims serialize on the execution row. Lock it first, then use a new
+        # READ COMMITTED statement so an attempt committed by a claim we waited
+        # for is visible before the legacy transition decides it has no owner.
+        parent_id = await session.scalar(
+            select(WorkflowExecution.id)
+            .where(WorkflowExecution.id == execution_id)
+            .with_for_update()
+        )
+        if parent_id is None:
+            return False
+        open_attempt_id = await session.scalar(
+            select(ExecutionAttempt.id)
+            .where(
+                ExecutionAttempt.execution_id == execution_id,
+                ExecutionAttempt.ended_at.is_(None),
+            )
+            .limit(1)
+        )
+        if open_attempt_id is not None:
+            return False
+
+    won = await _guarded(
+        session,
+        execution_id,
+        (WorkflowExecution.status == "running", _worker_attempt_guard(attempt_id)),
+        values,
+    )
+    if won and attempt_id is not None:
+        closed = await execution_attempts_repo.close_open(
+            session,
+            execution_id=execution_id,
+            attempt_id=attempt_id,
+            result=result,
+            failure_code=failure_code,
+            ended_at=now,
+        )
+        if not closed:
+            raise RuntimeError("guarded worker outcome won but attempt closure lost")
+    return won
 
 
 async def mark_failed_if_running(
-    session: AsyncSession, execution_id: str, *, error: str, failure_code: str, now: datetime
+    session: AsyncSession,
+    execution_id: str,
+    *,
+    error: str,
+    failure_code: str,
+    now: datetime,
+    attempt_id: str | None = None,
 ) -> bool:
     """G6/G9: running -> failed, dropping the lease."""
-    return await _guarded(
+    return await _worker_transition(
         session,
         execution_id,
-        (WorkflowExecution.status == "running",),
-        {
+        attempt_id=attempt_id,
+        values={
             "status": "failed",
             "error": error,
             "failure_code": failure_code,
             "completed_at": now,
             **_NO_LEASE,
         },
+        result=AttemptResult.FAILED,
+        failure_code=failure_code,
+        now=now,
     )
 
 
@@ -356,13 +494,14 @@ async def mark_completed_if_running(
     variables: Any,
     node_results: Any,
     now: datetime,
+    attempt_id: str | None = None,
 ) -> bool:
     """G7: running -> completed. An absent output is stored as JSON null."""
-    return await _guarded(
+    return await _worker_transition(
         session,
         execution_id,
-        (WorkflowExecution.status == "running",),
-        {
+        attempt_id=attempt_id,
+        values={
             "status": "completed",
             "output": _json(output),
             "variables": variables,
@@ -370,18 +509,31 @@ async def mark_completed_if_running(
             "completed_at": now,
             **_NO_LEASE,
         },
+        result=AttemptResult.COMPLETED,
+        failure_code=None,
+        now=now,
     )
 
 
 async def mark_waiting_approval_if_running(
-    session: AsyncSession, execution_id: str, *, variables: Any
+    session: AsyncSession,
+    execution_id: str,
+    *,
+    variables: Any,
+    now: datetime | None = None,
+    attempt_id: str | None = None,
 ) -> bool:
     """G8: running -> waiting_approval with the pending markers; ``completed_at`` untouched."""
-    return await _guarded(
+    if attempt_id is not None and now is None:
+        raise ValueError("now is required when closing an attempt")
+    return await _worker_transition(
         session,
         execution_id,
-        (WorkflowExecution.status == "running",),
-        {"status": "waiting_approval", "variables": variables, **_NO_LEASE},
+        attempt_id=attempt_id,
+        values={"status": "waiting_approval", "variables": variables, **_NO_LEASE},
+        result=AttemptResult.PAUSED,
+        failure_code=None,
+        now=now or datetime.now().astimezone(),
     )
 
 
@@ -391,6 +543,37 @@ def _orphan_guard(cutoff: datetime) -> tuple[ColumnElement[bool], ...]:
         WorkflowExecution.lease_expires_at.is_(None),
         WorkflowExecution.running_since < cutoff,
     )
+
+
+async def _close_swept_attempt(
+    session: AsyncSession,
+    execution_id: str,
+    *,
+    failure_code: str,
+    now: datetime,
+) -> None:
+    """Close the attempt made terminal by a winning sweeper transition, if any.
+
+    Legacy running rows and unclaimed resume rows legitimately have no attempt.
+    The execution update is the CAS winner and holds the row lock while this
+    transaction finds and closes its open attempt.
+    """
+    attempt_id = await session.scalar(
+        select(ExecutionAttempt.id)
+        .where(ExecutionAttempt.execution_id == execution_id, ExecutionAttempt.ended_at.is_(None))
+        .limit(1)
+    )
+    if attempt_id is not None:
+        closed = await execution_attempts_repo.close_open(
+            session,
+            execution_id=execution_id,
+            attempt_id=attempt_id,
+            result=AttemptResult.FAILED,
+            failure_code=failure_code,
+            ended_at=now,
+        )
+        if not closed:
+            raise RuntimeError("winning sweeper transition lost its open attempt")
 
 
 async def list_orphaned_running(
@@ -409,7 +592,7 @@ async def fail_orphaned_if_unchanged(
     session: AsyncSession, execution_id: str, *, cutoff: datetime, error: str, now: datetime
 ) -> bool:
     """G10: fail a still-orphaned row; a claim or renewal since the scan wins."""
-    return await _guarded(
+    won = await _guarded(
         session,
         execution_id,
         _orphan_guard(cutoff),
@@ -421,6 +604,9 @@ async def fail_orphaned_if_unchanged(
             **_NO_LEASE,
         },
     )
+    if won:
+        await _close_swept_attempt(session, execution_id, failure_code="orphaned_running", now=now)
+    return won
 
 
 async def list_waiting_approval(session: AsyncSession) -> list[ExecutionRecord]:
@@ -470,7 +656,7 @@ async def fail_expired_lease_if_unchanged(
     now: datetime,
 ) -> bool:
     """G12: fail a running row whose lease expiry is still the scanned value."""
-    return await _guarded(
+    won = await _guarded(
         session,
         execution_id,
         (
@@ -485,6 +671,9 @@ async def fail_expired_lease_if_unchanged(
             **_NO_LEASE,
         },
     )
+    if won:
+        await _close_swept_attempt(session, execution_id, failure_code="lease_expired", now=now)
+    return won
 
 
 async def claim_orphans_by_email(session: AsyncSession, email: str, user_id: str) -> int:
@@ -528,6 +717,7 @@ async def resume_if_waiting(
     decision: str,
     now: datetime,
     expected_pending: PendingInstance | None = None,
+    approval_id: str | None = None,
 ) -> bool:
     """G3/G4: waiting_approval -> running, stamping ``_resume_decision`` in the same statement.
 
@@ -559,6 +749,7 @@ async def resume_if_waiting(
                 ),
                 JSONB,
             ),
+            **({"pending_attempt_approval_id": approval_id} if approval_id is not None else {}),
         )
         .returning(WorkflowExecution.id)
         .execution_options(synchronize_session=False)

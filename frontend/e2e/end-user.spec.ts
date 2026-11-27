@@ -16,15 +16,29 @@ test.afterEach(async () => {
   await cleanupTestUsers();
 });
 
-// Minimal Start→End workflow that completes immediately (no LLM required).
+// Approval pause/resume creates two durable attempts without an LLM.
 const MINIMAL_WORKFLOW_BODY = {
   name: "PW Smoke Workflow",
   description: "Created by Playwright end-user spec",
   nodes: [
     { id: "s", type: "start", position: { x: 0, y: 0 }, data: { label: "Start" } },
+    {
+      id: "approval",
+      type: "user-approval",
+      position: { x: 200, y: 0 },
+      data: {
+        label: "Approval",
+        approvalMessage: "Please approve",
+        approverEmail: "approver@example.com",
+      },
+    },
     { id: "e", type: "end", position: { x: 400, y: 0 }, data: { label: "End" } },
   ],
-  edges: [{ id: "e1", source: "s", target: "e" }],
+  edges: [
+    { id: "e1", source: "s", target: "approval" },
+    { id: "e2", source: "approval", target: "e", branch: "approved" },
+    { id: "e3", source: "approval", target: "e", branch: "rejected" },
+  ],
   isTemplate: false,
   isPublic: true,
   isProduction: true,
@@ -45,7 +59,7 @@ async function createAndPublishWorkflow(accessToken: string): Promise<string> {
   return body.id;
 }
 
-test("end-user can run a published workflow and see the result", async ({ page }) => {
+test("end-user can run a published workflow and see the result", async ({ page, request }) => {
   // 1. Bootstrap: create user + workflow via API
   const user = await createTestUser();
   const workflowId = await createAndPublishWorkflow(user.accessToken);
@@ -70,10 +84,37 @@ test("end-user can run a published workflow and see the result", async ({ page }
   await expect(page).toHaveURL(/\/runs\/.+\/executions\/.+/, { timeout: 15_000 });
 
   // 6. Wait for execution page to render heading
-  await expect(page.locator("h2")).toContainText("Execution", { timeout: 10_000 });
+  await expect(page.getByRole("heading", { name: "Execution", exact: true })).toBeVisible({
+    timeout: 10_000,
+  });
+  await expect(page.getByRole("heading", { name: "Execution status", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Review", exact: true })).toBeVisible({
+    timeout: 30_000,
+  });
+  await page.getByRole("button", { name: "Review", exact: true }).click();
+  await page.getByRole("button", { name: "Approve", exact: true }).click();
 
   // 7. Wait for a terminal status badge (completed | failed) to appear.
   //    The ExecutionProgress component renders a Badge with the status text.
   const statusBadge = page.locator("[data-slot=badge]").first();
-  await expect(statusBadge).toContainText(/completed|failed/, { timeout: 30_000 });
+  await expect(statusBadge).toContainText("completed", { timeout: 30_000 });
+  await expect(page.getByRole("heading", { name: "Attempt 1", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Attempt 2", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Administrator diagnostics" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /recover/i })).toHaveCount(0);
+
+  const executionId = page.url().split("/").pop();
+  const ownerHeaders = { Authorization: `Bearer ${user.accessToken}` };
+  const ownerSummary = await request.get(`${apiUrl}/executions/${executionId}/observability`, {
+    headers: ownerHeaders,
+  });
+  expect(ownerSummary.status()).toBe(200);
+  expect(await ownerSummary.json()).not.toHaveProperty("adminDiagnostics");
+  const unrelated = await createTestUser();
+  for (const suffix of ["", "/observability", "/attempts?limit=50&offset=0"]) {
+    const denied = await request.get(`${apiUrl}/executions/${executionId}${suffix}`, {
+      headers: { Authorization: `Bearer ${unrelated.accessToken}` },
+    });
+    expect(denied.status()).toBe(404);
+  }
 });

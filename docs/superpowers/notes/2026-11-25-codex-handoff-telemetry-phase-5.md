@@ -60,3 +60,14 @@ Phase 6 (branch `feat/sqlalchemy-phase-6`, plan `docs/superpowers/plans/2026-11-
 - `scripts/**`, `frontend/scripts/**`, `CLAUDE.md`
 
 **Must not add:** any `prisma` or `asyncpg` import, `app.state.db` assignment or `NEEDS_LEGACY_PRISMA` marker; do not rely on `_prisma_migrations` existing or on `prisma migrate deploy` in a test. After phase 6 Task 6 the boundary test fails on any of these.
+
+## Closing note, 2026-11-27: Claude finished this branch
+
+Claude took over `feat/telemetry-phase-5-attempts` on 2026-11-27, rebased it onto main after SQLAlchemy phase 6, reviewed it, fixed the findings and completed the documentation. **Codex has nothing further to do on this branch.** Do not push to it or open a competing PR.
+
+What changed against this note while Claude finished it:
+
+- The migration is `0005_execution_attempts` (down revision `0004_langgraph_saver_tables`), not the `0004` named in earlier drafts.
+- The attempts work, the observability API and the UI ship together on this one branch.
+- Bugs found and fixed, review-gate table, skipped follow-ups and pending items (final full-run counts, PR number): see the Outcome sections of `docs/superpowers/plans/2026-11-25-telemetry-phase-5-attempts.md` and `docs/superpowers/plans/2026-11-26-execution-observability-ui.md`.
+- Recovery transitions (telemetry Task 7.2) and the audit ledger remain future work and are not part of this branch.

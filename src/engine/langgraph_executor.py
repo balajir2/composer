@@ -58,6 +58,16 @@ class CheckpointSyncFailed(Exception):
     """Bringing a thread forward or probing its checkpoint failed; old-table rows survive."""
 
 
+class CheckpointIncompatible(Exception):
+    """A paused run's saved Join progress does not fit the workflow as it is now."""
+
+
+_CHECKPOINT_INCOMPATIBLE_MESSAGE = (
+    "The workflow was changed while this run was paused, in a way that the run cannot "
+    "continue from (a Join now waits for different paths). Start a new run."
+)
+
+
 def _transition_succeeded(execution_id: str, intended_status: str, updated: int) -> bool:
     """Report a lost compare-and-set without exposing execution payloads."""
     if updated != 1:
@@ -220,7 +230,31 @@ class LangGraphExecutor:
         probe: Any = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
         return await self.checkpointer.aget_tuple(probe) is not None
 
-    async def _mark_completed(self, execution_id: str, final_state: dict[str, Any]) -> bool:
+    async def _assert_barriers_carry_over(self, compiled: Any, thread_id: str) -> None:
+        """Refuse a resume whose saved Join progress has no channel in the compiled graph.
+
+        A barrier Join keeps its progress in a `join:<lanes>:<join>` channel of the
+        checkpoint. Resume compiles the LIVE workflow, so an edit that changes the
+        Join's lanes while the run is paused renames that channel; LangGraph would
+        then drop the progress and the Join would never fire, yet the run would
+        end looking complete.
+        """
+        probe: Any = {"configurable": {"thread_id": thread_id, "checkpoint_ns": ""}}
+        head = await self.checkpointer.aget_tuple(probe)
+        checkpoint = getattr(head, "checkpoint", None)
+        if not isinstance(checkpoint, dict):
+            return
+        values = cast("dict[str, Any]", checkpoint).get("channel_values")
+        channels = getattr(compiled, "channels", None)
+        if not isinstance(values, dict) or channels is None:
+            return
+        for name, value in cast("dict[str, Any]", values).items():
+            if name.startswith("join:") and value and name not in channels:
+                raise CheckpointIncompatible(_CHECKPOINT_INCOMPATIBLE_MESSAGE)
+
+    async def _mark_completed(
+        self, execution_id: str, final_state: dict[str, Any], *, attempt_id: str | None = None
+    ) -> bool:
         """Persist completion results only while the execution is running."""
         final_vars: dict[str, Any] = final_state.get("variables") or {}
         final_outputs: dict[str, Any] = final_state.get("final_outputs") or {}
@@ -247,6 +281,7 @@ class LangGraphExecutor:
                 variables=final_vars,
                 node_results=final_state.get("node_results") or {},
                 now=utcnow(),
+                attempt_id=attempt_id,
             )
             await session.commit()
         updated = 1 if won else 0
@@ -258,6 +293,8 @@ class LangGraphExecutor:
         pending_info: dict[str, Any],
         existing_vars: dict[str, Any] | None,
         pending_since: str,
+        *,
+        attempt_id: str | None = None,
     ) -> bool:
         """Persist waiting_approval status + pending node/prompt into variables.
 
@@ -276,14 +313,19 @@ class LangGraphExecutor:
 
         async with self.sessionmaker() as session:
             won = await executions_repo.mark_waiting_approval_if_running(
-                session, execution_id, variables=merged
+                session, execution_id, variables=merged, now=utcnow(), attempt_id=attempt_id
             )
             await session.commit()
         updated = 1 if won else 0
         return _transition_succeeded(execution_id, "waiting_approval", updated)
 
     async def _mark_failed(
-        self, execution_id: str, exc: Exception, *, failure_code: str = "execution_error"
+        self,
+        execution_id: str,
+        exc: Exception,
+        *,
+        failure_code: str = "execution_error",
+        attempt_id: str | None = None,
     ) -> bool:
         """Persist failure details only while the execution is running."""
         async with self.sessionmaker() as session:
@@ -293,6 +335,7 @@ class LangGraphExecutor:
                 error=f"{type(exc).__name__}: {exc}",
                 failure_code=failure_code,
                 now=utcnow(),
+                attempt_id=attempt_id,
             )
             await session.commit()
         updated = 1 if won else 0
@@ -311,7 +354,7 @@ class LangGraphExecutor:
                 ) from exc
             raise
 
-    async def run(self, execution_id: str) -> None:
+    async def run(self, execution_id: str, *, attempt_id: str | None = None) -> None:
         """Drive the compiled graph to completion and persist results.
 
         Exceptions are caught here — they're recorded on the execution row so
@@ -343,7 +386,7 @@ class LangGraphExecutor:
                     existing_vars = final_state["variables"]
                 pending_since = datetime.now(UTC).isoformat()
                 if await self._mark_waiting_approval(
-                    execution_id, pending_info, existing_vars, pending_since
+                    execution_id, pending_info, existing_vars, pending_since, attempt_id=attempt_id
                 ):
                     await send_approval_email(
                         execution_id=execution_id,
@@ -365,7 +408,7 @@ class LangGraphExecutor:
                     )
                 return
 
-            if await self._mark_completed(execution_id, final_state):
+            if await self._mark_completed(execution_id, final_state, attempt_id=attempt_id):
                 await self._emit(
                     "workflow_completed",
                     execution_id,
@@ -377,11 +420,13 @@ class LangGraphExecutor:
             return
         except _ExecutionDeadlineExceeded as exc:
             logger.warning("Execution %s timed out", execution_id)
-            if await self._mark_failed(execution_id, exc, failure_code="execution_timeout"):
+            if await self._mark_failed(
+                execution_id, exc, failure_code="execution_timeout", attempt_id=attempt_id
+            ):
                 await self._emit("workflow_completed", execution_id, {"status": "failed"})
         except Exception as exc:
             logger.exception("Execution %s failed", execution_id)
-            if await self._mark_failed(execution_id, exc):
+            if await self._mark_failed(execution_id, exc, attempt_id=attempt_id):
                 # _emit is self-guarding (never raises) — no outer try/except needed.
                 await self._emit(
                     "workflow_completed",
@@ -389,7 +434,9 @@ class LangGraphExecutor:
                     {"status": "failed"},
                 )
 
-    async def resume(self, execution_id: str, decision: str) -> None:
+    async def resume(
+        self, execution_id: str, decision: str, *, attempt_id: str | None = None
+    ) -> None:
         """Continue a paused execution with a user decision (approved/rejected).
 
         Loads the checkpoint from the official Postgres saver, first copying it from the old tables
@@ -423,6 +470,7 @@ class LangGraphExecutor:
                 raise CheckpointMissing(execution.id)
             await self._emit("workflow_started", execution_id, {"status": "running"})
             compiled, _state, lg_config = await self._prepare_compiled(execution)
+            await self._assert_barriers_carry_over(compiled, execution.thread_id)
 
             final_state = await self._invoke_with_timeout(
                 compiled.ainvoke(
@@ -440,7 +488,7 @@ class LangGraphExecutor:
                     existing_vars = final_state["variables"]
                 pending_since = datetime.now(UTC).isoformat()
                 if await self._mark_waiting_approval(
-                    execution_id, pending_info, existing_vars, pending_since
+                    execution_id, pending_info, existing_vars, pending_since, attempt_id=attempt_id
                 ):
                     await send_approval_email(
                         execution_id=execution_id,
@@ -462,7 +510,7 @@ class LangGraphExecutor:
                     )
                 return
 
-            if await self._mark_completed(execution_id, final_state):
+            if await self._mark_completed(execution_id, final_state, attempt_id=attempt_id):
                 await self._emit(
                     "workflow_completed",
                     execution_id,
@@ -476,18 +524,32 @@ class LangGraphExecutor:
             return
         except CheckpointMissing as exc:
             logger.error("Execution %s has no checkpoint to resume", execution_id)
-            if await self._mark_failed(execution_id, exc, failure_code="checkpoint_missing"):
+            if await self._mark_failed(
+                execution_id, exc, failure_code="checkpoint_missing", attempt_id=attempt_id
+            ):
+                await self._emit("workflow_completed", execution_id, {"status": "failed"})
+        except CheckpointIncompatible as exc:
+            logger.error(
+                "Execution %s cannot resume: its Join progress no longer fits", execution_id
+            )
+            if await self._mark_failed(
+                execution_id, exc, failure_code="checkpoint_incompatible", attempt_id=attempt_id
+            ):
                 await self._emit("workflow_completed", execution_id, {"status": "failed"})
         except CheckpointSyncFailed as exc:
-            if await self._mark_failed(execution_id, exc, failure_code="checkpoint_sync_failed"):
+            if await self._mark_failed(
+                execution_id, exc, failure_code="checkpoint_sync_failed", attempt_id=attempt_id
+            ):
                 await self._emit("workflow_completed", execution_id, {"status": "failed"})
         except _ExecutionDeadlineExceeded as exc:
             logger.warning("Execution %s timed out during resume", execution_id)
-            if await self._mark_failed(execution_id, exc, failure_code="execution_timeout"):
+            if await self._mark_failed(
+                execution_id, exc, failure_code="execution_timeout", attempt_id=attempt_id
+            ):
                 await self._emit("workflow_completed", execution_id, {"status": "failed"})
         except Exception as exc:
             logger.exception("Execution %s failed during resume", execution_id)
-            if await self._mark_failed(execution_id, exc):
+            if await self._mark_failed(execution_id, exc, attempt_id=attempt_id):
                 # _emit is self-guarding (never raises) — no outer try/except needed.
                 await self._emit(
                     "workflow_completed",

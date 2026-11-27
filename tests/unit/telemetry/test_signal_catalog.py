@@ -53,6 +53,25 @@ def test_catalog_is_valid() -> None:
     validate(json.loads(text.split("```json\n", 1)[1].split("\n```", 1)[0]))
 
 
+def test_catalog_documents_log_exception_fields_and_privacy_rule() -> None:
+    text = CATALOG.read_text(encoding="utf-8")
+    section = text.split("## Log exception fields", 1)[1].split("## Span names", 1)[0]
+    for field in (
+        "exception.type",
+        "exception.chain",
+        "exception.frames",
+        "exception.root_frames",
+    ):
+        assert f"`{field}`" in section
+    assert (
+        "15 innermost" in section
+        and "10 innermost" in section
+        and "at most 5" in section
+        and "4096" in section
+    )
+    assert "message (`str(exc)`)" in section and "never emitted" in section
+
+
 def test_catalog_declares_provider_outcomes_and_websocket_instruments() -> None:
     text = CATALOG.read_text(encoding="utf-8")
     contract = json.loads(text.split("```json\n", 1)[1].split("\n```", 1)[0])

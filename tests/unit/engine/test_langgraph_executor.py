@@ -6,6 +6,7 @@ right fields on completion/failure.
 """
 
 import asyncio
+import inspect
 from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any, cast
@@ -46,6 +47,7 @@ def _resume_finds_a_checkpoint(monkeypatch: pytest.MonkeyPatch) -> None:  # pyri
         "src.engine.langgraph_executor.bring_forward", AsyncMock(return_value=False)
     )
     monkeypatch.setattr(LangGraphExecutor, "_has_checkpoint", AsyncMock(return_value=True))
+    monkeypatch.setattr(LangGraphExecutor, "_assert_barriers_carry_over", AsyncMock())
 
 
 @pytest.fixture(autouse=True)
@@ -1322,14 +1324,22 @@ async def test_status_transition_compares_running_and_clears_attempt(
                     "variables": {"lastOutput": "previous"},
                     "node_results": {"end": {"output": "result"}},
                 },
+                attempt_id="attempt-1",
             )
         elif status == "waiting_approval":
             transitioned = await executor._mark_waiting_approval(  # pyright: ignore[reportPrivateUsage]
-                "ex1", {"node_id": "ua", "prompt": "Approve?"}, {"saved": "value"}, "pause-1"
+                "ex1",
+                {"node_id": "ua", "prompt": "Approve?"},
+                {"saved": "value"},
+                "pause-1",
+                attempt_id="attempt-1",
             )
         else:
             transitioned = await executor._mark_failed(  # pyright: ignore[reportPrivateUsage]
-                "ex1", RuntimeError("private error"), failure_code="execution_timeout"
+                "ex1",
+                RuntimeError("private error"),
+                failure_code="execution_timeout",
+                attempt_id="attempt-1",
             )
 
     assert transitioned is expected
@@ -1339,6 +1349,7 @@ async def test_status_transition_compares_running_and_clears_attempt(
     assert _fake.commits == 1
     data = _fake.updates[0]
     assert data["execution_id"] == "ex1"
+    assert data["attempt_id"] == "attempt-1"
     assert data["status"] == status
     if status == "completed":
         assert data["output"] == "result"
@@ -1395,9 +1406,9 @@ async def test_status_transition_gates_events_and_approval_email(
     monkeypatch.setattr("src.engine.langgraph_executor.send_approval_email", send_email)
 
     if method == "run":
-        await executor.run("ex1")
+        await executor.run("ex1", attempt_id="attempt-1")
     else:
-        await executor.resume("ex1", "approved")
+        await executor.resume("ex1", "approved", attempt_id="attempt-1")
 
     assert len(_fake.updates) == 1
     expected_events = [("workflow_started", "running")]
@@ -1539,15 +1550,18 @@ async def test_graph_timeout_persists_guarded_failure(
     monkeypatch.setattr(executor, "_mark_failed", mark_failed)
 
     if method == "run":
-        await executor.run("ex1")
+        await executor.run("ex1", attempt_id="attempt-1")
     else:
-        await executor.resume("ex1", "approved")
+        await executor.resume("ex1", "approved", attempt_id="attempt-1")
 
     mark_failed.assert_awaited_once()
     assert mark_failed.await_args is not None
     assert mark_failed.await_args.args[0] == "ex1"
     assert isinstance(mark_failed.await_args.args[1], TimeoutError)
-    assert mark_failed.await_args.kwargs == {"failure_code": "execution_timeout"}
+    assert mark_failed.await_args.kwargs == {
+        "failure_code": "execution_timeout",
+        "attempt_id": "attempt-1",
+    }
     assert invocation_cancelled
     compiled.aget_state.assert_not_awaited()
     assert len(_fake.updates) == 1
@@ -1596,3 +1610,10 @@ async def test_dependency_timeout_is_execution_error(
         ("workflow_started", "running"),
         ("workflow_completed", "failed"),
     ]
+
+
+def test_worker_entrypoints_accept_keyword_only_attempt_identity() -> None:
+    for method in (LangGraphExecutor.run, LangGraphExecutor.resume):
+        parameter = inspect.signature(method).parameters["attempt_id"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.annotation == str | None

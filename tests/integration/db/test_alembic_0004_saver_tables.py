@@ -24,6 +24,7 @@ from src.db.url import to_libpq_url
 pytestmark = pytest.mark.integration
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
+THIS = "0004_langgraph_saver_tables"
 PREV = "0003_assignment_user_fks"
 TABLES = ("checkpoint_migrations", "checkpoints", "checkpoint_blobs", "checkpoint_writes")
 
@@ -96,15 +97,22 @@ def test_downgrade_and_upgrade_round_trip() -> None:
         _alembic("upgrade", "head")
 
 
-def test_downgrade_refuses_while_a_checkpoint_exists() -> None:
+def _at_this_revision() -> None:
+    # Later revisions (0005 onward) sit on top of 0004; step down to exactly 0004 so the
+    # downgrade under test is 0004's own.
     _alembic("upgrade", "head")
+    _alembic("downgrade", THIS)
+
+
+def test_downgrade_refuses_while_a_checkpoint_exists() -> None:
+    _at_this_revision()
     try:
         with _conn() as conn:
             conn.execute(
                 "INSERT INTO checkpoints (thread_id, checkpoint_id, checkpoint) "
                 "VALUES ('t-0004', 'c1', '{}')"
             )
-        failed = _run_alembic("downgrade", "-1")
+        failed = _run_alembic("downgrade", PREV)
         assert failed.returncode != 0
         assert "1 checkpoints exist" in failed.stdout + failed.stderr
         assert _existing_tables() == set(TABLES)  # nothing half-dropped
@@ -117,9 +125,9 @@ def test_downgrade_refuses_while_a_checkpoint_exists() -> None:
 def test_downgrade_fails_fast_when_a_saver_table_is_locked() -> None:
     blocker = psycopg.connect(os.environ["TEST_DATABASE_URL"])
     try:
-        _alembic("upgrade", "head")
+        _at_this_revision()
         blocker.execute("LOCK TABLE checkpoint_blobs IN ROW EXCLUSIVE MODE")
-        blocked = _run_alembic("downgrade", "-1")
+        blocked = _run_alembic("downgrade", PREV)
         assert blocked.returncode != 0
         assert "lock timeout" in (blocked.stdout + blocked.stderr).lower()
         assert _existing_tables() == set(TABLES)

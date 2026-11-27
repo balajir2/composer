@@ -1,19 +1,31 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useParams } from "next/navigation";
 import { AlertCircle, CheckCircle2, Clock, Loader2 } from "lucide-react";
-import { getExecution } from "@/lib/api/executions";
+import {
+  getExecution,
+  getExecutionObservability,
+  listExecutionAttempts,
+} from "@/lib/api/executions";
 import { ExecutionProgress } from "@/components/composer/execution-progress";
 import { ExecutionResult } from "@/components/composer/execution-result";
 import { ApproveDialog } from "@/components/composer/approve-dialog";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyState } from "@/components/composer/empty-state";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { ExecutionLifecycleSummary } from "@/components/composer/execution-lifecycle-summary";
+import { ExecutionAttemptTimeline } from "@/components/composer/execution-attempt-timeline";
+import { AdminExecutionDiagnostics } from "@/components/composer/admin-execution-diagnostics";
+import { ComposerApiError } from "@/lib/api/client";
+import type { ComposerEvent } from "@/lib/ws";
+import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 
-const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
+const ACTIVE_STATES = new Set(["pending", "queued", "running", "waiting_approval"]);
+const TERMINAL_STATES = new Set(["completed", "failed", "canceled"]);
+const REFRESH_DEBOUNCE_MS = 300;
 
 type NodeResult = {
   node_id?: string;
@@ -38,31 +50,69 @@ export default function ExecutionPage() {
   const queryClient = useQueryClient();
   const [finalStatus, setFinalStatus] = useState<string | null>(null);
   const [finalOutput, setFinalOutput] = useState<unknown>(null);
+  const previousStatus = useRef<string>();
 
   const {
     data: execution,
     isLoading,
     isError,
+    error,
   } = useQuery({
     queryKey: ["execution", executionId],
     queryFn: () => getExecution(executionId),
-    // Keep polling until BOTH status is terminal AND output is resolved.
-    // Stopping on status alone leaves a window where the WS terminal event
-    // pinned status="completed" but the persisted output hadn't been
-    // fetched yet — the row sat untouched until window-focus refetch
-    // (~minutes), showing the user "didn't set a final output" in the
-    // meantime even though the DB row is correct.
-    refetchInterval:
-      finalStatus &&
-      TERMINAL_STATES.has(finalStatus) &&
-      finalOutput !== null &&
-      finalOutput !== undefined
-        ? false
-        : 2000,
+    refetchInterval: (query) =>
+      ACTIVE_STATES.has(finalStatus ?? query.state.data?.status ?? "") ? 2000 : false,
   });
+
+  const pollInterval =
+    execution && ACTIVE_STATES.has(finalStatus ?? execution.status) ? 5000 : false;
+  const summary = useQuery({
+    queryKey: ["execution-observability", executionId],
+    queryFn: () => getExecutionObservability(executionId),
+    refetchInterval: pollInterval,
+    retry: false,
+  });
+  const limit = 50;
+  const offset = 0;
+  const attempts = useQuery({
+    queryKey: ["execution-attempts", executionId, limit, offset],
+    queryFn: () => listExecutionAttempts(executionId, { limit, offset }),
+    refetchInterval: pollInterval,
+    retry: false,
+  });
+  // Only lifecycle events change the durable summary and attempts; per-node events are covered
+  // by the active-status polling. A reconnect replays many events at once, so coalesce them into
+  // one trailing refresh instead of three refetches per event.
+  const refreshTimer = useRef<ReturnType<typeof setTimeout>>();
+  const refreshExecution = useCallback(
+    (ev: ComposerEvent) => {
+      if (!ev.type.startsWith("workflow_") && !ev.type.startsWith("approval_")) return;
+      clearTimeout(refreshTimer.current);
+      refreshTimer.current = setTimeout(() => {
+        void queryClient.invalidateQueries({ queryKey: ["execution", executionId] });
+        void queryClient.invalidateQueries({
+          queryKey: ["execution-observability", executionId],
+        });
+        void queryClient.invalidateQueries({ queryKey: ["execution-attempts", executionId] });
+      }, REFRESH_DEBOUNCE_MS);
+    },
+    [executionId, queryClient]
+  );
+  useEffect(() => () => clearTimeout(refreshTimer.current), []);
 
   useEffect(() => {
     if (!execution) return;
+    // A missed terminal socket event must still fetch the final durable
+    // lifecycle and attempts before polling stops.
+    if (
+      ACTIVE_STATES.has(previousStatus.current ?? "") &&
+      TERMINAL_STATES.has(execution.status) &&
+      finalStatus === null
+    ) {
+      void queryClient.invalidateQueries({ queryKey: ["execution-observability", executionId] });
+      void queryClient.invalidateQueries({ queryKey: ["execution-attempts", executionId] });
+    }
+    previousStatus.current = execution.status;
     // Pin the status the first time we see a terminal value from the polled
     // row.  WS-delivered terminal status arrives via onTerminal below.
     if (TERMINAL_STATES.has(execution.status) && finalStatus === null) {
@@ -75,24 +125,20 @@ export default function ExecutionPage() {
     if (finalOutput === null && execution.output !== null && execution.output !== undefined) {
       setFinalOutput(execution.output);
     }
-  }, [execution, finalStatus, finalOutput]);
+  }, [execution, finalStatus, finalOutput, executionId, queryClient]);
 
-  // When the WS terminal event arrives, force one immediate refetch so we
-  // pull the persisted output without waiting for the next 2s poll.  The
-  // backend's executor awaits the DB persist before emitting the terminal
-  // event, so by the time this fires the output is guaranteed to be in
-  // the row.
-  const handleTerminal = useCallback(
-    (s: string, out?: unknown) => {
-      setFinalStatus(s);
-      if (out !== undefined) setFinalOutput(out);
-      void queryClient.invalidateQueries({ queryKey: ["execution", executionId] });
-    },
-    [executionId, queryClient]
-  );
+  // The shared event callback invalidates persisted state; retain WS output
+  // immediately while that final fetch is in flight.
+  const handleTerminal = useCallback((s: string, out?: unknown) => {
+    setFinalStatus(s);
+    if (out !== undefined) setFinalOutput(out);
+  }, []);
 
   if (isLoading) return <Skeleton className="h-64 w-full" />;
-  if (isError || !execution) {
+  const notFound = [error, summary.error, attempts.error].some(
+    (error) => error instanceof ComposerApiError && error.status === 404
+  );
+  if (notFound || !execution) {
     return (
       <EmptyState
         title="Execution not found"
@@ -131,10 +177,30 @@ export default function ExecutionPage() {
         </div>
       </div>
 
+      {isError && (
+        <p role="status">Could not refresh execution. Displayed information may be stale.</p>
+      )}
+      {summary.data && <ExecutionLifecycleSummary summary={summary.data} stale={summary.isError} />}
+      {summary.isLoading && <p role="status">Loading execution status...</p>}
+      {summary.isError && (
+        <div role="status" className="space-y-2 text-sm">
+          <p>Could not refresh execution status.</p>
+          <Button
+            variant="outline"
+            aria-label="Retry execution status refresh"
+            onClick={() => void summary.refetch()}
+          >
+            Retry
+          </Button>
+        </div>
+      )}
+      <AdminExecutionDiagnostics diagnostics={summary.data?.adminDiagnostics} />
+
       <ExecutionProgress
         executionId={executionId}
         initialStatus={execution.status}
         onTerminal={handleTerminal}
+        onEvent={refreshExecution}
       />
 
       {status === "failed" && execution.error && (
@@ -173,6 +239,13 @@ export default function ExecutionPage() {
           </Card>
         )
       )}
+
+      <ExecutionAttemptTimeline
+        page={attempts.data}
+        isLoading={attempts.isLoading}
+        isError={attempts.isError}
+        onRetry={() => void attempts.refetch()}
+      />
 
       {/* Caller's input — collapsed by default so the result stays
           prominent. */}

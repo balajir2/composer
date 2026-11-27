@@ -1,6 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { createExecution } from "@/lib/api/executions";
+import { ComposerApiError } from "@/lib/api/client";
 import { RunDraftDialog } from "./run-draft-dialog";
 
 vi.mock("@/lib/api/executions", () => ({
@@ -82,5 +84,28 @@ describe("RunDraftDialog", () => {
       )
     );
     expect(screen.getByText("Jul 20, 2026")).toBeInTheDocument();
+  });
+
+  it("keeps the server's refusal on screen when the run is refused", async () => {
+    const message =
+      'User approval step "approval-1" has no "rejected" path. Connect its "rejected" handle to a step (for example End).';
+    vi.mocked(createExecution).mockRejectedValueOnce(
+      new ComposerApiError(422, { detail: message })
+    );
+    render(
+      wrap(
+        <RunDraftDialog
+          open={true}
+          onOpenChange={vi.fn()}
+          workflowId="wf1"
+          workflow={{ nodes: [] }}
+          onStarted={vi.fn()}
+        />
+      )
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Run" }));
+    const alert = await waitFor(() => screen.getByTestId("run-refused"));
+    expect(alert.textContent).toBe(message); // no "422:" prefix
+    expect(alert).toHaveAttribute("role", "alert");
   });
 });

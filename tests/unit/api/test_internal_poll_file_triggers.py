@@ -185,6 +185,63 @@ def test_poll_endpoint_processes_new_file_and_marks_it(monkeypatch: pytest.Monke
     )
 
 
+def test_poll_endpoint_skips_a_workflow_with_an_unconnected_required_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Its files are left alone (not consumed, not moved to the error folder)."""
+    client = _client_with_mock_db()
+    wf = _workflow_with_drive_trigger()
+    wf.nodes.append(
+        {
+            "id": "approval-1",
+            "type": "user-approval",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "approval-1"},
+        }
+    )
+    _set_production(AsyncMock(return_value=[wf]))
+    _patch_connection(monkeypatch, "user1")
+    fake_provider = MagicMock()
+    fake_provider.list_new_files = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        "src.api.internal.GoogleDriveProvider", MagicMock(return_value=fake_provider)
+    )
+
+    resp = client.post("/internal/poll-file-triggers")
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"triggered": 0, "failed": 0}
+    fake_provider.list_new_files.assert_not_awaited()
+
+
+def test_poll_endpoint_warns_once_per_workflow_about_an_unrunnable_canvas(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    import logging
+
+    from src.warn_throttle import WarnThrottle
+
+    client = _client_with_mock_db()
+    wf = _workflow_with_drive_trigger()
+    wf.nodes.append(
+        {
+            "id": "approval-1",
+            "type": "user-approval",
+            "position": {"x": 0, "y": 0},
+            "data": {"label": "approval-1"},
+        }
+    )
+    _set_production(AsyncMock(return_value=[wf]))
+    monkeypatch.setattr("src.api.internal._UNRUNNABLE_WARNINGS", WarnThrottle(900))
+
+    with caplog.at_level(logging.WARNING, logger="src.api.internal"):
+        for _ in range(3):
+            assert client.post("/internal/poll-file-triggers").status_code == 200
+
+    warnings = [r for r in caplog.records if "unconnected required branch" in r.getMessage()]
+    assert len(warnings) == 1
+
+
 def test_poll_endpoint_passes_processed_and_error_folder_ids_to_provider(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

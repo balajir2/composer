@@ -731,13 +731,15 @@ def install_fake_executor(
         def __init__(self, **kwargs: Any) -> None:
             self.kwargs = kwargs
 
-        async def run(self, execution_id: str) -> None:
+        async def run(self, execution_id: str, *, attempt_id: str | None = None) -> None:
             await _observe(execution_id)
             log.runs.append(execution_id)
             if log.on_run is not None:
                 await log.on_run(execution_id)
 
-        async def resume(self, execution_id: str, decision: str) -> None:
+        async def resume(
+            self, execution_id: str, decision: str, *, attempt_id: str | None = None
+        ) -> None:
             await _observe(execution_id)
             log.resumes.append((execution_id, decision))
             if log.on_resume is not None:

@@ -5,7 +5,7 @@ Not part of the public API surface; secured by OIDC token verification
 the callers are Cloud Tasks and Cloud Scheduler, not end users:
 
   - POST /internal/claim-and-run — Cloud Tasks delivery target. Claims
-    the execution via SELECT ... FOR UPDATE SKIP LOCKED (the pattern
+    the execution via SELECT ... FOR NO KEY UPDATE SKIP LOCKED (the pattern
     validated in scripts/poc_persistence_row_lock.py, ADR-0031) before
     running it — this, not Cloud Tasks' delivery guarantee, is what
     prevents two concurrent deliveries of the same task from
@@ -48,6 +48,7 @@ from google.oauth2 import id_token
 from opentelemetry import context as otel_context
 from pydantic import BaseModel, ConfigDict, Field
 
+from src.api._runnable import runnable_warnings
 from src.api.app_state import get_checkpointer, get_event_bus
 from src.config import get_settings
 from src.db.repos import cloud_storage as cloud_storage_repo
@@ -64,10 +65,13 @@ from src.maintenance.execution_sweeper import (
     sweep_expired_leases,
     sweep_old_execution_events,
     sweep_orphaned_running,
+    sweep_terminal_open_attempts,
 )
 from src.storage_providers.google_drive import GoogleDriveProvider
 from src.storage_providers.text_extraction import extract_text
+from src.telemetry.context import bind_context
 from src.telemetry.propagation import extract_task_context
+from src.warn_throttle import WarnThrottle
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -75,6 +79,9 @@ if TYPE_CHECKING:
     from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 logger = logging.getLogger(__name__)
+
+# One warning per unrunnable workflow per 15 minutes per process, not one per poll.
+_UNRUNNABLE_WARNINGS = WarnThrottle(interval_seconds=900)
 
 router = APIRouter(tags=["internal"])
 
@@ -203,7 +210,7 @@ async def claim_and_run_execution(
     *,
     worker_id: str,
 ) -> dict[str, str]:
-    """Claim `execution_id` (FOR UPDATE SKIP LOCKED) and run/resume it.
+    """Claim `execution_id` (FOR NO KEY UPDATE SKIP LOCKED) and run/resume it.
 
     This is the actual claim-and-run logic, factored out of the
     `claim_and_run` HTTP handler below so it can also be invoked
@@ -238,7 +245,7 @@ async def claim_and_run_execution(
     # If this timeout fires after the server committed the claim but before the reply was
     # read, the row stays leased and the handler answers 500; Cloud Tasks redelivers, gets
     # ``already_claimed``, and the row fails at lease expiry (``lease_expired``). There is
-    # no duplicate execution. The window is the same as the old Prisma tx(timeout=10000).
+    # no duplicate execution. The window is the 10 s claim timeout above.
     async with asyncio.timeout(10), sessionmaker() as session:
         claimed = await executions_repo.claim(
             session,
@@ -327,20 +334,41 @@ async def claim_and_run_execution(
             sessionmaker=sessionmaker, checkpointer=checkpointer, event_bus=event_bus
         )
 
-        if kind == "resume":
-            # P1-2 (Task 13): the decision travels via the claimed row's
-            # `variables._resume_decision`, stamped by the enqueueing call
-            # site BEFORE the Cloud Task fired (see ClaimAndRunRequest's
-            # docstring) — not via any request-body field.
-            decision = cast("dict[str, Any]", claimed.variables or {}).get("_resume_decision")
-            if not decision:
-                raise HTTPException(
-                    status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-                    detail="decision is required when kind='resume'",
-                )
-            await executor.resume(execution_id, decision)
-        else:
-            await executor.run(execution_id)
+        with bind_context(execution_id=execution_id, attempt_id=claimed.attempt_id):
+            if kind == "resume":
+                # P1-2 (Task 13): the decision travels via the claimed row's
+                # `variables._resume_decision`, stamped by the enqueueing call
+                # site BEFORE the Cloud Task fired (see ClaimAndRunRequest's
+                # docstring) — not via any request-body field.
+                decision = cast("dict[str, Any]", claimed.variables or {}).get("_resume_decision")
+                if not decision:
+                    # Fail the row now, fenced to this attempt, instead of leaving it leased
+                    # with its attempt open until the lease sweeper notices. A failed write
+                    # here must not mask the 422; the lease remains for the sweeper.
+                    try:
+                        async with sessionmaker() as missing_session:
+                            await executions_repo.mark_failed_if_running(
+                                missing_session,
+                                execution_id,
+                                error="Resume claimed without a decision.",
+                                failure_code="execution_error",
+                                now=utcnow(),
+                                attempt_id=claimed.attempt_id,
+                            )
+                            await missing_session.commit()
+                    except Exception:
+                        logger.exception(
+                            "internal: failed to mark decision-less resume %s as failed "
+                            "(lease remains for sweep_expired_leases to mark failed)",
+                            execution_id,
+                        )
+                    raise HTTPException(
+                        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                        detail="decision is required when kind='resume'",
+                    )
+                await executor.resume(execution_id, decision, attempt_id=claimed.attempt_id)
+            else:
+                await executor.run(execution_id, attempt_id=claimed.attempt_id)
     except HTTPException:
         raise
     except Exception as exc:
@@ -358,6 +386,7 @@ async def claim_and_run_execution(
                     error=f"{type(exc).__name__}: {exc}",
                     failure_code="execution_error",
                     now=utcnow(),
+                    attempt_id=claimed.attempt_id,
                 )
                 await crash_session.commit()
             updated_count = 1 if won else 0
@@ -486,6 +515,14 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
         logger.exception("internal: sweep_expired_leases failed")
         leases_expired = None
 
+    # Attempts left open under a terminal execution by a rolled-back (0004) image. Runs after the
+    # failure sweeps so their own attempt closes are never raced; failures stay isolated and the
+    # count is logged, not added to the response (its shape is a Cloud Scheduler contract).
+    try:
+        await sweep_terminal_open_attempts(sessionmaker)
+    except Exception:
+        logger.exception("internal: sweep_terminal_open_attempts failed")
+
     events_deleted: int | None
     try:
         events_deleted = await sweep_old_execution_events(
@@ -550,6 +587,18 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
             )
             continue
 
+        # A canvas with an unconnected required branch (or a Join that cannot
+        # wait correctly for its parallel paths) cannot run: leave its
+        # files untouched (not moved to the error folder) until it is fixed.
+        if runnable_warnings(wf):
+            if _UNRUNNABLE_WARNINGS.allow(wf.id):
+                logger.warning(
+                    "poll_file_triggers: workflow %s has an unconnected required branch; "
+                    "skipping (logged once per 15 minutes)",
+                    wf.id,
+                )
+            continue
+
         for raw_node in raw_nodes:
             try:
                 if raw_node.get("type") != "file-trigger":
@@ -570,8 +619,8 @@ async def poll_file_triggers(  # pyright: ignore[reportUnusedFunction]
                 # `data`, etc.) must not abort the rest of this
                 # workflow's nodes, let alone every other workflow — the
                 # same isolate-failures-per-item contract this endpoint
-                # documents everywhere else. Prisma Python decodes `nodes`
-                # Json as plain Python values, so a hand-edited/corrupted
+                # documents everywhere else. The `nodes`
+                # JSON column decodes to plain Python values, so a hand-edited/corrupted
                 # entry can legitimately not be a dict here.
                 node_id = (
                     cast("dict[str, Any]", raw_node).get("id")

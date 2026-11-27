@@ -24,6 +24,7 @@ from src.api.auth_standalone import router as auth_standalone_router
 from src.api.builder import router as builder_router
 from src.api.cloud_storage_oauth import router as cloud_storage_oauth_router
 from src.api.events_ws import router as events_ws_router
+from src.api.execution_observability import router as execution_observability_router
 from src.api.executions import router as executions_router
 from src.api.expressions import router as expressions_router
 from src.api.internal import router as internal_router
@@ -246,6 +247,7 @@ def create_app() -> FastAPI:
     app.include_router(llm_models_live_router)
     app.include_router(workflows_router)
     app.include_router(executions_router)
+    app.include_router(execution_observability_router)
     app.include_router(expressions_router)
     app.include_router(events_ws_router)
     app.include_router(internal_router)

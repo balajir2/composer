@@ -12,6 +12,7 @@ from src.db.models.checkpoints import (
 from src.db.models.cloud_storage import CloudStorageConnection
 from src.db.models.deployment import DeploymentSetting
 from src.db.models.enums import ApprovalDecision, UserRole
+from src.db.models.execution_attempts import AttemptResult, AttemptTriggerKind, ExecutionAttempt
 from src.db.models.executions import Approval, ExecutionEvent, WorkflowExecution
 from src.db.models.llm import LlmApiKey, LlmModel
 from src.db.models.mcp import McpOAuthState, McpOAuthToken, McpServer
@@ -23,9 +24,12 @@ __all__ = [
     "ApiKey",
     "Approval",
     "ApprovalDecision",
+    "AttemptResult",
+    "AttemptTriggerKind",
     "Base",
     "CloudStorageConnection",
     "DeploymentSetting",
+    "ExecutionAttempt",
     "ExecutionEvent",
     "LangGraphCheckpoint",
     "LangGraphCheckpointWrite",

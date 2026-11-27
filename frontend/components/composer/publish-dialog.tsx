@@ -15,7 +15,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { getWorkflow, updateWorkflow } from "@/lib/api/workflows";
 import { slugify } from "@/lib/slugify";
-import { ComposerApiError } from "@/lib/api/client";
+import { ComposerApiError, apiErrorText } from "@/lib/api/client";
 import { toast } from "sonner";
 import type { components } from "@/lib/api/generated/schema";
 
@@ -33,6 +33,7 @@ export function PublishDialog({ open, onOpenChange, workflow }: PublishDialogPro
   const queryClient = useQueryClient();
   const [slug, setSlug] = useState(() => slugify(workflow.name));
   const [slugError, setSlugError] = useState<string | null>(null);
+  const [publishError, setPublishError] = useState<string | null>(null);
   const [isPending, setIsPending] = useState(false);
 
   // Re-sync slug when dialog opens or workflow name changes.
@@ -40,6 +41,7 @@ export function PublishDialog({ open, onOpenChange, workflow }: PublishDialogPro
     if (open) {
       setSlug(slugify(workflow.name));
       setSlugError(null);
+      setPublishError(null);
     }
   }, [open, workflow.name]);
 
@@ -48,6 +50,7 @@ export function PublishDialog({ open, onOpenChange, workflow }: PublishDialogPro
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setSlugError(null);
+    setPublishError(null);
     setIsPending(true);
     try {
       // Re-fetch immediately before submitting rather than trusting the
@@ -82,7 +85,11 @@ export function PublishDialog({ open, onOpenChange, workflow }: PublishDialogPro
       if (err instanceof ComposerApiError && err.status === 409) {
         setSlugError("This slug is already in use. Choose a different one.");
       } else {
-        toast.error(err instanceof Error ? err.message : "Failed to publish workflow.");
+        // Also kept inline: the toast fades, and a refusal (e.g. a required branch that is
+        // not connected) names exactly what to fix on the canvas.
+        const text = apiErrorText(err, "Failed to publish workflow.");
+        setPublishError(text);
+        toast.error(text);
       }
     } finally {
       setIsPending(false);
@@ -114,6 +121,11 @@ export function PublishDialog({ open, onOpenChange, workflow }: PublishDialogPro
             />
             {slugError !== null && (
               <p className="text-sm font-medium text-destructive">{slugError}</p>
+            )}
+            {publishError !== null && (
+              <p role="alert" data-testid="publish-refused" className="text-sm text-destructive">
+                {publishError}
+              </p>
             )}
           </div>
           <div className="space-y-1">

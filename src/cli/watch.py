@@ -19,11 +19,19 @@ import httpx
 
 from src.storage_providers.local import LocalFilesystemProvider
 from src.storage_providers.text_extraction import extract_text
+from src.warn_throttle import WarnThrottle
 
 if TYPE_CHECKING:
     from src.storage_providers.base import FileRef, FileStorageProvider
 
 logger = logging.getLogger(__name__)
+
+_NOT_RUNNABLE_WARNINGS = WarnThrottle(interval_seconds=900)
+
+
+class WorkflowNotRunnableError(RuntimeError):
+    """The server answered 422: the workflow cannot run as drawn (an unconnected branch)."""
+
 
 _PROVIDERS: dict[str, type[FileStorageProvider]] = {
     "local": LocalFilesystemProvider,
@@ -48,6 +56,8 @@ async def _trigger_workflow(*, config: WatchConfig, input_payload: dict[str, str
     headers = {"Authorization": f"Bearer {config.api_key}"}
     async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=5.0)) as client:
         resp = await client.post(url, headers=headers, json={"input": input_payload})
+    if resp.status_code == 422:
+        raise WorkflowNotRunnableError(resp.text[:500])
     if resp.status_code >= 400:
         raise RuntimeError(f"trigger failed (HTTP {resp.status_code}): {resp.text[:500]}")
 
@@ -60,6 +70,19 @@ async def claim_file(provider: FileStorageProvider, ref: FileRef, config: WatchC
         raw = await provider.read_file(ref)
         text = extract_text(ref.name, raw)
         await _trigger_workflow(config=config, input_payload={config.target_input_variable: text})
+    except WorkflowNotRunnableError as exc:
+        # The workflow is unfinished, not the file: leave it in place so it is picked
+        # up once the workflow is fixed (same as the server-side poller). The warning
+        # is throttled; the file is retried on every poll.
+        if _NOT_RUNNABLE_WARNINGS.allow(config.external_slug):
+            logger.warning(
+                "composer watch: workflow %s cannot run yet (%s); leaving %s in place "
+                "and retrying until it is fixed",
+                config.external_slug,
+                exc,
+                ref.name,
+            )
+        return
     except Exception:
         logger.exception("composer watch: failed to claim %s", ref.name)
         await provider.move_file(ref, config.error_path)

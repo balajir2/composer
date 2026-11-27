@@ -667,3 +667,79 @@ async def test_existing_node_the_builder_edits_is_checked() -> None:
     model, _, _, _ = await _build(script, workflow=_with_old_bare_agent())
     assert len(model.seen) > 2
     assert "'old'" in _last_feedback(model)
+
+
+async def test_missing_approval_branch_is_sent_back_and_the_fix_is_kept() -> None:
+    """Production case: the builder wires only `approved`; it must be told to
+    connect `rejected` and keep the fix, never hand back an unrunnable flow."""
+    script = [
+        AIMessage(
+            content="",
+            tool_calls=[  # pyright: ignore[reportArgumentType]
+                _call(
+                    "create_node",
+                    {"node_type": "user-approval", "node_id": "approval-1", "label": "Approve"},
+                    "1",
+                ),
+                _call("disconnect_nodes", {"source": "s", "target": "e"}, "2"),
+                _call("connect_nodes", {"source": "s", "target": "approval-1"}, "3"),
+                _call(
+                    "connect_nodes",
+                    {"source": "approval-1", "target": "e", "branch": "approved"},
+                    "4",
+                ),
+            ],
+        ),
+        AIMessage(content="Built it."),
+        AIMessage(
+            content="",
+            tool_calls=[  # pyright: ignore[reportArgumentType]
+                _call(
+                    "connect_nodes",
+                    {"source": "approval-1", "target": "e", "branch": "rejected"},
+                    "5",
+                ),
+            ],
+        ),
+        AIMessage(content="Connected the rejected path."),
+    ]
+    model, events, reply, wf = await _build(script)
+    feedback = _last_feedback(model)
+    assert 'has no "rejected" path' in feedback
+    assert {(e.source, e.branch) for e in wf.edges if e.source == "approval-1"} == {
+        ("approval-1", "approved"),
+        ("approval-1", "rejected"),
+    }
+    assert reply == "Connected the rejected path."
+    assert not any("Remaining issues" in str(e.get("content")) for e in events)
+
+
+async def test_repair_prompt_attaches_settings_of_a_missing_branch_node_with_a_different_label() -> (
+    None
+):
+    """The issue names the node as `"Label" (node-id)`; the id is not quoted."""
+    script = [
+        AIMessage(
+            content="",
+            tool_calls=[  # pyright: ignore[reportArgumentType]
+                _call(
+                    "create_node",
+                    {"node_type": "user-approval", "node_id": "approval-1", "label": "Approve"},
+                    "1",
+                ),
+                _call("disconnect_nodes", {"source": "s", "target": "e"}, "2"),
+                _call("connect_nodes", {"source": "s", "target": "approval-1"}, "3"),
+                _call(
+                    "connect_nodes",
+                    {"source": "approval-1", "target": "e", "branch": "approved"},
+                    "4",
+                ),
+            ],
+        ),
+        AIMessage(content="Built it."),
+    ]
+    model, _, _, _ = await _build(script)
+    feedback = _last_feedback(model)
+    assert '"Approve" (approval-1)' in feedback
+    assert "Current settings" in feedback
+    assert "- `approval-1` (user-approval)" in feedback

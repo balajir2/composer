@@ -1,5 +1,6 @@
 """Email node executor."""
 
+import json
 import re
 from typing import Any
 
@@ -28,10 +29,34 @@ def _split_addresses(raw: str | None) -> list[str]:
     return addresses
 
 
-def _validate_from(raw: str) -> str:
-    value = raw.strip()
+_UNVERIFIED_DOMAIN_RE = re.compile(r"The\s+(\S+)\s+domain is not verified", re.IGNORECASE)
+
+
+def _unverified_domain(exc: ResendEmailProviderError) -> str | None:
+    """The domain Resend refused as unverified, or None for any other failure."""
+    if exc.status_code != 403:
+        return None
+    try:
+        body: Any = json.loads(exc.body)
+    except ValueError:
+        return None
+    if not isinstance(body, dict):
+        return None
+    fields = {str(k): v for k, v in body.items()}  # pyright: ignore[reportUnknownVariableType, reportUnknownArgumentType]
+    message = fields.get("message")
+    if fields.get("name") != "validation_error" or not isinstance(message, str):
+        return None
+    match = _UNVERIFIED_DOMAIN_RE.search(message)
+    return match.group(1) if match else None
+
+
+def _validate_from(raw: str, default: str) -> str:
+    """Validate the sender; a blank one falls back to the platform's verified sender."""
+    value = raw.strip() or default.strip()
     if not value:
-        raise EmailNodeError("email node has no from address")
+        raise EmailNodeError(
+            "email node has no from address and no platform sender (RESEND_FROM_EMAIL) is set"
+        )
     match = re.search(r"<([^>]+)>", value)
     addr = match.group(1).strip() if match else value
     if not _EMAIL_RE.match(addr):
@@ -48,11 +73,14 @@ class EmailExecutor:
         if self.node.data.provider != "resend":
             raise EmailNodeError(f"unsupported email provider: {self.node.data.provider}")
 
-        api_key = get_settings().resend_api_key
+        settings = get_settings()
+        api_key = settings.resend_api_key
         if not api_key:
             raise EmailNodeError("RESEND_API_KEY is not configured")
 
-        from_email = _validate_from(substitute(self.node.data.from_email, state))
+        from_email = _validate_from(
+            substitute(self.node.data.from_email, state), settings.resend_from_email
+        )
         to = _split_addresses(substitute(self.node.data.to, state))
         cc = _split_addresses(substitute(self.node.data.cc or "", state))
         bcc = _split_addresses(substitute(self.node.data.bcc or "", state))
@@ -96,6 +124,14 @@ class EmailExecutor:
                 idempotency_key=idempotency_key,
             )
         except ResendEmailProviderError as exc:
+            domain = _unverified_domain(exc)
+            if domain:
+                raise EmailNodeError(
+                    f"email node {self.node.id!r} failed: Resend API error 403: the sender "
+                    f"domain {domain} is not verified in Resend. Either verify {domain} in "
+                    "Resend (Domains), or clear this node's From field so the platform's "
+                    "verified sender is used."
+                ) from exc
             raise EmailNodeError(f"email node {self.node.id!r} failed: {exc}") from exc
 
         output = {

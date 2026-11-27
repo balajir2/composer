@@ -279,6 +279,38 @@ def fan_out_graph() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     return nodes, edges
 
 
+def join_lane_graph() -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """start fans out to two lanes of different length that meet at a Join. One lane holds the
+    approval, so the other (`b`) has already reached the Join's barrier when the run pauses; the
+    approval's two exits both feed the Join through one lane relay. After the Join: `fin` -> End."""
+    nodes = [
+        start_node(),
+        node("p", "set-state", stateKey="p", stateValue="yes"),
+        node("x1", "set-state", stateKey="x1", stateValue="yes"),
+        node("x2", "set-state", stateKey="x2", stateValue="yes"),
+        node("ua", "user-approval", approvalMessage="Lane", approverEmail="a@example.com"),
+        node("ok", "set-state", stateKey="result", stateValue="approved"),
+        node("b", "set-state", stateKey="b", stateValue="yes"),
+        node("j", "join"),
+        node("fin", "set-state", stateKey="fin", stateValue="yes"),
+        end_node(),
+    ]
+    edges = [
+        edge("s", "p"),
+        edge("p", "x1"),
+        edge("x1", "x2"),
+        edge("x2", "ua"),
+        edge("ua", "ok", branch="approved"),
+        edge("ok", "j"),
+        edge("ua", "j", "ua-rej", branch="rejected"),
+        edge("p", "b"),
+        edge("b", "j"),
+        edge("j", "fin"),
+        edge("fin", "e"),
+    ]
+    return nodes, edges
+
+
 async def start_paused(
     client: AsyncClient,
     db: Db,

@@ -45,7 +45,27 @@ Everything you need to build workflows on the canvas. If this is your first time
 
 ### Conditional routing
 
-When you connect from an `if-else`/`while`/`user-approval` node, the edge label is auto-set from the source handle (`true`/`false`, `body`/`exit`, `approved`/`rejected`). Both edges are required for the workflow to validate — a half-wired conditional won't save (the backend rejects with "leaves … node but has no branch label").
+When you connect from an `if-else`/`while`/`user-approval` node, the edge label is auto-set from the source handle (`true`/`false`, `body`/`exit`, `approved`/`rejected`). Every exit is required for the workflow to *run* (a `decision` in choice mode needs one per option). A half-wired canvas still **saves** — you can build in steps — but it carries a warning: the node shows an amber badge (hover for the message) and the save controls show "N problems: this workflow can't run yet" with the full list. **Run draft**, **Publish**, the external `POST /api/run/{slug}` and the Drive file trigger refuse until every exit is connected, with a message such as `User approval step "approval-1" has no "rejected" path. Connect its "rejected" handle to a step (for example End).` No execution is created. An edge that leaves a conditional node without a branch label is still rejected on save.
+
+Two exits may lead to the same End node (for example `approved` → a step → End and `rejected` → End): they can never both fire in one run, so the End needs no Join.
+
+### Parallel paths and the Join
+
+A step with two or more outgoing edges starts those paths in parallel. A **Join** brings parallel paths back together: it waits until *every* path has arrived, then runs once, so the steps after it run once too, even when the paths have different lengths. Give each parallel path its own End, or merge them with a Join first; a Join followed by an If / Else whose two exits share one End is fine.
+
+A Join whose inputs are *alternatives* (the two exits of an If / Else meeting again, or a loop coming back) is not a wait: it simply runs when whichever path was taken arrives.
+
+The save controls warn, and **Run draft**, **Publish**, the external API and resume refuse, when a Join cannot wait correctly:
+
+- **Mixed inputs**: some of its inputs are parallel paths and another is an alternative to one of them (`Join step "j" mixes parallel paths with an alternative path ...`). Merge the parallel paths with their own Join first, then connect that Join and the alternative path to this one.
+- **A path escapes**: a parallel path can finish at an End without reaching the Join, so the Join would wait forever (for example an approval whose `rejected` exit goes to its own End). Connect that path to the Join, or end it after the Join.
+- **Two paths collide**: two parallel paths meet at an ordinary step before the Join, so that step would run twice. Connect those paths to a Join first. The badge is on the colliding step; the other two are on the Join.
+
+A separate parallel path that never reaches the Join (it goes to its own End) is fine.
+
+If an End is refused only because a Join upstream of it has one of these problems, the End message also quotes the Join's message, so fix the Join first.
+
+Editing a workflow while a run is paused at an approval is supported. Reordering or re-dragging edges is harmless. Changing which paths feed a Join (adding or removing a path into it) is not: the run's saved wait cannot carry over, so the run fails with a message to start a new run instead of finishing without the Join.
 
 ## Build with AI
 
@@ -330,7 +350,7 @@ Send a deterministic workflow email through Resend.
 | Field | Purpose |
 |---|---|
 | `emailProvider` | Provider. Currently `resend`. |
-| `emailFrom` | Sender address. Friendly format like `Reports <reports@example.com>` is accepted. |
+| `emailFrom` | Optional sender address. Leave it empty to send from the platform's verified sender (`RESEND_FROM_EMAIL`). A From that renders empty after substitution (for example `{{sender}}` when `sender` has no value) also uses the platform sender. Friendly format like `Reports <reports@example.com>` is accepted. |
 | `emailTo` / `emailCc` / `emailBcc` | Recipients. Comma, semicolon, and newline separated lists are accepted. |
 | `emailReplyTo` | Optional reply-to address. |
 | `emailSubject` | Subject line. Mustache substitution applies. |
@@ -340,7 +360,7 @@ Send a deterministic workflow email through Resend.
 
 Output: `{provider, messageId, to, cc, bccCount, subject, status}`. Use a `user-approval` node before `email` for workflows where a human should review content before distribution.
 
-**Resend sender rules:** the `emailFrom` domain must be verified in the Resend account and allowed by the API key. For example, if Resend has verified `example.com`, use `Reports <reports@example.com>` as the sender. The recipient can be Gmail/Outlook/etc.; the sender cannot be `gmail.com` unless that domain is verified in your Resend account, which normal users cannot do.
+**Resend sender rules:** if you set `emailFrom`, its domain must be verified in the Resend account and allowed by the API key. For example, if Resend has verified `example.com`, use `Reports <reports@example.com>` as the sender. The recipient can be Gmail/Outlook/etc.; the sender cannot be `gmail.com` unless that domain is verified in your Resend account, which normal users cannot do. If the domain is not verified, the run fails with an error naming the domain; either verify it in Resend (Domains) or clear `emailFrom` so the platform's verified sender is used. The AI Builder leaves `emailFrom` empty unless you give it an address.
 
 **Recommended key type:** use a Resend **Sending access** key restricted to the verified sending domain. In Admin → LLM keys, Composer may report "Resend sending-only key accepted; domain listing is restricted." That is a successful least-privilege check, not a delivery error. Full-access keys are only needed for broader Resend administration outside Composer.
 

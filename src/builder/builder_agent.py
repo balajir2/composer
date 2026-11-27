@@ -19,7 +19,13 @@ from src.builder.layout import compute_layout
 from src.builder.node_catalog import is_hidden_from_builder
 from src.builder.normalize import normalize_orchestration
 from src.builder.prompts import build_system_prompt, describe_canvas
-from src.engine.graph_builder import collect_workflow_violations, dedupe_edges
+from src.engine.graph_builder import (
+    collect_join_problems,
+    collect_missing_branches,
+    collect_workflow_violations,
+    dedupe_edges,
+    find_missing_branches,
+)
 from src.engine.workflow import Workflow, WorkflowEdge
 
 MAX_TOOL_ITERATIONS = 12
@@ -73,6 +79,8 @@ def _turn_issues(
     requested = {str(e.get("node_id")) for e in ctx.events if e.get("type") == "credential_request"}
     return [
         *collect_workflow_violations(workflow),
+        *collect_missing_branches(workflow),
+        *collect_join_problems(workflow),
         *collect_completeness_issues(
             workflow, model_catalog=models, credential_requested=requested, only=touched
         ),
@@ -83,13 +91,16 @@ def _flagged_node_settings(workflow: Workflow, issues: list[str]) -> list[str]:
     """`data` of each node an issue names, minus fields the builder must not see.
 
     The system prompt's canvas listing carries only id/type/label; without
-    this the model repairs a node it cannot read. Every issue quotes ids as
-    repr (`node 'pii'`), which is how flagged nodes are found.
+    this the model repairs a node it cannot read. Issues quote ids as repr
+    (`node 'pii'`) or in double quotes (`step "approval-1"`), which is how
+    flagged nodes are found. A missing-branch issue names the node by label
+    (`step "Label" (node-id)`), so those nodes are matched structurally.
     """
     text = "\n".join(issues)
+    flagged = {m.node_id for m in find_missing_branches(workflow) if m.message in issues}
     lines: list[str] = []
     for node in workflow.nodes:
-        if repr(node.id) not in text:
+        if node.id not in flagged and repr(node.id) not in text and f'"{node.id}"' not in text:
             continue
         data = node.data.model_dump(by_alias=True, exclude_none=True, mode="json")
         shown = {k: v for k, v in data.items() if k != "label" and not is_hidden_from_builder(k)}

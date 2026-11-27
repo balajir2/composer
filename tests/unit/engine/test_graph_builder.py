@@ -1137,3 +1137,456 @@ def test_decision_router_reads_choice_result_from_state() -> None:
     state = initial_state()
     state["node_results"]["d"] = {"output": {"decision": "b", "confidence": 0.5}}
     assert router(state) == "b"
+
+
+# --- End incoming-edge rule: edges leaving a conditional node directly ---
+
+
+def _n(node_id: str, kind: str, data: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {
+        "id": node_id,
+        "type": kind,
+        "position": {"x": 0, "y": 0},
+        "data": {"label": node_id, **(data or {})},
+    }
+
+
+def _ss(node_id: str) -> dict[str, Any]:
+    return _n(node_id, "set-state", {"stateKey": "k", "stateValue": "v"})
+
+
+def _ed(edge_id: str, source: str, target: str, branch: str | None = None) -> dict[str, Any]:
+    edge: dict[str, Any] = {"id": edge_id, "source": source, "target": target}
+    if branch is not None:
+        edge["branch"] = branch
+    return edge
+
+
+def test_approval_rejected_straight_to_end_shared_with_approved_path_is_allowed() -> None:
+    """Production case: approved -> step -> End, rejected -> the same End."""
+    wf = _mk(
+        nodes=[
+            _n("s", "start"),
+            _n("approval-1", "user-approval"),
+            _ss("work"),
+            _n("end-1", "end"),
+        ],
+        edges=[
+            _ed("e1", "s", "approval-1"),
+            _ed("e2", "approval-1", "work", "approved"),
+            _ed("e3", "work", "end-1"),
+            _ed("e4", "approval-1", "end-1", "rejected"),
+        ],
+    )
+    validate_workflow_shape(wf)
+
+
+def test_if_else_true_straight_to_end_and_false_through_step_is_allowed() -> None:
+    wf = _mk(
+        nodes=[
+            _n("s", "start"),
+            _n("ie", "if-else", {"condition": "True"}),
+            _ss("w"),
+            _n("e", "end"),
+        ],
+        edges=[
+            _ed("e1", "s", "ie"),
+            _ed("e2", "ie", "e", "true"),
+            _ed("e3", "ie", "w", "false"),
+            _ed("e4", "w", "e"),
+        ],
+    )
+    validate_workflow_shape(wf)
+
+
+def test_both_approval_branches_straight_to_same_end_is_allowed() -> None:
+    wf = _mk(
+        nodes=[_n("s", "start"), _n("ua", "user-approval"), _n("e", "end")],
+        edges=[
+            _ed("e1", "s", "ua"),
+            _ed("e2", "ua", "e", "approved"),
+            _ed("e3", "ua", "e", "rejected"),
+        ],
+    )
+    validate_workflow_shape(wf)
+
+
+def test_decision_options_straight_to_same_end_is_allowed() -> None:
+    decision = _n(
+        "d",
+        "decision",
+        {"mode": "choice", "options": [{"label": "a"}, {"label": "b"}], "instruction": "q"},
+    )
+    wf = _mk(
+        nodes=[_n("s", "start"), decision, _ss("w"), _n("e", "end")],
+        edges=[
+            _ed("e1", "s", "d"),
+            _ed("e2", "d", "w", "a"),
+            _ed("e3", "w", "e"),
+            _ed("e4", "d", "e", "b"),
+        ],
+    )
+    validate_workflow_shape(wf)
+
+
+def test_two_sequential_steps_into_one_end_still_rejected() -> None:
+    wf = _mk(
+        nodes=[_n("s", "start"), _ss("a"), _ss("b"), _n("e", "end")],
+        edges=[
+            _ed("e1", "s", "a"),
+            _ed("e2", "a", "b"),
+            _ed("e3", "a", "e"),
+            _ed("e4", "b", "e"),
+        ],
+    )
+    with pytest.raises(WorkflowValidationError, match="exactly one incoming edge"):
+        validate_workflow_shape(wf)
+
+
+def test_two_edges_from_same_branch_into_one_end_still_rejected() -> None:
+    wf = _mk(
+        nodes=[_n("s", "start"), _n("ua", "user-approval"), _ss("w"), _n("e", "end")],
+        edges=[
+            _ed("e1", "s", "ua"),
+            _ed("e2", "ua", "w", "approved"),
+            _ed("e3", "ua", "e", "approved"),
+            _ed("e4", "w", "e"),
+            _ed("e5", "ua", "e", "rejected"),
+        ],
+    )
+    with pytest.raises(WorkflowValidationError, match="exactly one incoming edge"):
+        validate_workflow_shape(wf)
+
+
+# --- End incoming-edge rule: parallel fan-out ancestors ---
+
+
+def _ie(node_id: str) -> dict[str, Any]:
+    return _n(node_id, "if-else", {"condition": "True"})
+
+
+def _ee(source: str, target: str, branch: str | None = None) -> dict[str, Any]:
+    return _ed(f"{source}-{target}-{branch}", source, target, branch)
+
+
+def _topologies() -> dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
+    """Shapes where an End has several incoming edges and a fan-out upstream."""
+    return {
+        "fanout_bypass_delayed": (
+            [_n("s", "start"), _ss("p"), _ie("a"), _ss("y0"), _ss("y"), _n("end", "end")],
+            [
+                _ee("s", "p"),
+                _ee("p", "a"),
+                _ee("p", "y0"),
+                _ee("y0", "y"),
+                _ee("a", "end", "true"),
+                _ee("a", "y", "false"),
+                _ee("y", "end"),
+            ],
+        ),
+        "fanout_two_conds": (
+            [_n("s", "start"), _ss("p"), _ie("a"), _ie("b"), _ss("x"), _n("end", "end")],
+            [
+                _ee("s", "p"),
+                _ee("p", "a"),
+                _ee("p", "b"),
+                _ee("a", "end", "true"),
+                _ee("a", "x", "false"),
+                _ee("b", "x", "true"),
+                _ee("b", "x", "false"),
+                _ee("x", "end"),
+            ],
+        ),
+        "fanout_join": (
+            [_n("s", "start"), _ss("p"), _ie("a"), _ss("y"), _n("j", "join"), _n("end", "end")],
+            [
+                _ee("s", "p"),
+                _ee("p", "a"),
+                _ee("p", "y"),
+                _ee("a", "end", "true"),
+                _ee("a", "j", "false"),
+                _ee("y", "j"),
+                _ee("j", "end"),
+            ],
+        ),
+        "refan_after_join_into_one_end": (
+            [
+                _n("s", "start"),
+                _ss("p"),
+                _ss("a"),
+                _ss("b"),
+                _n("j", "join"),
+                _ss("q"),
+                _ss("q1"),
+                _ss("q2"),
+                _n("end", "end"),
+            ],
+            [
+                _ee("s", "p"),
+                _ee("p", "a"),
+                _ee("p", "b"),
+                _ee("a", "j"),
+                _ee("b", "j"),
+                _ee("j", "q"),
+                _ee("q", "q1"),
+                _ee("q", "q2"),
+                _ee("q1", "end"),
+                _ee("q2", "end"),
+            ],
+        ),
+        "double_c": (
+            [_n("s", "start"), _ss("p"), _ss("q"), _ie("c"), _n("end", "end")],
+            [
+                _ee("s", "p"),
+                _ee("s", "q"),
+                _ee("p", "c"),
+                _ee("q", "c"),
+                _ee("c", "end", "true"),
+                _ee("c", "end", "false"),
+            ],
+        ),
+        "bypass_old_hole": (
+            [_n("s", "start"), _ss("p"), _ie("a"), _ss("x"), _ss("y"), _n("end", "end")],
+            [
+                _ee("s", "p"),
+                _ee("p", "a"),
+                _ee("p", "x"),
+                _ee("a", "x", "true"),
+                _ee("a", "y", "false"),
+                _ee("x", "end"),
+                _ee("y", "end"),
+            ],
+        ),
+    }
+
+
+def _accepted_topologies() -> dict[str, tuple[list[dict[str, Any]], list[dict[str, Any]]]]:
+    decision = _n(
+        "d",
+        "decision",
+        {
+            "mode": "choice",
+            "options": [{"label": "a"}, {"label": "b"}, {"label": "c"}],
+            "instruction": "q",
+        },
+    )
+    return {
+        "approval_shape": (
+            [_n("s", "start"), _n("ua", "user-approval"), _ss("w"), _n("end", "end")],
+            [
+                _ee("s", "ua"),
+                _ee("ua", "w", "approved"),
+                _ee("w", "end"),
+                _ee("ua", "end", "rejected"),
+            ],
+        ),
+        "nested_if_else": (
+            [_n("s", "start"), _ie("a"), _ie("b"), _n("end", "end")],
+            [
+                _ee("s", "a"),
+                _ee("a", "b", "true"),
+                _ee("b", "end", "true"),
+                _ee("b", "end", "false"),
+                _ee("a", "end", "false"),
+            ],
+        ),
+        "branch_edge_plus_descendant": (
+            [_n("s", "start"), _ie("a"), _ss("x"), _n("end", "end")],
+            [
+                _ee("s", "a"),
+                _ee("a", "end", "true"),
+                _ee("a", "x", "false"),
+                _ee("x", "end"),
+            ],
+        ),
+        "decision_three_options": (
+            [_n("s", "start"), decision, _ss("w"), _n("end", "end")],
+            [
+                _ee("s", "d"),
+                _ee("d", "w", "a"),
+                _ee("w", "end"),
+                _ee("d", "end", "b"),
+                _ee("d", "end", "c"),
+            ],
+        ),
+        "while_body_and_exit": (
+            [
+                _n("s", "start"),
+                _n("w", "while", {"condition": "False", "maxIterations": 3}),
+                _n("end", "end"),
+            ],
+            [_ee("s", "w"), _ee("w", "end", "body"), _ee("w", "end", "exit")],
+        ),
+        "fanout_join_if_both_end": (
+            [
+                _n("s", "start"),
+                _ss("p"),
+                _ss("a"),
+                _ss("a2"),
+                _ss("b"),
+                _n("j", "join"),
+                _ie("c"),
+                _n("end", "end"),
+            ],
+            [
+                _ee("s", "p"),
+                _ee("p", "a"),
+                _ee("a", "a2"),
+                _ee("a2", "j"),
+                _ee("p", "b"),
+                _ee("b", "j"),
+                _ee("j", "c"),
+                _ee("c", "end", "true"),
+                _ee("c", "end", "false"),
+            ],
+        ),
+        "note_edge_into_end": (
+            [_n("s", "start"), _ss("x"), _n("nt", "note"), _n("end", "end")],
+            [_ee("s", "x"), _ee("x", "end"), _ee("nt", "end")],
+        ),
+    }
+
+
+@pytest.mark.parametrize("name", list(_topologies()))
+def test_end_reachable_by_parallel_paths_is_refused(name: str) -> None:
+    nodes, edges = _topologies()[name]
+    wf = _mk(nodes, edges)
+    with pytest.raises(WorkflowValidationError, match="reached by parallel paths") as info:
+        validate_workflow_shape(wf)
+    msg = str(info.value)
+    assert msg.startswith("End node 'end' must have exactly one incoming edge")
+    assert "Give each parallel path its own End step, or merge them with a Join first." in msg
+
+
+@pytest.mark.parametrize("name", list(_accepted_topologies()))
+def test_exclusive_end_shapes_are_accepted(name: str) -> None:
+    nodes, edges = _accepted_topologies()[name]
+    validate_workflow_shape(_mk(nodes, edges))
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        n
+        for n in _accepted_topologies()
+        if n not in ("approval_shape", "decision_three_options")  # pause / call an LLM
+    ],
+)
+async def test_accepted_end_shapes_run_end_exactly_once(name: str) -> None:
+    """Whatever the validator accepts must never run End twice. (The approval
+    shape pauses and the decision shape calls an LLM; tests/integration/test_approval_branch_straight_to_end.py
+    runs it.)"""
+    from src.engine.state import initial_state
+
+    nodes, edges = _accepted_topologies()[name]
+    wf = _mk(nodes, edges)
+    graph = build_graph(wf, MemorySaver())
+    count = 0
+    config: Any = {"configurable": {"thread_id": f"t-{name}"}, "recursion_limit": 60}
+    async for chunk in graph.astream(initial_state("x"), config, stream_mode="updates"):
+        for key in chunk:
+            if key == "end":
+                count += 1
+    assert count == 1
+
+
+# --- Required branches: warn on save, block run (single source of truth) ---
+
+from src.engine.graph_builder import (  # noqa: E402
+    _branch_mapping,  # pyright: ignore[reportPrivateUsage]
+    collect_missing_branches,
+    collect_workflow_violations,
+    required_branches,
+    validate_workflow_runnable,
+)
+
+
+def _approval_wf(branches: list[str]) -> Workflow:
+    edges = [_ed("e0", "s", "approval-1")]
+    for i, branch in enumerate(branches):
+        edges.append(_ed(f"b{i}", "approval-1", "end-1", branch))
+    return _mk(
+        nodes=[_n("s", "start"), _n("approval-1", "user-approval"), _n("end-1", "end")],
+        edges=edges,
+    )
+
+
+def test_missing_rejected_is_reported_in_user_words() -> None:
+    wf = _approval_wf(["approved"])
+    assert collect_missing_branches(wf) == [
+        'User approval step "approval-1" has no "rejected" path. '
+        'Connect its "rejected" handle to a step (for example End).'
+    ]
+
+
+def test_missing_message_uses_node_label_when_it_differs_from_id() -> None:
+    wf = _mk(
+        nodes=[
+            _n("s", "start"),
+            {**_n("approval-1", "user-approval"), "data": {"label": "Manager sign-off"}},
+            _n("end-1", "end"),
+        ],
+        edges=[_ed("e0", "s", "approval-1"), _ed("e1", "approval-1", "end-1", "approved")],
+    )
+    (message,) = collect_missing_branches(wf)
+    assert '"Manager sign-off" (approval-1)' in message
+
+
+def test_missing_false_branch_of_if_else() -> None:
+    wf = _mk(
+        nodes=[_n("s", "start"), _n("ie", "if-else", {"condition": "True"}), _n("e", "end")],
+        edges=[_ed("e1", "s", "ie"), _ed("e2", "ie", "e", "true")],
+    )
+    (message,) = collect_missing_branches(wf)
+    assert message.startswith('If / Else step "ie" has no "false" path.')
+
+
+def test_missing_exit_branch_of_while() -> None:
+    wf = _mk(
+        nodes=[_n("s", "start"), _n("w", "while", {"condition": "True"}), _ss("b"), _n("e", "end")],
+        edges=[_ed("e1", "s", "w"), _ed("e2", "w", "b", "body"), _ed("e3", "b", "e")],
+    )
+    (message,) = collect_missing_branches(wf)
+    assert message.startswith('While step "w" has no "exit" path.')
+
+
+def test_missing_decision_option_is_reported() -> None:
+    decision = _n(
+        "d",
+        "decision",
+        {"mode": "choice", "options": [{"label": "a"}, {"label": "b"}], "instruction": "q"},
+    )
+    wf = _mk(
+        nodes=[_n("s", "start"), decision, _n("e", "end")],
+        edges=[_ed("e1", "s", "d"), _ed("e2", "d", "e", "a")],
+    )
+    (message,) = collect_missing_branches(wf)
+    assert message.startswith('Decision step "d" has no "b" path.')
+
+
+def test_no_missing_branches_when_all_connected() -> None:
+    assert collect_missing_branches(_approval_wf(["approved", "rejected"])) == []
+    validate_workflow_runnable(_approval_wf(["approved", "rejected"]))
+
+
+def test_runnable_gate_raises_with_the_message_but_shape_validation_still_passes() -> None:
+    wf = _approval_wf(["approved"])
+    assert collect_workflow_violations(wf) == []  # saves
+    validate_workflow_shape(wf)  # saves
+    with pytest.raises(WorkflowValidationError, match='no "rejected" path'):
+        validate_workflow_runnable(wf)
+
+
+@pytest.mark.parametrize("branches", [["approved"], ["rejected"], ["approved", "rejected"], []])
+def test_missing_branches_agree_with_branch_mapping(branches: list[str]) -> None:
+    wf = _approval_wf(branches)
+    node = wf.nodes[1]
+    required = required_branches(node)
+    assert required == {"approved", "rejected"}
+    assert required is not None
+    try:
+        _branch_mapping(node, list(wf.edges), required)
+        mapping_accepts = True
+    except WorkflowValidationError:
+        mapping_accepts = False
+    assert mapping_accepts == (collect_missing_branches(wf) == [])

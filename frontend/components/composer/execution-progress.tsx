@@ -13,16 +13,18 @@ type NodeStatus = {
   error?: string;
 };
 
-const TERMINAL_STATES = new Set(["completed", "failed", "cancelled"]);
+const TERMINAL_STATES = new Set(["completed", "failed", "canceled"]);
 
 export function ExecutionProgress({
   executionId,
   initialStatus,
   onTerminal,
+  onEvent,
 }: {
   executionId: string;
   initialStatus: string;
   onTerminal: (finalStatus: string, output?: unknown) => void;
+  onEvent?: (event: ComposerEvent) => void;
 }) {
   const { data: session } = useSession();
   const token = (session as unknown as { accessToken?: string } | null)?.accessToken;
@@ -41,6 +43,7 @@ export function ExecutionProgress({
   useEffect(() => {
     if (!token) return;
     const unsub = subscribeExecution(executionId, token, (ev: ComposerEvent) => {
+      onEvent?.(ev);
       if (ev.type === "workflow_started") setStatus("running");
       if (ev.type === "workflow_completed") {
         const s = (ev as unknown as { status?: string }).status ?? "completed";
@@ -71,7 +74,7 @@ export function ExecutionProgress({
       }
     });
     return unsub;
-  }, [executionId, token, onTerminal]);
+  }, [executionId, token, onTerminal, onEvent]);
 
   const isTerminal = TERMINAL_STATES.has(status);
 

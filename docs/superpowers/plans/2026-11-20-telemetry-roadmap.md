@@ -339,7 +339,7 @@ Cloud Tasks breaks the synchronous parent/child call chain. Inject W3C trace con
 
 **Phase-start gate:** Re-read this roadmap after Claude's SQLAlchemy/Alembic migration merges and write the phase-specific execution plan using the exact merged model, repository, session, and migration paths. Preserve the interfaces and acceptance criteria below; do not revive Prisma paths from older commits.
 
-### Task 5.1: Add an explicit processing-attempt read model
+### Task 5.1: Add an explicit processing-attempt read model **(complete, 2026-11-25)**
 
 **Files:**
 - Create through Alembic: `execution_attempts` table and migration using the post-migration repository conventions
@@ -351,14 +351,19 @@ Cloud Tasks breaks the synchronous parent/child call chain. Inject W3C trace con
 - Produces: immutable attempt identity, ordinal, start/end timestamps, result, failure code, lease owner/expiry, trigger kind, recovery source, and actor/reason references.
 - Consumes: the durable execution/thread identity and conditional-transition rules.
 
-- [ ] Create a new attempt for initial claim, approval resume, and approved recovery; never overwrite prior attempt timing/failure fields.
-- [ ] Keep `WorkflowExecution` as the durable thread/current summary and `ExecutionAttempt` as append-oriented processing history.
-- [ ] Prove concurrent claim/resume/cancel/recovery can create at most one winning attempt.
-- [ ] Backfill no fictional history: legacy executions expose an “attempt history unavailable” marker until a real post-migration attempt exists.
-- [ ] Add pagination and indexes for execution/time/status/admin operational queries.
-- [ ] Commit as `feat(execution): persist processing attempt history`.
+- [x] Create a new attempt on initial claim and approval-resume claim; never overwrite prior attempt timing/failure fields. Recovery attempts remain deferred to Task 7.2.
+- [x] Keep `WorkflowExecution` as the durable thread/current summary and `ExecutionAttempt` as append-oriented processing history.
+- [x] Prove concurrent claim/resume/cancel paths create at most one winning attempt.
+- [x] Do not synthesize history for legacy executions: `has_history` is false until a real claim creates an attempt; an empty history page remains distinct from a missing execution.
+- [x] Add pagination and indexes for execution/time/result operational queries.
+- [x] Verify claim → approval pause → in-app approval → resume claim → completion with real-Postgres lifecycle coverage.
+- [x] `attempt_id` is created at claim; ordinal starts at 1 for the first real post-migration claim.
+- [x] A paused attempt stays immutable after later cancellation or approval expiry.
+- [x] Commit as `feat(execution): persist processing attempt history`.
 
-### Task 5.2: Expose role-aware observability APIs
+Recovery eligibility and transitions remain deferred to Task 7.2. Owner/admin read APIs and UI remain Tasks 5.2/5.3.
+
+### Task 5.2: Expose role-aware observability APIs **(complete, 2026-11-27)**
 
 **Files:**
 - Modify: `src/api/executions.py`
@@ -370,13 +375,13 @@ Cloud Tasks breaks the synchronous parent/child call chain. Inject W3C trace con
 - Produces: owner-safe execution summary/attempt timeline and admin diagnostics including lease data and recovery assessment.
 - Consumes: attempt repository and existing authorization dependencies.
 
-- [ ] Owners receive lifecycle state, attempt ordinal/timing/result, safe failure guidance, and recovery eligibility without lease owner, internal error detail, or cross-user data.
-- [ ] Admins receive thread ID, leases, failure codes, delivery attempts, event/audit references, and “manual review required” reasons.
-- [ ] Paginate attempt/event lists and cap returned payload sizes; never expose raw checkpoint blobs.
-- [ ] Test owner, assignee, unrelated member, inactive user, and admin authorization.
-- [ ] Commit as `feat(api): expose execution observability views`.
+- [x] Owners receive lifecycle state, attempt ordinal/timing/result, safe failure guidance, and recovery eligibility without lease owner, internal error detail, or cross-user data.
+- [x] Admins receive thread ID, leases, failure codes and delivery attempts (summary), plus per-attempt lease, failure code, recovery-source, approval, actor and reason references. Event and audit references and a “manual review required” reason are not returned: no audit ledger exists before Phase 7, and every failed execution is classified `assessment_required` until Task 7.1.
+- [x] Paginate the attempt list (default 50, maximum 100) and never expose raw checkpoint blobs or payloads. There is no event-list endpoint in Phase 5, so event pagination does not apply.
+- [x] Test owner, assignee, unrelated member, inactive user, and admin authorization.
+- [x] Commit as `feat(api): expose execution observability views`.
 
-### Task 5.3: Build the execution operations UI
+### Task 5.3: Build the execution operations UI **(complete, 2026-11-27)**
 
 **Files:**
 - Modify: `frontend/app/runs/history/page.tsx`
@@ -391,13 +396,15 @@ Cloud Tasks breaks the synchronous parent/child call chain. Inject W3C trace con
 - Produces: owner lifecycle summary and admin diagnostics panel.
 - Consumes: Task 5.2 API; no direct telemetry backend queries from the browser.
 
-- [ ] Add status filters, failure-code explanations, attempt timeline, approval wait, cancellation, recovery eligibility, and manual-review guidance.
-- [ ] Show leases and internal diagnostics only to admins; authorization remains enforced server-side.
-- [ ] Use polling/WebSocket invalidation without opening one high-frequency stream per history row.
-- [ ] Test loading, empty, stale, unauthorized, canceled, failed-recoverable, failed-ambiguous, and multi-attempt states.
-- [ ] Commit as `feat(frontend): show durable execution attempts`.
+- [x] Add status filters, failure-code explanations, attempt timeline, approval wait, cancellation, recovery eligibility, and manual-review guidance.
+- [x] Show leases and internal diagnostics only to admins; authorization remains enforced server-side.
+- [x] Use polling/WebSocket invalidation without opening one high-frequency stream per history row.
+- [x] Test loading, empty, stale, unauthorized, canceled, failed-recoverable, failed-ambiguous, and multi-attempt states.
+- [x] Commit as `feat(frontend): show execution observability` (the commit message differs from the one planned here).
 
 **Phase 5 exit gate:** An owner can understand what happened and whether they may recover; an admin can diagnose lease/attempt state; no UI control can recover canceled or ambiguous executions.
+
+**Phase 5 status (2026-11-27):** code and documentation complete on branch `feat/telemetry-phase-5-attempts` (Tasks 5.1 to 5.3); the exit gate is met in code (no recovery control exists, canceled is permanently ineligible, owners never receive admin fields). The final full-suite run and the PR are pending: PR number and final counts to be recorded in [the observability plan](2026-11-26-execution-observability-ui.md#outcome-2026-11-27). Outcomes and skipped follow-ups: [attempts plan](2026-11-25-telemetry-phase-5-attempts.md#outcome-2026-11-27) and [observability plan](2026-11-26-execution-observability-ui.md#outcome-2026-11-27).
 
 ## Phase 6 — LLM, tool, usage, and cost telemetry
 

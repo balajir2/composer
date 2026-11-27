@@ -9,6 +9,7 @@ performs the actual approve/reject.
 
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock
 
@@ -18,6 +19,7 @@ from fastapi.testclient import TestClient
 from src.db.models import ApprovalDecision
 from src.db.repos import approvals as approvals_repo
 from src.db.repos import executions as executions_repo
+from src.db.repos import workflows as workflows_repo
 from src.db.repos.executions import ExecutionRecord, PendingInstance
 from tests.unit.db_fakes import RecordingSessionmaker, assert_no_network_inside_session
 
@@ -94,8 +96,9 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _Repos]:
         events.append("db:resume")
         return True
 
-    async def _approve(*_a: Any, **_k: Any) -> None:
+    async def _approve(*_a: Any, **_k: Any) -> SimpleNamespace:
         events.append("db:approval")
+        return SimpleNamespace(id="approval-row-1")
 
     async def _enqueue(*_a: Any, **_k: Any) -> None:
         events.append("net:enqueue")
@@ -114,6 +117,8 @@ def _client(monkeypatch: pytest.MonkeyPatch) -> tuple[TestClient, _Repos]:
     monkeypatch.setattr(executions_repo, "get", repos.get)
     monkeypatch.setattr(executions_repo, "resume_if_waiting", repos.resume)
     monkeypatch.setattr(approvals_repo, "create", repos.approval_create)
+    # The runnable gate looks the workflow up; these tests are about the resume itself.
+    monkeypatch.setattr(workflows_repo, "get", AsyncMock(return_value=None))
     monkeypatch.setattr("src.api.approval_email.enqueue_execution", repos.enqueue)
     return TestClient(app), repos
 
@@ -291,6 +296,7 @@ def test_post_confirm_valid_token_records_approval_and_redirects(
     assert repos.resume.await_args.args[1] == "exec-1"
     kwargs = repos.resume.await_args.kwargs
     assert kwargs["decision"] == "approved"
+    assert kwargs["approval_id"] == "approval-row-1"
     # DB2: the guarded statement re-checks the pause instance the token was minted for.
     assert kwargs["expected_pending"] == PendingInstance(node_id="approval-1", since=_PENDING_SINCE)
 
@@ -312,16 +318,16 @@ def test_post_confirm_passes_resume_time_to_the_guarded_transition(
 def test_post_confirm_race_loses_when_the_guarded_transition_wins_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """A second confirmation click (or a near-simultaneous duplicate request), or a re-pause
-    after validation, must not resolve: the guarded UPDATE matches no row. No approval row, no
-    enqueue."""
+    """A second confirmation click or a re-pause loses the guarded update. The inserted audit
+    row remains uncommitted and the endpoint does not enqueue."""
     client, repos = _client(monkeypatch)
     repos.resume.side_effect = None
     repos.resume.return_value = False
     resp = client.post(f"/approvals/email/{_token()}/confirm", follow_redirects=False)
     assert resp.status_code == 303
     assert "status=invalid" in resp.headers["location"]
-    repos.approval_create.assert_not_awaited()
+    repos.approval_create.assert_awaited_once()
+    assert "db:commit" not in repos.events
     repos.enqueue.assert_not_awaited()
 
 
@@ -411,8 +417,8 @@ def test_post_confirm_enqueues_only_after_commit_and_after_the_session_closes(
     assert resp.status_code == 303
     assert repos.events == [
         "session:enter",
-        "db:resume",
         "db:approval",
+        "db:resume",
         "db:commit",
         "session:exit",
         "net:enqueue",

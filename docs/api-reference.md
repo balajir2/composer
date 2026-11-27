@@ -52,6 +52,8 @@ DELETE /workflows/{id}/assignments/{userId}              revoke access (owner or
 
 The `nodes` and `edges` arrays are validated against the discriminated union of node types defined in `src/engine/workflow.py`. Validation errors come back as `422` with FastAPI's standard `{detail: [{loc, msg, type}, ...]}` shape.
 
+**Warn on save, refuse to run.** A conditional node (`if-else`, `while`, `user-approval`, `decision`) with an unconnected required branch still saves. `POST /workflows`, `PUT /workflows/{id}` and `GET /workflows/{id}` return `warnings: [{code: "missing_branch", nodeId, branch, message}]` (empty when complete; list responses omit it). A Join that cannot wait correctly for its parallel paths is reported the same way, with `code` `join_mixed_inputs` or `join_lane_escapes` (`nodeId` is the Join) or `join_collision` (`nodeId` is the step two parallel paths reach); these save, and are refused on run, publish and resume exactly like a missing branch. On a published workflow the same array also carries `{code: "unknown_variable", nodeId, branch: null, message}` for each `{{variable}}` no Start input or step defines: it saves and runs (the placeholder stays literal text), but publishing it fresh would be refused. Starting an execution (`POST /executions`), `POST /api/run/{slug}`, publishing (`PUT` with `isProduction: true`, or `PATCH /workflows/{id}/admin-flags`) are refused with `422 {detail: "<message(s)>"}` before any execution row exists. The Drive file-trigger poller skips such a workflow and leaves its files untouched.
+
 **Edit conflicts (optional precondition).** `PUT /workflows/{id}` and `POST /builder/{id}/message` accept an optional `expectedUpdatedAt`: the `updatedAt` the client last saw (ISO 8601; the value from any workflow response can be echoed back as is). When it is sent and the workflow has changed since, nothing is written and the response is `409`:
 
 ```json
@@ -72,6 +74,8 @@ The `nodes` and `edges` arrays are validated against the discriminated union of 
 POST /executions                                        body: {workflowId, input, idempotencyKey?: string}
 GET  /executions?workflowId=<id>&status=<x>&limit=N&offset=N
 GET  /executions/{id}
+GET  /executions/{id}/observability                       role-projected lifecycle summary (runner or admin)
+GET  /executions/{id}/attempts?limit=N&offset=N            durable attempt history, ordinal ascending (runner or admin)
 POST /executions/{id}/resume                            body: {decision: "approved"|"rejected", note?: string}
 POST /executions/{id}/cancel
 DELETE /executions/{id}
@@ -89,6 +93,8 @@ WS   /executions/{id}/ws                                stream node events
 
 Statuses: `queued` / `running` / `waiting_approval` / `completed` / `failed` / `canceled`.
 
+`GET /executions/{id}/observability` and `GET /executions/{id}/attempts` are read-only views of an execution's durable lifecycle. Both are open to the user who ran the execution and to admins; anyone else, including an assignee of the workflow, gets 404, as does a missing execution. `attempts` accepts `limit` (default 50, maximum 100) and `offset`, and returns `historyAvailable`, `total`, `limit`, `offset` and `items`; an execution that has no recorded attempts (for example one that ran before attempt history existed) returns 200 with `historyAvailable: false` and no items. Owners get a safe projection (status, timestamps, attempt count, per-attempt ordinal, timing, result, trigger kind, safe failure guidance, whether an approval was involved). Admins also get `adminDiagnostics` (thread ID, failure code, delivery attempts, lease) and per-attempt lease, failure code and reference IDs. `recoveryState` is `ineligible_canceled`, `assessment_required` (failed) or `not_applicable`; there is no recovery endpoint. Field list and rationale: [signal catalog](telemetry/signal-catalog.md#inventory-and-interpretation).
+
 Each active processing attempt defaults to **29 minutes** (`EXECUTION_MAX_RUNTIME_SECONDS=1740`). The shutdown grace defaults to 30 seconds; the Cloud Tasks dispatch deadline and worker lease both derive from runtime plus grace (1770 seconds by default). An approval resume starts a fresh attempt. These processing limits are independent of the durable thread's lifetime: a workflow may wait months for approval without holding a worker, subject to retention policy and any operator-configured approval expiration.
 
 Failed executions expose `failureCode` alongside `error`:
@@ -100,6 +106,7 @@ Failed executions expose `failureCode` alongside `error`:
 | `orphaned_running` | A running attempt has no lease and exceeded its claim grace. |
 | `execution_error` | An executor or worker error ended the attempt. |
 | `checkpoint_missing` | A resume found no saved state for the run; it was not restarted. |
+| `checkpoint_incompatible` | A resume found Join progress saved by the paused run that the workflow, edited since, can no longer carry over (a Join now waits for different paths); the run was not continued. Start a new run. |
 | `checkpoint_sync_failed` | Copying the run's saved state forward (or reading it) failed during a resume; the run was not restarted and its saved state is untouched. |
 
 Expired leases become terminal failures. Maintenance never automatically replays the workflow or its external side effects.

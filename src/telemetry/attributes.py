@@ -22,6 +22,7 @@ VOCABULARIES = {
             "lease_expired",
             "checkpoint_missing",
             "checkpoint_sync_failed",
+            "checkpoint_incompatible",
         }
     ),
     "result": frozenset(
