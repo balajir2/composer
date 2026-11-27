@@ -1405,7 +1405,9 @@ def test_end_reachable_by_parallel_paths_is_refused(name: str) -> None:
     wf = _mk(nodes, edges)
     with pytest.raises(WorkflowValidationError, match="reached by parallel paths") as info:
         validate_workflow_shape(wf)
-    assert "Join" in str(info.value)
+    msg = str(info.value)
+    assert "Join" not in msg
+    assert "own End step" in msg
 
 
 @pytest.mark.parametrize("name", list(_accepted_topologies()))

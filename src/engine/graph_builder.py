@@ -346,8 +346,7 @@ def collect_workflow_violations(workflow: Workflow) -> list[str]:
                 f"End node {end_id!r} must have exactly one incoming edge from an "
                 f"executable node (found {len(incoming)}): it can be reached by parallel "
                 f"paths (an earlier step fans out to several steps), so it would run more "
-                f"than once. Merge the paths with a Join step before it, or give each "
-                f"path its own End step."
+                f"than once. Give each parallel path its own End step."
             )
             continue
         if len(incoming) > 1:
