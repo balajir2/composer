@@ -4,14 +4,19 @@ import type { components } from "./generated/schema";
 type ExecutionRead = components["schemas"]["ExecutionRead"];
 type ExecutionCreate = components["schemas"]["ExecutionCreate"];
 type ExecutionListResponse = components["schemas"]["ExecutionListResponse"];
+export type ExecutionObservabilityRead = components["schemas"]["ExecutionObservabilityRead"];
+export type ExecutionAttemptPage = components["schemas"]["ExecutionAttemptPage"];
+export type ExecutionAttemptRead = components["schemas"]["ExecutionAttemptRead"];
 
 export async function listExecutions(params?: {
   workflowId?: string;
+  status?: string;
   limit?: number;
   offset?: number;
 }): Promise<ExecutionListResponse> {
   const q = new URLSearchParams();
   if (params?.workflowId) q.set("workflowId", params.workflowId);
+  if (params?.status) q.set("status", params.status);
   if (params?.limit !== undefined) q.set("limit", String(params.limit));
   if (params?.offset !== undefined) q.set("offset", String(params.offset));
   const qs = q.toString();
@@ -24,6 +29,23 @@ export async function createExecution(body: ExecutionCreate): Promise<ExecutionR
 
 export async function getExecution(id: string): Promise<ExecutionRead> {
   return apiFetch<ExecutionRead>(`/executions/${id}`);
+}
+
+export async function getExecutionObservability(
+  id: string,
+): Promise<ExecutionObservabilityRead> {
+  return apiFetch<ExecutionObservabilityRead>(`/executions/${id}/observability`);
+}
+
+export async function listExecutionAttempts(
+  id: string,
+  params?: { limit?: number; offset?: number },
+): Promise<ExecutionAttemptPage> {
+  const q = new URLSearchParams();
+  if (params?.limit !== undefined) q.set("limit", String(params.limit));
+  if (params?.offset !== undefined) q.set("offset", String(params.offset));
+  const qs = q.toString();
+  return apiFetch<ExecutionAttemptPage>(`/executions/${id}/attempts${qs ? `?${qs}` : ""}`);
 }
 
 type ResumeRequest = components["schemas"]["ResumeRequest"];
