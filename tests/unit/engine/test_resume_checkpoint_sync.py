@@ -160,6 +160,26 @@ async def test_a_failing_checkpoint_probe_fails_the_run_with_its_own_code(
     assert fake.updates[0]["failure_code"] == "checkpoint_sync_failed"
 
 
+async def test_checkpoint_failures_pass_the_attempt_id_to_the_fenced_transition(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression: without attempt_id the fenced failure refused and the run stayed running."""
+    for head, bring_error, code in (
+        (None, None, "checkpoint_missing"),
+        (object(), RuntimeError("copy broke"), "checkpoint_sync_failed"),
+    ):
+        executor, _events, _fake, bring = _setup(monkeypatch, head=head)
+        bring.side_effect = bring_error
+        mark_failed = AsyncMock(wraps=executor._mark_failed)  # pyright: ignore[reportPrivateUsage]
+        monkeypatch.setattr(executor, "_mark_failed", mark_failed)
+
+        await executor.resume("ex1", "approved", attempt_id="attempt-1")
+
+        mark_failed.assert_awaited_once()
+        assert mark_failed.await_args is not None
+        assert mark_failed.await_args.kwargs == {"failure_code": code, "attempt_id": "attempt-1"}
+
+
 # --------------------------------------------------------------------------- bring_forward
 
 
