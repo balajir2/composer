@@ -3,11 +3,11 @@
 from dataclasses import dataclass
 from datetime import datetime
 
-from sqlalchemy import ColumnElement, func, select, update
+from sqlalchemy import ColumnElement, case, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.errors import add_or_referenced_row_missing
-from src.db.models import AttemptResult, AttemptTriggerKind, ExecutionAttempt
+from src.db.models import AttemptResult, AttemptTriggerKind, ExecutionAttempt, WorkflowExecution
 
 
 @dataclass(frozen=True)
@@ -107,6 +107,39 @@ async def close_open(
         .execution_options(synchronize_session=False)
     )
     return won is not None
+
+
+RECONCILED_FAILURE_CODE = "closed_by_reconciliation"
+
+
+async def close_open_for_terminal_executions(session: AsyncSession, *, now: datetime) -> int:
+    """Close every open attempt whose execution is already terminal; return how many.
+
+    A rolled-back (0004) image cancels or lease-fails executions without closing attempts, which
+    would show them "In progress" forever. One guarded UPDATE: the attempt must still be open and
+    the execution terminal when the statement runs, so a concurrent worker close wins and a
+    re-run matches nothing. The end time is the execution's ``completed_at`` (else ``now``),
+    never before the attempt's start, so the ended_at ordering check holds.
+    """
+    ended_at = func.greatest(
+        func.coalesce(WorkflowExecution.completed_at, now), ExecutionAttempt.started_at
+    )
+    closed = await session.scalars(
+        update(ExecutionAttempt)
+        .where(
+            ExecutionAttempt.execution_id == WorkflowExecution.id,
+            ExecutionAttempt.ended_at.is_(None),
+            WorkflowExecution.status.in_(("completed", "failed", "canceled")),
+        )
+        .values(
+            result=WorkflowExecution.status,
+            failure_code=RECONCILED_FAILURE_CODE,
+            ended_at=ended_at,
+        )
+        .returning(ExecutionAttempt.id)
+        .execution_options(synchronize_session=False)
+    )
+    return len(closed.all())
 
 
 async def get(session: AsyncSession, attempt_id: str) -> AttemptRecord | None:

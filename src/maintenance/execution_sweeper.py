@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING, Any, cast
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.db.repos import events as events_repo
+from src.db.repos import execution_attempts as attempts_repo
 from src.db.repos import executions as executions_repo
 
 if TYPE_CHECKING:
@@ -210,6 +211,24 @@ async def sweep_expired_leases(
     return SweepResult(scanned=len(rows), marked_failed=marked, errored=errored)
 
 
+async def sweep_terminal_open_attempts(
+    sessionmaker: SessionMaker,
+    *,
+    now: datetime | None = None,
+) -> int:
+    """Close attempts left open under an already-terminal execution (rollback to a 0004 image).
+
+    Idempotent and safe to run on every invocation: one guarded UPDATE in its own short session.
+    """
+    current_time = now or datetime.now(UTC)
+    async with sessionmaker() as session:
+        count = await attempts_repo.close_open_for_terminal_executions(session, now=current_time)
+        await session.commit()
+    if count:
+        logger.info("execution_sweeper: closed %d open attempts of terminal executions", count)
+    return count
+
+
 async def sweep_old_execution_events(
     sessionmaker: SessionMaker,
     *,
@@ -298,4 +317,5 @@ __all__ = [
     "sweep_expired_leases",
     "sweep_old_execution_events",
     "sweep_orphaned_running",
+    "sweep_terminal_open_attempts",
 ]

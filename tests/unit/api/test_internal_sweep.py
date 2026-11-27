@@ -24,6 +24,7 @@ def _patch_sweeps(monkeypatch: pytest.MonkeyPatch) -> dict[str, AsyncMock]:
             return_value=SweepResult(scanned=4, marked_failed=2, errored=1)
         ),
         "old_execution_events": AsyncMock(return_value=42),
+        "terminal_open_attempts": AsyncMock(return_value=7),
     }
     for name, mock in mocks.items():
         monkeypatch.setattr(f"src.api.internal.sweep_{name}", mock)
@@ -98,6 +99,20 @@ def test_sweep_endpoint_isolates_each_failed_sweep(
     assert response.status_code == 200, response.text
     assert response.json() == expected
     assert all(mock.await_count == 1 for mock in mocks.values())
+
+
+def test_sweep_endpoint_reconciles_open_attempts_and_isolates_its_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    mocks = _patch_sweeps(monkeypatch)
+    mocks["terminal_open_attempts"].side_effect = RuntimeError("transient DB error")
+    client, db = _client_with_mock_db()
+
+    response = client.post("/internal/sweep")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["events_deleted"] == 42  # the other sweeps still ran
+    mocks["terminal_open_attempts"].assert_awaited_once_with(db)
 
 
 def test_sweep_endpoint_rejects_unauthenticated_call_without_running_sweeps(

@@ -64,6 +64,7 @@ from src.maintenance.execution_sweeper import (
     sweep_expired_leases,
     sweep_old_execution_events,
     sweep_orphaned_running,
+    sweep_terminal_open_attempts,
 )
 from src.storage_providers.google_drive import GoogleDriveProvider
 from src.storage_providers.text_extraction import extract_text
@@ -508,6 +509,14 @@ async def sweep(  # pyright: ignore[reportUnusedFunction]
     except Exception:
         logger.exception("internal: sweep_expired_leases failed")
         leases_expired = None
+
+    # Attempts left open under a terminal execution by a rolled-back (0004) image. Runs after the
+    # failure sweeps so their own attempt closes are never raced; failures stay isolated and the
+    # count is logged, not added to the response (its shape is a Cloud Scheduler contract).
+    try:
+        await sweep_terminal_open_attempts(sessionmaker)
+    except Exception:
+        logger.exception("internal: sweep_terminal_open_attempts failed")
 
     events_deleted: int | None
     try:
