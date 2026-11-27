@@ -57,7 +57,7 @@ Stack we're committed to (see [`../decisions.md`](../decisions.md) for the ratio
 |---|---|---|
 | Runtime | Python 3.11 / 3.12 | Widest LangGraph + LangChain ecosystem |
 | Web framework | FastAPI | Async-first; OpenAPI auto-generated |
-| ORM | Prisma Python | Type-safe, schema-first ORM |
+| ORM | SQLAlchemy 2.x (async) + Alembic | Maintained ORM; Alembic is the only migration tool |
 | Database | Postgres 15+ (Neon recommended) | Battle-tested transactional store; PITR available |
 | Orchestration | LangGraph Python + LangChain | Resumable state machines with first-class checkpoint persistence |
 | Frontend | Next.js 15 + Tailwind + shadcn/ui | Modern App Router; the canvas uses React Flow |

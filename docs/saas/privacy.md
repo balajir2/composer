@@ -12,14 +12,14 @@ Composer stores three categories of data:
 2. **Workflow & execution data** — what they build and run.
 3. **Operational signals** — application/host logs, persisted execution events, and optional LLM traces.
 
-The full schema lives in [`../../prisma/schema.prisma`](../../prisma/schema.prisma); the table below is the digest with privacy-relevant context.
+The full schema is defined by the SQLAlchemy models in [`../../src/db/models/`](../../src/db/models/) and the Alembic revisions in [`../../src/db/migrations/versions/`](../../src/db/migrations/versions/); the table below is the digest with privacy-relevant context.
 
 ### Identity & access
 
 | Table | What it stores | PII? | Lawful basis (GDPR) |
 |---|---|---|---|
 | `users` | Email, name (if SSO supplies it), bcrypt-hashed password (standalone only), role, `isActive` flag, timestamps | Yes — email, name | Contract / legitimate interest |
-| Frontend NextAuth session | JWT-based browser session handled by NextAuth; no Composer `accounts` or `sessions` table exists in the Prisma schema | Possibly — identity claims | Contract |
+| Frontend NextAuth session | JWT-based browser session handled by NextAuth; no Composer `accounts` or `sessions` table exists in the Composer database schema | Possibly — identity claims | Contract |
 | `api_keys` | bcrypt-hashed key, label, prefix, owner, last-used timestamp, expiry | No (label may include PII if user includes their email) | Contract |
 | `mcp_servers` + `mcp_oauth_tokens` | Encrypted OAuth tokens for the MCP server, scopes, issuer | No directly; tokens grant access to *external* systems whose data may include PII | Contract |
 | `cloud_storage_connections` | Encrypted per-user OAuth tokens for cloud file-trigger providers (Google Drive today) | No directly; tokens grant access to the connected Drive folder's contents | Contract |

@@ -141,7 +141,7 @@ The whole loop is what most agentic-AI teams build from scratch: prompt + tool d
 
 ## Quick start
 
-**Prerequisites:** Python 3.11 or 3.12, Node.js 20+, [`uv`](https://docs.astral.sh/uv/), a Postgres 15+ database, and an API key for at least one LLM provider (Anthropic, OpenAI, Google, or Groq).
+**Prerequisites:** Python 3.11 or 3.12, Node.js 20+ (for the frontend only; the backend needs no Node.js), [`uv`](https://docs.astral.sh/uv/), a Postgres 15+ database, and an API key for at least one LLM provider (Anthropic, OpenAI, Google, or Groq).
 
 ```bash
 # 1. Clone + install
@@ -155,8 +155,7 @@ cp .env.example .env
 # Edit .env: DATABASE_URL, JWT_SECRET, ENCRYPTION_KEY, ANTHROPIC_API_KEY (or any LLM provider)
 
 # 3. Database + reference templates
-uv run prisma generate
-uv run prisma migrate deploy
+uv run alembic upgrade head          # builds the schema on an empty database
 uv run python -m scripts.seed_templates
 
 # 4. Run (Windows shortcut: opens both servers in fresh windows)
@@ -190,7 +189,7 @@ In **dev mode** (no `ENVIRONMENT=production` env var set) Composer accepts an un
          ▼              ▼              ▼              ▼
    ┌──────────┐    ┌─────────┐    ┌──────────┐   ┌──────────────┐
    │LangGraph │    │Postgres │    │   MCP    │   │     LLM      │
-   │executor  │◄───┤(Prisma) │    │ servers  │   │  providers   │
+   │executor  │◄───┤(psycopg)│    │ servers  │   │  providers   │
    │+executors│    │         │    │(HTTP/SSE)│   │ (Anthropic / │
    │          │    │         │    │          │   │  OpenAI/...) │
    └──────────┘    └─────────┘    └──────────┘   └──────────────┘
@@ -214,7 +213,7 @@ Deeper architecture: [`docs/architecture.md`](docs/architecture.md).
 | Layer | Choice |
 |---|---|
 | **Backend runtime** | Python 3.11 / 3.12, FastAPI, Pydantic v2 |
-| **ORM** | Prisma Python (schema-first, typed client) |
+| **ORM** | SQLAlchemy 2.x async on psycopg 3, Alembic migrations |
 | **Database** | Postgres 15+ (Neon-compatible, includes PITR) |
 | **Orchestration** | LangGraph Python + LangChain |
 | **LLM providers** | Anthropic Claude · OpenAI · Google Gemini · Groq |
@@ -226,7 +225,7 @@ Deeper architecture: [`docs/architecture.md`](docs/architecture.md).
 | **Encryption at rest** | `cryptography` AES-256-GCM |
 | **Sandboxing** | `simpleeval` (expressions) + `e2b_code_interpreter` (code) |
 | **Tests** | pytest + pytest-asyncio (1,751 collected on 2026-11-19), Vitest, Playwright |
-| **Tooling** | `uv` · `ruff` · `pyright` (strict) · Prisma migrations |
+| **Tooling** | `uv` · `ruff` · `pyright` (strict) · Alembic migrations |
 
 Why each piece was chosen, with alternatives considered: [`docs/decisions.md`](docs/decisions.md) (full ADR record).
 
@@ -294,14 +293,15 @@ composer/
 │   ├── tools/                        #   Built-in tool providers (Tavily, Firecrawl, ...)
 │   ├── vectordb/                     #   5 vector DB providers with query + upsert
 │   ├── security/                     #   Auth, JWT, encryption, rate limiting, password hashing
-│   ├── storage/                      #   Prisma client lifecycle + LangGraph checkpointer
+│   ├── db/                           #   SQLAlchemy models + repos + Alembic revisions (src/db/migrations)
+│   ├── checkpoints/                  #   LangGraph checkpointer (official Postgres saver)
 │   └── maintenance/                  #   Attempt/approval/event-retention sweepers
 ├── frontend/                         # Next.js 15 app
 │   ├── app/                          #   App Router pages: designer/, runs/, admin/, (auth)/
 │   ├── components/composer/          #   Canvas, panels, role-aware nav
 │   ├── lib/api/                      #   Typed REST clients (OpenAPI-generated schema)
 │   └── e2e/                          #   Playwright suite
-├── prisma/schema.prisma              # Single source of truth for the data model
+├── alembic.ini                       # Alembic config; revisions live in src/db/migrations/versions/
 ├── tests/                            # pytest unit + integration
 ├── scripts/                          # Operational scripts (seed_templates, link checker, ...)
 ├── docs/                             # Documentation (see docs/README.md for the index)
