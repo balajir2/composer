@@ -1,8 +1,8 @@
 from src.db.schema_filters import include_name
 
 
-def test_prisma_and_alembic_bookkeeping_tables_are_ignored() -> None:
-    assert include_name("_prisma_migrations", "table", {}) is False
+def test_alembic_bookkeeping_table_is_ignored() -> None:
+    assert include_name("_prisma_migrations", "table", {}) is True  # dropped by 0006; not special
     assert include_name("alembic_version", "table", {}) is False
 
 

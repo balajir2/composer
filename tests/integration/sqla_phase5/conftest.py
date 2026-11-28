@@ -69,10 +69,8 @@ __all__ = [
     "sessionmaker_",
 ]
 
-# Every checkpoint table that has ever existed. Old: Prisma's. New: langgraph-checkpoint-postgres.
+# The official saver's tables (the old Prisma ones were dropped by Alembic 0006).
 CHECKPOINT_TABLES = (
-    "langgraph_checkpoints",
-    "langgraph_checkpoint_writes",
     "checkpoints",
     "checkpoint_blobs",
     "checkpoint_writes",

@@ -53,7 +53,6 @@ async def _paused_then_resume(
         AsyncMock(return_value=SimpleNamespace(id="wf1", name="n", nodes=nodes, edges=edges)),
     )
     monkeypatch.setattr(lge_mod, "notify_execution_event", AsyncMock())
-    monkeypatch.setattr(lge_mod, "bring_forward", AsyncMock(return_value=False))
     executor = LangGraphExecutor(sessionmaker=fake.sessionmaker, checkpointer=saver)
     await executor.resume("ex1", "approved", attempt_id="attempt-1")
     return fake, saver

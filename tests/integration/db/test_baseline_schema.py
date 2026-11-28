@@ -24,8 +24,9 @@ from tests.integration.db.schema_catalog import snapshot
 pytestmark = pytest.mark.integration
 
 # The golden catalogs pin the schema at 0001 and 0004. Tests that compare against
-# golden_0004 migrate to exactly that revision, so later revisions (0005 onward) don't move
-# them; test_fresh_database_at_head_matches_the_models covers head itself.
+# golden_0004 migrate to exactly that revision, so later revisions (0005 onward, including
+# 0006, which drops the old checkpoint tables the goldens contain) don't move them; head itself
+# is covered by the model comparison and the 0006 tests below.
 BASE_HEAD = "0004_langgraph_saver_tables"
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
@@ -360,3 +361,27 @@ def test_leftover_types_without_tables_are_refused(scratch_db: str) -> None:
     assert "no Prisma history" in out
     assert "already exists" not in out
     assert _versions(scratch_db) == []
+
+
+LEGACY = {"langgraph_checkpoints", "langgraph_checkpoint_writes", "_prisma_migrations"}
+
+
+def test_fresh_database_at_head_has_none_of_the_legacy_tables(scratch_db: str) -> None:
+    _ok(scratch_db, "upgrade", "head")
+    assert _tables(scratch_db) & LEGACY == set()
+
+
+def test_a_prisma_built_database_loses_its_prisma_history_at_head(scratch_db: str) -> None:
+    _prisma_built(scratch_db)
+    _ok(scratch_db, "upgrade", "head")
+    assert _tables(scratch_db) & LEGACY == set()
+    assert _versions(scratch_db) == [(alembic_head_revision(),)]
+
+
+def test_0006_downgrade_restores_the_fresh_0005_schema_exactly(scratch_db: str) -> None:
+    _ok(scratch_db, "upgrade", "0005_execution_attempts")
+    before = snapshot(scratch_db)
+    _ok(scratch_db, "upgrade", "head")
+    _ok(scratch_db, "downgrade", "0005_execution_attempts")
+    assert snapshot(scratch_db) == before
+    assert "_prisma_migrations" not in _tables(scratch_db)

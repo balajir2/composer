@@ -12,8 +12,8 @@ from src.db.models import (
     Approval,
     ApprovalDecision,
     ExecutionEvent,
-    LangGraphCheckpoint,
-    LangGraphCheckpointWrite,
+    SaverCheckpoint,
+    SaverCheckpointWrite,
     Workflow,
     WorkflowExecution,
 )
@@ -247,23 +247,22 @@ async def test_list_refs_by_ids_and_owner(session: AsyncSession) -> None:
 async def _artifacts(session: AsyncSession, execution_id: str, thread_id: str) -> None:
     session.add(ExecutionEvent(execution_id=execution_id, seq=1, type="t", payload={}))
     session.add(
-        LangGraphCheckpoint(
+        SaverCheckpoint(
             thread_id=thread_id,
             checkpoint_ns="",
             checkpoint_id=_id("c"),
-            checkpoint=b"c",
-            metadata_=b"m",
+            checkpoint={},
         )
     )
     session.add(
-        LangGraphCheckpointWrite(
+        SaverCheckpointWrite(
             thread_id=thread_id,
             checkpoint_ns="",
             checkpoint_id=_id("c"),
             task_id="t",
             idx=0,
             channel="ch",
-            value=b"v",
+            blob=b"v",
         )
     )
     session.add(
@@ -276,8 +275,8 @@ async def _artifact_counts(session: AsyncSession, execution_id: str, thread_id: 
     out: list[int] = []
     for model, col, val in (
         (ExecutionEvent, ExecutionEvent.execution_id, execution_id),
-        (LangGraphCheckpoint, LangGraphCheckpoint.thread_id, thread_id),
-        (LangGraphCheckpointWrite, LangGraphCheckpointWrite.thread_id, thread_id),
+        (SaverCheckpoint, SaverCheckpoint.thread_id, thread_id),
+        (SaverCheckpointWrite, SaverCheckpointWrite.thread_id, thread_id),
         (Approval, Approval.execution_id, execution_id),
     ):
         out.append(

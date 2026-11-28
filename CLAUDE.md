@@ -101,7 +101,7 @@ Backend phases 0–9 ≈ 10 weeks. UI phase 10 ≈ 3 weeks. Total ≈ 13 weeks.
 |---|---|
 | Language | Python 3.11 or 3.12 (`>=3.11,<3.13`) |
 | Web framework | FastAPI |
-| ORM | **SQLAlchemy 2.x (async) + Alembic.** Alembic is the only migration tool; `0001_baseline` creates the base schema on an empty database. Prisma Python (archived upstream) was removed in phase 6 of `docs/superpowers/specs/2026-11-20-prisma-to-sqlalchemy-migration-design.md` (ADR-0037); the migration is complete except phase 7 cleanup (old checkpoint tables, `_prisma_migrations`). **Schema changes go through Alembic revisions only.** |
+| ORM | **SQLAlchemy 2.x (async) + Alembic.** Alembic is the only migration tool; `0001_baseline` creates the base schema on an empty database. Prisma Python (archived upstream) was removed in phase 6 of `docs/superpowers/specs/2026-11-20-prisma-to-sqlalchemy-migration-design.md` (ADR-0037); the migration is complete (phase 7, `0006_drop_legacy_tables`, dropped the old checkpoint tables and `_prisma_migrations`). **Schema changes go through Alembic revisions only.** |
 | Postgres driver | **psycopg 3** (asyncpg and Prisma were removed in phase 6) |
 | Database | Postgres 15+ (Neon for dev, Docker fallback) |
 | Orchestration | LangGraph Python + LangChain |

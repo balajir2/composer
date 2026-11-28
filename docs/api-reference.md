@@ -107,7 +107,7 @@ Failed executions expose `failureCode` alongside `error`:
 | `execution_error` | An executor or worker error ended the attempt. |
 | `checkpoint_missing` | A resume found no saved state for the run; it was not restarted. |
 | `checkpoint_incompatible` | A resume found Join progress saved by the paused run that the workflow, edited since, can no longer carry over (a Join now waits for different paths); the run was not continued. Start a new run. |
-| `checkpoint_sync_failed` | Copying the run's saved state forward (or reading it) failed during a resume; the run was not restarted and its saved state is untouched. |
+| `checkpoint_sync_failed` | Reading the run's saved state failed at the start of a resume; the run was not restarted and its saved state is untouched. (Before phase 7 it also covered copying state forward from the old checkpoint tables.) |
 
 Expired leases become terminal failures. Maintenance never automatically replays the workflow or its external side effects.
 

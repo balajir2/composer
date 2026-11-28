@@ -1039,6 +1039,8 @@ Timeouts fail with `execution_timeout`, expired leases with `lease_expired`, aba
 
 > **Phase 6 done (2026-11, ADR-0037):** Prisma, asyncpg and Node.js are removed and Alembic builds the base schema.
 
+> **Phase 7 done (2026-11-28):** Alembic `0006_drop_legacy_tables` dropped `langgraph_checkpoints`, `langgraph_checkpoint_writes` and `_prisma_migrations`; the migration is complete.
+
 ## ADR-0036: Official LangGraph checkpointer — Alembic-owned tables, split connections, legacy bridge
 
 **Date.** 2026-11-25. **Status.** Accepted. Implements phase 5 of ADR-0035; supersedes ADR-0001.
@@ -1055,6 +1057,8 @@ Timeouts fail with `execution_timeout`, expired leases with `lease_expired`, aba
 
 **Related.** ADR-0001, ADR-0033, ADR-0035.
 
+> **Phase 7 note (2026-11-28):** D9's bridge (`LegacyCheckpointSaver`, the copy tool, the deploy guard and copy-on-resume) was removed in phase 7, and D7's deletes now cover only the three saver tables. `checkpoint_sync_failed` keeps its value but now means a failed probe read at the start of a resume (the exception is `CheckpointReadFailed`). Rolling back across `0006` needs the downgrade first (see the runbook).
+
 ## ADR-0037: Prisma removed; Alembic builds the base schema
 
 **Date.** 2026-11 (merge date recorded in the CHANGELOG). **Status.** Accepted. Implements phase 6 of ADR-0035.
@@ -1070,3 +1074,5 @@ Timeouts fail with `execution_timeout`, expired leases with `lease_expired`, aba
 **Consequences.** A fresh database needs only `alembic upgrade head` (CI exercises this on every run). Production's database is not changed by phase 6; `_prisma_migrations` and the two old checkpoint tables stay until phase 7. Rolling back the image needs no database action, and an old deploy workflow still works until phase 7 drops `_prisma_migrations` (runbook: `docs/operations/production-deployment.md`, "Rolling back across the Prisma removal"). The backend image no longer contains Node.js, the Prisma engine or generated client, and it never contained `alembic.ini`, so migrations run only from a repository checkout. Prisma-only query parameters in `DATABASE_URL` are still stripped by `src/db/url.py` until the secret is cleaned.
 
 **Related.** ADR-0031, ADR-0035, ADR-0036. Plan: `docs/superpowers/plans/2026-11-26-sqlalchemy-phase-6-removal.md`.
+
+> **Phase 7 note (2026-11-28):** `_prisma_migrations` was dropped by `0006_drop_legacy_tables` and deliberately not recreated by its downgrade (D3 of the phase 7 plan). 0001's adoption logic is unchanged and still serves pre-2026-11-20 restores.

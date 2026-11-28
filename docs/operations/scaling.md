@@ -93,7 +93,7 @@ If you add a read replica, set the application to route reads (workflow lists, e
 Postgres storage grows with execution volume:
 
 - Each `workflow_executions` row is small (~1 KB plus the size of input/output JSON)
-- Each `langgraph_checkpoints` row is variable — proportional to workflow state size
+- Each `checkpoints` row is variable — proportional to workflow state size
 - Backups multiply this by retention
 
 For a typical customer running 10K executions/month with average input/output sizes of 1 KB each:

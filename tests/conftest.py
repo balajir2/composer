@@ -23,6 +23,14 @@ from httpx import ASGITransport, AsyncClient
 from src.config import get_settings
 from src.main import create_app
 
+# Tests never send LangSmith traces unless a run opts in with COMPOSER_TEST_TRACING=1.
+# Without this, a developer's .env (LANGCHAIN_TRACING_V2=true) turned tracing on for every
+# local test run and used up the LangSmith trace quota. load_dotenv() does not override
+# variables that are already set, so these defaults win over .env.
+if os.environ.get("COMPOSER_TEST_TRACING") != "1":
+    for _tracing_var in ("LANGCHAIN_TRACING_V2", "LANGSMITH_TRACING", "LANGSMITH_TRACING_V2"):
+        os.environ[_tracing_var] = "false"
+
 load_dotenv()
 
 

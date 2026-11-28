@@ -16,6 +16,8 @@ from typing import Any
 
 import psycopg
 
+# _prisma_migrations stays ignored: the adoption tests build it by hand and compare with the
+# 0001/0004 goldens, at revisions where it still exists (0006 drops it).
 IGNORED = frozenset({"alembic_version", "_prisma_migrations"})
 
 _TABLES = """

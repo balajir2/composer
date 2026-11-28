@@ -432,8 +432,8 @@ async def delete_execution(  # pyright: ignore[reportUnusedFunction]
 
     Cascade scope:
       - `approvals` rows — via the FK `ON DELETE CASCADE`.
-      - LangGraph checkpoints + checkpoint_writes — keyed by
-        `thread_id` (no FK to execution by design — checkpoints can
+      - LangGraph checkpoints, blobs and pending writes (the official
+        saver's three tables) — keyed by `thread_id` (no FK to execution by design — checkpoints can
         outlive the execution row in some scenarios).  We delete
         them explicitly here because once the execution is gone the
         checkpoints are unreachable garbage.

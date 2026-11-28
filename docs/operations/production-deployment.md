@@ -42,7 +42,7 @@ Walk through [postgres-setup.md](postgres-setup.md). The end state:
 
 ### 1.1a Apply release migrations before backend startup
 
-**On GCP Cloud Run with the GitHub Actions pipeline, this happens automatically.** `.github/workflows/deploy-gcp.yml` runs `uv run composer checkpoints guard`, then `uv run alembic upgrade head`, then `uv run alembic current`, against the `composer-database-url` secret (direct, non-pooler endpoint) right before `gcloud run deploy`. Alembic is the only migration tool (Prisma was removed in SQLAlchemy migration phase 6; before that the workflow also ran `prisma migrate deploy`). If a migration fails, the deploy stops and the previous revision keeps serving. Since the old revision briefly runs against the new schema, migrations must be additive and backward-compatible. Run the steps below by hand for first-time setup, for other hosts, or to check a database.
+**On GCP Cloud Run with the GitHub Actions pipeline, this happens automatically.** `.github/workflows/deploy-gcp.yml` runs `uv run alembic upgrade head`, then `uv run alembic current`, against the `composer-database-url` secret (direct, non-pooler endpoint) right before `gcloud run deploy`. Alembic is the only migration tool (Prisma was removed in SQLAlchemy migration phase 6; before that the workflow also ran `prisma migrate deploy`). If a migration fails, the deploy stops and the previous revision keeps serving. Since the old revision briefly runs against the new schema, migrations must be additive and backward-compatible. The one deliberate exception is `0006_drop_legacy_tables` (phase 7), a contract step that the previous image tolerates only for runs that aren't resumed or deleted during the swap; it shipped with no active runs and no approvals or deletes until the `/ready` smoke test passed (see "Rolling back across the phase 7 cleanup"). Run the steps below by hand for first-time setup, for other hosts, or to check a database.
 
 Deploys are serialised: the workflow's `concurrency` group (`deploy-gcp-production`, no cancellation) makes a second push to `main` wait for the running deploy rather than run alongside it. If several pushes queue up, only the newest waiting run deploys, which is the latest `main`.
 
@@ -55,7 +55,6 @@ Use an administrative/release environment with the intended `DATABASE_URL` and t
 ```bash
 # DATABASE_URL must be the DIRECT (non-pooler) host: migrations take locks that PgBouncer
 # transaction pooling breaks. For Neon, remove "-pooler" from the hostname.
-uv run composer checkpoints guard    # refuses (exit 1) while a paused run exists only in the old checkpoint tables
 uv run alembic upgrade head
 uv run alembic current               # must print the head revision
 ```
@@ -319,70 +318,17 @@ After go-live:
 - **Week 1**: run the [disaster-recovery.md](disaster-recovery.md) full drill. You want to know the recovery path works before you need it.
 - **Month 1**: run the [scaling.md](scaling.md) capacity review. Adjust the backend replica count + Postgres plan as needed.
 
-## Checkpointer cutover (phase 5 to phase 7)
+## Checkpointer (since phase 5)
 
-SQLAlchemy phase 5 replaced the Prisma LangGraph saver with the official `langgraph-checkpoint-postgres` saver, which reads and writes new tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`; Alembic revision `0004_langgraph_saver_tables`). The old tables (`langgraph_checkpoints`, `langgraph_checkpoint_writes`) are kept until phase 7 so a rollback is possible. A run paused on the old saver cannot resume on the new revision unless its snapshots exist in the new tables.
+Graphs checkpoint with the official `langgraph-checkpoint-postgres` saver, whose tables (`checkpoints`, `checkpoint_blobs`, `checkpoint_writes`, `checkpoint_migrations`) come from Alembic revision `0004_langgraph_saver_tables`. The old Prisma tables (`langgraph_checkpoints`, `langgraph_checkpoint_writes`), the copy tool and the deploy guard were removed in phase 7 by `0006_drop_legacy_tables`, which refused to run while an active run still had its newest checkpoint only in the old tables.
 
-### What the deploy guard checks
-
-The deploy workflow runs `uv run composer checkpoints guard` BEFORE `alembic upgrade head`, and before the Cloud Run deploy, so a refusal leaves the database untouched. On a database that has not yet reached revision 0004 the new saver tables do not exist; the guard then treats them as empty, so every active run with old-table checkpoints is blocked. It fails the job (so the previous revision keeps serving) while any `queued`, `running` or `waiting_approval` run has checkpoints only in the old tables: the old tables' newest checkpoint id for its thread is newer than the new tables', or the new tables have none. It prints `active runs: <status>=<n> ...`, then either `ok: ...` (exit 0) or one `blocked: <execution id> (<status>)` line per run (exit 1). A failure of the check itself (for example no database) also exits 1: the guard fails closed. Output carries ids, statuses and counts only.
-
-### Clearing the guard
-
-1. Copy the paused runs forward: `uv run composer checkpoints copy --to postgres --all-waiting` (or `--execution <id>`, repeatable). The `copy` commands need the DIRECT (non-pooler) `DATABASE_URL`, the one the deploy uses:
-
-   ```bash
-   export DATABASE_URL="$(gcloud secrets versions access latest \
-     --secret=composer-database-url --project=<PROJECT> | sed 's/-pooler\././')"
-   ```
-   (Run `copy --to postgres` only once the database is at revision 0004, i.e. after a deploy that applied the migration; before that, the guard's refusal is expected and the runs should finish or be cancelled.)
-2. Runs still `running`/`queued` cannot be copied (only `waiting_approval` runs are, unless `--force`): wait for them to finish or pause, then copy; or cancel them.
-3. Re-run the deploy.
-
-Copy exit codes: 0 all copied; 1 a copy failed or copied nothing; 2 some run was refused (unknown execution, wrong status, or the target is already ahead of the source) while the others were still copied. Exit 2 is an expected outcome, not an error: read the `refused` lines. A copy that reports `nothing to copy` for a run (it has no checkpoints in the source) is harmless. If it happens during `--to legacy --all-waiting`, the run has no official checkpoints, so there is nothing to roll back for it, and the command exits 1.
-
-Safety net: when a run is resumed, the executor first copies its thread from the old tables to the new ones if the old ones are ahead (`bring_forward`). A run that paused on the old revision after the guard ran (the window while Cloud Run shifts traffic) therefore still resumes. Roll-forward needs no manual step.
-
-### Failure codes after the cutover
+### Resume failure codes
 
 - `checkpoint_missing`: a resume found no saved state for the run. The run fails closed instead of restarting from scratch.
 - `checkpoint_incompatible`: the workflow was edited while the run was paused, and the edit changed which paths a Join waits for, so the run's saved Join progress cannot be carried over. The run fails closed (it is not completed) and the user is told to start a new run; there is nothing to recover. Reordering edges is not such a change.
-- `checkpoint_sync_failed`: copying the run's state forward (or reading it) failed during a resume. The run was not restarted and the old-table rows are intact, so it is recoverable: fix the cause (database reachability, a stale lock), confirm with `composer checkpoints guard` that the run is listed as blocked or copy it with `copy --to postgres --execution <id> --force`, then resume or re-queue it.
-
-### Rollback runbook
-
-Rolling back means the previous revision (which reads only the old tables) must find every paused run's state there. Placeholders: `<REGION>`, `<PROJECT>`, `<BACKEND_SERVICE>` (the Cloud Run service name), `<previous-rev>` (the revision name from `gcloud run revisions list --service=<BACKEND_SERVICE> --region=<REGION> --project=<PROJECT>`). The queue is `composer-executions` (`scripts/gcp-bootstrap.ps1`, `CLOUD_TASKS_QUEUE` default in `src/config.py`). Do it in this order:
-
-1. Pause the Cloud Tasks queue:
-   ```bash
-   gcloud tasks queues pause composer-executions --location=<REGION> --project=<PROJECT>
-   ```
-2. Copy state back, with the direct (non-pooler) `DATABASE_URL` (same `sed` as the deploy):
-   ```bash
-   export DATABASE_URL="$(gcloud secrets versions access latest \
-     --secret=composer-database-url --project=<PROJECT> | sed 's/-pooler\././')"
-   uv run composer checkpoints copy --to legacy --all-waiting
-   ```
-3. Shift traffic to the previous revision:
-   ```bash
-   gcloud run services update-traffic <BACKEND_SERVICE> \
-     --to-revisions=<previous-rev>=100 --region=<REGION> --project=<PROJECT>
-   ```
-4. Wait for the new revision's instances to drain (its in-flight requests finish).
-5. Copy again (runs that paused during the drain exist only in the new tables):
-   ```bash
-   uv run composer checkpoints copy --to legacy --all-waiting
-   ```
-6. Resume the queue:
-   ```bash
-   gcloud tasks queues resume composer-executions --location=<REGION> --project=<PROJECT>
-   ```
+- `checkpoint_sync_failed`: reading the run's saved state failed at the start of a resume. The graph did not run and the state is intact. Fix the cause (database reachability), then start a new run or re-queue it.
 
 The startup probe on the live service is the default TCP probe on port 8080, not `/ready`. An old revision therefore still starts and serves on a database already at 0004; only its `/ready` reports a schema mismatch, which is expected during a rollback. Do NOT switch the startup probe to `/ready` while a rollback or a mixed-version window is possible: the old revision would fail its probe and never take traffic.
-
-Risk: a run resumed on the old revision without its checkpoint in the old tables does not fail. The old revision finds no checkpoint and restarts the graph from scratch with empty input, repeating side effects (emails, HTTP calls, LLM calls). That is why the queue is paused first and the copy runs twice.
-
-Known gap: during a traffic shift, a run that pauses on the new revision and is resumed on a still-draining old instance is not copied back, so the old saver restarts it from scratch. The window is small; pausing the queue (step 1) is what keeps it small.
 
 Startup budget: the SQLAlchemy connect retry and the saver pool open retry run in series at boot, about 21 s worst case with the defaults. The saver schema check is bounded by `CHECKPOINTER_POOL_TIMEOUT_SECONDS` (10 s), and every database-facing startup step (both of those, the listener setup and the LLM key sync) runs under one deadline, `STARTUP_TIMEOUT_SECONDS` (60 s), after which startup raises and Cloud Run starts another instance; cancelling a query on a connection that stopped answering adds up to about 10 s. Keep the deadline well under the 240 s TCP startup probe, and keep it above the retry budget, before tightening any startup probe or timeout. Every connection also carries libpq `connect_timeout`, TCP keepalives and `tcp_user_timeout` (`src/db/libpq.py`), so a silent peer cannot hold a connection for the kernel's ~15 minute retransmission timeout.
 
@@ -408,10 +354,10 @@ If the deployment misbehaves materially:
 
 ### Rolling back across the Prisma removal (SQLAlchemy migration phase 6)
 
-Phase 6 changed no production data: production was already past `0001_baseline` (at `0004_langgraph_saver_tables`), so its first phase 6 deploy ran `alembic upgrade head` as a no-op, apart from any newer revision that was pending. `_prisma_migrations` and the two old checkpoint tables stay until phase 7. That makes rollback simple:
+Phase 6 changed no production data: production was already past `0001_baseline` (at `0004_langgraph_saver_tables`), so its first phase 6 deploy ran `alembic upgrade head` as a no-op, apart from any newer revision that was pending. `_prisma_migrations` and the two old checkpoint tables stayed until phase 7 (see below). That made rollback simple:
 
-- **Rolling back to a pre-phase-6 image is a Cloud Run revision swap with no database action.** Shift traffic to the previous revision (`gcloud run services update-traffic <BACKEND_SERVICE> --to-revisions=<previous-rev>=100 --region=<REGION> --project=<PROJECT>`). The old image still contains the Prisma client but never imports it. If the checkpointer is also being rolled back, follow the [Rollback runbook](#rollback-runbook) above as well.
-- **Re-running an old deploy workflow from a pre-phase-6 ref still works** while `_prisma_migrations` exists (until phase 7 drops it): its `prisma migrate deploy` finds nothing to apply. After phase 7, never re-run a pre-phase-6 deploy workflow: its `prisma migrate deploy` would fail on a non-empty schema without `_prisma_migrations`, loudly and without touching data.
+- **Rolling back to a pre-phase-6 image is a Cloud Run revision swap with no database action.** Shift traffic to the previous revision (`gcloud run services update-traffic <BACKEND_SERVICE> --to-revisions=<previous-rev>=100 --region=<REGION> --project=<PROJECT>`). The old image still contains the Prisma client but never imports it. If the image is older than phase 7, follow [Rolling back across the phase 7 cleanup](#rolling-back-across-the-phase-7-cleanup-0006_drop_legacy_tables) first.
+- **Re-running a pre-phase-6 deploy workflow does not work:** since `0005` it fails at `alembic upgrade head`, and since phase 7 `_prisma_migrations` is gone too. Never re-run one; swap the Cloud Run revision instead.
 - **Once a later revision reaches production** (for example `0005_execution_attempts` from the telemetry work), rolling back the image does not roll back the database. An image whose Alembic head is older than the database reports `/ready` 503 with `schema=mismatch`, but it keeps serving traffic, because the live startup probe is TCP on port 8080 and not `/ready`. An old deploy workflow run against that database fails closed at `alembic upgrade head` (the database's revision is not in the old checkout's history), so the deploy stops before `gcloud run deploy`. To redeploy an old build in that state, do it as a Cloud Run revision swap, not by re-running the old workflow.
 
 ### Rolling back across the execution-attempts migration (`0005_execution_attempts`)
@@ -421,6 +367,16 @@ Rolling the image back from a build whose head is `0005_execution_attempts` to o
 - **`/ready` reports `schema=mismatch` (503) while traffic still flows.** The old image's Alembic head (0004) is older than the database's (0005), so the readiness check fails, but the live startup probe is TCP on port 8080, so the revision keeps serving. Do not treat the 503 as an outage signal in this state, and do not gate the swap on it.
 - **Open attempts can be left behind.** The 0004 image does not know about `execution_attempts`. It cancels, lease-fails or otherwise ends executions without closing their attempt rows, so an execution is `completed`, `failed` or `canceled` while its attempt keeps `ended_at IS NULL` and the UI shows it as "In progress" forever. The 0005 image repairs this on its own: every `POST /internal/sweep` runs a reconciliation step that closes any open attempt whose execution is already terminal, in one guarded `UPDATE`. It sets `ended_at` to the execution's `completed_at` (or now), `result` from the execution's status, and `failure_code = 'closed_by_reconciliation'`. It is idempotent, never touches the attempt of a running or waiting execution, and runs in its own short session. After rolling forward again, wait for one sweep (or call the endpoint) and the history is consistent. While the 0004 image is live nothing runs this step, so attempts stay open until you roll forward.
 - **The 0005 downgrade refuses while history exists.** `alembic downgrade 0004_langgraph_saver_tables` fails if `execution_attempts` has any rows or any `workflow_executions.pending_attempt_approval_id` is set, and the error states the counts. To proceed deliberately: export `execution_attempts` first (for example `\copy execution_attempts TO 'attempts.csv' CSV HEADER`), then `TRUNCATE execution_attempts;` and `UPDATE workflow_executions SET pending_attempt_approval_id = NULL;`, then run the downgrade. Prefer leaving the database at 0005 and swapping only the image.
+
+### Rolling back across the phase 7 cleanup (`0006_drop_legacy_tables`)
+
+1. **Why it matters.** Images built before phase 7 read the old checkpoint tables on every resume and every delete. Without them, a resume fails the run with `checkpoint_sync_failed` and a delete returns HTTP 500.
+2. **Order: the downgrade first, then the image.** From a checkout of the phase 7 merge commit, with the direct `DATABASE_URL` (same `gcloud secrets ... | sed 's/-pooler\././'` as above), run `uv run alembic downgrade 0005_execution_attempts`, and only then `gcloud run services update-traffic ...`. The new image never touches the old tables, so the downgrade is safe while it still serves.
+3. **What the downgrade does.** It recreates the two tables EMPTY with their original DDL and restores no data. It does not recreate `_prisma_migrations`.
+4. **Old deploy workflows.** Re-running a pre-phase-7 deploy workflow against a database at 0006 fails closed at its guard step (exit 1; it prints `failed: ProgrammingError`, SQLAlchemy's wrapper for the missing table) before touching anything. After the downgrade it works again.
+5. **Pre-phase-5 images are not supported** after phase 7, except by downgrading and then copying new to old with the copy tool, which only exists at commit `6ce5495`: `git checkout 6ce5495 && uv run composer checkpoints copy --to legacy --all-waiting`.
+6. **If you forgot the downgrade:** run it at once. Runs that were resumed in between failed with `checkpoint_sync_failed`; their users start new runs.
+7. **`0006` refusing during a deploy.** Revision 0006 refuses (nothing is dropped, the deploy stops before `gcloud run deploy`) while a queued, running or waiting_approval run has its newest checkpoint only in the old tables. The message names the execution ids and the copy command at `6ce5495` (`git checkout 6ce5495 && uv run composer checkpoints copy --to postgres --execution <id>`, direct `DATABASE_URL`), or cancel the run, then re-run the deploy. That copy refuses `queued` and `running` runs unless you add `--force`; for those, prefer waiting for the run to finish or cancelling it. The 0004 downgrade message's reference to `composer checkpoints copy` means that same tool at `6ce5495`.
 
 The general principle: **prefer rollback over forward-fix during an incident**. Forward-fix lengthens the customer-impact window. Get back to the last-known-good state, investigate calmly, then re-deploy.
 

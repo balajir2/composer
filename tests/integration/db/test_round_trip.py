@@ -13,14 +13,14 @@ from src.db.models import (
     CloudStorageConnection,
     DeploymentSetting,
     ExecutionEvent,
-    LangGraphCheckpoint,
-    LangGraphCheckpointWrite,
     LlmApiKey,
     LlmModel,
     McpOAuthState,
     McpOAuthToken,
     McpServer,
     RateLimitBucket,
+    SaverCheckpointBlob,
+    SaverCheckpointWrite,
     User,
     UserRole,
     Workflow,
@@ -110,16 +110,16 @@ async def test_bytes_text_defaults_and_double_precision(session: AsyncSession) -
     )
     session.add_all(
         [
-            LangGraphCheckpoint(
-                thread_id=thread_id, checkpoint_id="c1", checkpoint=b"\x00\x01", metadata_=b"{}"
+            SaverCheckpointBlob(
+                thread_id=thread_id, channel="x", version="1", type="bytes", blob=b"\x00\x01"
             ),
-            LangGraphCheckpointWrite(
+            SaverCheckpointWrite(
                 thread_id=thread_id,
                 checkpoint_id="c1",
                 task_id="t",
                 idx=0,
                 channel="x",
-                value=b"\xff",
+                blob=b"\xff",
             ),
             server_row,
             McpOAuthToken(mcp_server_id="s", user_id=_unique("u"), encrypted_access_token="enc"),
@@ -147,13 +147,13 @@ async def test_bytes_text_defaults_and_double_precision(session: AsyncSession) -
     server_id, bucket_id = server_row.id, bucket_row.id
     session.expunge_all()
 
-    checkpoint = (
+    blob = (
         await session.execute(
-            select(LangGraphCheckpoint).where(LangGraphCheckpoint.thread_id == thread_id)
+            select(SaverCheckpointBlob).where(SaverCheckpointBlob.thread_id == thread_id)
         )
     ).scalar_one()
-    assert checkpoint.checkpoint == b"\x00\x01"
-    assert checkpoint.checkpoint_ns == ""
+    assert blob.blob == b"\x00\x01"
+    assert blob.checkpoint_ns == ""
     server = (
         await session.execute(select(McpServer).where(McpServer.id == server_id))
     ).scalar_one()
