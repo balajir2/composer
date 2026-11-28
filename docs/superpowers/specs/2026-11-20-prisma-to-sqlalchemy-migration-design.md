@@ -96,7 +96,7 @@ The first Alembic revision is empty and is *stamped* on existing databases (prod
 | 4 | **Executions core (done: 4a and 4b in one PR, pending; phase 5 next):** create, list, delete, resume, approvals, events, rate limiter, claim and sweep, all 15 guarded status updates | High | 3–4 days |
 | 5 | **Checkpointer and notifications (done, PR pending):** official saver, paused-run deploy guard, two-way copy tool, LISTEN/NOTIFY on psycopg | High | 2 days |
 | 6 | **Removal (done, PR pending; see ADR-0037):** Prisma client and schema; Node.js and asyncpg out of the image; remaining Prisma-shaped mocks; Alembic builds the base schema (`0001_baseline`) | Low | 1 day |
-| 7 | **Cleanup (about two weeks after phase 5 is stable):** Alembic revision that drops `langgraph_checkpoints`, `langgraph_checkpoint_writes` and `_prisma_migrations` | Low | ½ day |
+| 7 | **Cleanup (done, PR pending; 2026-11-28, ahead of the planned date):** Alembic `0006_drop_legacy_tables` drops `langgraph_checkpoints`, `langgraph_checkpoint_writes` and `_prisma_migrations`, refusing first while an active run still has its newest checkpoint only in the old tables; the bridge code (old saver, copy tool, deploy guard, copy-on-resume) is removed | Low | ½ day |
 
 Total: about 2½–3 weeks.
 
@@ -109,9 +109,9 @@ Total: about 2½–3 weeks.
 - **What users see:** nothing. Run pages, history and the API read the executions table, not checkpoints. Only the executor reads checkpoints, to detect a pause and resume the same run (`src/engine/langgraph_executor.py`).
 - **Paused-run deploy guard:** the deploy's migration step refuses the cutover if any execution is `waiting_approval` or `running` and still has its snapshots only in the old tables, unless those runs were copied first.
 - **Two-way copy tool:** a CLI command copies one run's snapshots between the old saver and the official saver, in either direction, through LangGraph's standard `BaseCheckpointSaver` interface. It covers both a forced cutover with paused runs and a rollback.
-- **Deletes:** the two places that delete checkpoint rows directly (`src/api/executions.py`) switch to the saver's `adelete_thread`. Until phase 7 they also clear the old tables.
+- **Deletes:** the two places that delete checkpoint rows directly (`src/api/executions.py`) switch to the saver's `adelete_thread`. Until phase 7 they also cleared the old tables.
 - **Neon pooler:** psycopg connections use `prepare_threshold=None` (no server-side prepared statements), as transaction-mode pooling requires.
-- **Rollback:** finished runs are unaffected. Runs that paused after the cutover exist only in the new tables, so a rollback runs the copy tool new → old for them first. The old tables are kept untouched until phase 7, so a rollback never needs a database restore.
+- **Rollback:** finished runs are unaffected. Runs that paused after the cutover exist only in the new tables, so a rollback runs the copy tool new → old for them first. The old tables are kept untouched until phase 7, so a rollback never needs a database restore. (Phase 7 removed the old tables; see the runbook for rollback across `0006`.)
 
 ### 3.5 Parallel feature work
 
@@ -193,7 +193,7 @@ No `prisma` import anywhere; Node.js and asyncpg removed from the backend image;
 | Risk | Mitigation |
 |---|---|
 | A guarded update or the claim behaves differently after porting | Named functions, real-Postgres race tests, behaviour tests proven on Prisma first |
-| A paused run can't resume after the checkpointer cutover | Deploy guard, two-way copy tool, old tables kept until phase 7 |
+| A paused run can't resume after the checkpointer cutover | Deploy guard, two-way copy tool, old tables kept until phase 7 (dropped then, behind an in-migration check) |
 | Timestamp drift between rows written by the two ORMs | `UTCDateTime` plus parity and repository tests on real columns |
 | Parallel feature PRs conflict with or bypass the migration | Schema freeze, Alembic-only rule, CI import allow-list, small phase PRs |
 | Connection exhaustion on Neon while both clients run | Pools for Prisma and psycopg are sized together to fit Neon's limit; Prisma's pool goes away in phase 6 |

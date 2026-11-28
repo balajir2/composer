@@ -59,13 +59,11 @@ again after every schema revision that ships in a new Composer release.
 
 Use the **direct** (non-pooler) Neon host: migrations take locks that PgBouncer transaction pooling
 breaks. For Neon that is the host without `-pooler` in its name (the deploy workflow swaps it
-automatically). Run the checkpoint guard first, as the deploy does; on a new database it prints `ok`
-immediately:
+automatically). 
 
 ```bash
 # From the Composer repo root, with DATABASE_URL pointing at the direct (non-pooler) production Neon host:
 export DATABASE_URL="postgresql://..."
-uv run composer checkpoints guard
 uv run alembic upgrade head
 uv run alembic current        # prints the head revision when the database is up to date
 ```
@@ -79,6 +77,8 @@ A database that only Prisma built (before 2026-11-20, no `alembic_version` table
 `alembic upgrade head` when its `_prisma_migrations` history lists all 20 migrations as finished:
 nothing is re-run, and Alembic records `0001_baseline`. A partial or unknown Prisma history, or
 tables without any Prisma history, are refused with a message naming the problem.
+Revision `0006_drop_legacy_tables` later drops `_prisma_migrations`; adoption happens before that, so a
+pre-2026-11-20 restore is still adopted.
 
 Do not run `prisma` commands: Prisma is no longer part of Composer.
 

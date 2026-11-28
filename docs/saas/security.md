@@ -21,7 +21,7 @@ Composer includes meaningful security foundations: encrypted LLM keys, OAuth tok
 | Per-user API keys (`ck_...`) | High — authorise external invocations of published workflows | Postgres `api_keys` (bcrypt-hashed; plaintext shown once at creation) |
 | User passwords (standalone mode only) | High | Postgres `users.password_hash` (bcrypt) |
 | Workflow definitions | Medium — may encode business logic | Postgres `workflows` (plaintext; not customer secrets) |
-| Execution inputs / outputs | Variable — depends on what the workflow processes | Postgres `workflow_executions`, `langgraph_checkpoints`; LangSmith if tracing enabled |
+| Execution inputs / outputs | Variable — depends on what the workflow processes | Postgres `workflow_executions`, `checkpoints`, `checkpoint_blobs`, `checkpoint_writes`; LangSmith if tracing enabled |
 | Audit log of executions, approvals, key usage | Medium — disclosure shows operational pattern | Postgres |
 | Customer documents uploaded for extraction | Low (transient) | **Never persisted** — read in memory, text extracted, bytes released |
 | Source code of Composer | Public — repo `balajir2/composer` | n/a |

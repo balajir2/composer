@@ -31,7 +31,7 @@ The full schema is defined by the SQLAlchemy models in [`../../src/db/models/`](
 |---|---|---|
 | `workflows` | Full node + edge graph, name, description, tags, `isPublic`/`isProduction` flags, owner, slug, timestamps | Possibly — workflows can encode prompts, examples, and references. Treat as confidential by default. |
 | `workflow_executions` | Input, output, variables, node results, status, error, timestamps, owning user | Possibly — execution input is whatever the caller submits |
-| `langgraph_checkpoints`, `checkpoint_writes` | Per-step state snapshots used by LangGraph for resumability | Possibly — same content as execution input/output |
+| `checkpoints`, `checkpoint_blobs`, `checkpoint_writes` | Per-step state snapshots used by LangGraph for resumability | Possibly — same content as execution input/output |
 | `approvals` | Human-approval decisions, the deciding user, optional feedback string | Possibly — feedback may include PII |
 | Document upload (`POST /uploads/extract-text`) | **Not stored** — extracted text is returned to the caller; the request stream is closed and bytes released | n/a |
 

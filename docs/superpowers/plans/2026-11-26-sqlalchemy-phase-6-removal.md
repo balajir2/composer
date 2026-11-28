@@ -1380,6 +1380,8 @@ One Alembic revision, plus deletions:
 - **Adoption rule (D4) after phase 7:** a restore from before 2026-11-20 still carries `_prisma_migrations`, so 0001's adoption still works for it. Only production loses the table, and production is past 0001. **Never re-run a pre-phase-6 deploy workflow** after phase 7: its `prisma migrate deploy` would find a non-empty schema without `_prisma_migrations` and fail (loudly, so no data is at risk). The runbook should say so.
 - Docs: the production-deployment "Checkpointer cutover" section is retired, the spec's phase 7 row is marked done, the CHANGELOG is updated, and ADR-0036 gets a note.
 
+Superseded by [the phase 7 plan](2026-11-28-sqlalchemy-phase-7-cleanup.md); note its D3 (the downgrade does not recreate `_prisma_migrations`).
+
 ## Follow-ups (not in this phase)
 
 - Remove the Prisma-only query parameters from the `composer-database-url` secret, then remove their stripping from `src/db/url.py` (D10).

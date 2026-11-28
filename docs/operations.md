@@ -47,7 +47,7 @@ A completed deployment passes all of these smoke tests:
 | MCP servers + OAuth tokens | Postgres `mcp_servers` + `mcp_oauth_tokens` (encrypted) | — |
 | LLM model catalog | Postgres `llm_models` | Designer's model dropdown |
 | Deployment settings | Postgres `deployment_settings` | Read by backend per-request |
-| Execution checkpoints | Postgres `langgraph_checkpoints` | — |
+| Execution checkpoints | Postgres `checkpoints`, `checkpoint_blobs`, `checkpoint_writes` | — |
 | Execution status + queueing | Postgres `workflow_executions` (`status='queued'` row + lease) | Google Cloud Tasks task (OIDC push to `POST /internal/claim-and-run`) |
 | Execution events (node started/completed, etc.) | Postgres `execution_events` (sequence-numbered) | `GET /executions/{id}/ws` replays from a reconnect cursor, then subscribes live via Postgres `LISTEN`/`NOTIFY` |
 | Rate-limit buckets | Postgres `rate_limit_buckets` | — (correct across all Cloud Run instances) |
