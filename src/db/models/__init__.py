@@ -2,8 +2,6 @@
 
 from src.db.models.base import Base
 from src.db.models.checkpoints import (
-    LangGraphCheckpoint,
-    LangGraphCheckpointWrite,
     SaverCheckpoint,
     SaverCheckpointBlob,
     SaverCheckpointMigration,
@@ -31,8 +29,6 @@ __all__ = [
     "DeploymentSetting",
     "ExecutionAttempt",
     "ExecutionEvent",
-    "LangGraphCheckpoint",
-    "LangGraphCheckpointWrite",
     "LlmApiKey",
     "LlmModel",
     "McpOAuthState",

@@ -103,7 +103,7 @@ def upgrade() -> None:
     op.execute(
         "LOCK TABLE langgraph_checkpoint_writes, langgraph_checkpoints IN ACCESS EXCLUSIVE MODE"
     )
-    counts = dict.fromkeys(ACTIVE_STATUSES, 0)
+    counts: dict[str, int] = dict.fromkeys(ACTIVE_STATUSES, 0)
     for status, n in bind.execute(sa.text(ACTIVE_COUNTS)):
         counts[str(status)] = int(n)
     print("0006: active runs " + " ".join(f"{s}={counts[s]}" for s in ACTIVE_STATUSES), flush=True)
