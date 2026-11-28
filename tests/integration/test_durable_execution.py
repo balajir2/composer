@@ -30,8 +30,6 @@ from src.db.models import (
     Approval,
     ApprovalDecision,
     ExecutionEvent,
-    LangGraphCheckpoint,
-    LangGraphCheckpointWrite,
     Workflow,
     WorkflowExecution,
 )
@@ -476,31 +474,15 @@ async def test_cancel_retains_checkpoint_and_pending_writes(
         )
     )
     try:
-        await rows.add(
-            LangGraphCheckpoint(
-                thread_id=execution.thread_id,
-                checkpoint_ns="",
-                checkpoint_id="checkpoint-1",
-                checkpoint=b"retained-checkpoint",
-                metadata_=b"retained-metadata",
-            )
-        )
-        await rows.add(
-            LangGraphCheckpointWrite(
-                thread_id=execution.thread_id,
-                checkpoint_ns="",
-                checkpoint_id="checkpoint-1",
-                task_id="task-1",
-                idx=0,
-                channel="result",
-                value=b"retained-write",
-            )
-        )
-        # Real runs write through the official saver now; its checkpoint must survive too.
+        # Real runs write through the official saver; its checkpoint and pending writes must
+        # survive a cancel.
         saver_config: Any = {
             "configurable": {"thread_id": execution.thread_id, "checkpoint_ns": ""}
         }
-        await app.state.checkpointer.aput(saver_config, empty_checkpoint(), {}, {})
+        stored_config = await app.state.checkpointer.aput(saver_config, empty_checkpoint(), {}, {})
+        await app.state.checkpointer.aput_writes(
+            stored_config, [("result", "retained-write")], "task-1"
+        )
 
         response = await client.post(f"/executions/{execution.id}/cancel")
 
@@ -511,20 +493,11 @@ async def test_cancel_retains_checkpoint_and_pending_writes(
         assert refreshed.running_since is None
         assert refreshed.lease_owner is None
         assert refreshed.lease_expires_at is None
-        checkpoints = await rows.where(
-            LangGraphCheckpoint, LangGraphCheckpoint.thread_id == execution.thread_id
-        )
-        writes = await rows.where(
-            LangGraphCheckpointWrite, LangGraphCheckpointWrite.thread_id == execution.thread_id
-        )
-        assert len(checkpoints) == 1
-        assert checkpoints[0].checkpoint == b"retained-checkpoint"
-        assert len(writes) == 1
-        assert writes[0].value == b"retained-write"
         retained = await app.state.checkpointer.aget_tuple(
             {"configurable": {"thread_id": execution.thread_id}}
         )
         assert retained is not None
+        assert ("task-1", "result", "retained-write") in (retained.pending_writes or [])
     finally:
         await rows.drop_threads([execution.thread_id])
         await rows.remove(ExecutionEvent, ExecutionEvent.execution_id == execution.id)

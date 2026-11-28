@@ -15,8 +15,6 @@ EXPECTED_TABLES = {
     "deployment_settings",
     "execution_events",
     "execution_attempts",
-    "langgraph_checkpoint_writes",
-    "langgraph_checkpoints",
     "llm_api_keys",
     "llm_models",
     "mcp_oauth_states",
@@ -30,7 +28,7 @@ EXPECTED_TABLES = {
 }
 
 
-def test_every_prisma_table_is_mapped_exactly_once() -> None:
+def test_every_table_is_mapped_exactly_once() -> None:
     assert set(Base.metadata.tables) == EXPECTED_TABLES
 
 
@@ -147,7 +145,7 @@ def test_enum_labels_match_the_database() -> None:
 
 
 def test_checkpoint_writes_primary_key_order() -> None:
-    table = Base.metadata.tables["langgraph_checkpoint_writes"]
+    table = Base.metadata.tables["checkpoint_writes"]
     assert [c.name for c in table.primary_key.columns] == [
         "thread_id",
         "checkpoint_ns",

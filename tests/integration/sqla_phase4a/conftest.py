@@ -49,8 +49,8 @@ from src.config import get_settings
 from src.db.errors import AlreadyExists
 from src.db.models import (
     Approval,
-    LangGraphCheckpoint,
-    LangGraphCheckpointWrite,
+    SaverCheckpoint,
+    SaverCheckpointWrite,
     User,
     UserRole,
     Workflow,
@@ -537,28 +537,27 @@ class Db:
                 )
             ) or 0
 
-    # ---- checkpoints (both tables) and approvals
+    # ---- checkpoints (the saver's tables) and approvals
 
     async def add_checkpoint(self, thread_id: str) -> None:
         async with self.sm() as s:
             s.add(
-                LangGraphCheckpoint(
+                SaverCheckpoint(
                     thread_id=thread_id,
                     checkpoint_ns="",
                     checkpoint_id=unique("ckpt"),
-                    checkpoint=b"c",
-                    metadata_=b"m",
+                    checkpoint={},
                 )
             )
             s.add(
-                LangGraphCheckpointWrite(
+                SaverCheckpointWrite(
                     thread_id=thread_id,
                     checkpoint_ns="",
                     checkpoint_id=unique("ckpt"),
                     task_id="t",
                     idx=0,
                     channel="ch",
-                    value=b"v",
+                    blob=b"v",
                 )
             )
             await s.commit()
@@ -568,13 +567,13 @@ class Db:
         async with self.sm() as s:
             a = await s.scalar(
                 select(func.count())
-                .select_from(LangGraphCheckpoint)
-                .where(LangGraphCheckpoint.thread_id == thread_id)
+                .select_from(SaverCheckpoint)
+                .where(SaverCheckpoint.thread_id == thread_id)
             )
             b = await s.scalar(
                 select(func.count())
-                .select_from(LangGraphCheckpointWrite)
-                .where(LangGraphCheckpointWrite.thread_id == thread_id)
+                .select_from(SaverCheckpointWrite)
+                .where(SaverCheckpointWrite.thread_id == thread_id)
             )
             return a or 0, b or 0
 
