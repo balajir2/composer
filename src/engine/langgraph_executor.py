@@ -21,7 +21,6 @@ from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.types import Command  # pyright: ignore[reportUnknownVariableType]
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from src.checkpoints.sync import bring_forward
 from src.config import get_settings
 from src.db.repos import executions as executions_repo
 from src.db.repos import workflows as workflows_repo
@@ -51,11 +50,11 @@ class _ExecutionDeadlineExceeded(TimeoutError):
 
 
 class CheckpointMissing(Exception):
-    """A resume found no checkpoint for the run in either store; it must not restart the graph."""
+    """A resume found no checkpoint for the run; it must not restart the graph."""
 
 
-class CheckpointSyncFailed(Exception):
-    """Bringing a thread forward or probing its checkpoint failed; old-table rows survive."""
+class CheckpointReadFailed(Exception):
+    """Probing the run's checkpoint failed before the graph ran; the saved state is intact."""
 
 
 class CheckpointIncompatible(Exception):
@@ -439,11 +438,11 @@ class LangGraphExecutor:
     ) -> None:
         """Continue a paused execution with a user decision (approved/rejected).
 
-        Loads the checkpoint from the official Postgres saver, first copying it from the old tables
-        if a pre-cutover pause left it there (src/checkpoints/sync.py, until phase 7), and feeds the
-        decision via Command(resume=decision).  A run with no checkpoint in either store fails with
-        ``failure_code="checkpoint_missing"`` instead of restarting from scratch.  If another
-        user-approval node is hit during resume, the execution is marked waiting_approval again.
+        Loads the checkpoint from the official Postgres saver and feeds the decision via
+        Command(resume=decision).  A run with no checkpoint fails with
+        ``failure_code="checkpoint_missing"``, and a failed probe with
+        ``"checkpoint_sync_failed"``; neither restarts the graph.  If another user-approval node
+        is hit during resume, the execution is marked waiting_approval again.
         """
         execution = await self._load_execution(execution_id)
         if execution is None:
@@ -452,20 +451,17 @@ class LangGraphExecutor:
 
         try:
             await ensure_execution_running(self.sessionmaker, execution_id)
-            # No session is open here: bring_forward opens and closes its own around the SQL and
-            # runs the saver calls without one.
             try:
-                await bring_forward(self.checkpointer, self.sessionmaker, execution.thread_id)
                 has_checkpoint = await self._has_checkpoint(execution.thread_id)
-            except Exception as sync_exc:
-                # Not "execution_error": the run's saved state is intact in the old tables, so
-                # an operator can recover it. Log the class only (messages may carry conninfo).
+            except Exception as read_exc:
+                # Not "execution_error": the graph never ran and the saved state is intact, so
+                # the run can be retried. Log the class only (messages may carry conninfo).
                 logger.error(
-                    "Execution %s checkpoint sync failed (%s)",
+                    "Execution %s checkpoint read failed (%s)",
                     execution_id,
-                    type(sync_exc).__name__,
+                    type(read_exc).__name__,
                 )
-                raise CheckpointSyncFailed(type(sync_exc).__name__) from None
+                raise CheckpointReadFailed(type(read_exc).__name__) from None
             if not has_checkpoint:
                 raise CheckpointMissing(execution.id)
             await self._emit("workflow_started", execution_id, {"status": "running"})
@@ -536,7 +532,9 @@ class LangGraphExecutor:
                 execution_id, exc, failure_code="checkpoint_incompatible", attempt_id=attempt_id
             ):
                 await self._emit("workflow_completed", execution_id, {"status": "failed"})
-        except CheckpointSyncFailed as exc:
+        except CheckpointReadFailed as exc:
+            # Wire value kept from phase 5 (dashboards, stored rows); since phase 7 it means a
+            # failed read.
             if await self._mark_failed(
                 execution_id, exc, failure_code="checkpoint_sync_failed", attempt_id=attempt_id
             ):
