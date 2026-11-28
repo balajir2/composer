@@ -22,7 +22,7 @@ async def _reset_rate_limit_buckets() -> None:  # pyright: ignore[reportUnusedFu
 
 @pytest_asyncio.fixture(autouse=True)
 async def _clean_checkpoint_rows() -> AsyncIterator[None]:  # pyright: ignore[reportUnusedFunction]
-    """Delete the checkpoint rows (all five tables) that a test created. See _checkpoint_reset.py."""
+    """Delete the checkpoint rows (the three saver tables) that a test created. See _checkpoint_reset.py."""
     before = await checkpoint_thread_ids()
     yield
     if before is not None:
