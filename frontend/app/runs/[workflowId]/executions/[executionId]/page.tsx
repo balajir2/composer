@@ -50,7 +50,7 @@ export default function ExecutionPage() {
   const queryClient = useQueryClient();
   const [finalStatus, setFinalStatus] = useState<string | null>(null);
   const [finalOutput, setFinalOutput] = useState<unknown>(null);
-  const previousStatus = useRef<string>();
+  const previousStatus = useRef<string | undefined>(undefined);
 
   const {
     data: execution,
@@ -83,7 +83,7 @@ export default function ExecutionPage() {
   // Only lifecycle events change the durable summary and attempts; per-node events are covered
   // by the active-status polling. A reconnect replays many events at once, so coalesce them into
   // one trailing refresh instead of three refetches per event.
-  const refreshTimer = useRef<ReturnType<typeof setTimeout>>();
+  const refreshTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const refreshExecution = useCallback(
     (ev: ComposerEvent) => {
       if (!ev.type.startsWith("workflow_") && !ev.type.startsWith("approval_")) return;
