@@ -59,7 +59,7 @@ WORKDIR /app
 # without a changing input this upgrade layer is reused forever and new
 # security fixes never land. Bump SECURITY_REFRESH whenever the image scan
 # reports a fixed OS package (last bumped for CVE-2026-124851, libzstd1).
-ARG SECURITY_REFRESH=2026-11-25
+ARG SECURITY_REFRESH=2026-11-28
 RUN echo "security refresh ${SECURITY_REFRESH}" \
     && apt-get update \
     && apt-get upgrade -y --no-install-recommends \

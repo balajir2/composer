@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — Dependabot backlog caught up in one pass (2026-11-28)
+
+- **Why:** twelve Dependabot PRs were closed unmerged (#40-#44, #46-#52). Rather than rebase each, the lot was applied together, each package taken to the latest compatible release (not the version the PR named), one commit per group, with every check run after each.
+- **Python (#52 supersedes #43, #44):** fastapi 0.163.1 -> 0.165.0, pydantic 2.14.3 -> 2.14.4, langgraph 1.2.22 -> 1.2.24, langchain 1.5.0 -> 1.5.2, langchain-core 1.8.3 -> 1.8.5, langchain-openai 1.8.0 -> 1.8.5, langchain-google-genai 4.5.0 -> 4.5.3, langchain-groq 1.2.0 -> 1.2.1, langsmith 0.15.0 -> 0.16.2, ruff 0.17.5 -> 0.17.6, pypdf 6.21.4 -> 7.2.0. Pulled along: starlette 1.3.1 -> 1.10.0, pydantic-core 2.50.5, langgraph-prebuilt 1.1.3, langchain-protocol 0.0.22. `pyproject.toml` floors raised to match.
+- **GitHub Actions (#46):** checkout v4 -> v7.0.1, setup-python v5 -> v7.1.0, setup-uv v4 -> v10.4.0, setup-node v4 -> v7.1.0, docker/setup-buildx-action v3 -> v4.4.1, docker/build-push-action v6 -> v7.4.0, google-github-actions/auth v2 -> v3.0.0, setup-gcloud v2 -> v3.0.1. Still SHA-pinned. actionlint clean apart from the existing SC2086 notes.
+- **Frontend minor/patch (#47 supersedes #40):** @tanstack/react-query 5.107.1 -> 5.108.4, lucide-react 1.73.0 -> 1.83.0, tailwind-merge 3.7.0 -> 3.7.1.
+- **Frontend majors applied:** @hookform/resolvers 3.10.0 -> 7.0.9 (#41); @testing-library/jest-dom 6.9.1 -> 8.0.0 (#48) with vitest 4.1.5 -> 5.1.2 and @types/node ^20 -> ^22 (jest-dom 8 peers vitest 5, vitest 5 peers @types/node 22+); react and react-dom 18 -> 19.3.1 with @types/react 19.3.x and @types/react-dom 19.3.x (#50; the PR alone could not resolve against react 18), the only code change being `useRef<T | undefined>(undefined)` for two refs in the execution page; eslint 8.57.1 -> 9.39.5 and eslint-config-next 15.5.28 -> 16.4.6 (#49), which moves `.eslintrc.json` to a flat `eslint.config.mjs` and the `lint` script from `next lint` to `eslint .`. eslint-plugin-react-hooks 7's new React Compiler rules (`set-state-in-effect`, `refs`, `incompatible-library`) are switched off to keep the lint gate where it was.
+- **Held back:**
+  - **typescript 7.0.2 (#51):** stays on 5.9.3 (latest 5.x). TS 7 is the native compiler with no JS API: Next.js 15.5 `next build` stops resolving the `@/*` path alias ("Can't resolve '@/components/ui/card'"), `tsc` rejects the CSS side-effect imports, and openapi-typescript (`^5.x`) and typescript-eslint (`<6.1`) peer-conflict. Revisit with a Next.js major that supports it.
+  - **eslint 10.15.0 (#42):** stays on 9.39.5. eslint-plugin-react, eslint-plugin-jsx-a11y and eslint-plugin-import, all dependencies of eslint-config-next 16, peer `eslint <=9`.
+  - **langchain-anthropic 1.7.12 (in #52):** stays 1.6.1 (cap `<1.7`): 1.7+ pulls the anthropic SDK 2.x and API version 2026-10-21, which rejects temperature/top_p/top_k. The Anthropic API stays on 2023-06-01 until the deliberate migration.
+  - **python 3.15-slim (#15):** Python stays 3.12.
+- **Dockerfile:** `SECURITY_REFRESH` bumped to 2026-11-28 to refresh the apt layer; mechanics unchanged.
+- **Note:** the frontend Dockerfile still builds on node:20. jest-dom 8 and vitest 5 declare Node >=22; they are dev/test-only and not run in that image (CI and local use Node 22), but moving the frontend image to Node 22 is advisable.
+
 ### Changed — `composer watch` backs off per workflow after a 422 (2026-11-28)
 
 - **Why:** since the 422 fix the watcher leaves a file in place when its workflow cannot run, but it still re-read, re-extracted (big PDFs) and re-POSTed every pending file on every poll, burning bandwidth, CPU and the API rate limit until the workflow was fixed.
