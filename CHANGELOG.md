@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+### Changed — `composer watch` backs off per workflow after a 422 (2026-11-28)
+
+- **Why:** since the 422 fix the watcher leaves a file in place when its workflow cannot run, but it still re-read, re-extracted (big PDFs) and re-POSTed every pending file on every poll, burning bandwidth, CPU and the API rate limit until the workflow was fixed.
+- **Back-off:** after a 422 the slug's files are skipped (not read, extracted or POSTed) until a window expires. The window starts at the poll interval, doubles on each consecutive 422 and is capped at 900 s (`BACKOFF_MAX_SECONDS`), so a workflow fixed in the Designer is picked up within 15 minutes (or one poll interval, if that is longer). The first poll after the window retries. Files stay in place; the listing still runs so the stability check stays current. It is per slug, so other workflows are unaffected.
+- **Resets:** any answer from the server other than 422 (success, other 4xx, 5xx) clears the back-off; an extraction failure or an unreachable server (no answer) leaves it unchanged. One info line is logged when a slug enters back-off and one when it recovers; neither contains file contents, and the existing throttled warning is unchanged.
+- **Server-side poller needs no change:** `poll_file_triggers` checks `runnable_warnings` before any Drive call, so an unrunnable workflow costs no listing or download per poll (and it logs once per 15 min).
+- **Tests:** `tests/unit/cli/test_watch.py` with an injected clock: no read or POST inside the window, retry after it, doubling to the cap, reset on success and on a 5xx, per-slug isolation, entering/recovered logs.
+
 ### Fixed — an approved resume could be stranded by a losing concurrent resume (2026-11-27)
 
 - **What happened:** when several resumes of one paused run raced (a double-click, two reviewers, API plus email link), each loser inserted its `approvals` row before its guarded `UPDATE` lost, and held that transaction open until it rolled back. The insert's foreign-key check takes `FOR KEY SHARE` on the `workflow_executions` row. The winner's claim (`executions_repo.claim`) locked the row with `FOR UPDATE SKIP LOCKED`, which conflicts with `KEY SHARE`, so if it ran inside that window it skipped the row and answered `already_claimed`. The row stayed `running` with no lease and no resume attempt, the graph never resumed, and the orphan sweeper later failed the approved run. Seen as the flaky `test_six_concurrent_resume_requests_after_restart_run_the_graph_once` (row `running` after the 200); a lock snapshot taken at the failing claim showed two `Key Share` lockers on the row and the losers' transactions still open.

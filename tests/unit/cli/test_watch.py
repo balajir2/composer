@@ -217,3 +217,155 @@ async def test_trigger_workflow_maps_http_422_to_not_runnable(
     config = _trigger_config(tmp_path, tmp_path, tmp_path)
     with pytest.raises(WorkflowNotRunnableError):
         await _trigger_workflow(config=config, input_payload={"a": "b"})
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+async def _poll_once(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    *,
+    statuses: list[str],
+    slug: str = "my-workflow",
+) -> tuple[list[str], list[str]]:
+    """Run one `poll_once` pass over a folder holding one file; return (posted slugs, reads)."""
+    from dataclasses import replace
+
+    from src.cli import watch
+    from src.storage_providers.local import LocalFilesystemProvider
+
+    source = tmp_path / "in"
+    source.mkdir(parents=True, exist_ok=True)
+    (source / "note.txt").write_bytes(b"content")
+    config = replace(
+        _trigger_config(source, tmp_path / "done", tmp_path / "error"), external_slug=slug
+    )
+    provider = LocalFilesystemProvider()
+    await provider.list_new_files(str(source))  # first sighting
+
+    posted: list[str] = []
+    reads: list[str] = []
+    orig_read = provider.read_file
+
+    async def _read(ref: object) -> bytes:
+        reads.append(slug)
+        return await orig_read(ref)  # pyright: ignore[reportArgumentType]
+
+    async def _post(**kwargs: object) -> None:
+        posted.append(slug)
+        outcome = statuses.pop(0)
+        if outcome == "422":
+            raise watch.WorkflowNotRunnableError("nope")
+        if outcome == "500":
+            raise watch.TriggerFailedError("trigger failed (HTTP 500)")
+
+    monkeypatch.setattr(provider, "read_file", _read)
+    monkeypatch.setattr("src.cli.watch._trigger_workflow", _post)
+    await watch.poll_once(provider, config)
+    return posted, reads
+
+
+@pytest.fixture
+def clock(monkeypatch: pytest.MonkeyPatch) -> _Clock:
+    from src.cli import watch
+
+    c = _Clock()
+    monkeypatch.setattr(watch, "_BACKOFF", watch.SlugBackoff(clock=c))
+    return c
+
+
+async def test_422_backs_off_the_slug_so_the_next_poll_does_not_read_or_post(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    posted, reads = await _poll_once(monkeypatch, tmp_path, statuses=["422"])
+    assert (posted, reads) == (["my-workflow"], ["my-workflow"])
+    clock.now += 0.5  # inside the 1 s window (poll interval)
+    posted, reads = await _poll_once(monkeypatch, tmp_path, statuses=[])
+    assert posted == [] and reads == []
+    assert (tmp_path / "in" / "note.txt").exists()
+
+
+async def test_the_slug_is_retried_once_the_window_has_passed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    await _poll_once(monkeypatch, tmp_path, statuses=["422"])
+    clock.now += 1.0
+    posted, _ = await _poll_once(monkeypatch, tmp_path, statuses=["422"])
+    assert posted == ["my-workflow"]
+
+
+async def test_consecutive_422s_double_the_window_up_to_the_cap(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    from src.cli import watch
+
+    windows: list[float] = []
+    for _ in range(14):
+        await _poll_once(monkeypatch, tmp_path, statuses=["422"])
+        windows.append(watch._BACKOFF.retry_at("my-workflow") - clock.now)  # pyright: ignore[reportPrivateUsage]
+        clock.now = watch._BACKOFF.retry_at("my-workflow")  # pyright: ignore[reportPrivateUsage]
+    assert windows[:4] == [1.0, 2.0, 4.0, 8.0]
+    assert max(windows) == watch.BACKOFF_MAX_SECONDS
+    assert windows[-1] == watch.BACKOFF_MAX_SECONDS
+
+
+async def test_a_success_resets_the_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    from src.cli import watch
+
+    for _ in range(3):
+        await _poll_once(monkeypatch, tmp_path, statuses=["422"])
+        clock.now = watch._BACKOFF.retry_at("my-workflow")  # pyright: ignore[reportPrivateUsage]
+    await _poll_once(monkeypatch, tmp_path, statuses=["ok"])
+    # Next 422 starts again at the poll interval, not at 8 s.
+    (tmp_path / "in").mkdir(exist_ok=True)
+    await _poll_once(monkeypatch, tmp_path, statuses=["422"])
+    assert watch._BACKOFF.retry_at("my-workflow") - clock.now == 1.0  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_a_server_error_resets_the_window(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    from src.cli import watch
+
+    await _poll_once(monkeypatch, tmp_path, statuses=["422"])
+    clock.now = watch._BACKOFF.retry_at("my-workflow")  # pyright: ignore[reportPrivateUsage]
+    await _poll_once(monkeypatch, tmp_path, statuses=["500"])
+    assert not watch._BACKOFF.blocked("my-workflow")  # pyright: ignore[reportPrivateUsage]
+    await _poll_once(monkeypatch, tmp_path, statuses=["422"])
+    assert watch._BACKOFF.retry_at("my-workflow") - clock.now == 1.0  # pyright: ignore[reportPrivateUsage]
+
+
+async def test_backoff_is_per_slug(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, clock: _Clock
+) -> None:
+    await _poll_once(monkeypatch, tmp_path / "a", statuses=["422"], slug="wf-a")
+    posted, _ = await _poll_once(monkeypatch, tmp_path / "b", statuses=["ok"], slug="wf-b")
+    assert posted == ["wf-b"]
+    posted, _ = await _poll_once(monkeypatch, tmp_path / "a", statuses=[], slug="wf-a")
+    assert posted == []
+
+
+async def test_backoff_logs_entering_and_recovering_without_file_contents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    clock: _Clock,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    import logging
+
+    with caplog.at_level(logging.INFO, logger="src.cli.watch"):
+        await _poll_once(monkeypatch, tmp_path, statuses=["422"])
+        clock.now += 1.0
+        await _poll_once(monkeypatch, tmp_path, statuses=["ok"])
+    msgs = [r.getMessage() for r in caplog.records]
+    assert len([m for m in msgs if "backing off" in m]) == 1
+    assert len([m for m in msgs if "recovered" in m]) == 1
+    assert not any("content" in m for m in msgs)
