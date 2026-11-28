@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 pytestmark = pytest.mark.integration
 ROOT = Path(__file__).resolve().parents[3]
 PREV = "0004_langgraph_saver_tables"
-HEAD = "0005_execution_attempts"
+THIS = "0005_execution_attempts"
 
 
 def _run_alembic(*args: str) -> subprocess.CompletedProcess[str]:
@@ -86,7 +86,7 @@ def test_upgrade_constraints_cascades_and_empty_round_trip() -> None:
                 "WHERE workflow_id = %s ORDER BY id",
                 (wid,),
             ).fetchall()
-        _alembic("upgrade", HEAD)
+        _alembic("upgrade", THIS)
         with _conn() as conn:
             assert conn.execute("SELECT count(*) FROM execution_attempts").fetchone() == (0,)
             after = conn.execute(
@@ -161,11 +161,11 @@ def test_upgrade_constraints_cascades_and_empty_round_trip() -> None:
                 (ids["queued"],),
             )
         _alembic("downgrade", PREV)
-        _alembic("upgrade", HEAD)
+        _alembic("upgrade", THIS)
         with _conn() as conn:
             assert conn.execute("SELECT count(*) FROM execution_attempts").fetchone() == (0,)
     finally:
-        _alembic("upgrade", HEAD)
+        _alembic("upgrade", "head")
         with _conn() as conn:
             conn.execute("DELETE FROM workflows WHERE id = %s", (wid,))
 
@@ -208,7 +208,7 @@ def test_downgrade_refuses_while_attempt_history_exists() -> None:
     finally:
         with _conn() as conn:
             conn.execute("DELETE FROM workflows WHERE id = %s", (wid,))
-        _alembic("upgrade", HEAD)
+        _alembic("upgrade", "head")
 
 
 def test_downgrade_refuses_while_a_pending_attempt_approval_is_stamped() -> None:
@@ -238,7 +238,7 @@ def test_downgrade_refuses_while_a_pending_attempt_approval_is_stamped() -> None
     finally:
         with _conn() as conn:
             conn.execute("DELETE FROM workflows WHERE id = %s", (wid,))
-        _alembic("upgrade", HEAD)
+        _alembic("upgrade", "head")
 
 
 def test_pending_attempt_approval_fk_is_validated_and_indexed() -> None:
