@@ -144,7 +144,7 @@ jobs:
 
       - name: Apply database migrations
         env:
-          # The checkpoint guard is the first connection to Neon; allow a cold start.
+          # Alembic is the first connection to Neon; allow a cold start (env.py also floors it at 15 s).
           DB_CONNECT_TIMEOUT_SECONDS: "15"
         run: |
           DATABASE_URL="$(gcloud secrets versions access latest \
@@ -157,14 +157,6 @@ jobs:
           echo "::add-mask::$DATABASE_URL"
           export DATABASE_URL
           uv sync --frozen
-          # SQLAlchemy phase 5 (until phase 7 drops the old checkpoint tables):
-          # refuse the cutover while an active run has checkpoints only in the
-          # old tables. Runs BEFORE the Alembic upgrade so a refusal leaves the
-          # database untouched (it also works before the saver tables exist).
-          # Fails the job here, so the previous revision keeps serving.
-          # Runbook: docs/operations/production-deployment.md
-          # "Checkpointer cutover".
-          uv run composer checkpoints guard
           # Alembic is the only migration tool (phase 6). On an empty database 0001 creates the base schema.
           uv run alembic upgrade head
           uv run alembic current

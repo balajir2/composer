@@ -28,6 +28,8 @@ ALLOWED = {
     "tests/integration/db/test_alembic_0006_drop_legacy_tables.py",
     "tests/unit/db/test_revision_0006.py",
     "tests/unit/db/test_schema_filters.py",
+    "tests/unit/db/test_baseline_frozen.py",  # test name only (twenty_prisma_migrations)
+    "tests/unit/test_deploy_workflow.py",  # asserts the guard step is gone
 }
 
 
